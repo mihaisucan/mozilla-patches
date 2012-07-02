@@ -1,0 +1,77 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1319019291 -10800
+# Node ID 2dd468b629036ed416ba27ff9833d6fb8f576ac4
+# Parent  7b05a3d1f56e054d21716fabaebd6076756020b0
+Bug 692400 - Style inspector appears to ignore inline styles
+
+diff --git a/browser/devtools/styleinspector/CssLogic.jsm b/browser/devtools/styleinspector/CssLogic.jsm
+--- a/browser/devtools/styleinspector/CssLogic.jsm
++++ b/browser/devtools/styleinspector/CssLogic.jsm
+@@ -602,17 +602,18 @@ CssLogic.prototype = {
+         }, this);
+       }, this);
+     }, this);
+   },
+ 
+   /**
+    * Check if the highlighted element or it's parents have matched selectors.
+    * If aCallback is provided then the domRules for the element are passed to
+-   * the callback function.
++   * the callback function. When the element has .style properties, the callback
++   * receives {style: element.style}.
+    *
+    * @param {function} [aCallback] Simple callback method
+    * @return {Boolean} true if the current element or it's parents have
+    * matching CssSelector objects, false otherwise
+    */
+   hasMatchedSelectors: function CL_hasMatchedSelectors(aCallback)
+   {
+     let domRules;
+@@ -623,21 +624,22 @@ CssLogic.prototype = {
+       try {
+         domRules = this.domUtils.getCSSStyleRules(element);
+       } catch (ex) {
+         Services.console.
+             logStringMessage("CssLogic_hasMatchedSelectors error: " + ex);
+         continue;
+       }
+ 
+-      if (domRules.Count() && (!aCallback || aCallback(domRules))) {
++      if ((domRules.Count() && (!aCallback || aCallback(domRules))) ||
++          (element.style.length > 0 &&
++          (!aCallback || aCallback({style: element.style})))) {
+         matched = true;
+         break;
+       }
+-
+     } while ((element = element.parentNode) &&
+         element.nodeType === Ci.nsIDOMNode.ELEMENT_NODE);
+ 
+     return matched;
+   },
+ 
+   /**
+    * Check if the highlighted element or it's parents have unmatched selectors.
+@@ -1494,16 +1496,21 @@ CssPropertyInfo.prototype = {
+    * 
+    * @return {Boolean} true if the current element or it's parents have
+    * matching CssSelector objects, false otherwise
+    */
+   hasMatchedSelectors: function CssPropertyInfo_hasMatchedSelectors()
+   {
+     if (this._hasMatchedSelectors === null) {
+       this._hasMatchedSelectors = this._cssLogic.hasMatchedSelectors(function(aDomRules) {
++        if (!aDomRules.Count) {
++          // For element.style.
++          return !!aDomRules.style.getPropertyValue(this.property);
++        }
++
+         for (let i = 0; i < aDomRules.Count(); i++) {
+           let domRule = aDomRules.GetElementAt(i);
+ 
+           if (domRule.type !== Ci.nsIDOMCSSRule.STYLE_RULE) {
+             continue;
+           }
+ 
+           let domSheet = domRule.parentStyleSheet;

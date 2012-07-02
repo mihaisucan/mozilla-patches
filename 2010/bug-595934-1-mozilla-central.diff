@@ -1,0 +1,644 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1985,16 +1985,17 @@ HUD_SERVICE.prototype =
+     if (!aMessage) {
+       throw new Error(ERRORS.MISSING_ARGS);
+     }
+ 
+     var hud = this.getHeadsUpDisplay(aMessage.hudId);
+     switch (aMessage.origin) {
+       case "network":
+       case "HUDConsole":
++      case "WebConsole":
+       case "console-listener":
+         this.logHUDMessage(aMessage, aConsoleNode, aMessageNode);
+         break;
+       default:
+         // noop
+         break;
+     }
+   },
+@@ -5260,25 +5261,91 @@ HUDConsoleObserver = {
+   observe: function HCO_observe(aSubject, aTopic, aData)
+   {
+     if (aTopic == "xpcom-shutdown") {
+       Services.console.unregisterListener(this);
+     }
+ 
+     if (aSubject instanceof Ci.nsIScriptError) {
+       switch (aSubject.category) {
++        // We ignore chrome-originating errors as we only
++        // care about content.
+         case "XPConnect JavaScript":
++          // nsXPCWrappedJSClass::CheckForException()
++          // nsXPCComponents_Utils::ReportError()
+         case "component javascript":
+         case "chrome javascript":
+-          // we ignore these CHROME-originating errors as we only
+-          // care about content
++          // ScriptErrorEvent in nsJSEnvironment.cpp
++        case "chrome registration":
++          // nsChromeRegistry::LogMessageWithContext()
++        case "XBL":
++          // nsXBLService
++        case "XBL Prototype Handler":
++          // nsXBLPrototypeHandler::ReportKeyConflict()
++        case "XBL Content Sink":
++          // nsXBLContentSink
++        case "xbl javascript":
++          // XBL_ProtoErrorReporter in nsXBLDocumentInfo.cpp
++        case "FrameConstructor":
++          // nsCSSFrameConstructor::ProcessChildren()
+           return;
++
++        // Display the messages from the following categories.
+         case "HUDConsole":
+         case "CSS Parser":
++          // nsCSSScanner::OutputError()
++        case "CSS Loader":
++          // SheetLoadData::OnStreamComplete()
+         case "content javascript":
++          // ScriptErrorEvent in nsJSEnvironment.cpp
++        case "DOM Events":
++          // nsHtml5StreamParser::ContinueAfterScripts()
++          // ReportUseOfDeprecatedMethod() in nsGlobalWindow.cpp,
++          // nsHTMLDocument.cpp, nsDOMEvent.cpp
++          // nsDOMEvent::ReportWrongPropertyAccessWarning()
++          // nsHTMLDocument::WriteCommon()
++        case "DOM:HTML":
++          // PrintWarningOnConsole() in nsDOMClassInfo.cpp
++        case "DOM Window":
++          // nsGlobalWindow::Close()
++          // TODO: This message is never displayed because its origin cannot be
++          // determined, no sourceName is given. See bug 603711.
++        case "SVG":
++          // nsSVGUtils::ReportToConsole()
++          // TODO: There is no call to ReportToConsole(). See bug 603732.
++        case "ImageMap":
++          // logMessage() in nsImageMap.cpp
++        case "HTML":
++          // SendJSWarning() in nsFormSubmission.cpp
++        case "Canvas":
++          // nsCanvasRenderingContext2D::SetStyleFromStringOrInterface()
++          // TODO: This message is never displayed because its origin cannot be
++          // determined, no sourceName is given. See bug 603714.
++        case "DOM3 Load":
++          // ReportUseOfDeprecatedMethod() in nsXMLDocument.cpp
++          // TODO: This message is generally not displayed because its origin
++          // (sourceName) points to the previous URI of the document object -
++          // not the URI of the page in which the script tries to load the new
++          // URI. See bug 603720.
++        case "DOM":
++          // nsDocument::ReportEmptyGetElementByIdArg()
++          //   TODO: This message is never displayed because its origin cannot
++          //   be determined, no sourceName is given. See bug 603723.
++          // nsXMLDocument::Load() - for chrome code.
++        case "malformed-xml":
++          // nsExpatDriver::HandleError()
++          // TODO: This message is only displayed when its origin (sourceName)
++          // is the same as the tab location for which a Web Console is open.
++          // See bug 603727.
++        case "DOM Worker javascript":
++          // nsReportErrorRunnable and DOMWorkerErrorReporter in
++          // nsDOMThreadService.cpp
++          // TODO: This message is never displayed because its origin
++          // (sourceName) points us only to the script that thrown the exception
++          // - no way to associate it to a specific tab. See bug 603730.
+           HUDService.reportConsoleServiceContentScriptError(aSubject);
+           return;
+         default:
+           HUDService.reportConsoleServiceMessage(aSubject);
+           return;
+       }
+     }
+   }
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -86,16 +86,22 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_588342_document_focus.js \
+ 	browser_webconsole_bug_585237_line_limit.js \
+ 	browser_webconsole_bug_581231_close_button.js \
+ 	browser_webconsole_bug_582201_duplicate_errors.js \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_583816_tab_focus.js \
+ 	browser_webconsole_bug_594477_clickable_output.js \
++	browser_webconsole_bug_595934_dom_events.js \
++	browser_webconsole_bug_595934_css_loader.js \
++	browser_webconsole_bug_595934_dom_html.js \
++	browser_webconsole_bug_595934_imagemap.js \
++	browser_webconsole_bug_595934_html.js \
++	browser_webconsole_bug_595934_malformed_xml.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+@@ -107,15 +113,23 @@ _BROWSER_TEST_PAGES = \
+ 	test-error.html \
+ 	test-duplicate-error.html \
+ 	test-image.png \
+ 	test-encoding-ISO-8859-1.html \
+ 	test-bug-593003-iframe-wrong-hud.html \
+ 	test-bug-593003-iframe-wrong-hud-iframe.html \
+ 	test-console-replaced-api.html \
+ 	test-own-console.html \
++	test-bug-595934-dom-events.html \
++	test-bug-595934-css-loader.html \
++	test-bug-595934-css-loader.css \
++	test-bug-595934-css-loader.css^headers^ \
++	test-bug-595934-dom-html.html \
++	test-bug-595934-imagemap.html \
++	test-bug-595934-html.html \
++	test-bug-595934-malformedxml.xhtml \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_css_loader.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_css_loader.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_css_loader.js
+@@ -0,0 +1,52 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-loader.html";
++
++let TestObserver = {
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
++
++  observe: function test_observe(aSubject, aTopic, aData)
++  {
++    if (aSubject instanceof Ci.nsIScriptError &&
++        aSubject.category == "CSS Loader") {
++      Services.console.unregisterListener(TestObserver);
++      executeSoon(performTest);
++    }
++  }
++};
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  HUD = HUDService.hudWeakReferences[hudId].get();
++
++  Services.console.registerListener(TestObserver);
++
++  executeSoon(function() {
++    content.location = TEST_URI;
++  });
++}
++
++function performTest() {
++  let textContent = HUD.outputNode.textContent;
++  isnot(textContent.indexOf("CSS Loader"), -1, "CSS Loader message found");
++
++  finishTest();
++}
++
++function test() {
++  addTab("data:text/html,Web Console test for bug 595934 - CSS Loader.");
++  browser.addEventListener("load", tabLoad, true);
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_dom_events.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_dom_events.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_dom_events.js
+@@ -0,0 +1,52 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events.html";
++
++let TestObserver = {
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
++
++  observe: function test_observe(aSubject, aTopic, aData)
++  {
++    if (aSubject instanceof Ci.nsIScriptError &&
++        aSubject.category == "DOM Events") {
++      Services.console.unregisterListener(TestObserver);
++      executeSoon(performTest);
++    }
++  }
++};
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  HUD = HUDService.hudWeakReferences[hudId].get();
++
++  Services.console.registerListener(TestObserver);
++
++  executeSoon(function() {
++    content.location = TEST_URI;
++  });
++}
++
++function performTest() {
++  let textContent = HUD.outputNode.textContent;
++  isnot(textContent.indexOf("preventBubble()"), -1,
++    "DOM Events warning found");
++
++  finishTest();
++}
++
++function test() {
++  addTab("data:text/html,Web Console test for bug 595934 - DOM Events.");
++  browser.addEventListener("load", tabLoad, true);
++}
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_dom_html.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_dom_html.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_dom_html.js
+@@ -0,0 +1,52 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-html.html";
++
++let TestObserver = {
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
++
++  observe: function test_observe(aSubject, aTopic, aData)
++  {
++    if (aSubject instanceof Ci.nsIScriptError &&
++        aSubject.category == "DOM:HTML") {
++      Services.console.unregisterListener(TestObserver);
++      executeSoon(performTest);
++    }
++  }
++};
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  HUD = HUDService.hudWeakReferences[hudId].get();
++
++  Services.console.registerListener(TestObserver);
++
++  executeSoon(function() {
++    content.location = TEST_URI;
++  });
++}
++
++function performTest() {
++  let textContent = HUD.outputNode.textContent;
++  isnot(textContent.indexOf("getElementById"), -1, "DOM:HTML message found");
++
++  finishTest();
++}
++
++function test() {
++  addTab("data:text/html,Web Console test for bug 595934 - DOM:HTML.");
++  browser.addEventListener("load", tabLoad, true);
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_html.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_html.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_html.js
+@@ -0,0 +1,53 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-595934-html.html";
++
++let TestObserver = {
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
++
++  observe: function test_observe(aSubject, aTopic, aData)
++  {
++    if (aSubject instanceof Ci.nsIScriptError &&
++        aSubject.category == "HTML") {
++      Services.console.unregisterListener(TestObserver);
++      executeSoon(performTest);
++    }
++  }
++};
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  HUD = HUDService.hudWeakReferences[hudId].get();
++
++  Services.console.registerListener(TestObserver);
++
++  executeSoon(function() {
++    let form = content.document.querySelector("form");
++    form.submit();
++  });
++}
++
++function performTest() {
++  let textContent = HUD.outputNode.textContent;
++  isnot(textContent.indexOf("multipart/form-data"), -1, "HTML message found");
++
++  finishTest();
++}
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoad, true);
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_imagemap.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_imagemap.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_imagemap.js
+@@ -0,0 +1,52 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-595934-imagemap.html";
++
++let TestObserver = {
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
++
++  observe: function test_observe(aSubject, aTopic, aData)
++  {
++    if (aSubject instanceof Ci.nsIScriptError &&
++        aSubject.category == "ImageMap") {
++      Services.console.unregisterListener(TestObserver);
++      executeSoon(performTest);
++    }
++  }
++};
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  HUD = HUDService.hudWeakReferences[hudId].get();
++
++  Services.console.registerListener(TestObserver);
++
++  executeSoon(function() {
++    content.location = TEST_URI;
++  });
++}
++
++function performTest() {
++  let textContent = HUD.outputNode.textContent;
++  isnot(textContent.indexOf("ImageMap"), -1, "ImageMap message found");
++
++  finishTest();
++}
++
++function test() {
++  addTab("data:text/html,Web Console test for bug 595934 - ImageMap.");
++  browser.addEventListener("load", tabLoad, true);
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_malformed_xml.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_malformed_xml.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_malformed_xml.js
+@@ -0,0 +1,53 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-595934-malformedxml.xhtml";
++
++let TestObserver = {
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
++
++  observe: function test_observe(aSubject, aTopic, aData)
++  {
++    if (aSubject instanceof Ci.nsIScriptError &&
++        aSubject.category == "malformed-xml") {
++      Services.console.unregisterListener(TestObserver);
++      executeSoon(performTest);
++    }
++  }
++};
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  HUD = HUDService.hudWeakReferences[hudId].get();
++
++  Services.console.registerListener(TestObserver);
++
++  executeSoon(function() {
++    content.location = TEST_URI;
++  });
++}
++
++function performTest() {
++  let textContent = HUD.outputNode.textContent;
++  isnot(textContent.indexOf("malformed-xml"), -1,
++    "malformed-xml message found");
++
++  finishTest();
++}
++
++function test() {
++  addTab("data:text/html,Web Console test for bug 595934 - malformed-xml.");
++  browser.addEventListener("load", tabLoad, true);
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-loader.css b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-loader.css
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-loader.css
+@@ -0,0 +1,10 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++body {
++  color: #0f0;
++  font-weight: bold;
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-loader.css^headers^ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-loader.css^headers^
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-loader.css^headers^
+@@ -0,0 +1,1 @@
++Content-Type: image/png
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-loader.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-loader.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-loader.html
+@@ -0,0 +1,12 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: CSS Loader</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++    <link rel="stylesheet" href="test-bug-595934-css-loader.css">
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "CSS Loader".</p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events.html
+@@ -0,0 +1,16 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: DOM Events</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++    <script type="text/javascript"><!--
++      window.addEventListener("DOMContentLoaded", function(aEvent) {
++        aEvent.preventBubble();
++      }, false);
++    // --></script>
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "DOM Events".</p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-html.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-html.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-html.html
+@@ -0,0 +1,15 @@
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: DOM:HTML</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++    <script type="text/javascript"><!--
++      window.addEventListener("load", function() {
++        document.all.foobar.style.color = "#00f";
++      }, false);
++    // --></script>
++  </head>
++  <body>
++    <p id="foobar">Web Console test for bug 595934 - category "DOM:HTML".</p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-html.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-html.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-html.html
+@@ -0,0 +1,15 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: HTML</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "HTML".</p>
++    <form action="?" enctype="multipart/form-data">
++      <p><label>Input <input type="text" value="test value"></label></p>
++    </form>
++  </body>
++</html>
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-imagemap.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-imagemap.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-imagemap.html
+@@ -0,0 +1,16 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: ImageMap</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "ImageMap".</p>
++    <p><img src="test-image.png" usemap="#testMap" alt="Test image"></p>
++    <map name="testMap">
++      <area shape="rect" coords="0,0,10,10,5" href="#" alt="Test area" />
++    </map>
++  </body>
++</html>
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-malformedxml.xhtml b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-malformedxml.xhtml
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-malformedxml.xhtml
+@@ -0,0 +1,10 @@
++<!DOCTYPE html>
++<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: malformed-xml</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "malformed-xml".</p>
++  </body>

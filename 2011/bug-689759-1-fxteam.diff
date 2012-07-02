@@ -1,0 +1,412 @@
+# HG changeset patch
+# User Michael Ratcliffe <mratcliffe@mozilla.com>
+# Date 1320575798 -7200
+# Node ID 67ab23b0a42d16f728cad1e16360462852062803
+# Parent  f1bafd81dfcd58cfeae0775d87e8f10e72082a18
+Bug 689759 - Style Inspector needs a no-results placeholder
+
+diff --git a/browser/devtools/styleinspector/CssHtmlTree.jsm b/browser/devtools/styleinspector/CssHtmlTree.jsm
+--- a/browser/devtools/styleinspector/CssHtmlTree.jsm
++++ b/browser/devtools/styleinspector/CssHtmlTree.jsm
+@@ -76,16 +76,19 @@ function CssHtmlTree(aStyleInspector)
+   this.root = this.styleDocument.getElementById("root");
+   this.path = this.styleDocument.getElementById("path");
+   this.templateRoot = this.styleDocument.getElementById("templateRoot");
+   this.templatePath = this.styleDocument.getElementById("templatePath");
+   this.propertyContainer = this.styleDocument.getElementById("propertyContainer");
+   this.templateProperty = this.styleDocument.getElementById("templateProperty");
+   this.panel = aStyleInspector.panel;
+ 
++  // No results text.
++  this.noResults = this.styleDocument.getElementById("noResults");
++
+   // The element that we're inspecting, and the document that it comes from.
+   this.viewedElement = null;
+   this.createStyleViews();
+ }
+ 
+ /**
+  * Memoized lookup of a l10n string from a string bundle.
+  * @param {string} aName The key to lookup.
+@@ -149,16 +152,19 @@ CssHtmlTree.prototype = {
+   onlyUserStylesCheckbox: null,
+ 
+   // Holds the ID of the panelRefresh timeout.
+   _panelRefreshTimeout: null,
+ 
+   // Toggle for zebra striping
+   _darkStripe: true,
+ 
++  // Number of visible properties
++  numVisibleProperties: 0,
++
+   get showOnlyUserStyles()
+   {
+     return this.onlyUserStylesCheckbox.checked;
+   },
+ 
+   /**
+    * Update the highlighted element. The CssHtmlTree panel will show the style
+    * information for the given element.
+@@ -193,27 +199,31 @@ CssHtmlTree.prototype = {
+       function displayProperties() {
+         if (this.viewedElement == aElement && this.styleInspector.isOpen()) {
+           // Display the next 15 properties
+           for (let step = i + batchSize; i < step && i <= max; i++) {
+             let name = CssHtmlTree.propertyNames[i];
+             let propView = new PropertyView(this, name);
+             CssHtmlTree.processTemplate(this.templateProperty,
+               this.propertyContainer, propView, true);
++            if (propView.visible) {
++              this.numVisibleProperties++;
++            }
+             propView.refreshAllSelectors();
+             this.propertyViews.push(propView);
+           }
+           if (i < max) {
+             // There are still some properties to display. We loop here to display
+             // the next batch of 15.
+             this._panelRefreshTimeout =
+               this.win.setTimeout(displayProperties.bind(this), 15);
+           } else {
+             this.htmlComplete = true;
+             this._panelRefreshTimeout = null;
++            this.noResults.hidden = this.numVisibleProperties > 0;
+             Services.obs.notifyObservers(null, "StyleInspector-populated", null);
+           }
+         }
+       }
+       this._panelRefreshTimeout =
+         this.win.setTimeout(displayProperties.bind(this), 15);
+     }
+   },
+@@ -222,16 +232,21 @@ CssHtmlTree.prototype = {
+    * Refresh the panel content.
+    */
+   refreshPanel: function CssHtmlTree_refreshPanel()
+   {
+     if (this._panelRefreshTimeout) {
+       this.win.clearTimeout(this._panelRefreshTimeout);
+     }
+ 
++    this.noResults.hidden = true;
++
++    // Reset visible property count
++    this.numVisibleProperties = 0;
++
+     // Reset zebra striping.
+     this._darkStripe = true;
+ 
+     // We use a setTimeout loop to display the properties in batches of 15 at a
+     // time. This results in a perceptibly more responsive UI.
+     let i = 0;
+     let batchSize = 15;
+     let max = this.propertyViews.length - 1;
+@@ -241,16 +256,17 @@ CssHtmlTree.prototype = {
+         this.propertyViews[i].refresh();
+       }
+       if (i < max) {
+         // There are still some property views to refresh. We loop here to
+         // display the next batch of 15.
+         this._panelRefreshTimeout = this.win.setTimeout(refreshView.bind(this), 15);
+       } else {
+         this._panelRefreshTimeout = null;
++        this.noResults.hidden = this.numVisibleProperties > 0;
+         Services.obs.notifyObservers(null, "StyleInspector-populated", null);
+       }
+     }
+     this._panelRefreshTimeout = this.win.setTimeout(refreshView.bind(this), 15);
+   },
+ 
+   /**
+    * Called when the user clicks on a parent element in the "current element"
+@@ -574,16 +590,17 @@ PropertyView.prototype = {
+     if (!this.tree.viewedElement || !this.visible) {
+       this.valueNode.innerHTML = "";
+       this.matchedSelectorsContainer.hidden = true;
+       this.matchedSelectorsContainer.innerHTML = "";
+       this.matchedExpander.removeAttribute("open");
+       return;
+     }
+ 
++    this.tree.numVisibleProperties++;
+     this.valueNode.innerHTML = this.propertyInfo.value;
+     this.refreshAllSelectors();
+   },
+ 
+   /**
+    * Refresh the panel matched rules.
+    */
+   refreshMatchedSelectors: function PropertyView_refreshMatchedSelectors()
+diff --git a/browser/devtools/styleinspector/csshtmltree.xul b/browser/devtools/styleinspector/csshtmltree.xul
+--- a/browser/devtools/styleinspector/csshtmltree.xul
++++ b/browser/devtools/styleinspector/csshtmltree.xul
+@@ -58,16 +58,21 @@
+ 
+ <!-- The output from #templateRoot (below) is inserted here. -->
+ <div id="root"></div>
+ 
+ <!-- The output from #templatePath (below) is inserted here. -->
+ <div id="path">
+ </div>
+ 
++<!-- When no properties are found the following block is displayed. -->
++<div id="noResults" hidden="">
++  &noPropertiesFound;
++</div>
++
+ <!-- The output from #templateProperty (below) is appended here. -->
+ <div id="propertyContainer">
+ </div>
+ 
+ <xul:hbox id="footer">
+   <xul:label class="legendKey bestmatch">&bestMatch;</xul:label>
+   <xul:label class="legendKey matched">&matched;</xul:label>
+   <xul:label class="legendKey parentmatch">&parentMatch;</xul:label>
+diff --git a/browser/devtools/styleinspector/test/browser/Makefile.in b/browser/devtools/styleinspector/test/browser/Makefile.in
+--- a/browser/devtools/styleinspector/test/browser/Makefile.in
++++ b/browser/devtools/styleinspector/test/browser/Makefile.in
+@@ -46,16 +46,17 @@ include $(DEPTH)/config/autoconf.mk
+ include $(topsrcdir)/config/rules.mk
+ 
+ _BROWSER_TEST_FILES = \
+   browser_styleinspector.js \
+   browser_styleinspector_webconsole.js \
+   browser_bug683672.js \
+   browser_styleinspector_bug_672746_default_styles.js \
+   browser_styleinspector_bug_672744_search_filter.js \
++  browser_styleinspector_bug_689759_no_results_placeholder.js \
+   browser_bug_692400_element_style.js \
+   browser_ruleview_editor.js \
+   browser_ruleview_inherit.js \
+   browser_ruleview_manipulation.js \
+   browser_ruleview_override.js \
+   browser_ruleview_ui.js \
+   head.js \
+   $(NULL)
+diff --git a/browser/devtools/styleinspector/test/browser/browser_styleinspector_bug_689759_no_results_placeholder.js b/browser/devtools/styleinspector/test/browser/browser_styleinspector_bug_689759_no_results_placeholder.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/styleinspector/test/browser/browser_styleinspector_bug_689759_no_results_placeholder.js
+@@ -0,0 +1,118 @@
++/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++// Tests that the no results placeholder works properly.
++
++let doc;
++let stylePanel;
++
++function createDocument()
++{
++  doc.body.innerHTML = '<style type="text/css"> ' +
++    '.matches {color: #F00;}</style>' +
++    '<span id="matches" class="matches">Some styled text</span>';
++  doc.title = "Tests that the no results placeholder works properly";
++  ok(window.StyleInspector, "StyleInspector exists");
++  stylePanel = new StyleInspector(window);
++  Services.obs.addObserver(runStyleInspectorTests, "StyleInspector-opened", false);
++  stylePanel.createPanel(false, function() {
++    stylePanel.open(doc.body);
++  });
++}
++
++function runStyleInspectorTests()
++{
++  Services.obs.removeObserver(runStyleInspectorTests, "StyleInspector-opened", false);
++
++  ok(stylePanel.isOpen(), "style inspector is open");
++
++  Services.obs.addObserver(SI_AddFilterText, "StyleInspector-populated", false);
++
++  let span = doc.querySelector("#matches");
++  ok(span, "captain, we have the matches span");
++
++  let htmlTree = stylePanel.cssHtmlTree;
++  stylePanel.selectNode(span);
++
++  is(span, htmlTree.viewedElement,
++    "style inspector node matches the selected node");
++  is(htmlTree.viewedElement, stylePanel.cssLogic.viewedElement,
++     "cssLogic node matches the cssHtmlTree node");
++}
++
++function SI_AddFilterText()
++{
++  Services.obs.removeObserver(SI_AddFilterText, "StyleInspector-populated", false);
++
++  let iframe = stylePanel.iframe;
++  let searchbar = stylePanel.cssHtmlTree.searchField;
++  let searchTerm = "xxxxx";
++
++  Services.obs.addObserver(SI_checkPlaceholderVisible, "StyleInspector-populated", false);
++  info("setting filter text to \"" + searchTerm + "\"");
++  searchbar.focus();
++  for each (let c in searchTerm) {
++    EventUtils.synthesizeKey(c, {}, iframe.contentWindow);
++  }
++}
++
++function SI_checkPlaceholderVisible()
++{
++  Services.obs.removeObserver(SI_checkPlaceholderVisible, "StyleInspector-populated", false);
++  info("SI_checkPlaceholderVisible called");
++  let placeholder = stylePanel.cssHtmlTree.noResults;
++  let iframe = stylePanel.iframe;
++  let display = iframe.contentWindow.getComputedStyle(placeholder).display;
++
++  is(display, "block", "placeholder is visible");
++
++  SI_ClearFilterText();
++}
++
++function SI_ClearFilterText()
++{
++  let iframe = stylePanel.iframe;
++  let searchbar = stylePanel.cssHtmlTree.searchField;
++
++  Services.obs.addObserver(SI_checkPlaceholderHidden, "StyleInspector-populated", false);
++  info("clearing filter text");
++  searchbar.focus();
++  searchbar.value = "";
++  EventUtils.synthesizeKey("c", {}, iframe.contentWindow);
++}
++
++function SI_checkPlaceholderHidden()
++{
++  Services.obs.removeObserver(SI_checkPlaceholderHidden, "StyleInspector-populated", false);
++  let placeholder = stylePanel.cssHtmlTree.noResults;
++  let iframe = stylePanel.iframe;
++  let display = iframe.contentWindow.getComputedStyle(placeholder).display;
++
++  is(display, "none", "placeholder is hidden");
++
++  Services.obs.addObserver(finishUp, "StyleInspector-closed", false);
++  stylePanel.close();
++}
++
++function finishUp()
++{
++  Services.obs.removeObserver(finishUp, "StyleInspector-closed", false);
++  ok(!stylePanel.isOpen(), "style inspector is closed");
++  doc = stylePanel = null;
++  gBrowser.removeCurrentTab();
++  finish();
++}
++
++function test()
++{
++  waitForExplicitFinish();
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function onLoad(evt) {
++    gBrowser.selectedBrowser.removeEventListener(evt.type, onLoad, true);
++    doc = content.document;
++    waitForFocus(createDocument, content);
++  }, true);
++
++  content.location = "data:text/html,no results placeholder test";
++}
+diff --git a/browser/locales/en-US/chrome/browser/devtools/styleinspector.dtd b/browser/locales/en-US/chrome/browser/devtools/styleinspector.dtd
+--- a/browser/locales/en-US/chrome/browser/devtools/styleinspector.dtd
++++ b/browser/locales/en-US/chrome/browser/devtools/styleinspector.dtd
+@@ -13,16 +13,21 @@
+ <!ENTITY selectedElementLabel  "Selected element:">
+ 
+ <!-- LOCALIZATION NOTE (helpLinkTitle): For each style property
+   -  the user can hover it and get a help link button which allows one to
+   -  quickly jump to the documentation from the Mozilla Developer Network site.
+   -  This is the link title shown in the hover tooltip. -->
+ <!ENTITY helpLinkTitle         "Read the documentation for this property">
+ 
++<!-- LOCALIZATION NOTE (noPropertiesFound): In the case where there are no CSS
++  -  properties to display e.g. due to search criteria this message is
++  -  displayed. -->
++<!ENTITY noPropertiesFound     "No CSS properties found.">
++
+ <!-- LOCALIZATION NOTE (unmatchedSelectors): For each style property
+   -  the panel shows whether there are any selectors that do not match the
+   -  currently selected element. -->
+ <!ENTITY unmatchedSelectors    "Unmatched selectors">
+ 
+ <!-- LOCALIZATION NOTE (bestMatch, matched, parentMatch & unmatched): For each
+   -  style property the panel shows the rules which hold that specific property.
+   -  For every rule, the rule status is also displayed: a rule can be the best
+diff --git a/browser/themes/gnomestripe/browser/devtools/csshtmltree.css b/browser/themes/gnomestripe/browser/devtools/csshtmltree.css
+--- a/browser/themes/gnomestripe/browser/devtools/csshtmltree.css
++++ b/browser/themes/gnomestripe/browser/devtools/csshtmltree.css
+@@ -219,16 +219,22 @@
+ .selectedElementLabel {
+   font-weight: bold;
+ }
+ 
+ .darkrow {
+   background-color: rgba(0,0,0,.022);
+ }
+ 
++#noResults {
++  font-size: 18px;
++  margin-top: 5px;
++  text-align: center;
++}
++
+ .header {
+   color: -moz-dialogtext;
+   background-color: -moz-dialog;
+   padding: 5px 0 0;
+ }
+ 
+ .onlyuserstyles,
+ .userStylesLabel {
+diff --git a/browser/themes/pinstripe/browser/devtools/csshtmltree.css b/browser/themes/pinstripe/browser/devtools/csshtmltree.css
+--- a/browser/themes/pinstripe/browser/devtools/csshtmltree.css
++++ b/browser/themes/pinstripe/browser/devtools/csshtmltree.css
+@@ -217,16 +217,22 @@
+ .selectedElementLabel {
+   font-weight: bold;
+ }
+ 
+ .darkrow {
+   background-color: rgba(0,0,0,.022);
+ }
+ 
++#noResults {
++  font-size: 18px;
++  margin-top: 5px;
++  text-align: center;
++}
++
+ .header {
+   color: -moz-dialogtext;
+   background-color: -moz-dialog;
+   padding: 5px 0 0;
+ }
+ 
+ .onlyuserstyles,
+ .userStylesLabel {
+diff --git a/browser/themes/winstripe/browser/devtools/csshtmltree.css b/browser/themes/winstripe/browser/devtools/csshtmltree.css
+--- a/browser/themes/winstripe/browser/devtools/csshtmltree.css
++++ b/browser/themes/winstripe/browser/devtools/csshtmltree.css
+@@ -218,16 +218,22 @@
+ .selectedElementLabel {
+   font-weight: bold;
+ }
+ 
+ .darkrow {
+   background-color: rgba(0,0,0,.022);
+ }
+ 
++#noResults {
++  font-size: 18px;
++  margin-top: 5px;
++  text-align: center;
++}
++
+ .header {
+   color: -moz-dialogtext;
+   background-color: -moz-dialog;
+   padding: 5px 0 0;
+ }
+ 
+ .onlyuserstyles,
+ .userStylesLabel {

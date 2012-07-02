@@ -1,0 +1,177 @@
+# HG changeset patch
+# Parent c186bfda9e7140a3dfb8dd79fc999da65115f391
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1310038240 -10800
+Bug 592469 - Web Console cleanup: part 11 - tests - clearDisplay()
+
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_582201_duplicate_errors.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_582201_duplicate_errors.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_582201_duplicate_errors.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_582201_duplicate_errors.js
+@@ -48,18 +48,17 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testDuplicateErrors, false);
+ }
+ 
+ function testDuplicateErrors() {
+   browser.removeEventListener("DOMContentLoaded", testDuplicateErrors,
+                               false);
+   openConsole();
+ 
+-  let hudId = HUDService.getHudIdByWindow(content);
+-  HUDService.clearDisplay(hudId);
++  HUDService.getHudByWindow(content).jsterm.clearOutput();
+ 
+   Services.console.registerListener(consoleObserver);
+ 
+   content.location.reload();
+ }
+ 
+ var consoleObserver = {
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_644419_log_limits.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_644419_log_limits.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_644419_log_limits.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_644419_log_limits.js
+@@ -50,21 +50,21 @@ function testWebDevLimits(aEvent) {
+     findLogEntry("bar is not defined");
+ 
+     Services.prefs.setIntPref("devtools.hud.loglimit.console", gOldPref);
+     testJsLimits();
+   });
+ }
+ 
+ function testJsLimits(aEvent) {
+-  HUDService.clearDisplay(gHudId);
+   gOldPref = Services.prefs.getIntPref("devtools.hud.loglimit.exception");
+   Services.prefs.setIntPref("devtools.hud.loglimit.exception", 10);
+ 
+   let hud = HUDService.hudReferences[gHudId];
++  hud.jsterm.clearOutput();
+   outputNode = hud.outputNode;
+   hud.console.log("testing JS limits");
+ 
+   // Find the sentinel entry.
+   findLogEntry("testing JS limits");
+   // Fill the log with JS errors.
+   let head = content.document.getElementsByTagName("head")[0];
+   for (let i = 0; i < 11; i++) {
+@@ -82,21 +82,21 @@ function testJsLimits(aEvent) {
+     Services.prefs.setIntPref("devtools.hud.loglimit.exception", gOldPref);
+     testNetLimits();
+   });
+ }
+ 
+ var gCounter, gImage;
+ 
+ function testNetLimits(aEvent) {
+-  HUDService.clearDisplay(gHudId);
+   gOldPref = Services.prefs.getIntPref("devtools.hud.loglimit.network");
+   Services.prefs.setIntPref("devtools.hud.loglimit.network", 10);
+ 
+   let hud = HUDService.hudReferences[gHudId];
++  hud.jsterm.clearOutput();
+   outputNode = hud.outputNode;
+   hud.console.log("testing Net limits");
+ 
+   // Find the sentinel entry.
+   findLogEntry("testing Net limits");
+   // Fill the log with network messages.
+   gCounter = 0;
+   loadImage();
+@@ -119,21 +119,21 @@ function loadImage() {
+   // Check if the sentinel entry is still there.
+   findLogEntry("testing Net limits");
+ 
+   Services.prefs.setIntPref("devtools.hud.loglimit.network", gOldPref);
+   testCssLimits();
+ }
+ 
+ function testCssLimits(aEvent) {
+-  HUDService.clearDisplay(gHudId);
+   gOldPref = Services.prefs.getIntPref("devtools.hud.loglimit.cssparser");
+   Services.prefs.setIntPref("devtools.hud.loglimit.cssparser", 10);
+ 
+   let hud = HUDService.hudReferences[gHudId];
++  hud.jsterm.clearOutput();
+   outputNode = hud.outputNode;
+   hud.console.log("testing CSS limits");
+ 
+   // Find the sentinel entry.
+   findLogEntry("testing CSS limits");
+ 
+   // Fill the log with CSS errors.
+   let body = content.document.getElementsByTagName("body")[0];
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_console_logging_api.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_console_logging_api.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_console_logging_api.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_console_logging_api.js
+@@ -63,46 +63,46 @@ function onLoad() {
+   testConsoleLoggingAPI("debug"); // bug 616742
+ 
+   finishTest();
+ }
+ 
+ function testConsoleLoggingAPI(aMethod) {
+   let console = content.wrappedJSObject.console;
+ 
+-  HUDService.clearDisplay(hudId);
++  hud.jsterm.clearOutput();
+ 
+   setStringFilter(hudId, "foo");
+   console[aMethod]("foo-bar-baz");
+   console[aMethod]("bar-baz");
+ 
+   var nodes = outputNode.querySelectorAll(".hud-filtered-by-string");
+ 
+   is(nodes.length, 1, "1 hidden " + aMethod  + " node found (via classList)");
+ 
+-  HUDService.clearDisplay(hudId);
++  hud.jsterm.clearOutput();
+ 
+   // now toggle the current method off - make sure no visible message
+ 
+   // TODO: move all filtering tests into a separate test file: see bug 608135
+   setStringFilter(hudId, "");
+   HUDService.setFilterState(hudId, aMethod, false);
+   console[aMethod]("foo-bar-baz");
+   nodes = outputNode.querySelectorAll("description");
+ 
+   is(nodes.length, 1,  aMethod + " logging turned off, 1 message hidden");
+ 
+-  HUDService.clearDisplay(hudId);
++  hud.jsterm.clearOutput();
+   HUDService.setFilterState(hudId, aMethod, true);
+   console[aMethod]("foo-bar-baz");
+   nodes = outputNode.querySelectorAll("description");
+ 
+   is(nodes.length, 1, aMethod + " logging turned on, 1 message shown");
+ 
+-  HUDService.clearDisplay(hudId);
++  hud.jsterm.clearOutput();
+   setStringFilter(hudId, "");
+ 
+   // test for multiple arguments.
+   console[aMethod]("foo", "bar");
+ 
+   let node = outputNode.querySelector(".hud-msg-node");
+   ok(/foo bar/.test(node.textContent),
+     "Emitted both console arguments");
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_copying_multiple_messages_inserts_newlines_in_between.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_copying_multiple_messages_inserts_newlines_in_between.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_copying_multiple_messages_inserts_newlines_in_between.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_copying_multiple_messages_inserts_newlines_in_between.js
+@@ -22,17 +22,17 @@ function onLoad() {
+   browser.removeEventListener("DOMContentLoaded", onLoad,
+                                                false);
+   executeSoon(testNewlines);
+ }
+ 
+ function testNewlines() {
+   openConsole();
+   hud = HUDService.getHudByWindow(content);
+-  HUDService.clearDisplay(hud.hudId);
++  hud.jsterm.clearOutput();
+ 
+   let console = content.wrappedJSObject.console;
+   ok(console != null, "we have the console object");
+ 
+   for (let i = 0; i < 20; i++) {
+     console.log("Hello world!");
+   }
+ 

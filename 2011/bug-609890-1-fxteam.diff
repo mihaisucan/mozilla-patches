@@ -1,0 +1,327 @@
+# HG changeset patch
+# Parent 17d1ceebf26f66e357764c7f66692c2bf38db917
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -99,16 +99,22 @@ XPCOMUtils.defineLazyGetter(this, "Autoc
+ });
+ 
+ XPCOMUtils.defineLazyGetter(this, "namesAndValuesOf", function () {
+   var obj = {};
+   Cu.import("resource:///modules/PropertyPanel.jsm", obj);
+   return obj.namesAndValuesOf;
+ });
+ 
++XPCOMUtils.defineLazyGetter(this, "gConsoleStorage", function () {
++  let obj = {};
++  Cu.import("resource://gre/modules/ConsoleAPIStorage.jsm", obj);
++  return obj.ConsoleAPIStorage;
++});
++
+ function LogFactory(aMessagePrefix)
+ {
+   function log(aMessage) {
+     var _msg = aMessagePrefix + " " + aMessage + "\n";
+     dump(_msg);
+   }
+   return log;
+ }
+@@ -1336,16 +1342,28 @@ HUD_SERVICE.prototype =
+    * @returns integer
+    */
+   getWindowId: function HS_getWindowId(aWindow)
+   {
+     return aWindow.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindowUtils).outerWindowID;
+   },
+ 
+   /**
++   * Gets the ID of the inner window of this DOM window
++   *
++   * @param nsIDOMWindow aWindow
++   * @returns integer
++   */
++  getInnerWindowId: function HS_getInnerWindowId(aWindow)
++  {
++    return aWindow.QueryInterface(Ci.nsIInterfaceRequestor).
++      getInterface(Ci.nsIDOMWindowUtils).currentInnerWindowID;
++  },
++
++  /**
+    * Gets the top level content window that has an outer window with
+    * the given ID or returns null if no such content window exists
+    *
+    * @param integer aId
+    * @returns nsIDOMWindow
+    */
+   getWindowByWindowId: function HS_getWindowByWindowId(aId)
+   {
+@@ -1461,22 +1479,23 @@ HUD_SERVICE.prototype =
+   {
+     let browser = aContext.linkedBrowser;
+     let window = browser.contentWindow;
+     let chromeDocument = aContext.ownerDocument;
+     let nBox = chromeDocument.defaultView.getNotificationBox(window);
+     let hudId = "hud_" + nBox.id;
+     let displayNode = chromeDocument.getElementById(hudId);
+ 
+-    if (hudId in this.hudReferences && displayNode) {
++    let hud = this.hudReferences[hudId];
++
++    if (hud && displayNode) {
+       if (!aAnimated) {
+         this.storeHeight(hudId);
+       }
+ 
+-      let hud = this.hudReferences[hudId];
+       browser.webProgress.removeProgressListener(hud.progressListener);
+       delete hud.progressListener;
+ 
+       this.unregisterDisplay(displayNode);
+ 
+       window.focus();
+     }
+   },
+@@ -2862,16 +2881,18 @@ HUD_SERVICE.prototype =
+       HUDService.registerHUDReference(hud);
+       let windowId = this.getWindowId(aContentWindow.top);
+       this.windowIds[windowId] = hudId;
+ 
+       hud.progressListener = new ConsoleProgressListener(hudId);
+ 
+       _browser.webProgress.addProgressListener(hud.progressListener,
+         Ci.nsIWebProgress.NOTIFY_STATE_ALL);
++
++      hud.displayCachedConsoleMessages();
+     }
+     else {
+       hud = this.hudReferences[hudId];
+       if (aContentWindow == aContentWindow.top) {
+         // TODO: name change?? doesn't actually re-attach the console
+         hud.reattachConsole(aContentWindow);
+       }
+     }
+@@ -3508,16 +3529,34 @@ HeadsUpDisplay.prototype = {
+       this.jsterm = new JSTerm(context, aParentNode, mixin, this.console);
+     }
+     else {
+       throw new Error("Unsupported Gecko Application");
+     }
+   },
+ 
+   /**
++   * Display cached messages that may have been collected before the UI is
++   * displayed.
++   *
++   * @returns void
++   */
++  displayCachedConsoleMessages: function HUD_displayCachedConsoleMessages()
++  {
++    // get the messages from the storageService:
++    let windowId = HUDService.getInnerWindowId(this.contentWindow);
++
++    let messages = gConsoleStorage.getEvents(windowId);
++
++    for (let i = 0; i < messages.length; i++) {
++      HUDService.logConsoleAPIMessage(this.hudId, messages[i]);
++    }
++  },
++
++  /**
+    * Re-attaches a console when the contentWindow is recreated
+    *
+    * @param nsIDOMWindow aContentWindow
+    * @returns void
+    */
+   reattachConsole: function HUD_reattachConsole(aContentWindow)
+   {
+     this.contentWindow = aContentWindow;
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -139,16 +139,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_646025_console_file_location.js \
+ 	browser_webconsole_position_ui.js \
+ 	browser_webconsole_bug_642615_autocomplete.js \
+ 	browser_webconsole_bug_585991_autocomplete_popup.js \
+ 	browser_webconsole_bug_585991_autocomplete_keys.js \
+ 	browser_webconsole_bug_663443_panel_title.js \
+ 	browser_webconsole_bug_660806_history_nav.js \
+ 	browser_webconsole_bug_651501_document_body_autocomplete.js \
++	browser_ConsoleAPICachedMessages.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_ConsoleAPICachedMessages.js b/toolkit/components/console/hudservice/tests/browser/browser_ConsoleAPICachedMessages.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_ConsoleAPICachedMessages.js
+@@ -0,0 +1,74 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is DevTools test code.
++ *
++ * The Initial Developer of the Original Code is Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   David Dahl <ddahl@mozilla.com>
++ *   Mihai Sucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "data:text/html,<p>Web Console test for bug 609890";
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab(TEST_URI);
++
++  gBrowser.selectedBrowser.addEventListener("load", testOpenUI, true);
++}
++
++function testOpenUI()
++{
++  gBrowser.selectedBrowser.removeEventListener("load", testOpenUI, true);
++
++  // test to see if the messages are
++  // displayed when the console UI is opened
++
++  let console = content.wrappedJSObject.console;
++  console.log("log Bazzle");
++  console.info("info Bazzle");
++  console.warn("warn Bazzle");
++  console.error("error Bazzle");
++
++  HUDService.activateHUDForContext(gBrowser.selectedTab);
++  let hudId = HUDService.getHudIdByWindow(content);
++  let hud = HUDService.getHudReferenceById(hudId);
++
++  testLogEntry(hud.outputNode, "log Bazzle",
++               "Find a console log entry from before console UI is opened",
++               false, null);
++
++  HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++
++  executeSoon(finish);
++}
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_notifications.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_notifications.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_notifications.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_notifications.js
+@@ -14,63 +14,62 @@
+  *
+  * The Original Code is DevTools test code.
+  *
+  * The Initial Developer of the Original Code is Mozilla Foundation.
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+- *  David Dahl <ddahl@mozilla.com>
++ *   David Dahl <ddahl@mozilla.com>
++ *   Mihai Sucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+  * decision by deleting the provisions above and replace them with the notice
+  * and other provisions required by the GPL or the LGPL. If you do not delete
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+-const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
++const TEST_URI = "data:text/html,<p>Web Console test for notifications";
+ 
+ function test() {
+   observer.init();
+   addTab(TEST_URI);
+-  browser.addEventListener("DOMContentLoaded", onLoad, false);
++  browser.addEventListener("load", onLoad, true);
+ }
+ 
+ function webConsoleCreated(aID)
+ {
+   Services.obs.removeObserver(observer, "web-console-created");
+-  executeSoon(function (){
+-    ok(HUDService.hudReferences[aID], "We have a hud reference");
+-    let console = browser.contentWindow.wrappedJSObject.console;
+-    console.log("adding a log message");
+-  });
++  ok(HUDService.hudReferences[aID], "We have a hud reference");
++  let console = content.wrappedJSObject.console;
++  console.log("adding a log message");
+ }
+ 
+ function webConsoleDestroyed(aID)
+ {
+   Services.obs.removeObserver(observer, "web-console-destroyed");
+   ok(!HUDService.hudReferences[aID], "We do not have a hud reference");
+-  finishTest();
++  executeSoon(finishTest);
+ }
+ 
+ function webConsoleMessage(aID, aNodeID)
+ {
+   Services.obs.removeObserver(observer, "web-console-message-created");
+   ok(aID, "we have a console ID");
+   ok(typeof aNodeID == 'string', "message node id is not null");
+-  closeConsole();
++  executeSoon(closeConsole);
+ }
+ 
+ let observer = {
+ 
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
+ 
+   observe: function observe(aSubject, aTopic, aData)
+   {
+@@ -95,11 +94,11 @@ let observer = {
+   {
+     Services.obs.addObserver(this, "web-console-created", false);
+     Services.obs.addObserver(this, "web-console-destroyed", false);
+     Services.obs.addObserver(this, "web-console-message-created", false);
+   }
+ };
+ 
+ function onLoad() {
+-  browser.removeEventListener("DOMContentLoaded", onLoad, false);
++  browser.removeEventListener("load", onLoad, true);
+   openConsole();
+ }

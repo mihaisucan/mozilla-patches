@@ -1,0 +1,22 @@
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+@@ -231,17 +231,17 @@ function testLogEntry(aOutputNode, aMatc
+   var msgs = aOutputNode.querySelector(".hud-group").childNodes;
+   for (var i = 1; i < msgs.length; i++) {
+     var message = msgs[i].textContent.indexOf(aMatchString);
+     if (message > -1) {
+       ok(true, aSuccessErrObj.success);
+       return;
+     }
+   }
+-  throw new Error(aSuccessErrObj.err);
++  ok(false, aSuccessErrObj.err);
+ }
+ 
+ // test network logging
+ //
+ // NB: After this test, the HUD (including its "jsterm" attribute) will be gone
+ // forever due to bug 580618!
+ function testNet()
+ {

@@ -1,0 +1,117 @@
+diff --git a/toolkit/themes/gnomestripe/global/webConsole_networkPanel.css b/toolkit/themes/gnomestripe/global/webConsole_networkPanel.css
+--- a/toolkit/themes/gnomestripe/global/webConsole_networkPanel.css
++++ b/toolkit/themes/gnomestripe/global/webConsole_networkPanel.css
+@@ -42,16 +42,17 @@ body {
+   font-size: 11px;
+   background: #EEE;
+   color: #000;
+ }
+ 
+ #header {
+   padding: 5px;
+   overflow-x:auto;
++  display: block;
+ }
+ 
+ h1 {
+   font-size: 13px;
+   line-height: 15px;
+   padding: 3px 10px;
+   vertical-align: bottom;
+   margin: 0px;
+@@ -71,16 +72,17 @@ h1 .info {
+ 
+ .property-table {
+   padding: 2px 5px;
+   background: -moz-linear-gradient(top, #FFF, #F8F8F8);
+   color: #333;
+   width: 100%;
+   max-height: 330px;
+   overflow: auto;
++  display: block;
+ }
+ 
+ .property-name {
+   font-size: 11px;
+   font-weight: bold;
+   color: #000;
+   white-space: nowrap;
+   text-align: right;
+diff --git a/toolkit/themes/pinstripe/global/webConsole_networkPanel.css b/toolkit/themes/pinstripe/global/webConsole_networkPanel.css
+--- a/toolkit/themes/pinstripe/global/webConsole_networkPanel.css
++++ b/toolkit/themes/pinstripe/global/webConsole_networkPanel.css
+@@ -42,16 +42,17 @@ body {
+   font-size: 11px;
+   background: #EEE;
+   color: #000;
+ }
+ 
+ #header {
+   padding: 5px;
+   overflow-x:auto;
++  display: block;
+ }
+ 
+ h1 {
+   font-size: 13px;
+   line-height: 15px;
+   padding: 3px 10px;
+   vertical-align: bottom;
+   margin: 0px;
+@@ -71,16 +72,17 @@ h1 .info {
+ 
+ .property-table {
+   padding: 2px 5px;
+   background: -moz-linear-gradient(top, #FFF, #F8F8F8);
+   color: #333;
+   width: 100%;
+   max-height: 330px;
+   overflow: auto;
++  display: block;
+ }
+ 
+ .property-name {
+   font-size: 11px;
+   font-weight: bold;
+   padding-right: 4px;
+   color: #000;
+   white-space: nowrap;
+diff --git a/toolkit/themes/winstripe/global/webConsole_networkPanel.css b/toolkit/themes/winstripe/global/webConsole_networkPanel.css
+--- a/toolkit/themes/winstripe/global/webConsole_networkPanel.css
++++ b/toolkit/themes/winstripe/global/webConsole_networkPanel.css
+@@ -42,16 +42,17 @@ body {
+   font-size: 11px;
+   background: #EEE;
+   color: #000;
+ }
+ 
+ #header {
+   padding: 5px;
+   overflow-x: auto;
++  display: block;
+ }
+ 
+ h1 {
+   font-size: 13px;
+   line-height: 15px;
+   padding: 3px 10px;
+   vertical-align: bottom;
+   margin: 0px;
+@@ -71,16 +72,17 @@ h1 .info {
+ 
+ .property-table {
+   padding: 2px 5px;
+   background: -moz-linear-gradient(top, #FFF, #F8F8F8);
+   color: #333;
+   width: 100%;
+   max-height: 330px;
+   overflow: auto;
++  display: block;
+ }
+ 
+ .property-table-header {
+   font-size: 11px;
+   font-weight: bold;
+   padding-right: 4px;
+   color: #000;
+   white-space: nowrap;

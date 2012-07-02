@@ -1,0 +1,169 @@
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -49,16 +49,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_HUDServiceTestsAll.js \
+ 	browser_webconsole_bug_585237_line_limit.js \
+ 	browser_webconsole_bug_586388_select_all.js  \
+ 	browser_webconsole_bug_588967_input_expansion.js \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_581231_close_button.js \
++	browser_webconsole_bug_587617_output_copy.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+ 	testscript.js \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_587617_output_copy.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_587617_output_copy.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_587617_output_copy.js
+@@ -0,0 +1,101 @@
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/HUDService.jsm");
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
++
++function tabLoaded() {
++  gBrowser.selectedBrowser.removeEventListener("load", tabLoaded, true);
++
++  waitForFocus(function () {
++    HUDService.activateHUDForContext(gBrowser.selectedTab);
++
++    // See bugs 574036, 586386 and 587617.
++
++    let HUD = HUDService.getDisplayByURISpec(content.location.href);
++    let filterBox = HUD.querySelector(".hud-filter-box");
++    let outputNode = HUD.querySelector(".hud-output-node");
++    let selection = getSelection();
++    let jstermInput = HUD.querySelector(".jsterm-input-node");
++    let console = content.wrappedJSObject.console;
++    let contentSelection = content.getSelection();
++
++    let make_selection = function () {
++      let controller = top.document.commandDispatcher.
++        getControllerForCommand("cmd_copy");
++      is(controller.isCommandEnabled("cmd_copy"), false, "cmd_copy is disabled");
++
++      console.log("Hello world!");
++
++      let range = document.createRange();
++      let selectedNode = outputNode.querySelector(".hud-group > label:last-child");
++      range.selectNode(selectedNode);
++      selection.addRange(range);
++
++      selectedNode.focus();
++
++      goUpdateCommand("cmd_copy");
++
++      controller = top.document.commandDispatcher.
++        getControllerForCommand("cmd_copy");
++      is(controller.isCommandEnabled("cmd_copy"), true, "cmd_copy is enabled");
++
++      waitForClipboard(selectedNode.textContent, clipboard_setup,
++        clipboard_copy_done, clipboard_copy_done);
++    };
++
++    let clipboard_setup = function () {
++      goDoCommand("cmd_copy");
++    };
++
++    let clipboard_copy_done = function () {
++      selection.removeAllRanges();
++      testEnd();
++    };
++
++    // Check if we first need to clear any existing selections.
++    if (selection.rangeCount > 0 || contentSelection.rangeCount > 0 ||
++        jstermInput.selectionStart != jstermInput.selectionEnd) {
++      if (jstermInput.selectionStart != jstermInput.selectionEnd) {
++        jstermInput.selectionStart = jstermInput.selectionEnd = 0;
++      }
++
++      if (selection.rangeCount > 0) {
++        selection.removeAllRanges();
++      }
++
++      if (contentSelection.rangeCount > 0) {
++        contentSelection.removeAllRanges();
++      }
++
++      goUpdateCommand("cmd_copy");
++      make_selection();
++    }
++    else {
++      make_selection();
++    }
++  });
++}
++
++function testEnd() {
++  HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++  finish();
++}
++
++function test() {
++  waitForExplicitFinish();
++
++  gBrowser.selectedBrowser.addEventListener("load", tabLoaded, true);
++
++  content.location = TEST_URI;
++}
++
+diff --git a/toolkit/themes/gnomestripe/global/webConsole.css b/toolkit/themes/gnomestripe/global/webConsole.css
+--- a/toolkit/themes/gnomestripe/global/webConsole.css
++++ b/toolkit/themes/gnomestripe/global/webConsole.css
+@@ -16,17 +16,18 @@
+  * The Initial Developer of the Original Code is
+  *   Mozilla Corporation
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   David Dahl <ddahl@mozilla.com>
+  *   Patrick Walton <pcwalton@mozilla.com>
+-
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+  * decision by deleting the provisions above and replace them with the notice
+@@ -55,17 +56,17 @@
+ }
+ 
+ .hud-main-label {
+     font-size: 1em;
+     padding-top: 0.33em;
+     font-weight: bold;
+ }
+ 
+-.hud-output-node div {
++.hud-output-node * {
+     -moz-user-select: text;
+     white-space: pre-wrap;
+     -moz-user-focus: normal;
+ }
+ 
+ .hud-clickable {
+     cursor: pointer !important;
+     text-decoration: underline;

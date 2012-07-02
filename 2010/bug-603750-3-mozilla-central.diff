@@ -1,0 +1,339 @@
+diff --git a/content/base/src/nsWebSocket.cpp b/content/base/src/nsWebSocket.cpp
+--- a/content/base/src/nsWebSocket.cpp
++++ b/content/base/src/nsWebSocket.cpp
+@@ -83,16 +83,20 @@
+ #include "nsIDNSRecord.h"
+ #include "nsIDNSService.h"
+ #include "nsLayoutStatics.h"
+ #include "nsIHttpAuthenticableChannel.h"
+ #include "nsIHttpChannelAuthProvider.h"
+ #include "mozilla/Mutex.h"
+ #include "nsIDOMCloseEvent.h"
+ #include "nsICryptoHash.h"
++#include "jsdbgapi.h"
++#include "nsIJSContextStack.h"
++#include "nsJSUtils.h"
++#include "nsIScriptError.h"
+ 
+ using namespace mozilla;
+ 
+ static nsIThread *gWebSocketThread = nsnull;
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+ // nsWebSocketEstablishedConnection
+ ////////////////////////////////////////////////////////////////////////////////
+@@ -1948,29 +1952,42 @@ nsWebSocketEstablishedConnection::PrintE
+   nsCOMPtr<nsIStringBundle> strBundle;
+   rv = bundleService->CreateBundle(aBundleURI, getter_AddRefs(strBundle));
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   nsCOMPtr<nsIConsoleService> console(
+     do_GetService(NS_CONSOLESERVICE_CONTRACTID, &rv));
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
++  nsCOMPtr<nsIScriptError2> errorObject(
++    do_CreateInstance(NS_SCRIPTERROR_CONTRACTID, &rv));
++  NS_ENSURE_SUCCESS(rv, rv);
++
+   // Localize the error message
+   nsXPIDLString message;
+   if (aFormatStrings) {
+     rv = strBundle->FormatStringFromName(aError, aFormatStrings,
+                                          aFormatStringsLen,
+                                          getter_Copies(message));
+   } else {
+     rv = strBundle->GetStringFromName(aError, getter_Copies(message));
+   }
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
++  errorObject->InitWithWindowID
++    (message.get(),
++     NS_ConvertUTF8toUTF16(mOwner->GetScriptFile()).get(),
++     nsnull,
++     mOwner->GetScriptLine(), 0, nsIScriptError::errorFlag,
++     "Web Socket", mOwner->WindowID()
++     );
++  
+   // print the error message directly to the JS console
+-  rv = console->LogStringMessage(message.get());
++  nsCOMPtr<nsIScriptError> logError(do_QueryInterface(errorObject));
++  rv = console->LogMessage(logError);
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   return NS_OK;
+ }
+ 
+ IMPL_RUNNABLE_ON_MAIN_THREAD_METHOD_BEGIN(Close)
+ {
+   nsresult rv;
+@@ -2845,17 +2862,19 @@ nsWebSocketEstablishedConnection::GetInt
+ ////////////////////////////////////////////////////////////////////////////////
+ // nsWebSocket
+ ////////////////////////////////////////////////////////////////////////////////
+ 
+ nsWebSocket::nsWebSocket() : mKeepingAlive(PR_FALSE),
+                              mCheckMustKeepAlive(PR_TRUE),
+                              mTriggeredCloseEvent(PR_FALSE),
+                              mReadyState(nsIWebSocket::CONNECTING),
+-                             mOutgoingBufferedAmount(0)
++                             mOutgoingBufferedAmount(0),
++                             mScriptLine(0),
++                             mWindowID(0)
+ {
+ }
+ 
+ nsWebSocket::~nsWebSocket()
+ {
+   if (mConnection) {
+     mConnection->Disconnect();
+     mConnection = nsnull;
+@@ -3513,16 +3532,44 @@ nsWebSocket::Init(nsIPrincipal* aPrincip
+   if (aOwnerWindow) {
+     mOwner = aOwnerWindow->IsOuterWindow() ?
+       aOwnerWindow->GetCurrentInnerWindow() : aOwnerWindow;
+   }
+   else {
+     mOwner = nsnull;
+   }
+ 
++  nsCOMPtr<nsIJSContextStack> stack =
++    do_GetService("@mozilla.org/js/xpc/ContextStack;1");
++  JSContext* cx = nsnull;
++  if (stack && NS_SUCCEEDED(stack->Peek(&cx)) && cx) {
++    JSStackFrame *fp = JS_GetScriptedCaller(cx, NULL);
++    if (fp) {
++      JSScript *script = JS_GetFrameScript(cx, fp);
++      if (script) {
++        mScriptFile = JS_GetScriptFilename(cx, script);
++      }
++
++      jsbytecode *pc = JS_GetFramePC(cx, fp);
++      if (script && pc) {
++        mScriptLine = JS_PCToLineNumber(cx, script, pc);
++      }
++    }
++
++    JSObject *jsGlobal = JS_GetGlobalForScopeChain(cx);
++    if (jsGlobal) {
++      nsIScriptGlobalObject* scGlobal =
++        nsJSUtils::GetStaticScriptGlobal(cx, jsGlobal);
++      nsCOMPtr<nsPIDOMWindow> win = do_QueryInterface(scGlobal);
++      if (win) {
++        mWindowID = win->GetOuterWindow()->WindowID();
++      }
++    }
++  }
++
+   // parses the url
+   rv = ParseURL(PromiseFlatString(aURL));
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   // sets the protocol
+   if (!aProtocol.IsEmpty()) {
+     rv = SetProtocol(PromiseFlatString(aProtocol));
+     NS_ENSURE_SUCCESS(rv, rv);
+diff --git a/content/base/src/nsWebSocket.h b/content/base/src/nsWebSocket.h
+--- a/content/base/src/nsWebSocket.h
++++ b/content/base/src/nsWebSocket.h
+@@ -98,16 +98,20 @@ public:
+   NS_IMETHOD AddEventListener(const nsAString& aType,
+                               nsIDOMEventListener *aListener,
+                               PRBool aUseCapture,
+                               PRBool aWantsUntrusted,
+                               PRUint8 optional_argc);
+ 
+   static void ReleaseGlobals();
+ 
++  const PRUint64 WindowID() { return mWindowID; }
++  const nsCString& GetScriptFile() { return mScriptFile; }
++  const PRUint32 GetScriptLine() { return mScriptLine; }
++
+ protected:
+   nsresult ParseURL(const nsString& aURL);
+   nsresult SetProtocol(const nsString& aProtocol);
+   nsresult EstablishConnection();
+ 
+   nsresult CreateAndDispatchSimpleEvent(const nsString& aName);
+   nsresult CreateAndDispatchMessageEvent(nsCString *aData);
+   nsresult CreateAndDispatchCloseEvent(PRBool aWasClean);
+@@ -148,16 +152,26 @@ protected:
+ 
+   nsCOMPtr<nsIPrincipal> mPrincipal;
+ 
+   nsRefPtr<nsWebSocketEstablishedConnection> mConnection;
+   PRUint32 mOutgoingBufferedAmount; // actually, we get this value from
+                                     // mConnection when we are connected,
+                                     // but we need this one after disconnecting.
+ 
++  // Web Socket owner information:
++  // - the script file name, UTF8 encoded.
++  // - source code line number where the Web Socket object was constructed.
++  // - the window ID of the outer window where the script lives. Note that this 
++  // may not be the same as the Web Socket owner window.
++  // These attributes are used for error reporting.
++  nsCString mScriptFile;
++  PRUint32 mScriptLine;
++  PRUint64 mWindowID;
++
+ private:
+   nsWebSocket(const nsWebSocket& x);   // prevent bad usage
+   nsWebSocket& operator=(const nsWebSocket& x);
+ };
+ 
+ #define NS_WSPROTOCOLHANDLER_CONTRACTID \
+     NS_NETWORK_PROTOCOL_CONTRACTID_PREFIX "ws"
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -101,16 +101,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_601352_scroll.js \
+ 	browser_webconsole_bug_592442_closing_brackets.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_601909_remember_height.js \
+ 	browser_webconsole_bug_613013_console_api_iframe.js \
+ 	browser_webconsole_bug_597756_reopen_closed_tab.js \
+ 	browser_webconsole_bug_600183_charset.js \
+ 	browser_webconsole_bug_601177_log_levels.js \
++	browser_webconsole_bug_603750_websocket.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+@@ -139,15 +140,17 @@ _BROWSER_TEST_PAGES = \
+ 	test-bug-597136-external-script-errors.html \
+ 	test-bug-597136-external-script-errors.js \
+ 	test-bug-613013-console-api-iframe.html \
+ 	test-bug-597756-reopen-closed-tab.html \
+ 	test-bug-600183-charset.html \
+ 	test-bug-600183-charset.html^headers^ \
+ 	test-bug-601177-log-levels.html \
+ 	test-bug-601177-log-levels.js \
++	test-bug-603750-websocket.html \
++	test-bug-603750-websocket.js \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_603750_websocket.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_603750_websocket.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_603750_websocket.js
+@@ -0,0 +1,69 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-603750-websocket.html";
++
++let errors = 0;
++let lastWindowId = 0;
++
++let TestObserver = {
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
++
++  observe: function test_observe(aSubject)
++  {
++    if (!(aSubject instanceof Ci.nsIScriptError) ||
++        !(aSubject instanceof Ci.nsIScriptError2)) {
++      return;
++    }
++
++    is(aSubject.category, "Web Socket", "received a Web Socket error");
++    isnot(aSubject.sourceName.indexOf("test-bug-603750-websocket.js"), -1,
++          "sourceName is correct");
++
++    if (++errors == 2) {
++      is(lastWindowId, aSubject.outerWindowID,
++         "same window ID (" + lastWindowId + ") for both errors");
++      executeSoon(performTest);
++    }
++    else {
++      lastWindowId = aSubject.outerWindowID;
++    }
++  }
++};
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  hud = HUDService.hudReferences[hudId];
++
++  Services.console.registerListener(TestObserver);
++
++  content.location = TEST_URI;
++}
++
++function performTest() {
++  let textContent = hud.outputNode.textContent;
++  isnot(textContent.indexOf("ws://0.0.0.0"), -1,
++        "first error message found");
++  isnot(textContent.indexOf("ws://0.0.0.1"), -1,
++        "second error message found");
++
++  Services.console.unregisterListener(TestObserver);
++  finishTest();
++}
++
++function test() {
++  addTab("data:text/html,Web Console test for bug 603750: Web Socket errors");
++  browser.addEventListener("load", tabLoad, true);
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-603750-websocket.html b/toolkit/components/console/hudservice/tests/browser/test-bug-603750-websocket.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-603750-websocket.html
+@@ -0,0 +1,13 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 603750 - Web Socket errors</title>
++    <!-- Any copyright is dedicated to the Public Domain.
++         http://creativecommons.org/publicdomain/zero/1.0/ -->
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - Web Socket errors.</p>
++    <iframe src="data:text/html,hello world!"></iframe>
++    <script type="text/javascript" src="test-bug-603750-websocket.js"></script>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-603750-websocket.js b/toolkit/components/console/hudservice/tests/browser/test-bug-603750-websocket.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-603750-websocket.js
+@@ -0,0 +1,18 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++window.addEventListener("load", function () {
++  var ws1 = new WebSocket("ws://0.0.0.0");
++  ws1.onopen = function() {
++    ws1.send("test 1");
++    ws1.close();
++  };
++
++  var ws2 = new window.frames[0].WebSocket("ws://0.0.0.1");
++  ws2.onopen = function() {
++    ws2.send("test 2");
++    ws2.close();
++  };
++}, false);

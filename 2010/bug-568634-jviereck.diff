@@ -1,0 +1,966 @@
+# HG changeset patch
+# Parent cbf493ff91ae2e4592e66af3d05bd6ff39789b3a
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -89,16 +89,355 @@ const NEW_GROUP_DELAY = 5000;
+ 
+ const ERRORS = { LOG_MESSAGE_MISSING_ARGS:
+                  "Missing arguments: aMessage, aConsoleNode and aMessageNode are required.",
+                  CANNOT_GET_HUD: "Cannot getHeads Up Display with provided ID",
+                  MISSING_ARGS: "Missing arguments",
+                  LOG_OUTPUT_FAILED: "Log Failure: Could not append messageNode to outputNode",
+ };
+ 
++/**
++ * Implements the nsIStreamListener and nsIRequestObserver interface. Used
++ * within the HS_httpObserverFactory function to get the response body of
++ * requests.
++ *
++ * The code is mostly based on code listings from:
++ *
++ *   http://www.softwareishard.com/blog/firebug/
++ *      nsitraceablechannel-intercept-http-traffic/
++ */
++function ResponseListener() {
++  this.receivedData = [];
++}
++
++ResponseListener.prototype =
++{
++  /**
++   * The original listener for this request.
++   */
++  originalListener: null,
++
++  /**
++   * Stores the received data.
++   */
++  receivedData: null,
++
++  /**
++   * Helper function for XPCOM instanciation (from Firebug)
++   *
++   * @param string aCName
++   * @param string aIfaceName
++   */
++  CCIN: function RL_CCIN(aCName, aIfaceName)
++  {
++    return Cc[aCName].createInstance(Ci[aIfaceName]);
++  },
++
++  /**
++   * See documention at
++   * https://developer.mozilla.org/en/XPCOM_Interface_Reference/nsIStreamListener
++   *
++   * @param nsIRequest aRequest
++   * @param nsISupports aContext
++   * @param nsIInputStream aInputStream
++   * @param unsigned long aOffset
++   * @param unsigned long aCount
++   */
++  onDataAvailable: function RL_onDataAvailable(aRequest, aContext, aInputStream,
++                                                aOffset, aCount)
++  {
++    let binaryInputStream = this.CCIN("@mozilla.org/binaryinputstream;1",
++      "nsIBinaryInputStream");
++    let storageStream = this.CCIN("@mozilla.org/storagestream;1",
++      "nsIStorageStream");
++    let binaryOutputStream = this.CCIN("@mozilla.org/binaryoutputstream;1",
++      "nsIBinaryOutputStream");
++
++    binaryInputStream.setInputStream(aInputStream);
++    storageStream.init(8192, aCount, null);
++    binaryOutputStream.setOutputStream(storageStream.getOutputStream(0));
++
++    // Copy received data as they come.
++    let data = binaryInputStream.readBytes(aCount);
++    this.receivedData.push(data);
++
++    binaryOutputStream.writeBytes(data, aCount);
++
++    this.originalListener.onDataAvailable(aRequest, aContext,
++      storageStream.newInputStream(0), aOffset, aCount);
++  },
++
++  /**
++   * See documentation at
++   * https://developer.mozilla.org/En/NsIRequestObserver
++   *
++   * @param nsIRequest aRequest
++   * @param nsISupports aContext
++   */
++  onStartRequest: function RL_onStartRequest(aRequest, aContext)
++  {
++    try {
++      this.originalListener.onStartRequest(aRequest, aContext);
++    } catch (ex) {
++      aRequest.cancel(ex.result);
++    }
++  },
++
++  /**
++   * See documentation at
++   * https://developer.mozilla.org/En/NsIRequestObserver
++   *
++   * @param nsIRequest aRequest
++   * @param nsISupports aContext
++   * @param nsresult aStatusCode
++   */
++  onStopRequest: function RL_onStopRequest(aRequest, aContext, aStatusCode)
++  {
++    this.originalListener.onStopRequest(aRequest, aContext, aStatusCode);
++  },
++
++  /**
++   * @param nsIIDRef aIID
++   * @returns nsQIResult
++   */
++  QueryInterface: function RL_QueryInterface(aIID)
++  {
++    if (aIID.equals(Ci.nsIStreamListener) ||
++      aIID.equals(Ci.nsISupports)) {
++      return this;
++    }
++    throw Components.results.NS_NOINTERFACE;
++  }
++}
++
++/**
++ * Helper object for networking stuff.
++ *
++ * All of the following functions have been taken from the Firebug source. They
++ * have been modified to match the Firefox coding rules.
++ */
++
++// FIREBUG CODE BEGIN.
++
++/*
++ * Software License Agreement (BSD License)
++ *
++ * Copyright (c) 2007, Parakey Inc.
++ * All rights reserved.
++ *
++ * Redistribution and use of this software in source and binary forms, with or without modification,
++ * are permitted provided that the following conditions are met:
++ *
++ * * Redistributions of source code must retain the above
++ *   copyright notice, this list of conditions and the
++ *   following disclaimer.
++ *
++ * * Redistributions in binary form must reproduce the above
++ *   copyright notice, this list of conditions and the
++ *   following disclaimer in the documentation and/or other
++ *   materials provided with the distribution.
++ *
++ * * Neither the name of Parakey Inc. nor the names of its
++ *   contributors may be used to endorse or promote products
++ *   derived from this software without specific prior
++ *   written permission of Parakey Inc.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
++ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
++ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
++ * IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
++ * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++/*
++ * Creator:
++ *  Joe Hewitt
++ * Contributors
++ *  John J. Barton (IBM Almaden)
++ *  Jan Odvarko (Mozilla Corp.)
++ *  Max Stepanov (Aptana Inc.)
++ *  Rob Campbell (Mozilla Corp.)
++ *  Hans Hillen (Paciello Group, Mozilla)
++ *  Curtis Bartley (Mozilla Corp.)
++ *  Mike Collins (IBM Almaden)
++ *  Kevin Decker
++ *  Mike Ratcliffe (Comartis AG)
++ *  Hernan Rodríguez Colmeiro
++ *  Austin Andrews
++ *  Christoph Dorn
++ *  Steven Roussey (AppCenter Inc, Network54)
++ */
++var NetworkHelper =
++{
++  /**
++   *
++   * @param object aObj
++   * @param nsIIDRef aIID
++   */
++  QI: function NH_QI(aObj, aIface)
++  {
++    return aObj.QueryInterface(aIface);
++  },
++
++  /**
++   *
++   * @param string aCName
++   * @param string aIfaceName
++   */
++  CCSV: function NH_CCSV(aCName, aIfaceName)
++  {
++    try {
++      // If fail to load, the error can be Cc[cName] has no properties.
++      return Cc[aCName].getService(Ci[aIfaceName]);
++    }
++    catch(exc) {
++      Cu.reportError(aCName + "@" + aIfaceName + " FAILED " + exc);
++      if (!Cc[aCName]) {
++        Cu.reportError("No Components.classes entry for " + aCName);
++      }
++      else if (!Ci[aIfaceName]) {
++        Cu.reportError("No Components.interfaces entry for " + aIfaceName);
++      }
++    }
++  },
++
++  /**
++   * Converts aText with a given aCharset to unicode.
++   *
++   * @param string aText Text to convert.
++   * @param string aCharset Charset to convert the text to.
++   * @returns string Converted text.
++   */
++  convertToUnicode: function NH_convertToUnicode(aText, aCharset)
++  {
++    if (!aText) {
++      return "";
++    }
++
++    let conv;
++    try {
++      conv = this.CCSV("@mozilla.org/intl/scriptableunicodeconverter",
++                        "nsIScriptableUnicodeConverter");
++      conv.charset = aCharset ? aCharset : "UTF-8";
++      return conv.ConvertToUnicode(aText);
++    }
++    catch (exc) {
++      // the exception is worthless, make up a new one
++      throw new Error(
++        "Failed to convert to unicode using charset: " +
++        conv.charset + " in @mozilla.org/intl/scriptableunicodeconverter");
++    }
++  },
++
++  /**
++   * Reads all available bytes from aStream and converts them to aCharset.
++   * If aNoClose is true, the internal used binaryInputStream is not closed.
++   *
++   * @param nsISeekableStream aStream
++   * @param string aCharset
++   * @param boolean aNoClose
++   * @returns string
++   */
++  readFromStream: function NH_readFromStream(aStream, aCharset, aNoClose)
++  {
++    let sis = this.CCSV("@mozilla.org/binaryinputstream;1",
++                        "nsIBinaryInputStream");
++    sis.setInputStream(aStream);
++
++    let segments = [];
++    var availableBytes;
++    while (availableBytes = aStream.available()) {
++      segments.push(sis.readBytes(availableBytes));
++    }
++
++    if (!aNoClose) {
++      sis.close();
++    }
++
++    let text = segments.join();
++    try {
++      return this.convertToUnicode(text, aCharset);
++    }
++    catch (err) {
++      return text;
++    }
++  },
++
++  /**
++   * Reads the posted text from aRequest.
++   *
++   * @param nsIHttpChannel aRequest
++   * @param nsIDOMNode aBrowser
++   * @returns string or null
++   */
++  readPostTextFromRequest: function NH_readPostTextFromRequest(aRequest, aBrowser)
++  {
++    try {
++      let is = this.QI(aRequest, Ci.nsIUploadChannel).uploadStream;
++      if (is) {
++        let ss = this.QI(is, Ci.nsISeekableStream);
++        let prevOffset;
++        if (ss) {
++          prevOffset = ss.tell();
++          ss.seek(Ci.nsISeekableStream.NS_SEEK_SET, 0);
++        }
++
++        // Read data from the stream.
++        let charset = aBrowser.contentWindow.document.characterSet;
++        let text = this.readFromStream(is, charset, true);
++
++        // Seek locks the file so, seek to the beginning only if necko hasn't
++        // read it yet, since necko doesn't seek to 0 before reading (at lest
++        // not till 459384 is fixed).
++        if (ss && prevOffset == 0) {
++          ss.seek(Ci.nsISeekableStream.NS_SEEK_SET, 0);
++        }
++        return text;
++      }
++    }
++    catch(ex) {
++    }
++    return null;
++  },
++
++  /**
++   * Reads the posted text from the page's cache.
++   *
++   * @param string aUrl
++   * @param nsIDOMNode aBrowser
++   * @returns string or null
++   */
++  readPostTextFromPage: function NH_readPostTextFromPage(aUrl, aBrowser)
++  {
++    if (aUrl == aBrowser.contentWindow.location.href) {
++      try {
++        let webNav = aBrowser.webNavigation;
++        let descriptor =
++          this.QI(webNav, Ci.nsIWebPageDescriptor).currentDescriptor;
++        let entry = this.QI(descriptor, Ci.nsISHEntry);
++        if (entry && entry.postData) {
++          let postStream = this.QI(entry.postData, Ci.nsISeekableStream);
++          postStream.seek(NS_SEEK_SET, 0);
++
++          let charset = browser.contentWindow.document.characterSet;
++          return this.readFromStream(postStream, charset, true);
++        }
++      }
++      catch (exc) {
++      }
++    }
++    return null;
++  }
++}
++
++// FIREBUG CODE END.
++
+ function HUD_SERVICE()
+ {
+   // TODO: provide mixins for FENNEC: bug 568621
+   if (appName() == "FIREFOX") {
+     var mixins = new FirefoxApplicationHooks();
+   }
+   else {
+     throw new Error("Unsupported Application");
+@@ -965,102 +1304,249 @@ HUD_SERVICE.prototype =
+       return aLoadContext.topWindow;
+     }
+     else {
+       return aLoadContext.associatedWindow;
+     }
+   },
+ 
+   /**
++   * Parses aHeader string.
++   *
++   * @param string  aHeader Header string to parse.
++   * @returns array First item holds the status string, the second item holds
++   *                the parsed header as an object <value>: <key>
++   */
++  parseHttpHeader: function HS_parseHttpHeader(aHeader)
++  {
++    let lines = aHeader.split("\n");
++    let status = lines[0];
++    let headerContent = {};
++
++    // Skip the first line and parse the rest.
++    lines.slice(1).forEach(function (line) {
++      // Skip empty lines.
++      if (!(line.trim())) {
++        return;
++      }
++      let colonIndex = line.indexOf(":");
++      headerContent[line.substring(0, colonIndex)] =
++        line.substring(colonIndex + 1).trim();
++    });
++
++    return [status, headerContent];
++  },
++
++  /**
++   * Requests that haven't finished yet.
++   */
++  openRequests: {},
++
++  /**
++   * Stores the last finished request. This is used by unit tests.
++   */
++  lastFinishedRequest: null,
++
++  /**
+    * Begin observing HTTP traffic that we care about,
+    * namely traffic that originates inside any context that a Heads Up Display
+    * is active for.
+    */
+   startHTTPObservation: function HS_httpObserverFactory()
+   {
+     // creates an observer for http traffic
+     var self = this;
+     var httpObserver = {
+       observeActivity :
+       function (aChannel, aActivityType, aActivitySubtype,
+                 aTimestamp, aExtraSizeData, aExtraStringData)
+       {
+-        var loadGroup;
+         if (aActivityType ==
+-            activityDistributor.ACTIVITY_TYPE_HTTP_TRANSACTION) {
++              activityDistributor.ACTIVITY_TYPE_HTTP_TRANSACTION ||
++            aActivityType ==
++              activityDistributor.ACTIVITY_TYPE_SOCKET_TRANSPORT) {
++
++          var transCodes = this.transactionCodes;
++          var loadGroup;
++          var hudId;
++
+           try {
+             var loadContext = self.getLoadContextFromChannel(aChannel);
+             // TODO: get image request data from the channel
+             // see bug 552140
+             var window = self.getWindowFromLoadContext(loadContext);
+             window = XPCNativeWrapper.unwrap(window);
+             var chromeWin = self.getChromeWindowFromContentWindow(window);
+             var vboxes =
+               chromeWin.document.getElementsByTagName("vbox");
+-            var hudId;
+             for (var i = 0; i < vboxes.length; i++) {
+               if (vboxes[i].getAttribute("class") == "hud-box") {
+                 hudId = vboxes[i].getAttribute("id");
+               }
+             }
+             loadGroup = self.getLoadGroup(hudId);
+           }
+           catch (ex) {
+             loadGroup = aChannel.QueryInterface(Ci.nsIChannel)
+                         .QueryInterface(Ci.nsIRequest).loadGroup;
+           }
+ 
+           if (!loadGroup) {
++            return;
++          }
++
++          aChannel = aChannel.QueryInterface(Ci.nsIHttpChannel);
++
++          if (aActivitySubtype ==
++                activityDistributor.ACTIVITY_SUBTYPE_REQUEST_HEADER) {
++
++            // Try to get a displayNode for this loadGroup. If there is none,
++            // then we try to load images in most cases.
++            displayNode = self.getDisplayByLoadGroup(loadGroup);
++            if (!displayNode) {
+               return;
++            }
++
++            // Get the hudId.
++            outputNode = displayNode.querySelectorAll(".hud-output-node")[0];
++            hudId = displayNode.getAttribute("id");
++
++            // The httpActivity object will hold all information concerning
++            // this request and later response.
++            var httpActivity = {
++              id: self.sequenceId(),
++              url: aChannel.URI.spec,
++              method: aChannel.requestMethod,
++              channel: aChannel,
++              loadGroup: loadGroup,
++              hud: self.hudWeakReferences[hudId].get(),
++
++              request: { },
++              response: { },
++              timing: {
++                "REQUEST_HEADER": aTimestamp
++              }
++            };
++
++            // Add a new output entry.
++            let loggedNode =
++              self.logActivity("network", aChannel.URI, httpActivity);
++
++            // In some cases loggedNode can be undefined (e.g. if an image was
++            // requested). Don't continue in such a case.
++            if (loggedNode === undefined) {
++              return;
++            }
++
++            // Add listener for the response body.
++            let newListener = new ResponseListener();
++            aChannel.QueryInterface(Ci.nsITraceableChannel);
++            newListener.originalListener = aChannel.setNewListener(newListener);
++            httpActivity.response.listener = newListener;
++
++            // Parse the header string into status and header section.
++            [httpActivity.request.status, httpActivity.request.header] =
++              self.parseHttpHeader(aExtraStringData);
++
++            // Store the loggedNode and the httpActivity object for later reuse.
++            httpActivity.messageObject = loggedNode;
++            self.openRequests[httpActivity.id] = httpActivity;
+           }
+-
+-          aChannel = aChannel.QueryInterface(Ci.nsIHttpChannel);
+-
+-          var transCodes = this.httpTransactionCodes;
+-
+-          var httpActivity = {
+-            channel: aChannel,
+-            loadGroup: loadGroup,
+-            type: aActivityType,
+-            subType: aActivitySubtype,
+-            timestamp: aTimestamp,
+-            extraSizeData: aExtraSizeData,
+-            extraStringData: aExtraStringData,
+-            stage: transCodes[aActivitySubtype],
+-          };
+-          if (aActivitySubtype ==
+-              activityDistributor.ACTIVITY_SUBTYPE_REQUEST_HEADER ) {
+-                // create a unique ID to track this transaction and be able to
+-                // update the logged node with subsequent http transactions
+-                httpActivity.httpId = self.sequenceId();
+-                let loggedNode =
+-                  self.logActivity("network", aChannel.URI, httpActivity);
+-                self.httpTransactions[aChannel] =
+-                  new Number(httpActivity.httpId);
++          else {
++            // Iterate over all currently ongoing requests. If aChannel can't
++            // be found within them, then exit this function.
++            let httpActivity = null;
++            for each (var item in self.openRequests) {
++              if (item.channel !== aChannel) {
++                continue;
++              }
++              httpActivity = item;
++              break;
++            }
++
++            if (!httpActivity) {
++              return;
++            }
++
++            let msgObject;
++            // Store the time information for this activity subtype.
++            httpActivity.timing[transCodes[aActivitySubtype]] = aTimestamp;
++
++            switch (aActivitySubtype) {
++              case activityDistributor.ACTIVITY_SUBTYPE_REQUEST_BODY_SENT:
++                let gBrowser = HUDService.currentContext().gBrowser;
++
++                let sentBody = NetworkHelper.readPostTextFromRequest(
++                                aChannel, gBrowser);
++                if (!sentBody) {
++                  sentBody = NetworkHelper.readPostTextFromPage(
++                                httpActivity.url, gBrowser);
++                  if (!sentBody) {
++                    sentBody = "";
++                  }
++                }
++                httpActivity.request.body = sentBody;
++                break;
++
++              case activityDistributor.ACTIVITY_SUBTYPE_RESPONSE_HEADER:
++                msgObject = httpActivity.messageObject;
++
++                // Parse the header string into status and header section.
++                [httpActivity.response.status, httpActivity.response.header] =
++                  self.parseHttpHeader(aExtraStringData);
++
++                msgObject.messageNode.appendChild(
++                  msgObject.textFactory(" [" + httpActivity.response.status));
++                break;
++
++              case activityDistributor.ACTIVITY_SUBTYPE_TRANSACTION_CLOSE:
++                msgObject = httpActivity.messageObject;
++
++                // Store the response body. This is not done during the
++                // ACTIVITY_SUBTYPE_RESPONSE_COMPLETE state, as the body
++                // might not be received by the listener at that point.
++                httpActivity.response.body =
++                  httpActivity.response.listener.receivedData.join();
++
++                let timing = httpActivity.timing;
++                let requestDuration =
++                  Math.round((timing.TRANSACTION_CLOSE -
++                                timing.REQUEST_HEADER) / 1000);
++
++                msgObject.messageNode.appendChild(
++                  msgObject.textFactory(" " + requestDuration + "ms]"));
++
++                self.lastFinishedRequest = self.openRequests[item.id];
++                delete self.openRequests[item.id];
++                break;
++            }
+           }
+         }
+       },
+ 
+-      httpTransactionCodes: {
++      transactionCodes: {
+         0x5001: "REQUEST_HEADER",
+         0x5002: "REQUEST_BODY_SENT",
+         0x5003: "RESPONSE_START",
+         0x5004: "RESPONSE_HEADER",
+         0x5005: "RESPONSE_COMPLETE",
+         0x5006: "TRANSACTION_CLOSE",
++
++        0x804b0003: "STATUS_RESOLVING",
++        0x804b0007: "STATUS_CONNECTING_TO",
++        0x804b0004: "STATUS_CONNECTED_TO",
++        0x804b0005: "STATUS_SENDING_TO",
++        0x804b000a: "STATUS_WAITING_FOR",
++        0x804b0006: "STATUS_RECEIVING_FROM"
+       }
+     };
+ 
+     activityDistributor.addObserver(httpObserver);
+   },
+ 
+-  // keep tracked of trasactions where the request header was logged
+-  // update logged transactions thereafter.
+-  httpTransactions: {},
+-
+   /**
+    * Logs network activity
+    *
+    * @param nsIURI aURI
+    * @param object aActivityObject
+    * @returns void
+    */
+   logNetActivity: function HS_logNetActivity(aType, aURI, aActivityObject)
+@@ -1094,23 +1580,24 @@ HUD_SERVICE.prototype =
+       var message = { logLevel: aType,
+                       activityObj: aActivityObject,
+                       hudId: hudId,
+                       origin: "network",
+                       domId: domId,
+                     };
+       var msgType = this.getStr("typeNetwork");
+       var msg = msgType + " " +
+-        aActivityObject.channel.requestMethod +
++        aActivityObject.method +
+         " " +
+-        aURI.spec;
++        aActivityObject.url;
+       message.message = msg;
+       var messageObject =
+-      this.messageFactory(message, aType, outputNode, aActivityObject);
++        this.messageFactory(message, aType, outputNode, aActivityObject);
+       this.logMessage(messageObject.messageObject, outputNode, messageObject.messageNode);
++      return messageObject;
+     }
+     catch (ex) {
+       Cu.reportError(ex);
+     }
+   },
+ 
+   /**
+    * Logs console listener activity
+@@ -1198,17 +1685,17 @@ HUD_SERVICE.prototype =
+    * @param object (or nsIScriptError) aActivityObj
+    * @returns void
+    */
+   logActivity: function HS_logActivity(aType, aURI, aActivityObject)
+   {
+     var displayNode, outputNode, hudId;
+ 
+     if (aType == "network") {
+-      var result = this.logNetActivity(aType, aURI, aActivityObject);
++      return this.logNetActivity(aType, aURI, aActivityObject);
+     }
+     else if (aType == "console-listener") {
+       this.logConsoleActivity(aURI, aActivityObject);
+     }
+   },
+ 
+   /**
+    * Builds and appends a group to the console if enough time has passed since
+@@ -3152,17 +3639,17 @@ ConsoleUtils = {
+   timestamp: function ConsoleUtils_timestamp()
+   {
+     return Date.now();
+   },
+ 
+   /**
+    * Generates a formatted timestamp string for displaying in console messages.
+    *
+-   * @param integer [ms] Optional, allows you to specify the timestamp in 
++   * @param integer [ms] Optional, allows you to specify the timestamp in
+    * milliseconds since the UNIX epoch.
+    * @returns string The timestamp formatted for display.
+    */
+   timestampString: function ConsoleUtils_timestampString(ms)
+   {
+     // TODO: L10N see bug 568656
+     var d = new Date(ms ? ms : null);
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -45,16 +45,17 @@ include $(topsrcdir)/config/rules.mk
+ 
+ _BROWSER_TEST_FILES = \
+ 	browser_HUDServiceTestsAll.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
++	test-network-request.html \
+ 	test-mutation.html \
+ 	testscript.js \
+ 	test-filter.html \
+ 	test-observe-http-ajax.html \
+ 	test-data.json \
+ 	test-property-provider.html \
+ 	test-error.html \
+ 	test-duplicate-error.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+@@ -59,24 +59,29 @@ let log = function _log(msg) {
+ };
+ 
+ const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
+ 
+ const TEST_HTTP_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-observe-http-ajax.html";
+ 
+ const TEST_NETWORK_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-network.html";
+ 
++const TEST_NETWORK_REQUEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-network-request.html";
++
+ const TEST_FILTER_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-filter.html";
+ 
+ const TEST_PROPERTY_PROVIDER_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-property-provider.html";
+ 
+ const TEST_ERROR_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-error.html";
+ 
+ const TEST_DUPLICATE_ERROR_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-duplicate-error.html";
+ 
++const TEST_DATA_JSON_CONTENT =
++  '{ id: "test JSON data", myArray: [ "foo", "bar", "baz", "biff" ] }';
++
+ function noCacheUriSpec(aUriSpec) {
+   return aUriSpec + "?_=" + Date.now();
+ }
+ 
+ content.location.href = TEST_URI;
+ 
+ function testRegistries() {
+   var displaysIdx = HUDService.displaysIndex();
+@@ -290,16 +295,114 @@ function testNet()
+       { success: successMsg, err: errMsg });
+ 
+     testPageReload();
+   }, false);
+ 
+   content.location = TEST_NETWORK_URI;
+ }
+ 
++function testNetworkLogging()
++{
++  HUDService.clearDisplay(hudId);
++  HUDService.setFilterState(hudId, "network", true);
++  HUDService.lastFinishedRequest = null;
++  filterBox.value = "";
++
++  let loggingGen;
++  // This generator function is used to step through the individual, async tests.
++  function loggingGeneratorFunc() {
++    browser.addEventListener("DOMContentLoaded", function onLoad () {
++      browser.removeEventListener("DOMContentLoaded", onLoad, false);
++      loggingGen.next();
++    }, false);
++    content.location = TEST_NETWORK_REQUEST_URI;
++    yield;
++
++    // Check if page load was logged correctly.
++    let httpActivity = HUDService.lastFinishedRequest;
++    isnot(httpActivity, null, "Page load was logged");
++    is(httpActivity.url, TEST_NETWORK_REQUEST_URI,
++      "Logged network entry is page load");
++    is(httpActivity.method, "GET", "Method is correct");
++    is(httpActivity.request.body, undefined, "No request body sent");
++    ok(httpActivity.response.body.indexOf("<!DOCTYPE HTML>") == 0,
++      "Response body's beginning is okay");
++
++    // Start xhr-get test.
++    browser.contentWindow.wrappedJSObject.testXhrGet(loggingGen);
++    yield;
++
++    // Use executeSoon here as the xhr callback calls loggingGen.next() before
++    // the network observer detected that the request is completly done and the
++    // HUDService.lastFinishedRequest is set. executeSoon solves that problem.
++    executeSoon(function() {
++      // Check if xhr-get test was successful.
++      httpActivity = HUDService.lastFinishedRequest;
++      isnot(httpActivity, null, "testXhrGet() was logged");
++      is(httpActivity.method, "GET", "Method is correct");
++      is(httpActivity.request.body, undefined, "No request body was sent");
++      is(httpActivity.response.body, TEST_DATA_JSON_CONTENT,
++        "Response is correct");
++      HUDService.lastFinishedRequest = null;
++      loggingGen.next();
++    });
++    yield;
++
++    // Start xhr-post test.
++    browser.contentWindow.wrappedJSObject.testXhrPost(loggingGen);
++    yield;
++
++    executeSoon(function() {
++      // Check if xhr-post test was successful.
++      httpActivity = HUDService.lastFinishedRequest;
++      isnot(httpActivity, null, "testXhrPost() was logged");
++      is(httpActivity.method, "POST", "Method is correct");
++      is(httpActivity.request.body, "Hello world!",
++        "Request body was logged");
++      is(httpActivity.response.body, TEST_DATA_JSON_CONTENT,
++        "Response is correct");
++      HUDService.lastFinishedRequest = null
++      loggingGen.next();
++    });
++    yield;
++
++    // Start submit-form test. As the form is submitted, the page is loaded
++    // again. Bind to the DOMContentLoaded event to catch when this is done.
++    browser.addEventListener("DOMContentLoaded", function onLoad () {
++      browser.removeEventListener("DOMContentLoaded", onLoad, false);
++      loggingGen.next();
++    }, false);
++    browser.contentWindow.wrappedJSObject.testSubmitForm();
++    yield;
++
++    // Check if submitting the form was logged successful.
++    httpActivity = HUDService.lastFinishedRequest;
++    isnot(httpActivity, null, "testSubmitForm() was logged");
++    is(httpActivity.method, "POST", "Method is correct");
++    isnot(httpActivity.request.body.indexOf(
++      "Content-Type: application/x-www-form-urlencoded"), -1,
++      "Content-Type is correct");
++    isnot(httpActivity.request.body.indexOf(
++      "Content-Length: 20"), -1, "Content-length is correct");
++    isnot(httpActivity.request.body.indexOf(
++      "name=foo+bar&age=144"), -1, "Form data is correct");
++    ok(httpActivity.response.body.indexOf("<!DOCTYPE HTML>") == 0,
++      "Response body's beginning is okay");
++
++    HUDService.lastFinishedRequest = null
++
++    // All tests are done. Execute the next one.
++    testErrorOnPageReload();
++  }
++
++  loggingGen = loggingGeneratorFunc();
++  loggingGen.next();
++}
++
+ function testOutputOrder()
+ {
+   let HUD = HUDService.hudWeakReferences[hudId].get();
+   let jsterm = HUD.jsterm;
+   let outputNode = jsterm.outputNode;
+ 
+   jsterm.clearOutput();
+   jsterm.execute("console.log('foo', 'bar');");
+@@ -677,17 +780,17 @@ function testPageReload() {
+ 
+     is(typeof console, "object", "window.console is an object, after page reload");
+     is(typeof console.log, "function", "console.log is a function");
+     is(typeof console.info, "function", "console.info is a function");
+     is(typeof console.warn, "function", "console.warn is a function");
+     is(typeof console.error, "function", "console.error is a function");
+     is(typeof console.exception, "function", "console.exception is a function");
+ 
+-    testErrorOnPageReload();
++    testNetworkLogging();
+   }, false);
+ 
+   content.location.reload();
+ }
+ 
+ function testErrorOnPageReload() {
+   // see bug 580030: the error handler fails silently after page reload.
+   // https://bugzilla.mozilla.org/show_bug.cgi?id=580030
+@@ -825,16 +928,17 @@ function testEnd() {
+   finish();
+ }
+ 
+ let tab, browser, hudId, hud, filterBox, outputNode, cs;
+ 
+ let win = gBrowser.selectedBrowser;
+ tab = gBrowser.selectedTab;
+ browser = gBrowser.getBrowserForTab(tab);
++let testAsync;
+ 
+ function test() {
+   waitForExplicitFinish();
+   browser.addEventListener("DOMContentLoaded", function onLoad(event) {
+     browser.removeEventListener("DOMContentLoaded", onLoad, false);
+ 
+     HUDService.activateHUDForContext(tab);
+     hudId = HUDService.displaysIndex()[0];
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-data.json b/toolkit/components/console/hudservice/tests/browser/test-data.json
+--- a/toolkit/components/console/hudservice/tests/browser/test-data.json
++++ b/toolkit/components/console/hudservice/tests/browser/test-data.json
+@@ -1,1 +1,1 @@
+-{ id: "test JSON data", myArray: [ "foo", "bar", "baz", "biff" ] }
++{ id: "test JSON data", myArray: [ "foo", "bar", "baz", "biff" ] }
+\ No newline at end of file
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-network-request.html b/toolkit/components/console/hudservice/tests/browser/test-network-request.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-network-request.html
+@@ -0,0 +1,38 @@
++<!DOCTYPE HTML>
++<html dir="ltr" xml:lang="en-US" lang="en-US"><head>
++    <title>Console HTTP test page</title>
++    <script type="text/javascript">
++      function makeXhr(aMethod, aUrl, aRequestBody, aTestGenerator) {
++        var xmlhttp = new XMLHttpRequest();
++        xmlhttp.open(aMethod, aUrl, true);
++        xmlhttp.onreadystatechange = function (aEvt) {
++          if (xmlhttp.readyState == 4) {
++            aTestGenerator.next();
++          }
++        };
++        xmlhttp.send(aRequestBody);
++      }
++
++      function testXhrGet(aTestGenerator) {
++        makeXhr('get', 'test-data.json', null, aTestGenerator);
++      }
++
++      function testXhrPost(aTestGenerator) {
++        makeXhr('post', 'test-data.json', "Hello world!", aTestGenerator);
++      }
++
++      function testSubmitForm() {
++        document.getElementsByTagName("form")[0].submit();
++      }
++    </script>
++  </head>
++  <body>
++    <h1>Heads Up Display HTTP Logging Testpage</h1>
++    <h2>This page is used to test the HTTP logging.</h2>
++
++    <form action="http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-network-request.html" method="post">
++      <input name="name" type="text" value="foo bar"><br>
++      <input name="age" type="text" value="144"><br>
++    </form>
++  </body>
++</html>

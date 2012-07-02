@@ -1,0 +1,151 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -4394,16 +4394,21 @@ LogMessage.prototype = {
+     var ts = ConsoleUtils.timestamp();
+     this.timestampedMessage = ConsoleUtils.timestampString(ts) + ": " +
+       this.message.message;
+     var messageTxtNode = this.textFactory(this.timestampedMessage);
+ 
+     this.messageNode.appendChild(messageTxtNode);
+ 
+     var klass = "hud-msg-node hud-" + this.level;
++
++    if (this.activityObject.category == "CSS Parser") {
++      klass += " hud-cssparser";
++    }
++
+     this.messageNode.setAttribute("class", klass);
+ 
+     var self = this;
+ 
+     var messageObject = {
+       logLevel: self.level,
+       message: self.message,
+       timestamp: ts,
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+@@ -221,27 +221,47 @@ function testConsoleLoggingAPI(aMethod)
+ 
+   let HUD = HUDService.hudWeakReferences[hudId].get();
+   let jsterm = HUD.jsterm;
+   let group = jsterm.outputNode.querySelector(".hud-group");
+   ok(/foo bar/.test(group.childNodes[1].childNodes[0].nodeValue),
+     "Emitted both console arguments");
+ }
+ 
+-function testLogEntry(aOutputNode, aMatchString, aSuccessErrObj)
++function testLogEntry(aOutputNode, aMatchString, aSuccessErrObj, onlyVisible, failIfFound)
+ {
+-  var msgs = aOutputNode.querySelector(".hud-group").childNodes;
+-  for (var i = 1; i < msgs.length; i++) {
+-    var message = msgs[i].textContent.indexOf(aMatchString);
++  let found = true;
++  let notfound = false;
++  let foundMsg = aSuccessErrObj.success;
++  let notfoundMsg = aSuccessErrObj.err;
++
++  if (failIfFound) {
++    found = false;
++    notfound = true;
++    foundMsg = aSuccessErrObj.err;
++    notfoundMsg = aSuccessErrObj.success;
++  }
++
++  let selector = ".hud-group > *";
++
++  // Skip entries that are hidden by the filter.
++  if (onlyVisible) {
++    selector += ":not(.hud-filtered-by-type)";
++  }
++
++  let msgs = aOutputNode.querySelectorAll(selector);
++  for (let i = 1, n = msgs.length; i < n; i++) {
++    let message = msgs[i].textContent.indexOf(aMatchString);
+     if (message > -1) {
+-      ok(true, aSuccessErrObj.success);
++      ok(found, foundMsg);
+       return;
+     }
+   }
+-  throw new Error(aSuccessErrObj.err);
++
++  ok(notfound, notfoundMsg);
+ }
+ 
+ // test network logging
+ //
+ // NB: After this test, the HUD (including its "jsterm" attribute) will be gone
+ // forever due to bug 580618!
+ function testNet()
+ {
+@@ -1327,26 +1347,67 @@ function testDuplicateError() {
+           ok(text.indexOf("fooDuplicateError1", error1pos + 1) == -1,
+             "no duplicate for fooDuplicateError1");
+         }
+ 
+         ok(text.indexOf("test-duplicate-error.html") > -1,
+           "found test-duplicate-error.html");
+ 
+         text = null;
+-        testWebConsoleClose();
++        testCssParserFilter();
+       });
+     }
+   };
+ 
+   Services.console.registerListener(consoleObserver);
+   content.location = TEST_DUPLICATE_ERROR_URI;
+ }
+ 
+ /**
++ * Unit test for bug 589162:
++ * CSS filtering on the console does not work
++ */
++function testCssParserFilter() {
++  let contentLoaded = function onContentLoad() {
++    browser.removeEventListener("load", arguments.callee, true);
++
++    let HUD = HUDService.getDisplayByURISpec(content.location.href);
++    let hudId = HUD.getAttribute("id");
++    let filterBox = HUD.querySelector(".hud-filter-box");
++    let outputNode = HUD.querySelector(".hud-output-node");
++    filterBox.value = "";
++    HUDService.updateFilterText(filterBox);
++    HUDService.setFilterState(hudId, "cssparser", true);
++
++    let warningFound = "the unknown CSS property warning is displayed";
++    let warningNotFound = "could not find the unknown CSS property warning";
++
++    testLogEntry(outputNode, "foobarCssParser",
++      { success: warningFound, err: warningNotFound });
++
++    HUDService.setFilterState(hudId, "cssparser", false);
++
++    warningNotFound = "the unknown CSS property warning is not displayed, " +
++      "after filtering";
++    warningFound = "the unknown CSS property warning is still displayed, " +
++      "after filtering";
++
++    testLogEntry(outputNode, "foobarCssParser",
++      { success: warningNotFound, err: warningFound }, true, true);
++
++    testWebConsoleClose();
++  };
++
++  browser.addEventListener("load", contentLoaded, true);
++
++  content.location = "data:text/html,<div style='font-size:3em;foobarCssParser:baz'>" +
++    "test CSS parser filter</div>";
++}
++
++/**
+  * Unit test for bug 580001:
+  * 'Close console after completion causes error "inputValue is undefined"'
+  */
+ function testWebConsoleClose() {
+   let display = HUDService.getDisplayByURISpec(content.location.href);
+   let input = display.querySelector(".jsterm-input-node");
+ 
+   let errorWhileClosing = false;

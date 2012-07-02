@@ -1,0 +1,344 @@
+diff --git a/browser/base/content/tabview/groupitems.js b/browser/base/content/tabview/groupitems.js
+--- a/browser/base/content/tabview/groupitems.js
++++ b/browser/base/content/tabview/groupitems.js
+@@ -746,38 +746,51 @@ GroupItem.prototype = Utils.extend(new I
+ 
+     this._cancelFadeAwayUndoButtonTimer();
+ 
+     // When the last non-empty groupItem is closed and there are no orphan or
+     // pinned tabs then create a new group with a blank tab.
+     let remainingGroups = GroupItems.groupItems.filter(function (groupItem) {
+       return (groupItem != self && groupItem.getChildren().length);
+     });
++
++    let tab = null;
++
+     if (!gBrowser._numPinnedTabs && !GroupItems.getOrphanedTabs().length &&
+         !remainingGroups.length) {
+       let emptyGroups = GroupItems.groupItems.filter(function (groupItem) {
+         return (groupItem != self && !groupItem.getChildren().length);
+       });
+       let group = (emptyGroups.length ? emptyGroups[0] : GroupItems.newGroup());
+-      group.newTab();
++      tab = group.newTab(null, true);
+     }
+ 
+-    this.destroy();
++    let closed = this.destroy();
++
++    if (!closed && tab) {
++      // Remove the new tab, if this group is no longer closed.
++      tab._tabViewTabItem.close();
++    } else if (closed && tab) {
++      // The group is closed, we can zoom into the new empty tab.
++      tab._tabViewTabItem.zoomIn(true);
++    }
+   },
+ 
+   // ----------
+   // Function: destroy
+   // Close all tabs linked to children (tabItems), removes all children and 
+   // close the groupItem.
+   //
+   // Parameters:
+   //   options - An object with optional settings for this call.
+   //
+   // Options:
+   //   immediately - (bool) if true, no animation will be used
++  //
++  // Returns true if the groupItem has been closed, or false otherwise.
+   destroy: function GroupItem_destroy(options) {
+     let self = this;
+ 
+     // when "TabClose" event is fired, the browser tab is about to close and our 
+     // item "close" event is fired.  And then, the browser tab gets closed. 
+     // In other words, the group "close" event is fired before all browser
+     // tabs in the group are closed.  The below code would fire the group "close"
+     // event only after all browser tabs in that group are closed.
+@@ -799,19 +812,24 @@ GroupItem.prototype = Utils.extend(new I
+     });
+ 
+     if (shouldRemoveTabItems.length != toClose.length) {
+       // remove children without the assiciated tab and show the group item
+       shouldRemoveTabItems.forEach(function(child) {
+         self.remove(child, { dontArrange: true });
+       });
+ 
+-      this.$undoContainer.fadeOut(function() { self._unhide() });
++      if (this.hidden) {
++        this.$undoContainer.fadeOut(function() { self._unhide() });
++      }
++
++      return false;
+     } else {
+       this.close(options);
++      return true;
+     }
+   },
+ 
+   // ----------
+   // Function: _fadeAwayUndoButton
+   // Fades away the undo button
+   _fadeAwayUndoButton: function GroupItem__fadeAwayUdoButton() {
+     let self = this;
+@@ -1679,24 +1697,28 @@ GroupItem.prototype = Utils.extend(new I
+       immediately ? this.$resizer.hide() : this.$resizer.fadeOut();
+       this.resizable(false);
+     }
+   },
+ 
+   // ----------
+   // Function: newTab
+   // Creates a new tab within this groupItem.
+-  newTab: function GroupItem_newTab(url) {
++  // Returns the new tab XUL element.
++  newTab: function GroupItem_newTab(url, dontZoomIn) {
+     GroupItems.setActiveGroupItem(this);
+     let newTab = gBrowser.loadOneTab(url || "about:blank", {inBackground: true});
+ 
+     // TabItems will have handled the new tab and added the tabItem property.
+     // We don't have to check if it's an app tab (and therefore wouldn't have a
+     // TabItem), since we've just created it.
+-    newTab._tabViewTabItem.zoomIn(!url);
++    if (!dontZoomIn)
++      newTab._tabViewTabItem.zoomIn(!url);
++
++    return newTab;
+   },
+ 
+   // ----------
+   // Function: reorderTabItemsBasedOnTabOrder
+   // Reorders the tabs in a groupItem based on the arrangment of the tabs
+   // shown in the tab bar. It does it by sorting the children
+   // of the groupItem by the positions of their respective tabs in the
+   // tab bar.
+diff --git a/browser/base/content/tabview/ui.js b/browser/base/content/tabview/ui.js
+--- a/browser/base/content/tabview/ui.js
++++ b/browser/base/content/tabview/ui.js
+@@ -21,16 +21,17 @@
+  * Contributor(s):
+  * Ian Gilman <ian@iangilman.com>
+  * Aza Raskin <aza@mozilla.com>
+  * Michael Yoshitaka Erlewine <mitcho@mitcho.com>
+  * Ehsan Akhgari <ehsan@mozilla.com>
+  * Raymond Lee <raymond@appcoast.com>
+  * Sean Dunn <seanedunn@yahoo.com>
+  * Tim Taubert <tim.taubert@gmx.de>
++ * Mihai Sucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -204,16 +205,20 @@ let UI = {
+       iQ(window).bind("unload", function() {
+         self.uninit();
+       });
+ 
+       gWindow.addEventListener("tabviewhide", function() {
+         self.exit();
+       }, false);
+ 
++      this.onDOMWillOpenModalDialog = this.onDOMWillOpenModalDialog.bind(this);
++      gWindow.addEventListener("DOMWillOpenModalDialog",
++        this.onDOMWillOpenModalDialog, false);
++
+       // ___ setup key handlers
+       this._setTabViewFrameKeyHandlers();
+ 
+       // ___ add tab action handlers
+       this._addTabActionHandlers();
+ 
+       // ___ groups
+       GroupItems.init();
+@@ -844,18 +849,24 @@ let UI = {
+     }
+     // reset these vars, just in case.
+     this._closedLastVisibleTab = false;
+     this._closedSelectedTabInTabView = false;
+     this.restoredClosedTab = false;
+ 
+     // if TabView is visible but we didn't just close the last tab or
+     // selected tab, show chrome.
+-    if (this.isTabViewVisible())
++    if (this.isTabViewVisible()) {
++      // Unhide the group of the tab the user is activating.
++      if (tab && tab._tabViewTabItem && tab._tabViewTabItem.parent &&
++          tab._tabViewTabItem.parent.hidden)
++        tab._tabViewTabItem.parent._unhide();
++
+       this.hideTabView();
++    }
+ 
+     // another tab might be selected when hideTabView() is invoked so a
+     // validation is needed.
+     if (this._currentTab != tab)
+       return;
+ 
+     let oldItem = null;
+     let newItem = null;
+@@ -889,16 +900,54 @@ let UI = {
+       }
+ 
+       if (GroupItems.getActiveGroupItem() || GroupItems.getActiveOrphanTab())
+         GroupItems._updateTabBar();
+     }
+   },
+ 
+   // ----------
++  // Function: onDOMWillOpenModalDialog
++  // Called when a web page is about to show a modal dialog.
++  // Parameters:
++  //   event - the DOMWillOpenModalDialog event object.
++  onDOMWillOpenModalDialog: function UI_onDOMWillOpenModalDialog(event) {
++    if (!event.isTrusted || !this.isTabViewVisible())
++      return;
++
++    let tab = this.getTabForContentWindow(event.target);
++    if (!tab)
++      return;
++
++    // When TabView is visible, we need to call onTabSelect to make sure that
++    // TabView is hidden and that the correct group is activated. When a modal
++    // dialog is shown for currently selected tab the onTabSelect event handler
++    // is not called, so we need to do it.
++    if (gBrowser.selectedTab == tab && this._currentTab == tab)
++      this.onTabSelect(tab);
++  },
++
++  // ----------
++  // Function: getTabForContentWindow
++  // Find a tab given by the content window.
++  // Parameters:
++  //   event - the DOMWillOpenModalDialog event object.
++  // Returns the XUL tab element or null.
++  getTabForContentWindow: function UI_getTabForContentWindow(window) {
++    window = window.top;
++
++    for (let i = 0; i < gBrowser.browsers.length; i++) {
++      if (gBrowser.browsers[i].contentWindow == window)
++        return gBrowser.tabs[i];
++    }
++
++    return null;
++  },
++
++  // ----------
+   // Function: setReorderTabsOnHide
+   // Sets the groupItem which the tab items' tabs should be re-ordered when
+   // switching to the main browser UI.
+   // Parameters:
+   //   groupItem - the groupItem which would be used for re-ordering tabs.
+   setReorderTabsOnHide: function UI_setReorderTabsOnHide(groupItem) {
+     if (this.isTabViewVisible()) {
+       var index = this._reorderTabsOnHide.indexOf(groupItem);
+diff --git a/browser/base/content/test/tabview/browser_tabview_bug599626.js b/browser/base/content/test/tabview/browser_tabview_bug599626.js
+--- a/browser/base/content/test/tabview/browser_tabview_bug599626.js
++++ b/browser/base/content/test/tabview/browser_tabview_bug599626.js
+@@ -15,16 +15,17 @@
+  *
+  * The Initial Developer of the Original Code is
+  * Mozilla Foundation.
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  * Raymond Lee <raymond@appcoast.com>
++ * Mihai Sucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -63,55 +64,67 @@ function onTabViewWindowLoaded() {
+     browser.removeEventListener("load", onLoad, true);
+ 
+     testStayOnPage(contentWindow, groupItemOne, groupItemTwo);
+   }
+   browser.addEventListener("load", onLoad, true);
+ }
+ 
+ function testStayOnPage(contentWindow, groupItemOne, groupItemTwo) {
++  groupItemTwo.addSubscriber(groupItemTwo, "groupShown", function() {
++    groupItemTwo.removeSubscriber(groupItemTwo, "groupShown");
++
++    is(gBrowser.tabs.length, 2,
++       "The total number of tab is 2 when staying on the page");
++    is(contentWindow.TabItems.getItems().length, 2,
++       "The total number of tab items is 2 when staying on the page");
++  });
++
+   setupAndRun(contentWindow, groupItemOne, groupItemTwo, function(doc) {
+-    groupItemTwo.addSubscriber(groupItemTwo, "groupShown", function() {
+-      groupItemTwo.removeSubscriber(groupItemTwo, "groupShown");
++    // stay on page
++    doc.documentElement.getButton("cancel").click();
+ 
+-      is(gBrowser.tabs.length, 2, 
+-         "The total number of tab is 2 when staying on the page");
+-      is(contentWindow.TabItems.getItems().length, 2, 
+-         "The total number of tab items is 2 when staying on the page");
++    let onTabViewShown = function() {
++      window.removeEventListener("tabviewshown", onTabViewShown, false);
+ 
+-      let onTabViewShown = function() {
+-        window.removeEventListener("tabviewshown", onTabViewShown, false);
++      // start the next test
++      testLeavePage(contentWindow, groupItemOne, groupItemTwo);
++    };
+ 
+-        // start the next test
+-        testLeavePage(contentWindow, groupItemOne, groupItemTwo);
+-      };
+-      window.addEventListener("tabviewshown", onTabViewShown, false);
++    window.addEventListener("tabviewshown", onTabViewShown, false);
++
++    executeSoon(function() {
+       TabView.toggle();
+     });
+-    // stay on page
+-    doc.documentElement.getButton("cancel").click();
+   });
+ }
+ 
+ function testLeavePage(contentWindow, groupItemOne, groupItemTwo) {
++  let groupClosed = false;
++
++  let endGame = function() {
++    window.removeEventListener("tabviewhidden", endGame, false);
++    if (groupClosed)
++      finish();
++  };
++  window.addEventListener("tabviewhidden", endGame, false);
++
+   setupAndRun(contentWindow, groupItemOne, groupItemTwo, function(doc) {
+     // clean up and finish the test
+     groupItemTwo.addSubscriber(groupItemTwo, "close", function() {
+       groupItemTwo.removeSubscriber(groupItemTwo, "close");
+ 
+       is(gBrowser.tabs.length, 1,
+          "The total number of tab is 1 after leaving the page");
+       is(contentWindow.TabItems.getItems().length, 1, 
+          "The total number of tab items is 1 after leaving the page");
+ 
+-      let endGame = function() {
+-        window.removeEventListener("tabviewhidden", endGame, false);
++      groupClosed = true;
++      if (!TabView.isVisible())
+         finish();
+-      };
+-      window.addEventListener("tabviewhidden", endGame, false);
+     });
+ 
+     // Leave page
+     doc.documentElement.getButton("accept").click();
+   });
+ }
+ 
+ function setupAndRun(contentWindow, groupItemOne, groupItemTwo, callback) {

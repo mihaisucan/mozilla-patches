@@ -1,0 +1,255 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1670,16 +1670,18 @@ function HeadsUpDisplay(aConfig)
+   }
+   catch(ex) {
+     Cu.reportError(ex);
+   }
+ 
+   this.XULFactory = NodeFactory("xul", "xul", this.chromeDocument);
+   this.textFactory = NodeFactory("text", "xul", this.chromeDocument);
+ 
++  this.chromeWindow = HUDService.getChromeWindowFromContentWindow(this.contentWindow);
++
+   // create a panel dynamically and attach to the parentNode
+   let hudBox = this.createHUD();
+ 
+   let splitter = this.chromeDocument.createElement("splitter");
+   splitter.setAttribute("class", "hud-splitter");
+ 
+   this.notificationBox.insertBefore(splitter,
+                                     this.notificationBox.childNodes[1]);
+@@ -1755,19 +1757,25 @@ HeadsUpDisplay.prototype = {
+    * Re-attaches a console when the contentWindow is recreated
+    *
+    * @returns void
+    */
+   reattachConsole: function HUD_reattachConsole()
+   {
+     this.hudId = this.HUDBox.getAttribute("id");
+ 
+-    // set outputNode
+     this.outputNode = this.HUDBox.querySelectorAll(".hud-output-node")[0];
+ 
++    this.contextMenu = this.HUDBox.querySelector("#" + this.hudId +
++        "-output-contextmenu");
++    this.copyOutputMenuItem = this.HUDBox.
++      querySelector("menuitem[command=cmd_copy]");
++
++    this.chromeWindow = HUDService.
++      getChromeWindowFromContentWindow(this.contentWindow);
+     this.chromeDocument = this.HUDBox.ownerDocument;
+ 
+     if (this.outputNode) {
+       // createConsole
+       this.createConsole();
+     }
+     else {
+       throw new Error("Cannot get output node");
+@@ -1862,16 +1870,17 @@ HeadsUpDisplay.prototype = {
+     let consoleWrap = this.makeXULNode("vbox");
+     this.consoleWrap = consoleWrap;
+     consoleWrap.setAttribute("class", "hud-console-wrapper");
+     consoleWrap.setAttribute("flex", "1");
+ 
+     this.outputNode = this.makeXULNode("vbox");
+     this.outputNode.setAttribute("class", "hud-output-node");
+     this.outputNode.setAttribute("flex", "1");
++    this.outputNode.setAttribute("context", this.hudId + "-output-contextmenu");
+ 
+     this.filterSpacer = this.makeXULNode("spacer");
+     this.filterSpacer.setAttribute("flex", "1");
+ 
+     this.filterBox = this.makeXULNode("textbox");
+     this.filterBox.setAttribute("class", "compact hud-filter-box");
+     this.filterBox.setAttribute("hudId", this.hudId);
+     this.filterBox.setAttribute("placeholder", this.getStr("stringFilter"));
+@@ -1882,24 +1891,39 @@ HeadsUpDisplay.prototype = {
+     this.consoleClearButton = this.makeXULNode("button");
+     this.consoleClearButton.setAttribute("class", "hud-console-clear");
+     this.consoleClearButton.setAttribute("label", this.getStr("btnClear"));
+     this.consoleClearButton.setAttribute("buttonType", "clear");
+     this.consoleClearButton.setAttribute("hudId", this.hudId);
+     var command = "HUDConsoleUI.command(this)";
+     this.consoleClearButton.setAttribute("oncommand", command);
+ 
++    this.copyOutputMenuItem = this.makeXULNode("menuitem");
++    this.copyOutputMenuItem.setAttribute("label", this.getStr("copyCmd.label"));
++    this.copyOutputMenuItem.setAttribute("accesskey", this.getStr("copyCmd.accesskey"));
++    this.copyOutputMenuItem.setAttribute("key", "key_copy");
++    this.copyOutputMenuItem.setAttribute("command", "cmd_copy");
++
++    this.contextMenu = this.makeXULNode("menupopup");
++    this.contextMenu.setAttribute("id", this.hudId + "-output-contextmenu");
++    this.contextMenu.appendChild(this.copyOutputMenuItem);
++
+     this.filterPrefs = HUDService.getDefaultFilterPrefs(this.hudId);
+ 
+     let consoleFilterToolbar = this.makeFilterToolbar();
+     consoleFilterToolbar.setAttribute("id", "viewGroup");
+     this.consoleFilterToolbar = consoleFilterToolbar;
+     consoleWrap.appendChild(consoleFilterToolbar);
+ 
+     consoleWrap.appendChild(this.outputNode);
++
++    // We want the context menu inside the console wrapper, but outside the
++    // outputNode.
++    outerWrap.appendChild(this.contextMenu);
++
+     outerWrap.appendChild(consoleWrap);
+ 
+     this.HUDBox.lastTimestamp = 0;
+ 
+     this.jsTermParentNode = outerWrap;
+     this.HUDBox.appendChild(outerWrap);
+     return this.HUDBox;
+   },
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+@@ -775,25 +775,87 @@ function testDuplicateError() {
+           ok(text.indexOf("fooDuplicateError1", error1pos + 1) == -1,
+             "no duplicate for fooDuplicateError1");
+         }
+ 
+         ok(text.indexOf("test-duplicate-error.html") > -1,
+           "found test-duplicate-error.html");
+ 
+         text = null;
+-        testWebConsoleClose();
++        testCopyOutputMenuItem();
+       });
+     }
+   };
+ 
+   Services.console.registerListener(consoleObserver);
+   content.location = TEST_DUPLICATE_ERROR_URI;
+ }
+ 
++function testCopyOutputMenuItem()
++{
++  // See bug 574036 - HUD Console should allow copying text.
++  // https://bugzilla.mozilla.org/show_bug.cgi?id=574036
++
++  var HUD = HUDService.hudWeakReferences[hudId].get();
++  var selection = getSelection();
++  var console = content.wrappedJSObject.console;
++
++  if (selection.rangeCount > 0) {
++    selection.removeAllRanges();
++  }
++
++  // Test 1: check that the copyOutputMenuItem is disabled
++  HUD.contextMenu.addEventListener("popupshown", function () {
++    HUD.contextMenu.removeEventListener("popupshown", arguments.callee, false);
++
++    // Skip the test on Linux, because the menu is always enabled.
++    // See bug 584972 - https://bugzilla.mozilla.org/show_bug.cgi?id=584972
++    if (navigator.platform.indexOf("Linux") == -1) {
++      ok(HUD.copyOutputMenuItem.disabled, "HUD.copyOutputMenuItem is disabled");
++    }
++
++    console.log("Hello world!");
++
++    var range = HUD.chromeDocument.createRange();
++    range.selectNode(HUD.outputNode.firstChild);
++    selection.addRange(range);
++
++    // Test 2: check that the copyOutputMenuItem is enabled, because a node is
++    // selected.
++    HUD.contextMenu.addEventListener("popupshown", function () {
++      HUD.contextMenu.removeEventListener("popupshown", arguments.callee,
++        false);
++
++      ok(!HUD.copyOutputMenuItem.disabled, "HUD.copyOutputMenuItem is enabled");
++
++      selection.removeAllRanges();
++
++      // We are done, close the contextmenu now.
++      EventUtils.synthesizeKey("VK_ESCAPE", {});
++
++      testWebConsoleClose();
++    }, false);
++
++    HUD.contextMenu.addEventListener("popuphidden", function () {
++      HUD.contextMenu.removeEventListener("popuphidden", arguments.callee,
++        false);
++
++      // Show the context menu again.
++      EventUtils.synthesizeMouse(HUD.outputNode, 2, 2, {type: "contextmenu",
++        button: 2});
++    }, false);
++
++    // We need to hide the context menu, before we can show it again.
++    EventUtils.synthesizeKey("VK_ESCAPE", {});
++  }, false);
++
++  EventUtils.synthesizeMouse(HUD.outputNode, 1, 1, {type: "contextmenu",
++    button: 2});
++}
++
+ /**
+  * Unit test for bug 580001:
+  * 'Close console after completion causes error "inputValue is undefined"'
+  */
+ function testWebConsoleClose() {
+   let display = HUDService.getDisplayByURISpec(content.location.href);
+   let input = display.querySelector(".jsterm-input-node");
+ 
+diff --git a/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties b/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties
+--- a/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties
++++ b/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties
+@@ -31,8 +31,10 @@ tipConsoleWarnings=Log calls to console.
+ btnConsoleLog=Log
+ tipConsoleLog=Log calls to console.log()
+ btnGlobal=Global Messages
+ tipGlobal=Toggle Global Message logging
+ localConsole=Local Console
+ btnClear=Clear Console
+ tipClear=Clear the console output
+ stringFilter=Filter
++copyCmd.label=Copy
++copyCmd.accesskey=C
+diff --git a/toolkit/themes/pinstripe/global/headsUpDisplay.css b/toolkit/themes/pinstripe/global/headsUpDisplay.css
+--- a/toolkit/themes/pinstripe/global/headsUpDisplay.css
++++ b/toolkit/themes/pinstripe/global/headsUpDisplay.css
+@@ -57,16 +57,17 @@
+     font-size: 1em;
+     padding-top: 0.33em;
+     font-weight: bold;
+ }
+ 
+ .hud-output-node div {
+     -moz-user-select: text;
+     white-space: pre-wrap;
++    -moz-user-focus: normal;
+ }
+ 
+ .hud-output-node .hud-network {
+     color: blue;
+ }
+ 
+ .hud-output-node .hud-error {
+     color: red;
+diff --git a/toolkit/themes/winstripe/global/headsUpDisplay.css b/toolkit/themes/winstripe/global/headsUpDisplay.css
+--- a/toolkit/themes/winstripe/global/headsUpDisplay.css
++++ b/toolkit/themes/winstripe/global/headsUpDisplay.css
+@@ -54,16 +54,17 @@
+     font-size: 1em;
+     padding-top: 0.33em;
+     font-weight: bold;
+ }
+ 
+ .hud-output-node div {
+     -moz-user-select: text;
+     white-space: pre-wrap;
++    -moz-user-focus: normal;
+ }
+ 
+ .hud-output-node .hud-network {
+     color: blue;
+ }
+ 
+ .hud-output-node .hud-error {
+     color: red;

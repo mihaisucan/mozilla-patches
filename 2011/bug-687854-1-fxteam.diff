@@ -1,0 +1,314 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1316534081 -10800
+# Node ID 2a6386c768d8f534e6c5bba7230a081959878fab
+# Parent  8e3e1c5f348da4bb38895b513f42c40d7f5eb087
+Bug 687854 - Move the Inspector code to browser/devtools
+
+diff --git a/browser/base/Makefile.in b/browser/base/Makefile.in
+--- a/browser/base/Makefile.in
++++ b/browser/base/Makefile.in
+@@ -51,17 +51,16 @@ CHROME_DEPS += $(abs_srcdir)/content/ove
+ 
+ ifdef ENABLE_TESTS
+ DIRS += content/test
+ endif
+ 
+ EXTRA_JS_MODULES = \
+ 	content/openLocationLastURL.jsm \
+ 	content/NetworkPrioritizer.jsm \
+-	content/domplate.jsm \
+ 	$(NULL)
+ 
+ include $(topsrcdir)/config/rules.mk
+ 
+ PRE_RELEASE_SUFFIX := ""
+ 
+ DEFINES += \
+ 	-DMOZ_APP_VERSION=$(MOZ_APP_VERSION) \
+diff --git a/browser/base/content/browser.css b/browser/base/content/browser.css
+--- a/browser/base/content/browser.css
++++ b/browser/base/content/browser.css
+@@ -527,9 +527,9 @@ statuspanel[label=""] {
+   -moz-box-align: end;
+ }
+ 
+ .panel-inner-arrowcontentfooter[footertype="promobox"] {
+   -moz-binding: url("chrome://browser/content/urlbarBindings.xml#promobox");
+ }
+ 
+ /* highlighter */
+-%include highlighter.css
++%include ../../devtools/highlighter/highlighter.css
+diff --git a/browser/base/content/browser.js b/browser/base/content/browser.js
+--- a/browser/base/content/browser.js
++++ b/browser/base/content/browser.js
+@@ -175,17 +175,17 @@ XPCOMUtils.defineLazyGetter(this, "Popup
+ 
+ let gInitialPages = [
+   "about:blank",
+   "about:privatebrowsing",
+   "about:sessionrestore"
+ ];
+ 
+ #include browser-fullZoom.js
+-#include inspector.js
++#include ../../devtools/highlighter/inspector.js
+ #include browser-places.js
+ #include browser-tabPreviews.js
+ #include browser-tabview.js
+ 
+ #ifdef MOZ_SERVICES_SYNC
+ #include browser-syncui.js
+ #endif
+ 
+diff --git a/browser/base/content/test/Makefile.in b/browser/base/content/test/Makefile.in
+--- a/browser/base/content/test/Makefile.in
++++ b/browser/base/content/test/Makefile.in
+@@ -37,17 +37,16 @@
+ DEPTH		= ../../../..
+ topsrcdir	= @top_srcdir@
+ srcdir		= @srcdir@
+ VPATH		= @srcdir@
+ relativesrcdir  = browser/base/content/test
+ 
+ DIRS += \
+ 		tabview \
+-		inspector \
+ 		$(NULL)
+ 
+ include $(DEPTH)/config/autoconf.mk
+ include $(topsrcdir)/config/rules.mk
+ 
+ _TEST_FILES = \
+ 		test_feed_discovery.html \
+ 		feed_discovery.html \
+diff --git a/browser/base/jar.mn b/browser/base/jar.mn
+--- a/browser/base/jar.mn
++++ b/browser/base/jar.mn
+@@ -26,17 +26,16 @@ browser.jar:
+         content/browser/aboutRobots-icon.png          (content/aboutRobots-icon.png)
+         content/browser/aboutRobots-widget-left.png   (content/aboutRobots-widget-left.png)
+ *       content/browser/browser.css                   (content/browser.css)
+ *       content/browser/browser.js                    (content/browser.js)
+ *       content/browser/browser.xul                   (content/browser.xul)
+ *       content/browser/browser-tabPreviews.xml       (content/browser-tabPreviews.xml)
+ *       content/browser/content.js                    (content/content.js)
+ *       content/browser/fullscreen-video.xhtml        (content/fullscreen-video.xhtml)
+-*       content/browser/inspector.html                (content/inspector.html)
+ *       content/browser/pageinfo/pageInfo.xul         (content/pageinfo/pageInfo.xul)
+ *       content/browser/pageinfo/pageInfo.js          (content/pageinfo/pageInfo.js)
+ *       content/browser/pageinfo/pageInfo.css         (content/pageinfo/pageInfo.css)
+ *       content/browser/pageinfo/pageInfo.xml         (content/pageinfo/pageInfo.xml)
+ *       content/browser/pageinfo/feeds.js             (content/pageinfo/feeds.js)
+ *       content/browser/pageinfo/feeds.xml            (content/pageinfo/feeds.xml)
+ *       content/browser/pageinfo/permissions.js       (content/pageinfo/permissions.js)
+ *       content/browser/pageinfo/security.js          (content/pageinfo/security.js)
+diff --git a/browser/devtools/Makefile.in b/browser/devtools/Makefile.in
+--- a/browser/devtools/Makefile.in
++++ b/browser/devtools/Makefile.in
+@@ -42,16 +42,17 @@ topsrcdir = @top_srcdir@
+ srcdir    = @srcdir@
+ VPATH   = @srcdir@
+ 
+ include $(DEPTH)/config/autoconf.mk
+ 
+ include $(topsrcdir)/config/config.mk
+ 
+ DIRS = \
++  highlighter \
+   webconsole \
+   scratchpad \
+   sourceeditor \
+   styleinspector \
+   shared \
+   $(NULL)
+ 
+ ifdef ENABLE_TESTS
+diff --git a/browser/devtools/highlighter/Makefile.in b/browser/devtools/highlighter/Makefile.in
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/highlighter/Makefile.in
+@@ -0,0 +1,55 @@
++#
++# ***** BEGIN LICENSE BLOCK *****
++# Version: MPL 1.1/GPL 2.0/LGPL 2.1
++#
++# The contents of this file are subject to the Mozilla Public License Version
++# 1.1 (the "License"); you may not use this file except in compliance with
++# the License. You may obtain a copy of the License at
++# http://www.mozilla.org/MPL/
++#
++# Software distributed under the License is distributed on an "AS IS" basis,
++# WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++# for the specific language governing rights and limitations under the
++# License.
++#
++# The Original Code is Highlighter Build Code.
++#
++# The Initial Developer of the Original Code is The Mozilla Foundation.
++#
++# Portions created by the Initial Developer are Copyright (C) 2011
++# the Initial Developer. All Rights Reserved.
++#
++# Contributor(s):
++#   Rob Campbell <rcampbell@mozilla.com>
++#   Mihai Sucan <mihai.sucan@gmail.com>
++#
++# Alternatively, the contents of this file may be used under the terms of
++# either the GNU General Public License Version 2 or later (the "GPL"), or
++# the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++# in which case the provisions of the GPL or the LGPL are applicable instead
++# of those above. If you wish to allow use of your version of this file only
++# under the terms of either the GPL or the LGPL, and not to allow others to
++# use your version of this file under the terms of the MPL, indicate your
++# decision by deleting the provisions above and replace them with the notice
++# and other provisions required by the GPL or the LGPL. If you do not delete
++# the provisions above, a recipient may use your version of this file under
++# the terms of any one of the MPL, the GPL or the LGPL.
++#
++# ***** END LICENSE BLOCK *****
++
++DEPTH		= ../../..
++topsrcdir	= @top_srcdir@
++srcdir		= @srcdir@
++VPATH		= @srcdir@
++
++include $(DEPTH)/config/autoconf.mk
++
++EXTRA_JS_MODULES = \
++	domplate.jsm \
++	$(NULL)
++
++ifdef ENABLE_TESTS
++ 	DIRS += test
++endif
++
++include $(topsrcdir)/config/rules.mk
+diff --git a/browser/base/content/domplate.jsm b/browser/devtools/highlighter/domplate.jsm
+rename from browser/base/content/domplate.jsm
+rename to browser/devtools/highlighter/domplate.jsm
+diff --git a/browser/base/content/highlighter.css b/browser/devtools/highlighter/highlighter.css
+rename from browser/base/content/highlighter.css
+rename to browser/devtools/highlighter/highlighter.css
+diff --git a/browser/base/content/insideOutBox.js b/browser/devtools/highlighter/insideOutBox.js
+rename from browser/base/content/insideOutBox.js
+rename to browser/devtools/highlighter/insideOutBox.js
+diff --git a/browser/base/content/inspector.html b/browser/devtools/highlighter/inspector.html
+rename from browser/base/content/inspector.html
+rename to browser/devtools/highlighter/inspector.html
+diff --git a/browser/base/content/inspector.js b/browser/devtools/highlighter/inspector.js
+rename from browser/base/content/inspector.js
+rename to browser/devtools/highlighter/inspector.js
+diff --git a/browser/base/content/test/inspector/Makefile.in b/browser/devtools/highlighter/test/Makefile.in
+rename from browser/base/content/test/inspector/Makefile.in
+rename to browser/devtools/highlighter/test/Makefile.in
+--- a/browser/base/content/test/inspector/Makefile.in
++++ b/browser/devtools/highlighter/test/Makefile.in
+@@ -29,21 +29,21 @@
+ # use your version of this file under the terms of the MPL, indicate your
+ # decision by deleting the provisions above and replace them with the notice
+ # and other provisions required by the GPL or the LGPL. If you do not delete
+ # the provisions above, a recipient may use your version of this file under
+ # the terms of any one of the MPL, the GPL or the LGPL.
+ #
+ # ***** END LICENSE BLOCK *****
+ 
+-DEPTH		= ../../../../..
++DEPTH     = ../../../..
+ topsrcdir	= @top_srcdir@
+ srcdir		= @srcdir@
+ VPATH		= @srcdir@
+-relativesrcdir  = browser/base/content/test/inspector
++relativesrcdir  = browser/devtools/highlighter/test
+ 
+ include $(DEPTH)/config/autoconf.mk
+ include $(topsrcdir)/config/rules.mk
+ 
+ _BROWSER_FILES = \
+ 		browser_inspector_initialization.js \
+ 		browser_inspector_treeSelection.js \
+ 		browser_inspector_highlighter.js \
+diff --git a/browser/base/content/test/inspector/browser_inspector_bug_566084_location_changed.js b/browser/devtools/highlighter/test/browser_inspector_bug_566084_location_changed.js
+rename from browser/base/content/test/inspector/browser_inspector_bug_566084_location_changed.js
+rename to browser/devtools/highlighter/test/browser_inspector_bug_566084_location_changed.js
+diff --git a/browser/base/content/test/inspector/browser_inspector_bug_665880.js b/browser/devtools/highlighter/test/browser_inspector_bug_665880.js
+rename from browser/base/content/test/inspector/browser_inspector_bug_665880.js
+rename to browser/devtools/highlighter/test/browser_inspector_bug_665880.js
+diff --git a/browser/base/content/test/inspector/browser_inspector_bug_674871.js b/browser/devtools/highlighter/test/browser_inspector_bug_674871.js
+rename from browser/base/content/test/inspector/browser_inspector_bug_674871.js
+rename to browser/devtools/highlighter/test/browser_inspector_bug_674871.js
+diff --git a/browser/base/content/test/inspector/browser_inspector_editor.js b/browser/devtools/highlighter/test/browser_inspector_editor.js
+rename from browser/base/content/test/inspector/browser_inspector_editor.js
+rename to browser/devtools/highlighter/test/browser_inspector_editor.js
+diff --git a/browser/base/content/test/inspector/browser_inspector_highlighter.js b/browser/devtools/highlighter/test/browser_inspector_highlighter.js
+rename from browser/base/content/test/inspector/browser_inspector_highlighter.js
+rename to browser/devtools/highlighter/test/browser_inspector_highlighter.js
+diff --git a/browser/base/content/test/inspector/browser_inspector_iframeTest.js b/browser/devtools/highlighter/test/browser_inspector_iframeTest.js
+rename from browser/base/content/test/inspector/browser_inspector_iframeTest.js
+rename to browser/devtools/highlighter/test/browser_inspector_iframeTest.js
+diff --git a/browser/base/content/test/inspector/browser_inspector_initialization.js b/browser/devtools/highlighter/test/browser_inspector_initialization.js
+rename from browser/base/content/test/inspector/browser_inspector_initialization.js
+rename to browser/devtools/highlighter/test/browser_inspector_initialization.js
+diff --git a/browser/base/content/test/inspector/browser_inspector_registertools.js b/browser/devtools/highlighter/test/browser_inspector_registertools.js
+rename from browser/base/content/test/inspector/browser_inspector_registertools.js
+rename to browser/devtools/highlighter/test/browser_inspector_registertools.js
+diff --git a/browser/base/content/test/inspector/browser_inspector_scrolling.js b/browser/devtools/highlighter/test/browser_inspector_scrolling.js
+rename from browser/base/content/test/inspector/browser_inspector_scrolling.js
+rename to browser/devtools/highlighter/test/browser_inspector_scrolling.js
+diff --git a/browser/base/content/test/inspector/browser_inspector_store.js b/browser/devtools/highlighter/test/browser_inspector_store.js
+rename from browser/base/content/test/inspector/browser_inspector_store.js
+rename to browser/devtools/highlighter/test/browser_inspector_store.js
+diff --git a/browser/base/content/test/inspector/browser_inspector_tab_switch.js b/browser/devtools/highlighter/test/browser_inspector_tab_switch.js
+rename from browser/base/content/test/inspector/browser_inspector_tab_switch.js
+rename to browser/devtools/highlighter/test/browser_inspector_tab_switch.js
+diff --git a/browser/base/content/test/inspector/browser_inspector_treePanel_click.js b/browser/devtools/highlighter/test/browser_inspector_treePanel_click.js
+rename from browser/base/content/test/inspector/browser_inspector_treePanel_click.js
+rename to browser/devtools/highlighter/test/browser_inspector_treePanel_click.js
+diff --git a/browser/base/content/test/inspector/browser_inspector_treePanel_input.html b/browser/devtools/highlighter/test/browser_inspector_treePanel_input.html
+rename from browser/base/content/test/inspector/browser_inspector_treePanel_input.html
+rename to browser/devtools/highlighter/test/browser_inspector_treePanel_input.html
+diff --git a/browser/base/content/test/inspector/browser_inspector_treePanel_output.js b/browser/devtools/highlighter/test/browser_inspector_treePanel_output.js
+rename from browser/base/content/test/inspector/browser_inspector_treePanel_output.js
+rename to browser/devtools/highlighter/test/browser_inspector_treePanel_output.js
+--- a/browser/base/content/test/inspector/browser_inspector_treePanel_output.js
++++ b/browser/devtools/highlighter/test/browser_inspector_treePanel_output.js
+@@ -37,18 +37,18 @@
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ let doc = null;
+ let xhr = null;
+ let expectedResult = "";
+ 
+-const TEST_URI = "http://mochi.test:8888/browser/browser/base/content/test/inspector/browser_inspector_treePanel_input.html";
+-const RESULT_URI = "http://mochi.test:8888/browser/browser/base/content/test/inspector/browser_inspector_treePanel_result.html";
++const TEST_URI = "http://mochi.test:8888/browser/browser/devtools/highlighter/test/browser_inspector_treePanel_input.html";
++const RESULT_URI = "http://mochi.test:8888/browser/browser/devtools/highlighter/test/browser_inspector_treePanel_result.html";
+ 
+ function tabFocused()
+ {
+   xhr = new XMLHttpRequest();
+   xhr.onreadystatechange = xhr_onReadyStateChange;
+   xhr.open("GET", RESULT_URI, true);
+   xhr.send(null);
+ }
+diff --git a/browser/base/content/test/inspector/browser_inspector_treePanel_result.html b/browser/devtools/highlighter/test/browser_inspector_treePanel_result.html
+rename from browser/base/content/test/inspector/browser_inspector_treePanel_result.html
+rename to browser/devtools/highlighter/test/browser_inspector_treePanel_result.html
+diff --git a/browser/base/content/test/inspector/browser_inspector_treeSelection.js b/browser/devtools/highlighter/test/browser_inspector_treeSelection.js
+rename from browser/base/content/test/inspector/browser_inspector_treeSelection.js
+rename to browser/devtools/highlighter/test/browser_inspector_treeSelection.js
+diff --git a/browser/devtools/jar.mn b/browser/devtools/jar.mn
+--- a/browser/devtools/jar.mn
++++ b/browser/devtools/jar.mn
+@@ -1,7 +1,8 @@
+ browser.jar:
+     content/browser/NetworkPanel.xhtml            (webconsole/NetworkPanel.xhtml)
+ *   content/browser/scratchpad.xul                (scratchpad/scratchpad.xul)
+ *   content/browser/scratchpad.js                 (scratchpad/scratchpad.js)
+     content/browser/csshtmltree.xhtml             (styleinspector/csshtmltree.xhtml)
+     content/browser/orion.js                      (sourceeditor/orion/orion.js)
+     content/browser/orion.css                     (sourceeditor/orion/orion.css)
++*   content/browser/inspector.html                (highlighter/inspector.html)

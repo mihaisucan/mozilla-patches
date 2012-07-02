@@ -1,0 +1,43 @@
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_588342_document_focus.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_588342_document_focus.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_588342_document_focus.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_588342_document_focus.js
+@@ -3,17 +3,17 @@
+  * Any copyright is dedicated to the Public Domain.
+  * http://creativecommons.org/publicdomain/zero/1.0/
+  *
+  * Contributor(s):
+  *  Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+-const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
++const TEST_URI = "data:text/html,Web Console test for bug 588342";
+ let fm, notificationBox, input;
+ 
+ function test()
+ {
+   fm = Cc["@mozilla.org/focus-manager;1"].getService(Ci.nsIFocusManager);
+   addTab(TEST_URI);
+   browser.addEventListener("load", tabLoad, true);
+ }
+@@ -55,18 +55,16 @@ function runTest() {
+   function domNodeRemoved(aEvent) {
+     executeSoon(function() {
+       if (!DOMNodeRemoved && !notificationBox.querySelector(".hud-box")) {
+         DOMNodeRemoved = true;
+         document.removeEventListener(aEvent.type, domNodeRemoved, false);
+         is(fm.focusedWindow, browser.contentWindow.wrappedJSObject,
+            "content document has focus");
+         input = notificationBox = fm = null;
++        finishTest();
+       }
+-      finishTest();
+     });
+   }
+   document.addEventListener("DOMNodeRemoved", domNodeRemoved , false);
+-  fm = notificationBox = input = null;
+-  finishTest();
++  HUDService.deactivateHUDForContext(tab);
+ }
+ 
+-

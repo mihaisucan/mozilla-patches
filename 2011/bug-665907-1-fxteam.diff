@@ -1,0 +1,125 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1314719112 -10800
+# Node ID 9ef4f96a4d58fc513586a7bb4e91edff65912634
+# Parent  2470993f6287d3b594a542023ce1cb077fda9bff
+Bug 665907 - [highlighter] Bounding boxes update are slow while the page is scrolling.
+
+diff --git a/browser/base/content/highlighter.css b/browser/base/content/highlighter.css
+--- a/browser/base/content/highlighter.css
++++ b/browser/base/content/highlighter.css
+@@ -7,19 +7,19 @@
+   top: 0;
+   left: 0;
+ }
+ 
+ #highlighter-veil-container {
+   overflow: hidden;
+ }
+ 
+-.highlighter-veil,
+-#highlighter-veil-middlebox,
+-#highlighter-veil-transparentbox {
++#highlighter-veil-container:not([locked]) .highlighter-veil,
++#highlighter-veil-container:not([locked]) #highlighter-veil-middlebox,
++#highlighter-veil-container:not([locked]) #highlighter-veil-transparentbox {
+   -moz-transition-property: width, height;
+   -moz-transition-duration: 0.1s;
+   -moz-transition-timing-function: linear;
+ }
+ 
+ #highlighter-veil-bottombox,
+ #highlighter-veil-rightbox {
+   -moz-box-flex: 1;
+diff --git a/browser/base/content/inspector.js b/browser/base/content/inspector.js
+--- a/browser/base/content/inspector.js
++++ b/browser/base/content/inspector.js
+@@ -920,17 +920,17 @@ var InspectorUI = {
+     // if currently editing an attribute value, starting
+     // "live inspection" mode closes the editor
+     if (this.editingContext)
+       this.closeEditor();
+ 
+     document.getElementById("inspector-inspect-toolbutton").checked = true;
+     this.attachPageListeners();
+     this.inspecting = true;
+-    this.highlighter.veilTransparentBox.removeAttribute("locked");
++    this.highlighter.veilMiddleBox.parentNode.removeAttribute("locked");
+   },
+ 
+   /**
+    * Stop inspecting webpage, detach page listeners, disable highlighter
+    * event listeners.
+    * @param aPreventScroll
+    *        Prevent scroll in the HTML tree?
+    */
+@@ -943,17 +943,17 @@ var InspectorUI = {
+     document.getElementById("inspector-inspect-toolbutton").checked = false;
+     this.detachPageListeners();
+     this.inspecting = false;
+     if (this.highlighter.node) {
+       this.select(this.highlighter.node, true, true, !aPreventScroll);
+     } else {
+       this.select(null, true, true);
+     }
+-    this.highlighter.veilTransparentBox.setAttribute("locked", true);
++    this.highlighter.veilMiddleBox.parentNode.setAttribute("locked", true);
+   },
+ 
+   /**
+    * Select an object in the tree view.
+    * @param aNode
+    *        node to inspect
+    * @param forceUpdate
+    *        force an update?
+diff --git a/browser/themes/gnomestripe/browser/browser.css b/browser/themes/gnomestripe/browser/browser.css
+--- a/browser/themes/gnomestripe/browser/browser.css
++++ b/browser/themes/gnomestripe/browser/browser.css
+@@ -1979,12 +1979,12 @@ panel[dimmed="true"] {
+ }
+ 
+ #highlighter-veil-transparentbox {
+   box-shadow: 0 0 0 1px rgba(0,0,0,0.5);
+   outline: 1px dashed rgba(255,255,255,0.5);
+   outline-offset: -1px;
+ }
+ 
+-#highlighter-veil-transparentbox[locked] {
++#highlighter-veil-container[locked] #highlighter-veil-transparentbox {
+   box-shadow: 0 0 0 1px black;
+   outline-color: white;
+ }
+diff --git a/browser/themes/pinstripe/browser/browser.css b/browser/themes/pinstripe/browser/browser.css
+--- a/browser/themes/pinstripe/browser/browser.css
++++ b/browser/themes/pinstripe/browser/browser.css
+@@ -2557,12 +2557,12 @@ panel[dimmed="true"] {
+ }
+ 
+ #highlighter-veil-transparentbox {
+   box-shadow: 0 0 0 1px rgba(0,0,0,0.5);
+   outline: 1px dashed rgba(255,255,255,0.5);
+   outline-offset: -1px;
+ }
+ 
+-#highlighter-veil-transparentbox[locked] {
++#highlighter-veil-container[locked] #highlighter-veil-transparentbox {
+   box-shadow: 0 0 0 1px black;
+   outline-color: white;
+ }
+diff --git a/browser/themes/winstripe/browser/browser.css b/browser/themes/winstripe/browser/browser.css
+--- a/browser/themes/winstripe/browser/browser.css
++++ b/browser/themes/winstripe/browser/browser.css
+@@ -2551,12 +2551,12 @@ panel[dimmed="true"] {
+ }
+ 
+ #highlighter-veil-transparentbox {
+   box-shadow: 0 0 0 1px rgba(0,0,0,0.5);
+   outline: 1px dashed rgba(255,255,255,0.5);
+   outline-offset: -1px;
+ }
+ 
+-#highlighter-veil-transparentbox[locked] {
++#highlighter-veil-container[locked] #highlighter-veil-transparentbox {
+   box-shadow: 0 0 0 1px black;
+   outline-color: white;
+ }

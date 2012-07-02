@@ -1,0 +1,254 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1348,16 +1348,24 @@ HUD_SERVICE.prototype =
+    * @returns void
+    */
+   activateHUDForContext: function HS_activateHUDForContext(aContext)
+   {
+     var window = aContext.linkedBrowser.contentWindow;
+     var id = aContext.linkedBrowser.parentNode.parentNode.getAttribute("id");
+     this.registerActiveContext(id);
+     HUDService.windowInitializer(window);
++    if (window.frames) {
++      Array.prototype.forEach.call(window.frames, function(aFrame) {
++        HUDService.windowInitializer(aFrame);
++        if (aFrame.frames) {
++          Array.prototype.forEach.call(aFrame.frames, arguments.callee);
++        }
++      });
++    }
+   },
+ 
+   /**
+    * Deactivate a HeadsUpDisplay for the current window
+    *
+    * @param nsIDOMWindow aContext
+    * @returns void
+    */
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -56,16 +56,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_581231_close_button.js \
+ 	browser_webconsole_bug_595350_multiple_windows_and_tabs.js \
+ 	browser_webconsole_consoleonpage.js \
+ 	browser_webconsole_bug_587617_output_copy.js \
+ 	browser_webconsole_bug_588342_document_focus.js \
++	browser_webconsole_bug_598438_iframes.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+ 	testscript.js \
+@@ -76,15 +77,16 @@ _BROWSER_TEST_PAGES = \
+ 	test-error.html \
+ 	test-duplicate-error.html \
+ 	test-image.png \
+ 	test-encoding-ISO-8859-1.html \
+ 	test-bug-593003-iframe-wrong-hud.html \
+ 	test-bug-593003-iframe-wrong-hud-iframe.html \
+ 	test-console-replaced-api.html \
+ 	test-own-console.html \
++	test-bug-598438-iframe.html \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_598438_iframes.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_598438_iframes.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_598438_iframes.js
+@@ -0,0 +1,156 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const Cc = Components.classes;
++
++Cu.import("resource://gre/modules/HUDService.jsm");
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-598438-iframe.html";
++
++let outputNode;
++let buttonNr = 0;
++let button1, button2;
++
++/**
++ * Check if a log entry exists in the HUD output node.
++ *
++ * @param {Element} aOutputNode
++ *        the HUD output node.
++ * @param {string} aMatchString
++ *        the string you want to check if it exists in the output node.
++ * @param {boolean} [aOnlyVisible=false]
++ *        find only messages that are visible, not hidden by the filter.
++ * @param {boolean} [aFailIfFound=false]
++ *        fail the test if the string is found in the output node.
++ */
++function testLogEntry(aOutputNode, aMatchString, aSuccessErrObj, aOnlyVisible,
++                      aFailIfFound)
++{
++  let found = true;
++  let notfound = false;
++  let foundMsg = aSuccessErrObj.success;
++  let notfoundMsg = aSuccessErrObj.err;
++
++  if (aFailIfFound) {
++    found = false;
++    notfound = true;
++    foundMsg = aSuccessErrObj.err;
++    notfoundMsg = aSuccessErrObj.success;
++  }
++
++  let selector = ".hud-group > *";
++
++  // Skip entries that are hidden by the filter.
++  if (aOnlyVisible) {
++    selector += ":not(.hud-filtered-by-type)";
++  }
++
++  let msgs = aOutputNode.querySelectorAll(selector);
++  for (let i = 0, n = msgs.length; i < n; i++) {
++    let message = msgs[i].textContent.indexOf(aMatchString);
++    if (message > -1) {
++      ok(found, foundMsg);
++      return;
++    }
++  }
++
++  ok(notfound, notfoundMsg);
++}
++
++function onContentLoaded()
++{
++  HUDService.activateHUDForContext(gBrowser.selectedTab);
++
++  let HUD = HUDService.getDisplayByURISpec(content.location.href);
++  outputNode = HUD.querySelector(".hud-output-node");
++
++  content.wrappedJSObject.aSecret = Date.now();
++  content.wrappedJSObject.frames[0].aSecret = Date.now() + 1;
++
++  button1 = content.document.querySelector("button");
++  ok(button1, "button1 found");
++
++  button2 = content.frames[0].document.querySelector("button");
++  ok(button2, "button2 found");
++
++  button1.addEventListener("mouseup", onMouseup, false);
++
++  EventUtils.synthesizeMouse(button1, 1, 1, {}, content);
++}
++
++function onMouseup(aEvent)
++{
++  buttonNr++;
++  this.removeEventListener(aEvent.type, arguments.callee, false);
++
++  executeSoon(function() {
++    if (buttonNr == 2) {
++      performTest(button1);
++      executeSoon(function() {
++        performTest(button2);
++        testEnd();
++      });
++    }
++    else {
++      button2.addEventListener("mouseup", onMouseup, false);
++      EventUtils.synthesizeMouse(button2, 2, 2, {},
++        button2.ownerDocument.defaultView);
++    }
++  });
++}
++
++function performTest(button)
++{
++  let logFound = "found the console.log() message";
++  let logNotFound = "failed to find the console.log() message";
++
++  let secret = button.ownerDocument.defaultView.wrappedJSObject.aSecret;
++
++  testLogEntry(outputNode, "myFooConsoleLog" + secret,
++    { success: logFound, err: logNotFound }, true);
++
++  let errorFound = "found the script exception";
++  let errorNotFound = "failed to find the script exception";
++
++  testLogEntry(outputNode, "myFooError" + secret,
++    { success: errorFound, err: errorNotFound }, true);
++}
++
++function testEnd()
++{
++  button1 = button2 = outputNode = null;
++  HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++  gBrowser.removeCurrentTab();
++  executeSoon(finish);
++}
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++
++    waitForFocus(function() {
++      let iframe = content.document.createElement("iframe");
++      iframe.addEventListener("load", function() {
++        iframe.removeEventListener("load", arguments.callee, false);
++        onContentLoaded();
++      }, false);
++      iframe.src = TEST_URI + "?" + Date.now();
++      content.document.body.appendChild(iframe);
++    }, content);
++  }, true);
++
++  content.location = TEST_URI;
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-598438-iframe.html b/toolkit/components/console/hudservice/tests/browser/test-bug-598438-iframe.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-598438-iframe.html
+@@ -0,0 +1,22 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test - bug 598438</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++  </head>
++  <body>
++    <p>Web Console test - bug 598438</p>
++    <p><button>click!</button></p>
++
++    <script type="text/javascript"><!--
++      document.querySelector("button").addEventListener("mousedown",
++        function() {
++          console.log("myFooConsoleLog" + window.aSecret);
++          setTimeout(function() {
++            eval("window.myFooError" + window.aSecret + "();");
++          }, 0);
++        }, false);
++      // --></script>
++  </body>
++</html>

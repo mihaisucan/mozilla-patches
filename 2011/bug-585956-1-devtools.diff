@@ -1,0 +1,229 @@
+# HG changeset patch
+# Date 1302203789 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Parent df19f4679db15dde177c87be50e0dc9a57d5a96a
+Bug 585956 - Implement console.trace() in web console
+
+diff --git a/dom/base/ConsoleAPI.js b/dom/base/ConsoleAPI.js
+--- a/dom/base/ConsoleAPI.js
++++ b/dom/base/ConsoleAPI.js
+@@ -16,16 +16,17 @@
+  * The Initial Developer of the Original Code is Mozilla Foundation
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *  David Dahl <ddahl@mozilla.com>  (Original Author)
+  *  Ryan Flint <rflint@mozilla.com>
+  *  Rob Campbell <rcampbell@mozilla.com>
++ *  Mihai Sucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -71,35 +72,40 @@ ConsoleAPI.prototype = {
+         self.notifyObservers(id, "info", arguments);
+       },
+       warn: function CA_warn() {
+         self.notifyObservers(id, "warn", arguments);
+       },
+       error: function CA_error() {
+         self.notifyObservers(id, "error", arguments);
+       },
++      trace: function CA_trace() {
++        self.notifyObservers(id, "trace", self.getStackTrace());
++      },
+       __exposedProps__: {
+         log: "r",
+         info: "r",
+         warn: "r",
+-        error: "r"
++        error: "r",
++        trace: "r",
+       }
+     };
+ 
+     // We need to return an actual content object here, instead of a wrapped
+     // chrome object. This allows things like console.log.bind() to work.
+     let sandbox = Cu.Sandbox(aWindow);
+     let contentObject = Cu.evalInSandbox(
+         "(function(x) {\
+           var bind = Function.bind;\
+           var obj = {\
+             log: bind.call(x.log, x),\
+             info: bind.call(x.info, x),\
+             warn: bind.call(x.warn, x),\
+             error: bind.call(x.error, x),\
++            trace: bind.call(x.trace, x),\
+             __noSuchMethod__: function() {}\
+           };\
+           Object.defineProperty(obj, '__mozillaConsole__', { value: true });\
+           return obj;\
+         })", sandbox)(chromeObject);
+ 
+       return contentObject;
+   },
+@@ -116,12 +122,37 @@ ConsoleAPI.prototype = {
+       level: aLevel,
+       arguments: aArguments
+     };
+ 
+     consoleEvent.wrappedJSObject = consoleEvent;
+ 
+     Services.obs.notifyObservers(consoleEvent,
+                                  "console-api-log-event", aID);
+-  }
++  },
++
++  /**
++   * Build the stacktrace array for the console.trace() call.
++   *
++   * @return array
++   *         Each element is a stack frame that holds the following properties:
++   *         filename, lineNumber, functionName and language.
++   **/
++  getStackTrace: function CA_getStackTrace() {
++    let stack = [];
++    let frame = Components.stack.caller;
++    while (frame = frame.caller) {
++      if (frame.language == Ci.nsIProgrammingLanguage.JAVASCRIPT ||
++          frame.language == Ci.nsIProgrammingLanguage.JAVASCRIPT2) {
++        stack.push({
++          filename: frame.filename,
++          lineNumber: frame.lineNumber,
++          functionName: frame.name,
++          language: frame.language,
++        });
++      }
++    }
++
++    return stack;
++  },
+ };
+ 
+ let NSGetFactory = XPCOMUtils.generateNSGetFactory([ConsoleAPI]);
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -140,16 +140,17 @@ const SEVERITY_LOG = 3;
+ 
+ // A mapping from the console API log event levels to the Web Console
+ // severities.
+ const LEVELS = {
+   error: SEVERITY_ERROR,
+   warn: SEVERITY_WARNING,
+   info: SEVERITY_INFO,
+   log: SEVERITY_LOG,
++  trace: SEVERITY_LOG,
+ };
+ 
+ // The lowest HTTP response code (inclusive) that is considered an error.
+ const MIN_HTTP_ERROR_CODE = 400;
+ // The highest HTTP response code (exclusive) that is considered an error.
+ const MAX_HTTP_ERROR_CODE = 600;
+ 
+ // HTTP status codes.
+@@ -1973,23 +1974,95 @@ HUD_SERVICE.prototype =
+    * @return void
+    */
+   logConsoleAPIMessage: function HS_logConsoleAPIMessage(aHUDId,
+                                                          aLevel,
+                                                          aArguments)
+   {
+     // Pipe the message to createMessageNode().
+     let hud = HUDService.hudReferences[aHUDId];
+-    let mappedArguments = Array.map(aArguments, hud.jsterm.formatResult,
+-                                    hud.jsterm);
+-    let joinedArguments = Array.join(mappedArguments, " ");
++
++    let body = null;
++    let clipboardText = null;
++    let sourceURL = null;
++    let sourceLine = 0;
++
++    switch (aLevel) {
++      case "log":
++      case "info":
++      case "warn":
++      case "error":
++        let mappedArguments = Array.map(aArguments, hud.jsterm.formatResult,
++                                        hud.jsterm);
++        body = Array.join(mappedArguments, " ");
++        break;
++
++      case "trace":
++        body = aArguments[0].filename + " :: " +
++               aArguments[0].functionName + " :: " +
++               aArguments[0].lineNumber;
++        sourceURL = aArguments[0].filename;
++        sourceLine = aArguments[0].lineNumber;
++
++        clipboardText = "";
++
++        aArguments.forEach(function(aFrame) {
++          clipboardText += aFrame.filename + " :: " +
++                           aFrame.functionName + " :: " +
++                           aFrame.lineNumber + "\n";
++        });
++
++        clipboardText = clipboardText.trimRight();
++        break;
++
++      default:
++        throw Components.Exception("Unknown Console API log level: " + aLevel,
++                                   Cr.NS_ERROR_INVALID_ARG,
++                                   Components.stack.caller);
++    }
++
+     let node = ConsoleUtils.createMessageNode(hud.outputNode.ownerDocument,
+                                               CATEGORY_WEBDEV,
+                                               LEVELS[aLevel],
+-                                              joinedArguments);
++                                              body,
++                                              sourceURL,
++                                              sourceLine,
++                                              clipboardText);
++
++    // Make the node bring up the property panel, to allow the user to inspect
++    // the stack trace.
++    if (aLevel == "trace") {
++      node._stacktrace = aArguments;
++
++      let linkNode = node.querySelector(".webconsole-msg-body");
++      linkNode.classList.add("hud-clickable");
++      linkNode.setAttribute("aria-haspopup", "true");
++
++      node.addEventListener("mousedown", function(aEvent) {
++        this._startX = aEvent.clientX;
++        this._startY = aEvent.clientY;
++      }, false);
++
++      node.addEventListener("click", function(aEvent) {
++        if (aEvent.detail != 1 || aEvent.button != 0 ||
++            (this._startX != aEvent.clientX &&
++             this._startY != aEvent.clientY)) {
++          return;
++        }
++
++        if (!this._panelOpen) {
++          let propPanel = hud.jsterm.openPropertyPanel(null,
++                                                       node._stacktrace,
++                                                       this);
++          propPanel.panel.setAttribute("hudId", aHUDId);
++          this._panelOpen = true;
++        }
++      }, false);
++    }
++
+     ConsoleUtils.outputMessageNode(node, aHUDId);
+   },
+ 
+   /**
+    * Get OutputNode by Id
+    *
+    * @param string aId
+    * @returns nsIDOMNode (richlistbox)

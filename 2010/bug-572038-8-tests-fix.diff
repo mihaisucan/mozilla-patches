@@ -1,0 +1,44 @@
+diff --git a/browser/base/content/inspector.js b/browser/base/content/inspector.js
+--- a/browser/base/content/inspector.js
++++ b/browser/base/content/inspector.js
+@@ -1327,16 +1327,22 @@ var InspectorUI = {
+ 
+   /**
+    * Close inspector UI and associated panels. Unhighlight and stop inspecting.
+    * Remove event listeners for document scrolling, resize and
+    * tabContainer.TabSelect.
+    */
+   closeInspectorUI: function IUI_closeInspectorUI()
+   {
++    if (this.closing || !this.win || !this.browser) {
++      return;
++    }
++
++    this.closing = true;
++
+     this.win.document.removeEventListener("scroll", this, false);
+     this.win.removeEventListener("resize", this, false);
+     gBrowser.tabContainer.removeEventListener("TabSelect", this, false);
+     this.stopInspecting();
+     this.inspectCmd.setAttribute("checked", "false");
+     if (this.highlighter && this.highlighter.isHighlighting) {
+       this.highlighter.unhighlight();
+     }
+@@ -1359,16 +1365,17 @@ var InspectorUI = {
+     if (this.domPanel) {
+       this.domPanel.hidePopup();
+       this.domBox = null;
+       this.domTreeView = null;
+       this.propertyPanel.destroy();
+     }
+     this.inspectCmd.setAttribute("checked", false);
+     this.browser = this.win = null; // null out references to browser and window
++    this.closing = false;
+     Services.obs.notifyObservers(null, "inspector-closed", null);
+   },
+ 
+   /**
+    * Begin inspecting webpage, attach page event listeners, activate
+    * highlighter event listeners.
+    */
+   startInspecting: function IUI_startInspecting()

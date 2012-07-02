@@ -1,0 +1,339 @@
+diff --git a/browser/base/content/csshtmltree.js b/browser/base/content/csshtmltree.js
+--- a/browser/base/content/csshtmltree.js
++++ b/browser/base/content/csshtmltree.js
+@@ -370,16 +370,20 @@ function PropertyView(aTree, aGroup, aNa
+   this.group = aGroup;
+   this.name = aName;
+ 
+   this.closed = true;
+   this.element = null; // Assigned by templating process.
+   this.populated = false;
+ };
+ 
++// How many unmatched rules should be displayed by default when a property view
++// is expanded?
++PropertyView.UNMATCHED_RULE_COUNT = 5;
++
+ PropertyView.prototype = {
+   /**
+    * The click event handler for the property name of the property view.
+    */
+   click: function PropertyView_click()
+   {
+     // TODO: Animate opening/closing. See bug 587752.
+     if (!this.closed) {
+@@ -387,67 +391,109 @@ PropertyView.prototype = {
+       if (this.toggle) {
+         this.toggle.innerHTML = "&#x25B6;";
+       }
+       this.closed = true;
+       return;
+     }
+ 
+     if (!this.populated) {
+-      let data = {
+-        cssInfo: this.tree.cssLogic.getCssInfo(this.name),
+-
+-        statusText: function(aStatus) {
+-          return CssLogic.STATUS_NAMES[aStatus];
+-        },
+-
+-        selectorText: function(aSelector) {
+-          let result = aSelector;
+-          if (aSelector == "@element.style") {
+-            result = InspectorUI.cssHtmlTree.strings.
+-              GetStringFromName("style.elementSelector");
+-          }
+-          return result;
+-        },
+-
+-        specificityTitle: function(aRule)
+-        {
+-          let bundle = InspectorUI.cssHtmlTree.strings;
+-          let specificity = aRule.specificity;
+-
+-          let important = "";
+-          if (specificity.important) {
+-            important = bundle.GetStringFromName("style.property.important")
+-              + " ";
+-          }
+-
+-          let result = "";
+-          if (specificity.inline) {
+-            result = important;
+-          } else {
+-            result = bundle.formatStringFromName("style.rule.specificity",
+-              [important, specificity.ids, specificity.classes,
+-              specificity.tags], 4);
+-          }
+-
+-          return result;
+-        }
+-      };
+-      this.tree._template(this.tree.templateRules, this.element, data);
+-      this.populated = true;
++      this._populateTemplate();
+     }
+ 
+     this.element.style.display = "block";
+     if (this.toggle) {
+       this.toggle.innerHTML = "&#x25BC;";
+     }
+     this.closed = false;
+   },
+ 
+   /**
++   * Populate the property view template.
++   *
++   * @private
++   * @param {boolean} [showAll=false] Should the view include all rules? If not, 
++   * the number of unmatched rules will be limited to the number given by 
++   * {PropertyView.UNMATCHED_RULE_COUNT}.
++   * @returns {void}
++   */
++  _populateTemplate: function PropertyView_populateTemplate(showAll)
++  {
++    let data = {
++      statusText: function(aStatus) {
++        return CssLogic.STATUS_NAMES[aStatus];
++      },
++
++      selectorText: function(aSelector) {
++        let result = aSelector;
++        if (aSelector == "@element.style") {
++          result = InspectorUI.cssHtmlTree.strings.
++            GetStringFromName("style.elementSelector");
++        }
++        return result;
++      },
++
++      specificityTitle: function(aRule)
++      {
++        let bundle = InspectorUI.cssHtmlTree.strings;
++        let specificity = aRule.specificity;
++
++        let important = "";
++        if (specificity.important) {
++          important = bundle.GetStringFromName("style.property.important")
++            + " ";
++        }
++
++        let result = "";
++        if (specificity.inline) {
++          result = important;
++        } else {
++          result = bundle.formatStringFromName("style.rule.specificity",
++            [important, specificity.ids, specificity.classes,
++            specificity.tags], 4);
++        }
++
++        return result;
++      },
++
++      str: {
++      },
++    };
++
++    let cssInfo = this.tree.cssLogic.getCssInfo(this.name);
++
++    if (showAll ||
++      cssInfo.unmatchedRuleCount <= PropertyView.UNMATCHED_RULE_COUNT) {
++      data.rules = cssInfo.rules;
++      data.showMoreUnmatchedRules = false;
++
++    } else {
++      data.showMoreUnmatchedRules = true;
++
++      data.rules = cssInfo.rules.slice(0, cssInfo.ruleCount -
++        cssInfo.unmatchedRuleCount + PropertyView.UNMATCHED_RULE_COUNT);
++
++      data.str.showMoreUnmatchedRules = this.tree.strings.
++        formatStringFromName("style.rule.showMoreUnmatchedRules",
++        [cssInfo.unmatchedRuleCount - PropertyView.UNMATCHED_RULE_COUNT], 1);
++
++      let self = this;
++      data.showMoreUnmatchedRulesClick =
++        function showMoreUnmatchedRulesClick(aEvent)
++        {
++          aEvent.preventDefault();
++          self._populateTemplate(true);
++        };
++    }
++
++    this.tree._template(this.tree.templateRules, this.element, data);
++    this.populated = true;
++  },
++
++  /**
+    * Get the computed style for the current property.
+    *
+    * @returns {string} the computed style for the current property of the
+    * currently highlighted element.
+    */
+   get value() {
+     return this.tree.cssLogic.getCssInfo(this.name).value;
+   },
+diff --git a/browser/base/content/csshtmltree.xhtml b/browser/base/content/csshtmltree.xhtml
+--- a/browser/base/content/csshtmltree.xhtml
++++ b/browser/base/content/csshtmltree.xhtml
+@@ -203,28 +203,37 @@ To visually debug the templates without 
+       <table class="rules" save="${property.element}"></table>
+     </div>
+   </div>
+ 
+   <!--
+   Inside each property we have a list of rules that affect that property
+   templateRules needs data like this:
+   {
+-    cssInfo: ..., // from cssLogic.getCssInfo(property)
++    rules: ..., // from cssLogic.getCssInfo(property)
+     statusText: function(status) {}, // convert rule.status to readable text
++    specificityTitle: function(rule) {}, // determine the CSS rule specificity 
++    title to use for the given rule.
++    showMoreUnmatchedRules: true / false, // show a "more unmatched rules" link
++    showMoreUnmatchedRulesClick: function() {}, // click event handler for the 
++    "show more unmatched rules"
+   }
+   The table element is only there do the DOM doesn't muck with the tr
+   -->
+   <table id="templateRules">
+-    <tr foreach="rule in ${cssInfo.rules}">
++    <tr foreach="rule in ${rules}">
+       <td class="rule-text">${selectorText(rule.selector)} &#x2192;
+         ${rule.value}</td>
+       <td class="rule-specificity"
+         title="${specificityTitle(rule)}">${rule.specificity}</td>
+       <td><a target="_blank" href="view-source:${rule.href}"
+           class="link">${rule.source}</a></td>
+       <td class="rule-status">${statusText(rule.status)}</td>
+     </tr>
++    <tr if="${showMoreUnmatchedRules}" class="showMoreUnmatchedRules">
++      <td colspan="4"><a href="#" class="link"
++          onclick="${showMoreUnmatchedRulesClick}">${str.showMoreUnmatchedRules}</a></td>
++    </tr>
+   </table>
+ </div>
+ 
+ </body>
+ </html>
+diff --git a/browser/base/content/csslogic.js b/browser/base/content/csslogic.js
+--- a/browser/base/content/csslogic.js
++++ b/browser/base/content/csslogic.js
+@@ -421,16 +421,17 @@ function CssInfo(aCssLogic, aProperty)
+     this.value = aCssLogic._computedStyle.getPropertyValue(aProperty);
+   } else {
+     this.value = "";
+   }
+ 
+   this._matched = false;
+   this._localRules = false;
+   this._cssLogic = aCssLogic;
++  this._unmatchedRuleCount = 0;
+ };
+ 
+ CssInfo.prototype = {
+   /**
+    * ruleCount could be accessed through this.rules.length, however that means
+    * we need to have sorted them into the correct order, which could take time
+    * hence we have a separate accessor for the times when you just want to know
+    * how rules there are without getting access to the rule ordering.
+@@ -445,16 +446,35 @@ CssInfo.prototype = {
+     if (!this._localRules) {
+       this._findElementRules();
+     }
+ 
+     return this._rules.length;
+   },
+ 
+   /**
++   * Retrieve the number of unmatched rules.
++   * @returns {number} the number of unmatched rules.
++   */
++  get unmatchedRuleCount()
++  {
++    if (!this._rules) {
++      this._findRules();
++    }
++    if (!this._localRules) {
++      this._findElementRules();
++    }
++    if (!this._matched) {
++      this._markMatches();
++    }
++
++    return this._unmatchedRuleCount;
++  },
++
++  /**
+    * Accessor for a list of rules sorted by their applicability to the current
+    * element.
+    *
+    * @returns {array}
+    */
+   get rules()
+   {
+     if (!this._rules) {
+@@ -524,16 +544,17 @@ CssInfo.prototype = {
+       let rule = this._rules[r];
+ 
+       // Do we have a selector match?
+       if (rule.selector == "@element.style" ||
+         this._cssLogic.viewedElement.mozMatchesSelector(rule.selector)) {
+         rule.status = CssLogic.STATUS.MATCHED;
+       } else {
+         rule.status = CssLogic.STATUS.UNMATCHED;
++        this._unmatchedRuleCount++;
+       }
+     }
+ 
+     // TODO: Loop through UNMATCHED rules looking for an inherited match. See
+     // bug 585577.
+ 
+     // Sort the arrays by how well they match the given element.
+     this._rules.sort(function(aRule1, aRule2) {
+@@ -570,16 +591,18 @@ CssInfo.prototype = {
+         if (aRule.selector == "@element.style") {
+           removeRules.push(aIndex);
+         }
+       }, this);
+ 
+       removeRules.forEach(function (aIndex) {
+         this._rules.splice(aIndex, 1);
+       }, this);
++
++      this._unmatchedRuleCount = 0;
+     }
+ 
+     this._matched = false;
+     this._localRules = false;
+   },
+ 
+   toString: function CssInfo_toString()
+   {
+diff --git a/browser/locales/en-US/chrome/browser/inspector.properties b/browser/locales/en-US/chrome/browser/inspector.properties
+--- a/browser/locales/en-US/chrome/browser/inspector.properties
++++ b/browser/locales/en-US/chrome/browser/inspector.properties
+@@ -90,14 +90,23 @@ style.rule.sourceElement=element
+ # LOCALIZATION NOTE (style.rule.specificity): This is used inside
+ # the Style panel of the Inspector tool. Each style property is inside a rule. A
+ # rule is a selector that can match (or not) the highlighted element in the web
+ # page. The rule selector can have its specificity calculated based on the
+ # number of IDs, tags, and classes that it tries to match. This string is
+ # displayed when the user hover the specificity score column.
+ style.rule.specificity=%1$S%2$S ID(s), %3$S class(es), %4$S tag(s).
+ 
++# LOCALIZATION NOTE (style.rule.specificity): This is used inside
++# the Style panel of the Inspector tool. Each style property is inside a rule. A
++# rule is a selector that can match (or not) the highlighted element in the web
++# page. The property view shows only a few of the unmatched rules. If the user 
++# wants to see all of the unmatched rules, he/she must click the link displayed 
++# at the bottom of the rules table. That link shows how many rules are not 
++# displayed. This is the string used when the link is generated.
++style.rule.showMoreUnmatchedRules=%1$S more rules...
++
+ # LOCALIZATION NOTE (style.property.numberOfRulesSingular): This is used inside
+ # the Style panel of the Inspector tool. For each property the panel shows
+ # the rule with its selector. Rules can come from element.style. In this case,
+ # one can translate element.style to the local language.
+ style.elementSelector=element.style
+ 

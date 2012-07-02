@@ -1,0 +1,527 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1333217753 -10800
+# Node ID 67fd700da1cab870f4e094b7776fd77bc8a5eaba
+# Parent  51e463e400d0b06e6c36d91ec41b71386868f5ed
+Bug 734641 - Intermittent mochitest-browser-chrome browser/devtools/debugger/test/browser_dbg_bug723069_editor-breakpoints.js | The correct script was loaded initially. - Didn't expect -1, but got it
+
+diff --git a/browser/devtools/debugger/DebuggerUI.jsm b/browser/devtools/debugger/DebuggerUI.jsm
+--- a/browser/devtools/debugger/DebuggerUI.jsm
++++ b/browser/devtools/debugger/DebuggerUI.jsm
+@@ -487,30 +487,31 @@ DebuggerUI.prototype = {
+    * local file.
+    * XXX: it may be better to use nsITraceableChannel to get to the sources
+    * without relying on caching when we can (not for eval, etc.):
+    * http://www.softwareishard.com/blog/firebug/nsitraceablechannel-intercept-http-traffic/
+    */
+   _onLoadSource: function DebuggerUI__onLoadSource(aEvent) {
+     let gBrowser = this.aWindow.gBrowser;
+ 
+-    let url = aEvent.detail;
++    let url = aEvent.detail.url;
++    let showOptions = aEvent.detail.options;
+     let scheme = Services.io.extractScheme(url);
+     switch (scheme) {
+       case "file":
+       case "chrome":
+       case "resource":
+         try {
+           NetUtil.asyncFetch(url, function onFetch(aStream, aStatus) {
+             if (!Components.isSuccessCode(aStatus)) {
+               return this.logError(url, aStatus);
+             }
+             let source = NetUtil.readInputStreamToString(aStream, aStream.available());
+             aStream.close();
+-            this._onSourceLoaded(url, source);
++            this._onSourceLoaded(url, source, showOptions);
+           }.bind(this));
+         } catch (ex) {
+           return this.logError(url, ex.name);
+         }
+         break;
+ 
+       default:
+         let channel = Services.io.newChannel(url, null, null);
+@@ -524,17 +525,18 @@ DebuggerUI.prototype = {
+           onDataAvailable: function (aRequest, aContext, aStream, aOffset, aCount) {
+             chunks.push(NetUtil.readInputStreamToString(aStream, aCount));
+           },
+           onStopRequest: function (aRequest, aContext, aStatusCode) {
+             if (!Components.isSuccessCode(aStatusCode)) {
+               return this.logError(url, aStatusCode);
+             }
+ 
+-            this._onSourceLoaded(url, chunks.join(""), channel.contentType);
++            this._onSourceLoaded(url, chunks.join(""), channel.contentType,
++                                 showOptions);
+           }.bind(this)
+         };
+ 
+         channel.loadFlags = channel.LOAD_FROM_CACHE;
+         channel.asyncOpen(streamListener, null);
+         break;
+     }
+   },
+@@ -550,40 +552,43 @@ DebuggerUI.prototype = {
+   logError: function DebuggerUI_logError(aUrl, aStatus) {
+     let view = this.getDebugger(gBrowser.selectedTab).DebuggerView;
+     Components.utils.reportError(view.getFormatStr("loadingError", [ aUrl, aStatus ]));
+   },
+ 
+   /**
+    * Called when source has been loaded.
+    *
++   * @private
+    * @param string aSourceUrl
+    *        The URL of the source script.
+    * @param string aSourceText
+    *        The text of the source script.
+    * @param string aContentType
+    *        The content type of the source script.
++   * @param object [aOptions]
++   *        Additional options for showing the script (optional). Supported
++   *        options:
++   *        - targetLine: place the editor at the given line number.
+    */
+   _onSourceLoaded: function DebuggerUI__onSourceLoaded(aSourceUrl,
+                                                        aSourceText,
+-                                                       aContentType) {
++                                                       aContentType,
++                                                       aOptions) {
+     let dbg = this.getDebugger(this.aWindow.gBrowser.selectedTab);
+-    dbg.debuggerWindow.SourceScripts.setEditorMode(aSourceUrl, aContentType);
+-    dbg.editor.setText(aSourceText);
+-    dbg.editor.resetUndo();
+     let doc = dbg.frame.contentDocument;
+     let scripts = doc.getElementById("scripts");
+     let elt = scripts.getElementsByAttribute("value", aSourceUrl)[0];
+     let script = elt.getUserData("sourceScript");
+     script.loaded = true;
+     script.text = aSourceText;
+     script.contentType = aContentType;
+     elt.setUserData("sourceScript", script, null);
+-    dbg._updateEditorBreakpoints();
+-    dbg.debuggerWindow.StackFrames.updateEditor();
++
++    dbg.debuggerWindow.SourceScripts._onShowScript(script, aOptions);
+   }
+ };
+ 
+ /**
+  * Various debugger UI preferences (currently just the pane height).
+  */
+ let DebuggerUIPreferences = {
+ 
+diff --git a/browser/devtools/debugger/debugger.js b/browser/devtools/debugger/debugger.js
+--- a/browser/devtools/debugger/debugger.js
++++ b/browser/devtools/debugger/debugger.js
+@@ -267,23 +267,23 @@ var StackFrames = {
+     if (aDepth !== null) {
+       DebuggerView.Stackframes.highlightFrame(this.selectedFrame, true);
+     }
+ 
+     let frame = this.activeThread.cachedFrames[aDepth];
+     if (!frame) {
+       return;
+     }
++
+     // Move the editor's caret to the proper line.
+     if (DebuggerView.Scripts.isSelected(frame.where.url) && frame.where.line) {
+       window.editor.setCaretPosition(frame.where.line - 1);
+       window.editor.setDebugLocation(frame.where.line - 1);
+     } else if (DebuggerView.Scripts.contains(frame.where.url)) {
+       DebuggerView.Scripts.selectScript(frame.where.url);
+-      SourceScripts.onChange({ target: DebuggerView.Scripts._scripts });
+       window.editor.setCaretPosition(frame.where.line - 1);
+     } else {
+       window.editor.setDebugLocation(-1);
+     }
+ 
+     // Display the local variables.
+     let localScope = DebuggerView.Properties.localScope;
+     localScope.empty();
+@@ -518,18 +518,17 @@ var SourceScripts = {
+    * Handler for changes on the selected source script.
+    */
+   onChange: function SS_onChange(aEvent) {
+     let scripts = aEvent.target;
+     if (!scripts.selectedItem) {
+       return;
+     }
+     let script = scripts.selectedItem.getUserData("sourceScript");
+-    this.setEditorMode(script.url, script.contentType);
+-    this._showScript(script);
++    this.showScript(script);
+   },
+ 
+   /**
+    * Sets the proper editor mode (JS or HTML) according to the specified
+    * content type, or by determining the type from the URL.
+    *
+    * @param string aUrl
+    *        The script URL.
+@@ -623,38 +622,74 @@ var SourceScripts = {
+   /**
+    * Add the specified script to the list and display it in the editor if the
+    * editor is empty.
+    */
+   _addScript: function SS_addScript(aScript) {
+     DebuggerView.Scripts.addScript(this._getScriptLabel(aScript.url), aScript);
+ 
+     if (window.editor.getCharCount() == 0) {
+-      this._showScript(aScript);
++      this.showScript(aScript);
+     }
+   },
+ 
+   /**
+    * Load the editor with the script text if available, otherwise fire an event
+    * to load and display the script text.
++   *
++   * @param object aScript
++   *        The script object coming from the active thread.
++   * @param object [aOptions]
++   *        Additional options for showing the script (optional). Supported
++   *        options:
++   *        - targetLine: place the editor at the given line number.
+    */
+-  _showScript: function SS_showScript(aScript) {
++  showScript: function SS_showScript(aScript, aOptions) {
+     if (!aScript.loaded) {
+       // Notify the chrome code that we need to load a script file.
+       var evt = document.createEvent("CustomEvent");
+-      evt.initCustomEvent("Debugger:LoadSource", true, false, aScript.url);
++      evt.initCustomEvent("Debugger:LoadSource", true, false,
++                          {url: aScript.url, options: aOptions});
+       document.documentElement.dispatchEvent(evt);
++      window.editor.setMode(SourceEditor.MODES.TEXT);
+       window.editor.setText(DebuggerView.getStr("loadingText"));
++      window.editor.resetUndo();
+     } else {
+-      window.editor.setText(aScript.text);
+-      window.updateEditorBreakpoints();
+-      StackFrames.updateEditor();
++      this._onShowScript(aScript, aOptions);
++    }
++  },
++
++  /**
++   * Display the script source once it loads.
++   *
++   * @private
++   * @param object aScript
++   *        The script object coming from the active thread.
++   * @param object [aOptions]
++   *        Additional options for showing the script (optional). Supported
++   *        options:
++   *        - targetLine: place the editor at the given line number.
++   */
++  _onShowScript: function SS__onShowScript(aScript, aOptions) {
++    aOptions = aOptions || {};
++    this.setEditorMode(aScript.url, aScript.contentType);
++    window.editor.setText(aScript.text);
++    window.updateEditorBreakpoints();
++    StackFrames.updateEditor();
++    if (aOptions.targetLine) {
++      window.editor.setCaretPosition(aOptions.targetLine - 1);
+     }
+     window.editor.resetUndo();
+-  }
++
++    // Notify the chrome code that we shown script file.
++    let evt = document.createEvent("CustomEvent");
++    evt.initCustomEvent("Debugger:ScriptShown", true, false,
++                        {url: aScript.url});
++    document.documentElement.dispatchEvent(evt);
++  },
+ };
+ 
+ SourceScripts.onScripts = SourceScripts.onScripts.bind(SourceScripts);
+ SourceScripts.onNewScript = SourceScripts.onNewScript.bind(SourceScripts);
+ SourceScripts.onScriptsCleared = SourceScripts.onScriptsCleared.bind(SourceScripts);
+ SourceScripts.onChange = SourceScripts.onChange.bind(SourceScripts);
+ 
+ window.addEventListener("DOMContentLoaded", initDebugger, false);
+diff --git a/browser/devtools/debugger/test/browser_dbg_bug723069_editor-breakpoints.js b/browser/devtools/debugger/test/browser_dbg_bug723069_editor-breakpoints.js
+--- a/browser/devtools/debugger/test/browser_dbg_bug723069_editor-breakpoints.js
++++ b/browser/devtools/debugger/test/browser_dbg_bug723069_editor-breakpoints.js
+@@ -16,53 +16,70 @@ let gScripts = null;
+ let gEditor = null;
+ let gBreakpoints = null;
+ 
+ function test()
+ {
+   let tempScope = {};
+   Cu.import("resource:///modules/source-editor.jsm", tempScope);
+   let SourceEditor = tempScope.SourceEditor;
++  let scriptShown = false;
++  let framesAdded = false;
+ 
+   debug_tab_pane(TAB_URL, function(aTab, aDebuggee, aPane) {
+     gTab = aTab;
+     gDebuggee = aDebuggee;
+     gPane = aPane;
+     gDebugger = gPane.debuggerWindow;
++    gPane.activeThread.addOneTimeListener("framesadded", function() {
++      framesAdded = true;
++      runTest();
++    });
+ 
+-    gPane.activeThread.addOneTimeListener("framesadded", function() {
+-      Services.tm.currentThread.dispatch({ run: onScriptsAdded }, 0);
+-    });
+     gDebuggee.firstCall();
+   });
+ 
+-  function onScriptsAdded()
++  window.addEventListener("Debugger:ScriptShown", function _onEvent(aEvent) {
++    let url = aEvent.detail.url;
++    if (url.indexOf("-02.js") != -1) {
++      scriptShown = true;
++      window.removeEventListener(aEvent.type, _onEvent);
++      runTest();
++    }
++  });
++
++  function runTest()
++  {
++    if (scriptShown && framesAdded) {
++      Services.tm.currentThread.dispatch({ run: onScriptShown }, 0);
++    }
++  }
++
++  function onScriptShown()
+   {
+     gScripts = gDebugger.DebuggerView.Scripts;
+ 
+     is(gDebugger.StackFrames.activeThread.state, "paused",
+       "Should only be getting stack frames while paused.");
+ 
+     is(gScripts._scripts.itemCount, 2, "Found the expected number of scripts.");
+ 
+     gEditor = gDebugger.editor;
+ 
+     isnot(gEditor.getText().indexOf("debugger"), -1,
+           "The correct script was loaded initially.");
+     isnot(gScripts.selected, gScripts.scriptLocations()[0],
+-          "the correct sccript is selected");
++          "the correct script is selected");
+ 
+     gBreakpoints = gPane.breakpoints;
+     is(Object.keys(gBreakpoints), 0, "no breakpoints");
+     ok(!gPane.getBreakpoint("foo", 3), "getBreakpoint('foo', 3) returns falsey");
+ 
+     is(gEditor.getBreakpoints().length, 0, "no breakpoints in the editor");
+ 
+-
+-    info("add the first breakpoint");
+     gEditor.addEventListener(SourceEditor.EVENTS.BREAKPOINT_CHANGE,
+                              onEditorBreakpointAddFirst);
+     let location = {url: gScripts.selected, line: 6};
+     executeSoon(function() {
+       gPane.addBreakpoint(location, onBreakpointAddFirst);
+     });
+   }
+ 
+diff --git a/browser/devtools/debugger/test/browser_dbg_bug731394_editor-contextmenu.js b/browser/devtools/debugger/test/browser_dbg_bug731394_editor-contextmenu.js
+--- a/browser/devtools/debugger/test/browser_dbg_bug731394_editor-contextmenu.js
++++ b/browser/devtools/debugger/test/browser_dbg_bug731394_editor-contextmenu.js
+@@ -14,30 +14,49 @@ let gDebugger = null;
+ 
+ function test()
+ {
+   let tempScope = {};
+   Cu.import("resource:///modules/source-editor.jsm", tempScope);
+   let SourceEditor = tempScope.SourceEditor;
+ 
+   let contextMenu = null;
++  let scriptShown = false;
++  let framesAdded = false;
+ 
+   debug_tab_pane(TAB_URL, function(aTab, aDebuggee, aPane) {
+     gTab = aTab;
+     gDebuggee = aDebuggee;
+     gPane = aPane;
+     gDebugger = gPane.debuggerWindow;
+ 
+     gPane.activeThread.addOneTimeListener("framesadded", function() {
+-      Services.tm.currentThread.dispatch({ run: onScriptsAdded }, 0);
++      framesAdded = true;
++      runTest();
+     });
+     gDebuggee.firstCall();
+   });
+ 
+-  function onScriptsAdded()
++  window.addEventListener("Debugger:ScriptShown", function _onEvent(aEvent) {
++    let url = aEvent.detail.url;
++    if (url.indexOf("-02.js") != -1) {
++      scriptShown = true;
++      window.removeEventListener(aEvent.type, _onEvent);
++      runTest();
++    }
++  });
++
++  function runTest()
++  {
++    if (scriptShown && framesAdded) {
++      Services.tm.currentThread.dispatch({ run: onScriptShown }, 0);
++    }
++  }
++
++  function onScriptShown()
+   {
+     let scripts = gDebugger.DebuggerView.Scripts._scripts;
+ 
+     is(gDebugger.StackFrames.activeThread.state, "paused",
+       "Should only be getting stack frames while paused.");
+ 
+     is(scripts.itemCount, 2, "Found the expected number of scripts.");
+ 
+diff --git a/browser/devtools/debugger/test/browser_dbg_stack-05.js b/browser/devtools/debugger/test/browser_dbg_stack-05.js
+--- a/browser/devtools/debugger/test/browser_dbg_stack-05.js
++++ b/browser/devtools/debugger/test/browser_dbg_stack-05.js
+@@ -10,82 +10,101 @@
+ const TAB_URL = EXAMPLE_URL + "browser_dbg_script-switching.html";
+ 
+ var gPane = null;
+ var gTab = null;
+ var gDebuggee = null;
+ var gDebugger = null;
+ 
+ function test() {
++  let scriptShown = false;
++  let framesAdded = false;
++
+   debug_tab_pane(TAB_URL, function(aTab, aDebuggee, aPane) {
+     gTab = aTab;
+     gDebuggee = aDebuggee;
+     gPane = aPane;
+     gDebugger = gPane.debuggerWindow;
+ 
+-    testRecurse();
++    gPane.activeThread.addOneTimeListener("framesadded", function() {
++      framesAdded = true;
++      runTest();
++    });
++
++    gDebuggee.firstCall();
+   });
++
++  window.addEventListener("Debugger:ScriptShown", function _onEvent(aEvent) {
++    let url = aEvent.detail.url;
++    if (url.indexOf("-02.js") != -1) {
++      scriptShown = true;
++      window.removeEventListener(aEvent.type, _onEvent);
++      runTest();
++    }
++  });
++
++  function runTest()
++  {
++    if (scriptShown && framesAdded) {
++      Services.tm.currentThread.dispatch({ run: testRecurse }, 0);
++    }
++  }
+ }
+ 
+-function testRecurse() {
+-  gPane.activeThread.addOneTimeListener("framesadded", function() {
+-    Services.tm.currentThread.dispatch({ run: function() {
+-      let frames = gDebugger.DebuggerView.Stackframes._frames;
+-      let childNodes = frames.childNodes;
++function testRecurse()
++{
++  let frames = gDebugger.DebuggerView.Stackframes._frames;
++  let childNodes = frames.childNodes;
+ 
+-      is(frames.querySelectorAll(".dbg-stackframe").length, 4,
+-        "Correct number of frames.");
++  is(frames.querySelectorAll(".dbg-stackframe").length, 4,
++    "Correct number of frames.");
+ 
+-      is(childNodes.length, frames.querySelectorAll(".dbg-stackframe").length,
+-        "All children should be frames.");
++  is(childNodes.length, frames.querySelectorAll(".dbg-stackframe").length,
++    "All children should be frames.");
+ 
+-      ok(frames.querySelector("#stackframe-0").classList.contains("selected"),
+-        "First frame should be selected by default.");
++  ok(frames.querySelector("#stackframe-0").classList.contains("selected"),
++    "First frame should be selected by default.");
+ 
+-      ok(!frames.querySelector("#stackframe-2").classList.contains("selected"),
+-        "Third frame should not be selected.");
++  ok(!frames.querySelector("#stackframe-2").classList.contains("selected"),
++    "Third frame should not be selected.");
+ 
+-      is(gDebugger.editor.getDebugLocation(), 5,
+-         "editor debugger location is correct.");
++  is(gDebugger.editor.getDebugLocation(), 5,
++     "editor debugger location is correct.");
+ 
+-      EventUtils.sendMouseEvent({ type: "click" },
+-        frames.querySelector("#stackframe-2"),
+-        gDebugger);
++  EventUtils.sendMouseEvent({ type: "click" },
++    frames.querySelector("#stackframe-2"),
++    gDebugger);
+ 
+-      ok(!frames.querySelector("#stackframe-0").classList.contains("selected"),
+-         "First frame should not be selected after click.");
++  ok(!frames.querySelector("#stackframe-0").classList.contains("selected"),
++     "First frame should not be selected after click.");
+ 
+-      ok(frames.querySelector("#stackframe-2").classList.contains("selected"),
+-         "Third frame should be selected after click.");
++  ok(frames.querySelector("#stackframe-2").classList.contains("selected"),
++     "Third frame should be selected after click.");
+ 
+-      is(gDebugger.editor.getDebugLocation(), 4,
+-         "editor debugger location is correct after click.");
++  is(gDebugger.editor.getDebugLocation(), 4,
++     "editor debugger location is correct after click.");
+ 
+-      EventUtils.sendMouseEvent({ type: "click" },
+-        frames.querySelector("#stackframe-0 .dbg-stackframe-name"),
+-        gDebugger);
++  EventUtils.sendMouseEvent({ type: "click" },
++    frames.querySelector("#stackframe-0 .dbg-stackframe-name"),
++    gDebugger);
+ 
+-      ok(frames.querySelector("#stackframe-0").classList.contains("selected"),
+-         "First frame should be selected after click inside the first frame.");
++  ok(frames.querySelector("#stackframe-0").classList.contains("selected"),
++     "First frame should be selected after click inside the first frame.");
+ 
+-      ok(!frames.querySelector("#stackframe-2").classList.contains("selected"),
+-         "Third frame should not be selected after click inside the first frame.");
++  ok(!frames.querySelector("#stackframe-2").classList.contains("selected"),
++     "Third frame should not be selected after click inside the first frame.");
+ 
+-      is(gDebugger.editor.getDebugLocation(), 5,
+-         "editor debugger location is correct (frame 0 again).");
++  is(gDebugger.editor.getDebugLocation(), 5,
++     "editor debugger location is correct (frame 0 again).");
+ 
+-      gDebugger.StackFrames.activeThread.resume(function() {
+-        is(gDebugger.editor.getDebugLocation(), -1,
+-           "editor debugger location is correct after resume.");
+-        closeDebuggerAndFinish(gTab);
+-      });
+-    }}, 0);
++  gDebugger.StackFrames.activeThread.resume(function() {
++    is(gDebugger.editor.getDebugLocation(), -1,
++       "editor debugger location is correct after resume.");
++    closeDebuggerAndFinish(gTab);
+   });
+-
+-  gDebuggee.firstCall();
+ }
+ 
+ registerCleanupFunction(function() {
+   removeTab(gTab);
+   gPane = null;
+   gTab = null;
+   gDebuggee = null;
+   gDebugger = null;

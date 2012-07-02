@@ -1,0 +1,427 @@
+# HG changeset patch
+# Parent aad447152159a2bbc19766b50abc248cc09fe52b
+# Date 1311186673 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+
+Bug 670896 - Part 6 - nsEventSource, nsWebSocket, nsJSEnvironemnt and others
+
+diff --git a/content/base/src/nsEventSource.cpp b/content/base/src/nsEventSource.cpp
+--- a/content/base/src/nsEventSource.cpp
++++ b/content/base/src/nsEventSource.cpp
+@@ -79,17 +79,18 @@ using namespace mozilla;
+ nsEventSource::nsEventSource() :
+   mStatus(PARSE_STATE_OFF),
+   mFrozen(PR_FALSE),
+   mErrorLoadOnRedirect(PR_FALSE),
+   mGoingToDispatchAllMessages(PR_FALSE),
+   mLastConvertionResult(NS_OK),
+   mReadyState(nsIEventSource::CONNECTING),
+   mScriptLine(0),
+-  mWindowID(0)
++  mWindowID(0),
++  mInnerWindowID(0)
+ {
+ }
+ 
+ nsEventSource::~nsEventSource()
+ {
+   Close();
+ 
+   if (mListenerManager) {
+@@ -248,16 +249,17 @@ nsEventSource::Init(nsIPrincipal* aPrinc
+   JSContext* cx = nsnull;
+   if (stack && NS_SUCCEEDED(stack->Peek(&cx)) && cx) {
+     const char *filename;
+     if (nsJSUtils::GetCallingLocation(cx, &filename, &mScriptLine)) {
+       mScriptFile.AssignASCII(filename);
+     }
+ 
+     mWindowID = nsJSUtils::GetCurrentlyRunningCodeWindowID(cx);
++    mInnerWindowID = nsJSUtils::GetCurrentlyRunningCodeInnerWindowID(cx);
+   }
+ 
+   // Get the load group for the page. When requesting we'll add ourselves to it.
+   // This way any pending requests will be automatically aborted if the user
+   // leaves the page.
+   if (mScriptContext) {
+     nsCOMPtr<nsIDocument> doc =
+       nsContentUtils::GetDocumentFromScriptContext(mScriptContext);
+@@ -1066,17 +1068,17 @@ nsEventSource::PrintErrorOnConsole(const
+   }
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   errObj->InitWithWindowID(message.get(),
+                            mScriptFile.get(),
+                            nsnull,
+                            mScriptLine, 0,
+                            nsIScriptError::errorFlag,
+-                           "Event Source", mWindowID);
++                           "Event Source", mWindowID, mInnerWindowID);
+ 
+   // print the error message directly to the JS console
+   nsCOMPtr<nsIScriptError> logError = do_QueryInterface(errObj);
+   rv = console->LogMessage(logError);
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   return NS_OK;
+ }
+diff --git a/content/base/src/nsEventSource.h b/content/base/src/nsEventSource.h
+--- a/content/base/src/nsEventSource.h
++++ b/content/base/src/nsEventSource.h
+@@ -247,21 +247,22 @@ protected:
+ 
+   PRUint32 mRedirectFlags;
+   nsCOMPtr<nsIAsyncVerifyRedirectCallback> mRedirectCallback;
+   nsCOMPtr<nsIChannel> mNewRedirectChannel;
+ 
+   // Event Source owner information:
+   // - the script file name
+   // - source code line number where the Event Source object was constructed.
+-  // - the window ID of the outer window where the script lives. Note that this
+-  // may not be the same as the Event Source owner window.
++  // - the IDs of the outer and inner windows where the script lives. Note that
++  //   this may not be the same as the Event Source owner window.
+   // These attributes are used for error reporting.
+   nsString mScriptFile;
+   PRUint32 mScriptLine;
+   PRUint64 mWindowID;
++  PRUint64 mInnerWindowID;
+ 
+ private:
+   nsEventSource(const nsEventSource& x);   // prevent bad usage
+   nsEventSource& operator=(const nsEventSource& x);
+ };
+ 
+ #endif // nsEventSource_h__
+diff --git a/content/base/src/nsWebSocket.cpp b/content/base/src/nsWebSocket.cpp
+--- a/content/base/src/nsWebSocket.cpp
++++ b/content/base/src/nsWebSocket.cpp
+@@ -346,17 +346,17 @@ nsWebSocketEstablishedConnection::PrintE
+   }
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   errorObject->InitWithWindowID
+     (message.get(),
+      NS_ConvertUTF8toUTF16(mOwner->GetScriptFile()).get(),
+      nsnull,
+      mOwner->GetScriptLine(), 0, nsIScriptError::errorFlag,
+-     "Web Socket", mOwner->WindowID()
++     "Web Socket", mOwner->WindowID(), mOwner->InnerWindowID()
+      );
+   
+   // print the error message directly to the JS console
+   nsCOMPtr<nsIScriptError> logError(do_QueryInterface(errorObject));
+   rv = console->LogMessage(logError);
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   return NS_OK;
+@@ -608,17 +608,18 @@ nsWebSocketEstablishedConnection::GetInt
+ ////////////////////////////////////////////////////////////////////////////////
+ 
+ nsWebSocket::nsWebSocket() : mKeepingAlive(PR_FALSE),
+                              mCheckMustKeepAlive(PR_TRUE),
+                              mTriggeredCloseEvent(PR_FALSE),
+                              mReadyState(nsIWebSocket::CONNECTING),
+                              mOutgoingBufferedAmount(0),
+                              mScriptLine(0),
+-                             mWindowID(0)
++                             mWindowID(0),
++                             mInnerWindowID(0)
+ {
+   NS_ABORT_IF_FALSE(NS_IsMainThread(), "Not running on main thread");
+ }
+ 
+ nsWebSocket::~nsWebSocket()
+ {
+   NS_ABORT_IF_FALSE(NS_IsMainThread(), "Not running on main thread");
+   if (mConnection) {
+@@ -1340,16 +1341,17 @@ nsWebSocket::Init(nsIPrincipal* aPrincip
+ 
+       jsbytecode *pc = JS_GetFramePC(cx, fp);
+       if (script && pc) {
+         mScriptLine = JS_PCToLineNumber(cx, script, pc);
+       }
+     }
+ 
+     mWindowID = nsJSUtils::GetCurrentlyRunningCodeWindowID(cx);
++    mInnerWindowID = nsJSUtils::GetCurrentlyRunningCodeInnerWindowID(cx);
+   }
+ 
+   // parses the url
+   rv = ParseURL(PromiseFlatString(aURL));
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   // Don't allow https:// to open ws://
+   nsCOMPtr<nsIURI> originURI;
+diff --git a/content/base/src/nsWebSocket.h b/content/base/src/nsWebSocket.h
+--- a/content/base/src/nsWebSocket.h
++++ b/content/base/src/nsWebSocket.h
+@@ -94,16 +94,17 @@ public:
+   NS_IMETHOD RemoveEventListener(const nsAString& aType,
+                                  nsIDOMEventListener* aListener,
+                                  PRBool aUseCapture);
+ 
+   // Determine if preferences allow WebSocket
+   static PRBool PrefEnabled();
+ 
+   const PRUint64 WindowID() const { return mWindowID; }
++  const PRUint64 InnerWindowID() const { return mInnerWindowID; }
+   const nsCString& GetScriptFile() const { return mScriptFile; }
+   const PRUint32 GetScriptLine() const { return mScriptLine; }
+ 
+ protected:
+   nsresult ParseURL(const nsString& aURL);
+   nsresult SetProtocol(const nsString& aProtocol);
+   nsresult EstablishConnection();
+ 
+@@ -151,21 +152,22 @@ protected:
+   nsRefPtr<nsWebSocketEstablishedConnection> mConnection;
+   PRUint32 mOutgoingBufferedAmount; // actually, we get this value from
+                                     // mConnection when we are connected,
+                                     // but we need this one after disconnecting.
+ 
+   // Web Socket owner information:
+   // - the script file name, UTF8 encoded.
+   // - source code line number where the Web Socket object was constructed.
+-  // - the window ID of the outer window where the script lives. Note that this 
+-  // may not be the same as the Web Socket owner window.
++  // - the IDs of the outer and inner windows where the script lives. Note that
++  //   this may not be the same as the Web Socket owner window.
+   // These attributes are used for error reporting.
+   nsCString mScriptFile;
+   PRUint32 mScriptLine;
+   PRUint64 mWindowID;
++  PRUint64 mInnerWindowID;
+ 
+ private:
+   nsWebSocket(const nsWebSocket& x);   // prevent bad usage
+   nsWebSocket& operator=(const nsWebSocket& x);
+ };
+ 
+ #endif
+diff --git a/content/xml/document/src/nsXMLDocument.cpp b/content/xml/document/src/nsXMLDocument.cpp
+--- a/content/xml/document/src/nsXMLDocument.cpp
++++ b/content/xml/document/src/nsXMLDocument.cpp
+@@ -380,17 +380,20 @@ nsXMLDocument::Load(const nsAString& aUr
+           do_CreateInstance(NS_SCRIPTERROR_CONTRACTID, &rv);
+       NS_ENSURE_SUCCESS(rv, rv);
+ 
+       rv = errorObject->InitWithWindowID(error.get(), NS_ConvertUTF8toUTF16(spec).get(),
+                                          nsnull, 0, 0, nsIScriptError::warningFlag,
+                                          "DOM",
+                                          callingDoc ?
+                                            callingDoc->OuterWindowID() :
+-                                           this->OuterWindowID());
++                                           this->OuterWindowID(),
++                                         callingDoc ?
++                                           callingDoc->InnerWindowID() :
++                                           this->InnerWindowID());
+ 
+       NS_ENSURE_SUCCESS(rv, rv);
+ 
+       nsCOMPtr<nsIConsoleService> consoleService =
+         do_GetService(NS_CONSOLESERVICE_CONTRACTID);
+       nsCOMPtr<nsIScriptError> logError = do_QueryInterface(errorObject);
+       if (consoleService && logError) {
+         consoleService->LogMessage(logError);
+diff --git a/dom/base/nsDOMClassInfo.cpp b/dom/base/nsDOMClassInfo.cpp
+--- a/dom/base/nsDOMClassInfo.cpp
++++ b/dom/base/nsDOMClassInfo.cpp
+@@ -1775,17 +1775,18 @@ PrintWarningOnConsole(JSContext *cx, con
+ 
+   nsresult rv = scriptError->InitWithWindowID(msg.get(),
+                                               sourcefile.get(),
+                                               EmptyString().get(),
+                                               lineno,
+                                               0, // column for error is not available
+                                               nsIScriptError::warningFlag,
+                                               "DOM:HTML",
+-                                              nsJSUtils::GetCurrentlyRunningCodeWindowID(cx));
++                                              nsJSUtils::GetCurrentlyRunningCodeWindowID(cx),
++                                              nsJSUtils::GetCurrentlyRunningCodeInnerWindowID(cx));
+ 
+   if (NS_SUCCEEDED(rv)){
+     nsCOMPtr<nsIScriptError> logError = do_QueryInterface(scriptError);
+     consoleService->LogMessage(logError);
+   }
+ }
+ 
+ static inline JSString *
+diff --git a/dom/base/nsJSEnvironment.cpp b/dom/base/nsJSEnvironment.cpp
+--- a/dom/base/nsJSEnvironment.cpp
++++ b/dom/base/nsJSEnvironment.cpp
+@@ -272,21 +272,22 @@ class ScriptErrorEvent : public nsRunnab
+ {
+ public:
+   ScriptErrorEvent(nsIScriptGlobalObject* aScriptGlobal,
+                    PRUint32 aLineNr, PRUint32 aColumn, PRUint32 aFlags,
+                    const nsAString& aErrorMsg,
+                    const nsAString& aFileName,
+                    const nsAString& aSourceLine,
+                    PRBool aDispatchEvent,
+-                   PRUint64 aWindowID)
++                   PRUint64 aWindowID,
++                   PRUint64 aInnerWindowID)
+   : mScriptGlobal(aScriptGlobal), mLineNr(aLineNr), mColumn(aColumn),
+     mFlags(aFlags), mErrorMsg(aErrorMsg), mFileName(aFileName),
+     mSourceLine(aSourceLine), mDispatchEvent(aDispatchEvent),
+-    mWindowID(aWindowID)
++    mWindowID(aWindowID), mInnerWindowID(aInnerWindowID)
+   {}
+ 
+   NS_IMETHOD Run()
+   {
+     nsEventStatus status = nsEventStatus_eIgnore;
+     // First, notify the DOM that we have a script error.
+     if (mDispatchEvent) {
+       nsCOMPtr<nsPIDOMWindow> win(do_QueryInterface(mScriptGlobal));
+@@ -369,17 +370,17 @@ public:
+           ? "chrome javascript"
+           : "content javascript";
+ 
+         nsCOMPtr<nsIScriptError2> error2(do_QueryInterface(errorObject));
+         if (error2) {
+           rv = error2->InitWithWindowID(mErrorMsg.get(), mFileName.get(),
+                                         mSourceLine.get(),
+                                         mLineNr, mColumn, mFlags,
+-                                        category, mWindowID);
++                                        category, mWindowID, mInnerWindowID);
+         } else {
+           rv = errorObject->Init(mErrorMsg.get(), mFileName.get(),
+                                  mSourceLine.get(),
+                                  mLineNr, mColumn, mFlags,
+                                  category);
+         }
+ 
+         if (NS_SUCCEEDED(rv)) {
+@@ -399,16 +400,17 @@ public:
+   PRUint32                        mLineNr;
+   PRUint32                        mColumn;
+   PRUint32                        mFlags;
+   nsString                        mErrorMsg;
+   nsString                        mFileName;
+   nsString                        mSourceLine;
+   PRBool                          mDispatchEvent;
+   PRUint64                        mWindowID;
++  PRUint64                        mInnerWindowID;
+ 
+   static PRBool sHandlingScriptError;
+ };
+ 
+ PRBool ScriptErrorEvent::sHandlingScriptError = PR_FALSE;
+ 
+ // NOTE: This function could be refactored to use the above.  The only reason
+ // it has not been done is that the code below only fills the error event
+@@ -479,23 +481,31 @@ NS_ScriptErrorReporter(JSContext *cx,
+        * event because the dom event handler would encounter
+        * an OOM exception trying to process the event, and
+        * then we'd need to generate a new OOM event for that
+        * new OOM instance -- this isn't pretty.
+        */
+       nsAutoString sourceLine;
+       sourceLine.Assign(reinterpret_cast<const PRUnichar*>(report->uclinebuf));
+       nsCOMPtr<nsPIDOMWindow> win = do_QueryInterface(globalObject);
+-      PRUint64 windowID = win ? win->WindowID() : 0;
++      PRUint64 windowID = 0;
++      PRUint64 innerWindowID = 0;
++      if (win) {
++        windowID = win->WindowID();
++        nsCOMPtr<nsPIDOMWindow> innerWin = win->GetCurrentInnerWindow();
++        if (innerWin) {
++          innerWindowID = innerWin->WindowID();
++        }
++      }
+       nsContentUtils::AddScriptRunner(
+         new ScriptErrorEvent(globalObject, report->lineno,
+                              report->uctokenptr - report->uclinebuf,
+                              report->flags, msg, fileName, sourceLine,
+                              report->errorNumber != JSMSG_OUT_OF_MEMORY,
+-                             windowID));
++                             windowID, innerWindowID));
+     }
+   }
+ 
+ #ifdef DEBUG
+   // Print it to stderr as well, for the benefit of those invoking
+   // mozilla with -console.
+   nsCAutoString error;
+   error.Assign("JavaScript ");
+diff --git a/parser/htmlparser/src/nsExpatDriver.cpp b/parser/htmlparser/src/nsExpatDriver.cpp
+--- a/parser/htmlparser/src/nsExpatDriver.cpp
++++ b/parser/htmlparser/src/nsExpatDriver.cpp
+@@ -371,17 +371,18 @@ nsExpatDriver::nsExpatDriver()
+     mInCData(PR_FALSE),
+     mInInternalSubset(PR_FALSE),
+     mInExternalDTD(PR_FALSE),
+     mMadeFinalCallToExpat(PR_FALSE),
+     mIsFinalChunk(PR_FALSE),
+     mInternalState(NS_OK),
+     mExpatBuffered(0),
+     mCatalogData(nsnull),
+-    mWindowID(0)
++    mWindowID(0),
++    mInnerWindowID(0)
+ {
+ }
+ 
+ nsExpatDriver::~nsExpatDriver()
+ {
+   if (mExpatParser) {
+     XML_ParserFree(mExpatParser);
+   }
+@@ -948,17 +949,17 @@ nsExpatDriver::HandleError()
+   nsresult rv = NS_ERROR_FAILURE;
+   if (serr) {
+     nsCOMPtr<nsIScriptError2> serr2(do_QueryInterface(serr));
+     rv = serr2->InitWithWindowID(description.get(),
+                                  mURISpec.get(),
+                                  mLastLine.get(),
+                                  lineNumber, colNumber,
+                                  nsIScriptError::errorFlag, "malformed-xml",
+-                                 mWindowID);
++                                 mWindowID, mInnerWindowID);
+   }
+ 
+   // If it didn't initialize, we can't do any logging.
+   PRBool shouldReportError = NS_SUCCEEDED(rv);
+ 
+   if (mSink && shouldReportError) {
+     rv = mSink->ReportError(errorText.get(), 
+                             sourceText.get(), 
+@@ -1247,16 +1248,20 @@ nsExpatDriver::WillBuildModel(const CPar
+       nsIScriptGlobalObject *global =
+         doc->GetScriptHandlingObject(aHasHadScriptHandlingObject);
+       if (global) {
+         win = do_QueryInterface(global);
+       }
+     }
+     if (win) {
+       mWindowID = win->GetOuterWindow()->WindowID();
++      nsCOMPtr<nsPIDOMWindow> innerWin = win->GetOuterWindow()->GetCurrentInnerWindow();
++      if (innerWin) {
++        mInnerWindowID = innerWin->WindowID();
++      }
+     }
+   }
+ 
+   // Set up the callbacks
+   XML_SetXmlDeclHandler(mExpatParser, Driver_HandleXMLDeclaration); 
+   XML_SetElementHandler(mExpatParser, Driver_HandleStartElement,
+                         Driver_HandleEndElement);
+   XML_SetCharacterDataHandler(mExpatParser, Driver_HandleCharacterData);
+diff --git a/parser/htmlparser/src/nsExpatDriver.h b/parser/htmlparser/src/nsExpatDriver.h
+--- a/parser/htmlparser/src/nsExpatDriver.h
++++ b/parser/htmlparser/src/nsExpatDriver.h
+@@ -165,11 +165,12 @@ private:
+   nsCOMPtr<nsIExpatSink> mSink;
+   nsCOMPtr<nsIExtendedExpatSink> mExtendedSink;
+ 
+   const nsCatalogData* mCatalogData; // weak
+   nsString         mURISpec;
+ 
+   // Used for error reporting.
+   PRUint64         mWindowID;
++  PRUint64         mInnerWindowID;
+ };
+ 
+ #endif

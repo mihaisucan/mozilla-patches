@@ -1,0 +1,59 @@
+# HG changeset patch
+# Parent 5f0cda6cfb8706df2308fd7c416852463b6ce20c
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1891,33 +1891,16 @@ HUD_SERVICE.prototype =
+ 
+   /**
+    * Registry of ApplicationHooks used by specified Gecko Apps
+    *
+    * @returns Specific Gecko 'ApplicationHooks' Object/Mixin
+    */
+   applicationHooks: null,
+ 
+-  getChromeWindowFromContentWindow:
+-  function HS_getChromeWindowFromContentWindow(aContentWindow)
+-  {
+-    if (!aContentWindow) {
+-      throw new Error("Cannot get contentWindow via nsILoadContext");
+-    }
+-    var win = aContentWindow.QueryInterface(Ci.nsIDOMWindow)
+-      .QueryInterface(Ci.nsIInterfaceRequestor)
+-      .getInterface(Ci.nsIWebNavigation)
+-      .QueryInterface(Ci.nsIDocShellTreeItem)
+-      .rootTreeItem
+-      .QueryInterface(Ci.nsIInterfaceRequestor)
+-      .getInterface(Ci.nsIDOMWindow)
+-      .QueryInterface(Ci.nsIDOMChromeWindow);
+-    return win;
+-  },
+-
+   /**
+    * Requests that haven't finished yet.
+    */
+   openRequests: {},
+ 
+   /**
+    * Assign a function to this property to listen for finished httpRequests.
+    * Used by unit tests.
+@@ -2842,17 +2825,17 @@ function HeadsUpDisplay(aConfig)
+       throw new Error(this.ERRORS.PARENTNODE_NOT_FOUND);
+     }
+     this.parentNode = parentNode;
+   }
+ 
+   // create textNode Factory:
+   this.textFactory = NodeFactory("text", "xul", this.chromeDocument);
+ 
+-  this.chromeWindow = HUDService.getChromeWindowFromContentWindow(this.contentWindow);
++  this.chromeWindow = this.chromeDocument.defaultView;
+ 
+   // create a panel dynamically and attach to the parentNode
+   let hudBox = this.createHUD();
+ 
+   let splitter = this.chromeDocument.createElement("splitter");
+   splitter.setAttribute("class", "hud-splitter");
+ 
+   this.notificationBox.insertBefore(splitter,

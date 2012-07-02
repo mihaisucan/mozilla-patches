@@ -1,0 +1,429 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1318357718 -10800
+# Node ID 4a6e9aa5de1eef66e1d26fca0fb1e84b637c5324
+# Parent  fb18dd9ee477571facd11004ae57198773f84494
+Bug 693554 - Web Console and Firebug Console panel should not display 'undefined' for simple console.* API calls
+
+diff --git a/browser/devtools/webconsole/HUDService.jsm b/browser/devtools/webconsole/HUDService.jsm
+--- a/browser/devtools/webconsole/HUDService.jsm
++++ b/browser/devtools/webconsole/HUDService.jsm
+@@ -4293,16 +4293,17 @@ function JSTermHelper(aJSTerm)
+    */
+   aJSTerm.sandbox.$ = function JSTH_$(aId)
+   {
+     try {
+       return aJSTerm._window.document.getElementById(aId);
+     }
+     catch (ex) {
+       aJSTerm.console.error(ex.message);
++      return aJSTerm._ignoreReturnValue;
+     }
+   };
+ 
+   /**
+    * Returns the result of document.querySelectorAll(aSelector).
+    *
+    * @param string aSelector
+    *        A string that is passed to window.document.querySelectorAll.
+@@ -4310,16 +4311,17 @@ function JSTermHelper(aJSTerm)
+    */
+   aJSTerm.sandbox.$$ = function JSTH_$$(aSelector)
+   {
+     try {
+       return aJSTerm._window.document.querySelectorAll(aSelector);
+     }
+     catch (ex) {
+       aJSTerm.console.error(ex.message);
++      return aJSTerm._ignoreReturnValue;
+     }
+   };
+ 
+   /**
+    * Runs a xPath query and returns all matched nodes.
+    *
+    * @param string aXPath
+    *        xPath search query to execute.
+@@ -4357,45 +4359,47 @@ function JSTermHelper(aJSTerm)
+   Object.defineProperty(aJSTerm.sandbox, "$0", {
+     get: function() {
+       let mw = HUDService.currentContext();
+       try {
+         return mw.InspectorUI.selection;
+       }
+       catch (ex) {
+         aJSTerm.console.error(ex.message);
++        return aJSTerm._ignoreReturnValue;
+       }
+     },
+     enumerable: true,
+     configurable: false
+   });
+ 
+   /**
+    * Clears the output of the JSTerm.
+    */
+   aJSTerm.sandbox.clear = function JSTH_clear()
+   {
+-    aJSTerm.helperEvaluated = true;
+     aJSTerm.clearOutput();
++    return aJSTerm._ignoreReturnValue;
+   };
+ 
+   /**
+    * Returns the result of Object.keys(aObject).
+    *
+    * @param object aObject
+    *        Object to return the property names from.
+    * @returns array of string
+    */
+   aJSTerm.sandbox.keys = function JSTH_keys(aObject)
+   {
+     try {
+       return Object.keys(unwrap(aObject));
+     }
+     catch (ex) {
+       aJSTerm.console.error(ex.message);
++      return aJSTerm._ignoreReturnValue;
+     }
+   };
+ 
+   /**
+    * Returns the values of all properties on aObject.
+    *
+    * @param object aObject
+    *        Object to display the values from.
+@@ -4417,47 +4421,46 @@ function JSTermHelper(aJSTerm)
+     return arrValues;
+   };
+ 
+   /**
+    * Opens a help window in MDC
+    */
+   aJSTerm.sandbox.help = function JSTH_help()
+   {
+-    aJSTerm.helperEvaluated = true;
+     aJSTerm._window.open(
+         "https://developer.mozilla.org/AppLinks/WebConsoleHelp?locale=" +
+         aJSTerm._window.navigator.language, "help", "");
++    return aJSTerm._ignoreReturnValue;
+   };
+ 
+   /**
+    * Inspects the passed aObject. This is done by opening the PropertyPanel.
+    *
+    * @param object aObject
+    *        Object to inspect.
+    * @returns void
+    */
+   aJSTerm.sandbox.inspect = function JSTH_inspect(aObject)
+   {
+-    aJSTerm.helperEvaluated = true;
+     let propPanel = aJSTerm.openPropertyPanel(null, unwrap(aObject));
+     propPanel.panel.setAttribute("hudId", aJSTerm.hudId);
++    return aJSTerm._ignoreReturnValue;
+   };
+ 
+   /**
+    * Inspects the passed aNode in the style inspector.
+    *
+    * @param object aNode
+    *        aNode to inspect.
+    * @returns void
+    */
+   aJSTerm.sandbox.inspectstyle = function JSTH_inspectstyle(aNode)
+   {
+     let errstr = null;
+-    aJSTerm.helperEvaluated = true;
+ 
+     if (!Services.prefs.getBoolPref("devtools.styleinspector.enabled")) {
+       errstr = HUDService.getStr("inspectStyle.styleInspectorNotEnabled");
+     } else if (!aNode) {
+       errstr = HUDService.getStr("inspectStyle.nullObjectPassed");
+     } else if (!(aNode instanceof Ci.nsIDOMNode)) {
+       errstr = HUDService.getStr("inspectStyle.mustBeDomNode");
+     } else if (!(aNode.style instanceof Ci.nsIDOMCSSStyleDeclaration)) {
+@@ -4466,58 +4469,60 @@ function JSTermHelper(aJSTerm)
+ 
+     if (!errstr) {
+       let stylePanel = StyleInspector.createPanel();
+       stylePanel.setAttribute("hudToolId", aJSTerm.hudId);
+       stylePanel.showTool(aNode);
+     } else {
+       aJSTerm.writeOutput(errstr + "\n", CATEGORY_OUTPUT, SEVERITY_ERROR);
+     }
++
++    return aJSTerm._ignoreReturnValue;
+   };
+ 
+   /**
+    * Prints aObject to the output.
+    *
+    * @param object aObject
+    *        Object to print to the output.
+    * @returns void
+    */
+   aJSTerm.sandbox.pprint = function JSTH_pprint(aObject)
+   {
+-    aJSTerm.helperEvaluated = true;
+     if (aObject === null || aObject === undefined || aObject === true || aObject === false) {
+       aJSTerm.console.error(HUDService.getStr("helperFuncUnsupportedTypeError"));
+-      return;
++      return aJSTerm._ignoreReturnValue;
+     }
+     else if (typeof aObject === TYPEOF_FUNCTION) {
+       aJSTerm.writeOutput(aObject + "\n", CATEGORY_OUTPUT, SEVERITY_LOG);
+-      return;
++      return aJSTerm._ignoreReturnValue;
+     }
+ 
+     let output = [];
+     let pairs = namesAndValuesOf(unwrap(aObject));
+ 
+     pairs.forEach(function(pair) {
+       output.push("  " + pair.display);
+     });
+ 
+     aJSTerm.writeOutput(output.join("\n"), CATEGORY_OUTPUT, SEVERITY_LOG);
++    return aJSTerm._ignoreReturnValue;
+   };
+ 
+   /**
+    * Print a string to the output, as-is.
+    *
+    * @param string aString
+    *        A string you want to output.
+    * @returns void
+    */
+   aJSTerm.sandbox.print = function JSTH_print(aString)
+   {
+-    aJSTerm.helperEvaluated = true;
+     aJSTerm.writeOutput("" + aString, CATEGORY_OUTPUT, SEVERITY_LOG);
++    return aJSTerm._ignoreReturnValue;
+   };
+ }
+ 
+ /**
+  * JSTerm
+  *
+  * JavaScript Terminal: creates input nodes for console code interpretation
+  * and 'JS Workspaces'
+@@ -4642,18 +4647,24 @@ JSTerm.prototype = {
+       $ = this.sandbox.$;
+       delete this.sandbox.$;
+     }
+     if (typeof window.$$ == "function") {
+       $$ = this.sandbox.$$;
+       delete this.sandbox.$$;
+     }
+ 
++    if (this._ignoreReturnValue) {
++      window.console.__returnValue__ = this._ignoreReturnValue;
++    }
++
+     let result = Cu.evalInSandbox(aString, this.sandbox, "1.8", "Web Console", 1);
+ 
++    delete window.console.__returnValue__;
++
+     if ($) {
+       this.sandbox.$ = $;
+     }
+     if ($$) {
+       this.sandbox.$$ = $$;
+     }
+ 
+     return result;
+@@ -4667,22 +4678,21 @@ JSTerm.prototype = {
+     if (!aExecuteString) {
+       this.writeOutput("no value to execute", CATEGORY_OUTPUT, SEVERITY_LOG);
+       return;
+     }
+ 
+     this.writeOutput(aExecuteString, CATEGORY_INPUT, SEVERITY_LOG);
+ 
+     try {
+-      this.helperEvaluated = false;
++      this._ignoreReturnValue = "_webconsole-eval-" + Date.now();
+       let result = this.evalInSandbox(aExecuteString);
+ 
+       // Hide undefined results coming from helpers.
+-      let shouldShow = !(result === undefined && this.helperEvaluated);
+-      if (shouldShow) {
++      if (result !== this._ignoreReturnValue) {
+         let inspectable = this.isResultInspectable(result);
+         let resultString = this.formatResult(result);
+ 
+         if (inspectable) {
+           this.writeOutputJS(aExecuteString, result, resultString);
+         }
+         else {
+           this.writeOutput(resultString, CATEGORY_OUTPUT, SEVERITY_LOG);
+diff --git a/dom/base/ConsoleAPI.js b/dom/base/ConsoleAPI.js
+--- a/dom/base/ConsoleAPI.js
++++ b/dom/base/ConsoleAPI.js
+@@ -40,17 +40,28 @@
+  * ***** END LICENSE BLOCK ***** */
+ 
+ let Cu = Components.utils;
+ let Ci = Components.interfaces;
+ let Cc = Components.classes;
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/Services.jsm");
+-Cu.import("resource://gre/modules/ConsoleAPIStorage.jsm");
++
++XPCOMUtils.defineLazyGetter(this, "ConsoleAPIStorage", function () {
++  let obj = {};
++  Cu.import("resource://gre/modules/ConsoleAPIStorage.jsm", obj);
++  return obj.ConsoleAPIStorage;
++});
++
++XPCOMUtils.defineLazyGetter(this, "isNonNativeGetter", function () {
++  let obj = {};
++  Cu.import("resource:///modules/PropertyPanel.jsm", obj);
++  return obj.isNonNativeGetter;
++});
+ 
+ function ConsoleAPI() {}
+ ConsoleAPI.prototype = {
+ 
+   classID: Components.ID("{b49c18f8-3379-4fc0-8c90-d7772c1a9ff3}"),
+ 
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsIDOMGlobalPropertyInitializer]),
+ 
+@@ -64,49 +75,54 @@ ConsoleAPI.prototype = {
+ 
+       outerID = windowUtils.outerWindowID;
+       innerID = windowUtils.currentInnerWindowID;
+     }
+     catch (ex) {
+       Cu.reportError(ex);
+     }
+ 
++    let options = {
++      innerID: innerID,
++      outerID: outerID,
++    };
++
+     let self = this;
+     let chromeObject = {
+       // window.console API
+       log: function CA_log() {
+-        self.notifyObservers(outerID, innerID, "log", self.processArguments(arguments));
++        return self.notifyObservers(options, "log", self.processArguments(arguments));
+       },
+       info: function CA_info() {
+-        self.notifyObservers(outerID, innerID, "info", self.processArguments(arguments));
++        return self.notifyObservers(options, "info", self.processArguments(arguments));
+       },
+       warn: function CA_warn() {
+-        self.notifyObservers(outerID, innerID, "warn", self.processArguments(arguments));
++        return self.notifyObservers(options, "warn", self.processArguments(arguments));
+       },
+       error: function CA_error() {
+-        self.notifyObservers(outerID, innerID, "error", self.processArguments(arguments));
++        return self.notifyObservers(options, "error", self.processArguments(arguments));
+       },
+       debug: function CA_debug() {
+-        self.notifyObservers(outerID, innerID, "log", self.processArguments(arguments));
++        return self.notifyObservers(options, "log", self.processArguments(arguments));
+       },
+       trace: function CA_trace() {
+-        self.notifyObservers(outerID, innerID, "trace", self.getStackTrace());
++        return self.notifyObservers(options, "trace", self.getStackTrace());
+       },
+       // Displays an interactive listing of all the properties of an object.
+       dir: function CA_dir() {
+-        self.notifyObservers(outerID, innerID, "dir", arguments);
++        return self.notifyObservers(options, "dir", arguments);
+       },
+       group: function CA_group() {
+-        self.notifyObservers(outerID, innerID, "group", self.beginGroup(arguments));
++        return self.notifyObservers(options, "group", self.beginGroup(arguments));
+       },
+       groupCollapsed: function CA_groupCollapsed() {
+-        self.notifyObservers(outerID, innerID, "groupCollapsed", self.beginGroup(arguments));
++        return self.notifyObservers(options, "groupCollapsed", self.beginGroup(arguments));
+       },
+       groupEnd: function CA_groupEnd() {
+-        self.notifyObservers(outerID, innerID, "groupEnd", arguments);
++        return self.notifyObservers(options, "groupEnd", arguments);
+       },
+       __exposedProps__: {
+         log: "r",
+         info: "r",
+         warn: "r",
+         error: "r",
+         debug: "r",
+         trace: "r",
+@@ -138,56 +154,63 @@ ConsoleAPI.prototype = {
+       __noSuchMethod__: { enumerable: true, configurable: true, writable: true,
+                           value: function() {} },
+       __mozillaConsole__: { value: true }
+     };
+ 
+     Object.defineProperties(contentObj, properties);
+     Cu.makeObjectPropsNormal(contentObj);
+ 
++    options.console = contentObj;
++
+     return contentObj;
+   },
+ 
+   /**
+    * Notify all observers of any console API call.
+    *
+    * @param number aOuterWindowID
+    *        The outer window ID from where the message came from.
+    * @param number aInnerWindowID
+    *        The inner window ID from where the message came from.
+    * @param string aLevel
+    *        The message level.
+    * @param mixed aArguments
+    *        The arguments given to the console API call.
+    **/
+   notifyObservers:
+-  function CA_notifyObservers(aOuterWindowID, aInnerWindowID, aLevel, aArguments) {
+-    if (!aOuterWindowID) {
+-      return;
++  function CA_notifyObservers(aOptions, aLevel, aArguments) {
++    let result = "__returnValue__" in aOptions.console &&
++                 !isNonNativeGetter(aOptions.console, "__returnValue__") ?
++                 aOptions.console.__returnValue__ : undefined;
++    if (!aOptions.outerID) {
++      return result;
+     }
+ 
+     let stack = this.getStackTrace();
+     // Skip the first frame since it contains an internal call.
+     let frame = stack[1];
+     let consoleEvent = {
+-      ID: aOuterWindowID,
+-      innerID: aInnerWindowID,
++      ID: aOptions.outerID,
++      innerID: aOptions.innerID,
+       level: aLevel,
+       filename: frame.filename,
+       lineNumber: frame.lineNumber,
+       functionName: frame.functionName,
+       arguments: aArguments
+     };
+ 
+     consoleEvent.wrappedJSObject = consoleEvent;
+ 
+-    ConsoleAPIStorage.recordEvent(aInnerWindowID, consoleEvent);
++    ConsoleAPIStorage.recordEvent(aOptions.innerID, consoleEvent);
+ 
+     Services.obs.notifyObservers(consoleEvent,
+-                                 "console-api-log-event", aOuterWindowID);
++                                 "console-api-log-event", aOptions.outerID);
++
++    return result;
+   },
+ 
+   /**
+    * Process the console API call arguments in order to perform printf-like
+    * string substitution.
+    * TODO: object substitution should display an interactive property list (bug
+    * 685815) and width and precision qualifiers should be taken into account
+    * (bug 685813).

@@ -1,0 +1,879 @@
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -15,16 +15,17 @@
+ #
+ # The Initial Developer of the Original Code is Mozilla Foundation.
+ # Portions created by the Initial Developer are Copyright (C) 2010
+ # the Initial Developer. All Rights Reserved.
+ #
+ # Contributor(s):
+ #  David Dahl <ddahl@mozilla.com>
+ #  Patrick Walton <pcwalton@mozilla.com>
++#  Mihai Șucan <mihai.sucan@gmail.com>
+ #
+ # Alternatively, the contents of this file may be used under the terms of
+ # either of the GNU General Public License Version 2 or later (the "GPL"),
+ # or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+ # in which case the provisions of the GPL or the LGPL are applicable instead
+ # of those above. If you wish to allow use of your version of this file only
+ # under the terms of either the GPL or the LGPL, and not to allow others to
+ # use your version of this file under the terms of the MPL, indicate your
+@@ -53,16 +54,18 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_586388_select_all.js  \
+ 	browser_webconsole_bug_588967_input_expansion.js \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_581231_close_button.js \
+ 	browser_webconsole_consoleonpage.js \
+ 	browser_webconsole_bug_587617_output_copy.js \
++	browser_webconsole_bug_594741_top_sites.js \
++	browser_webconsole_bug_594741_stress_test.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+ 	testscript.js \
+@@ -73,15 +76,16 @@ _BROWSER_TEST_PAGES = \
+ 	test-error.html \
+ 	test-duplicate-error.html \
+ 	test-image.png \
+ 	test-encoding-ISO-8859-1.html \
+ 	test-bug-593003-iframe-wrong-hud.html \
+ 	test-bug-593003-iframe-wrong-hud-iframe.html \
+ 	test-console-replaced-api.html \
+ 	test-own-console.html \
++	test-bug-594741-stress-test.html \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594741_stress_test.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594741_stress_test.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594741_stress_test.js
+@@ -0,0 +1,135 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/HUDService.jsm");
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-594741-stress-test.html";
++
++let tabs = [];
++let windows = [];
++let ntabs = 2;
++let nwindows = 2;
++let tabToggleDelayMin = 2000;
++let tabToggleDelayMax = 4000;
++let testTimeout = 30; // seconds
++let testTimeoutFactor = 2;
++let testEnded = false;
++
++function rnd(max, min) {
++  if (!max) {
++    return Math.random();
++  }
++
++  if (!min) {
++    min = 0;
++  }
++  return min + Math.floor(Math.random() * (max - min));
++}
++
++function tabLoad(aEvent, tab, win_gBrowser) {
++  tab.linkedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  tabActivateWebConsole(tab, win_gBrowser);
++}
++
++function tabActivateWebConsole(tab, win_gBrowser) {
++  if (testEnded) {
++    return;
++  }
++
++  win_gBrowser.selectedTab = tab;
++
++  try {
++    HUDService.activateHUDForContext(tab);
++  }
++  catch(ex) {
++    ok(false, "HUDService.activateHUDForContext() exception: " + ex);
++  }
++
++  setTimeout(tabDeactivateWebConsole, rnd(tabToggleDelayMax, tabToggleDelayMin), tab, win_gBrowser);
++}
++
++function tabDeactivateWebConsole(tab, win_gBrowser) {
++  if (testEnded) {
++    return;
++  }
++
++  win_gBrowser.selectedTab = tab;
++
++  try {
++    HUDService.deactivateHUDForContext(tab);
++  }
++  catch(ex) {
++    ok(false, "HUDService.deactivateHUDForContext() exception: " + ex);
++  }
++
++  setTimeout(tabActivateWebConsole, rnd(tabToggleDelayMax, tabToggleDelayMin), tab, win_gBrowser);
++}
++
++function addNewTab(win_gBrowser) {
++  let tab = win_gBrowser.addTab();
++  tab.linkedBrowser.addEventListener("load", function(aEvent) {
++    tabLoad(aEvent, tab, win_gBrowser);
++  }, true);
++
++  tab.linkedBrowser.contentWindow.location = TEST_URI;
++
++  return [tab, win_gBrowser];
++}
++
++function testEnd() {
++  testEnded = true;
++
++  tabs.forEach(function(arr) {
++    let nBox = gBrowser.getNotificationBox(arr[0].linkedBrowser);
++    let hudId = "hud_" + nBox.getAttribute("id");
++
++    try {
++      if (!HUDService.canActivateContext(hudId)) {
++        HUDService.deactivateHUDForContext(arr[0]);
++      }
++    }
++    catch(ex) {
++      ok(false, "exception while ending test: " + ex);
++    }
++
++    arr[1].removeTab(arr[0]);
++  });
++
++  windows.forEach(function(win) {
++    win.close();
++  });
++
++  finish();
++}
++
++function test() {
++  waitForExplicitFinish();
++
++  requestLongerTimeout(testTimeoutFactor);
++  setTimeout(testEnd, testTimeout * (testTimeoutFactor - 0.5) * 1000);
++
++  for (let i = 0; i < ntabs; i++) {
++    tabs.push(addNewTab(gBrowser));
++  }
++
++  for (let i = 0; i < nwindows-1; i++) {
++    let win = OpenBrowserWindow();
++    win.addEventListener("load", function(aEvent) {
++      win.removeEventListener(aEvent.type, arguments.callee, true);
++      for (let i = 0; i < ntabs; i++) {
++        tabs.push(addNewTab(win.gBrowser));
++      }
++    }, true);
++    windows.push(win);
++  }
++}
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594741_top_sites.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594741_top_sites.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594741_top_sites.js
+@@ -0,0 +1,260 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/HUDService.jsm");
++
++const DEFAULT_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
++
++// Taken from Alexa's list of top sites. (2010-09-13)
++const TOP_SITES = ["http://www.google.com", "http://www.facebook.com", "http://www.youtube.com", "http://www.yahoo.com", "http://www.live.com", "http://www.baidu.com", "http://en.wikipedia.org", "http://www.twitter.com", "http://www.msn.com", "http://www.taobao.com/", "http://www.yahoo.co.jp", "http://www.google.co.in", "http://www.amazon.com", "http://www.ebay.com", "http://www.bing.com", "http://www.microsoft.com", "http://www.linkedin.com", "http://www.yandex.ru", "http://www.163.com", "http://www.myspace.com", "http://www.hi5.com", "http://www.craiglist.com", "http://www.mail.ru", "http://www.flickr.com", "http://www.imdb.com", "http://www.apple.com", "http://bbc.co.uk", "http://www.cnn.com", "http://www.adobe.com", "http://www.cnet.com", "http://www.nytimes.com", "http://www.godaddy.com", "http://www.dailymotion.com", "http://www.digg.com", "http://www.deviantart.com", "http://www.weather.com"];
++
++let pos = -1;
++let loads = 0;
++let max_loads = 4;
++let loadTimeout = null;
++let testTimeout = 30; // seconds
++let testTimeoutFactor = 5;
++let testEnded = false;
++let testEndTimeout = null;
++
++function pageNext() {
++  if (testEnded) {
++    return;
++  }
++
++  if (++pos == TOP_SITES.length || ++loads == max_loads) {
++    executeSoon(testEnd);
++    return;
++  }
++
++  gBrowser.tabContainer.advanceSelectedTab(1, true);
++
++  executeSoon(function() {
++    loadTimeout = setTimeout(function() {
++      if (loadTimeout) {
++        loadTimeout = null;
++        gBrowser.selectedBrowser.removeEventListener("load", pageLoad, true);
++
++        ok(false, "timeout: failed to load " + content.location);
++        pageNext();
++      }
++    }, 60000);
++
++    gBrowser.selectedBrowser.addEventListener("load", pageLoad, true);
++    content.location = TOP_SITES[pos];
++  });
++}
++
++function pageLoad(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++  if (loadTimeout) {
++    clearTimeout(loadTimeout);
++    loadTimeout = null;
++  }
++  if (testEnded) {
++    return;
++  }
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  ok(!hudId, "Web Console is not open for " + content.location);
++
++  let startPageReload = function() {
++    if (!testEnded) {
++      gBrowser.selectedBrowser.addEventListener("load", pageReload, true);
++      content.location.reload();
++    }
++  };
++
++  let notificationBox = gBrowser.getNotificationBox(gBrowser.selectedBrowser);
++  let DOMNodeInserted = false;
++  let DOMNodeInserted_handler = function(aEvent) {
++    let input = notificationBox.querySelector(".jsterm-input-node");
++    if (input && !DOMNodeInserted) {
++      DOMNodeInserted = true;
++      document.removeEventListener(aEvent.type, arguments.callee, false);
++
++      if (hudTimeout) {
++        clearTimeout(hudTimeout);
++        hudTimeout = null;
++      }
++
++      if (!input.getAttribute("focused")) {
++        input.addEventListener("focus", function(aEvent) {
++          input.removeEventListener(aEvent.type, arguments.callee, false);
++          executeSoon(startPageReload);
++        }, false);
++      }
++      else {
++        executeSoon(startPageReload);
++      }
++    }
++  };
++
++  document.addEventListener("DOMNodeInserted", DOMNodeInserted_handler, false);
++
++  let hudTimeout = null;
++
++  try {
++    hudTimeout = setTimeout(function() {
++      hudTimeout = null;
++      if (!DOMNodeInserted) {
++        document.removeEventListener("DOMNodeInserted",
++          DOMNodeInserted_handler, false);
++
++        ok(false, "timeout: HUDService.activateHUDForContext() failed to show" +
++          " the UI on " + content.location);
++
++        try {
++          HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++        }
++        catch (ex) {
++          ok(false, "HUDService.deactivateHUDForContext() exception on " +
++            content.location + ": " + ex);
++        }
++
++        executeSoon(pageNext);
++      }
++    }, 2000);
++
++    HUDService.activateHUDForContext(gBrowser.selectedTab);
++  }
++  catch (ex) {
++    ok(false, "failed to open the Web Console on " + content.location);
++    Cu.reportError("HUDService exception: " + ex);
++
++    document.removeEventListener("DOMNodeInserted", DOMNodeInserted_handler,
++      false);
++
++    if (hudTimeout) {
++      clearTimeout(hudTimeout);
++      hudTimeout = null;
++    }
++
++    try {
++      HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++    }
++    catch (ex) {
++      ok(false, "HUDService.deactivateHUDForContext() exception on " +
++        content.location + ": " + ex);
++    }
++
++    executeSoon(pageNext);
++  }
++}
++
++function pageReload(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++  if (testEnded) {
++    return;
++  }
++
++  let notificationBox = gBrowser.getNotificationBox(gBrowser.selectedBrowser);
++  let hudBox = notificationBox.querySelector(".hud-box");
++  ok(hudBox, "we have the .hud-box element on " + content.location);
++
++  try {
++    let hudId = HUDService.getHudIdByWindow(content);
++    ok(hudId, "we have a hudId for " + content.location);
++    let win = HUDService.getContentWindowFromHUDId(hudId);
++    is(win, content, "we have the correct window object on " + content.location);
++  }
++  catch (ex) {
++    ok(false, "failed to determine if the Web Console is open on " + content.location);
++    Cu.reportError("HUDService exception: " + ex);
++  }
++
++  let DOMNodeRemoved = false;
++  let DOMNodeRemoved_handler = function(aEvent) {
++    executeSoon(function() {
++      if (!DOMNodeRemoved && !notificationBox.querySelector(".hud-box")) {
++        DOMNodeRemoved = true;
++        document.removeEventListener(aEvent.type, arguments.callee, false);
++
++        if (hudTimeout) {
++          clearTimeout(hudTimeout);
++          hudTimeout = null;
++        }
++
++        executeSoon(pageNext);
++      }
++    });
++  };
++  document.addEventListener("DOMNodeRemoved", DOMNodeRemoved_handler, false);
++
++  let hudTimeout = null;
++  try {
++    hudTimeout = setTimeout(function() {
++      hudTimeout = null;
++      if (!DOMNodeRemoved) {
++        document.removeEventListener("DOMNodeRemoved",
++          DOMNodeRemoved_handler, false);
++
++        ok(false, "timeout: HUDService.deactivateHUDForContext() failed to " +
++          "hide the UI on " + content.location);
++
++        pageNext();
++      }
++    }, 2000);
++
++    HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++  }
++  catch (ex) {
++    ok(false, "failed to close the Web Console on " + content.location);
++    Cu.reportError("HUDService exception: " + ex);
++
++    document.removeEventListener("DOMNodeRemoved", DOMNodeRemoved_handler,
++      false);
++
++    if (hudTimeout) {
++      clearTimeout(hudTimeout);
++      hudTimeout = null;
++    }
++
++    pageNext();
++  }
++}
++
++function testEnd() {
++  if (testEndTimeout) {
++    clearTimeout(testEndTimeout);
++  }
++
++  if (!testEnded) {
++    testEnded = true;
++    gBrowser.removeCurrentTab();
++    finish();
++  }
++}
++
++function test() {
++  waitForExplicitFinish();
++
++  pos = Math.floor(Math.random() * (TOP_SITES.length - max_loads));
++  requestLongerTimeout(testTimeoutFactor);
++  testEndTimeout = setTimeout(testEnd, testTimeout * (testTimeoutFactor - 0.5) * 1000);
++
++  // Block all popups.
++  Services.prefs.setIntPref("privacy.popups.policy", 2);
++
++  gBrowser.selectedBrowser.addEventListener("load", function(aEvent) {
++    gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++    gBrowser.selectedTab = gBrowser.addTab();
++
++    gBrowser.selectedBrowser.addEventListener("load", function(aEvent) {
++      gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++      pageNext();
++    }, true);
++    content.location = DEFAULT_URI;
++  }, true);
++  content.location = DEFAULT_URI;
++}
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-594741-stress-test.html b/toolkit/components/console/hudservice/tests/browser/test-bug-594741-stress-test.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-594741-stress-test.html
+@@ -0,0 +1,412 @@
++<!DOCTYPE HTML>
++<html dir="ltr" xml:lang="en-US" lang="en-US">
++<head>
++  <!-- ***** BEGIN LICENSE BLOCK *****
++    -  Any copyright is dedicated to the Public Domain.
++    -  http://creativecommons.org/publicdomain/zero/1.0/
++    -
++    -  Contributor(s):
++    -   Mihai Șucan <mihai.sucan@gmail.com>
++    -
++    -  ***** END LICENSE BLOCK ***** -->
++  <title>Bug 594741 - Web Console stress test</title>
++
++<script type="text/javascript"><!--
++  var cfg = {
++    cssSelectorsMax: 5,
++    cssPropertiesMax: 30,
++    cssSelectorTokensMax: 4,
++    cssTagRatio: 0.5,
++    cssClassRatio: 0.5,
++    cssAttrSelectorRatio: 0.5,
++    cssAttrSelectorErrorRatio: 0.08,
++    cssIdRatio: 0.5,
++    cssPseudoRatio: 0.5,
++    tagNameErrorRatio: 0.05,
++    tokenLengthMax: 10,
++    cssPseudoNthMax: 100,
++    cssPseudoErrorRatio: 0.08,
++    cssPropertyNameErrorRatio: 0.3,
++    cssRulesMax: 20,
++    cssSelectorCombinatorErrorRatio: 0.08,
++    testImage: "test-image.png",
++    consoleMessageArgMax: 10,
++  };
++
++  function generateStyleError() {
++    var styles = document.getElementById("styles");
++    var style = "";
++    var rules = rnd(cfg.cssRulesMax, 1);
++
++    for (var i = 0; i < rules; i++) {
++      style += generateStyleRule() + "\n";
++    }
++
++    styles.innerHTML = "<style type='text/css'><!-- \n" +
++      style + " \n --></style>";
++  }
++
++  function generateScriptError() {
++    eval(generateScript());
++  }
++
++  function generateScriptError() {
++    var fn = new Function(generateScript());
++    fn();
++  }
++
++  function generateScriptEvalError() {
++    eval(generateScript());
++  }
++
++  function generateScriptEventError() {
++    var fn = function() {
++      p.removeEventListener("click", fn, false);
++      eval(generateScript());
++    };
++
++    var p = document.querySelector("p");
++    p.addEventListener("click", fn, false);
++
++    var click = document.createEvent("MouseEvents");
++    click.initMouseEvent("click", true, true,
++      window, 0, 0, 0, 0, 0, false, false,
++      false, false, 0, null);
++    p.dispatchEvent(click);
++  }
++
++  function generateConsoleMessages() {
++    var n = rnd(cfg.consoleMessageArgMax);
++    var log = [];
++    var info = [];
++    var warn = [];
++    var error = [];
++    var exception = [];
++
++    for (var i = 0; i < n; i++) {
++      log.push(generateToken());
++      info.push(generateToken());
++      warn.push(generateToken());
++      error.push(generateToken());
++      exception.push(generateToken());
++    }
++    log.push(rndElem(document.body.childNodes));
++    info.push(rndElem(document.body.childNodes));
++    warn.push(rndElem(document.body.childNodes));
++    error.push(rndElem(document.body.childNodes));
++    exception.push(rndElem(document.body.childNodes));
++
++    console.log.call(console.log, log);
++    console.info.call(console.info, info);
++    console.warn.call(console.warn, warn);
++    console.error.call(console.error, error);
++    console.exception.call(console.exception, exception);
++  }
++
++  function generateNetworkRequest() {
++    var iframe = document.querySelector("iframe");
++    iframe.contentWindow.location.reload();
++  }
++
++  function generateScript() {
++    var keywords = ["const", "if", "var", "else", "function", "while", "do",
++        "return", "let", "switch", "case", "continue", "break", "in", "for",
++        "new", "typeof", "void", "null", "false", "true", "this", "delete",
++        "instanceof", "with", "throw", "try", "catch"];
++
++    var token1 = generateToken();
++    var token2 = generateToken();
++
++    var code = [
++      "(function(" + token1 + ") { return " + token1 + " + " +
++        token2 + "; })(window)",
++      token1 + "." + token2 + "()",
++      "window." + token1 + "()",
++      "window.document('" + token1 + "')",
++      rndElem(keywords) + " = '" + token1 + "'",
++      "for)()" + token1 + "{syntax-error",
++    ];
++
++    return rndElem(code);
++  }
++
++  function generateStyleRule() {
++    var rule = "";
++    var selectors = [];
++    var nrSelectors = rnd(cfg.cssSelectorsMax, 1);
++    for (var i = 0; i < nrSelectors; i++) {
++      selectors.push(generateCSSSelector());
++    }
++    rule += selectors.join(",\n") + " {\n";
++
++    var properties = [];
++    var nrProperties = rnd(cfg.cssPropertiesMax, 1);
++    for (var i = 0; i < nrSelectors; i++) {
++      properties.push(generateCSSPropertyName() + ": " + 
++          generateCSSPropertyValue());
++    }
++
++    rule += properties.join(";\n") + "\n} ";
++    return rule;
++  }
++
++  function generateCSSSelector() {
++    var selector = "";
++    var tokens = rnd(cfg.cssSelectorTokensMax, 1);
++
++    for (var i = 0; i < tokens; i++) {
++      if (i > 0) {
++        selector += generateCSSSelectorCombinator();
++      }
++
++      var tag = rnd() < cfg.cssTagRatio ? generateTagName() : "";
++      var className = rnd() < cfg.cssClassRatio ? "." + generateToken() : "";
++      var id = rnd() < cfg.cssIdRatio ? "#" + generateToken() : "";
++      var pseudo = rnd() < cfg.cssPseudoRatio ? generateCSSPseudo() : "";
++      var attr = rnd() < cfg.cssAttrSelectorRatio ?
++        generateCSSAttrSelector() : "";
++
++      if (!tag && !className && !id) {
++        selector += "*" + attr + pseudo;
++      } else {
++        selector += tag + id + className + attr + pseudo;
++      }
++    }
++
++    return selector;
++  }
++
++  function generateCSSAttrSelector() {
++    var attr = "[" + generateToken();
++
++    var comparators = ["=", "~=", "^=", "$=", "*=", "|=", ""];
++
++    var comparator = rnd() < cfg.cssAttrSelectorErrorRatio ?
++      rndChar() : rndElem(comparators);
++
++    if (comparator.length) {
++      attr += comparator + '"' + generateToken() + '"';
++    }
++
++    return attr + "]";
++  }
++
++  function generateCSSSelectorCombinator() {
++    var combinators = [" ", " > ", " + ", " ~ "];
++
++    return rnd() < cfg.cssSelectorCombinatorErrorRatio ?
++      " " + rndChar() + " " : rndElem(combinators);
++  }
++
++  function generateTagName() {
++    var tags = ["a", "abbr", "acronym", "address", "applet", "area", "article",
++    "aside", "audio", "b", "base", "basefont", "bdo", "big", "blockquote",
++    "body", "br", "button", "canvas", "caption", "center", "cite", "code",
++    "col", "colgroup", "command", "datalist", "dd", "del", "details", "dfn",
++    "dir", "div", "dl", "dt", "em", "embed", "fieldset", "figcaption", "figure",
++    "font", "footer", "form", "frame", "frameset", "h1", "to", "h6", "head",
++    "header", "hgroup", "hr", "html", "i", "iframe", "img", "input", "ins",
++    "keygen", "kbd", "label", "legend", "li", "link", "map", "mark", "menu",
++    "meta", "meter", "nav", "noframes", "noscript", "object", "ol", "optgroup",
++    "option", "output", "p", "param", "pre", "progress", "q", "rp", "rt",
++    "ruby", "s", "samp", "script", "section", "select", "small", "source",
++    "span", "strike", "strong", "style", "sub", "summary", "sup", "table",
++    "tbody", "td", "textarea", "tfoot", "th", "thead", "time", "title", "tr",
++    "tt", "u", "ul", "var", "video", "xmp"];
++
++    return rnd() < cfg.tagNameErrorRatio ? generateToken() : rndElem(tags);
++  }
++
++  function generateToken() {
++    var str = [];
++    var len = rnd(cfg.tokenLengthMax, 1);
++    for (var i = 0; i < len; i++) {
++      str.push(String.fromCharCode(rnd(122, 48)));
++    }
++    str = str.join("").replace(/[^a-zA-Z0-9-_]/g, "").
++      replace(/^[^a-zA-Z]/, "");
++    if (!str) {
++      str = generateToken();
++    }
++
++    return str;
++  }
++
++  function generateCSSPseudo() {
++    var n = rnd(cfg.cssPseudoNthMax, 1);
++
++    var pseudos = [":root", ":nth-child(" + n + ")", ":nth-last-child(" + n +
++      ")", ":nth-of-type(" + n + ")", ":nth-last-of-type(" + n + ")",
++      ":first-child", ":last-child", ":first-of-type", ":last-of-type",
++      ":only-child", ":only-of-type", ":empty", ":link", ":visited", ":active",
++      ":hover", ":focus", ":target", ":lang(" + generateToken() + ")",
++      ":enabled", ":disabled", ":checked", "::first-line", "::first-letter",
++      "::before", "::after", "::selection"];
++
++    return rnd() < cfg.cssPseudoErrorRatio ?
++      ":" + generateToken() : rndElem(pseudos);
++  }
++
++  function generateCSSPropertyName() {
++    var properties = ["background", "background-attachment", "background-color",
++        "background-image", "background-position", "background-repeat",
++        "border", "border-bottom", "border-bottom-color", "border-bottom-style",
++        "border-bottom-width", "border-color", "border-collapse", "border-left",
++        "border-left-color", "border-left-style", "border-left-width",
++        "border-right", "border-right-color", "border-right-style",
++        "border-right-width", "border-spacing", "border-style", "border-top",
++        "border-top-color", "border-top-style", "border-top-width",
++        "border-width", "bottom", "caption-side", "clear", "clip", "color",
++        "content", "counter-increment", "counter-reset", "cursor", "direction",
++        "display", "empty-cells", "float", "font", "font-family", "font-size",
++        "font-style", "font-variant", "font-weight", "height", "left",
++        "letter-spacing", "line-height", "list-style", "list-style-image",
++        "list-style-position", "list-style-type", "margin", "margin-bottom",
++        "margin-left", "margin-right", "margin-top", "max-height", "max-width",
++        "min-height", "min-width", "orphans", "outline", "outline-color",
++        "outline-style", "outline-width", "overflow", "padding",
++        "padding-bottom", "padding-left", "padding-right", "padding-top",
++        "page-break-after", "page-break-before", "page-break-inside",
++        "position", "quotes", "right", "table-layout", "text-align",
++        "text-decoration", "text-indent", "text-shadow", "text-transform",
++        "top", "unicode-bidi", "vertical-align", "visibility", "white-space",
++        "widows", "width", "word-spacing", "z-index", "opacity"];
++
++    return rnd() < cfg.cssPropertyNameErrorRatio ?
++      generateToken() : rndElem(properties);
++  }
++
++  function generateCSSPropertyValue() {
++    var red = rnd(255);
++    var green = rnd(255);
++    var blue = rnd(255);
++    var rgb = "rgb(" + red + "," + green + "," + blue + ")";
++    var rgba = "rgba(" + rnd() + "," + red + "," + green + "," + blue + ")";
++    var hex = "#" + red.toString(16) + green.toString(16) + blue.toString(16);
++    var n = rnd(360);
++    var token = generateToken();
++
++    var colors = [rgba, hex, rgb, "aliceblue", "antiquewhite", "aqua", "aqua",
++        "aquamarine", "azure", "beige", "bisque", "black", "blanchedalmond",
++        "blue", "blueviolet", "brown", "burlywood", "cadetblue", "chartreuse",
++        "chocolate", "coral", "cornflowerblue", "cornsilk", "crimson", "cyan",
++        "darkblue", "darkcyan", "darkgoldenrod", "darkgray", "darkgreen",
++        "darkgrey", "darkkhaki", "darkmagenta", "darkolivegreen", "darkorange",
++        "darkorchid", "darkred", "darksalmon", "darkseagreen", "darkslateblue",
++        "darkslategray", "darkslategrey", "darkturquoise", "darkviolet",
++        "deeppink", "deepskyblue", "dimgray", "dimgrey", "dodgerblue",
++        "firebrick", "floralwhite", "forestgreen", "fuchsia", "gainsboro",
++        "ghostwhite", "gold", "goldenrod", "gray", "green", "greenyellow",
++        "grey", "honeydew", "hotpink", "indianred", "indigo", "ivory", "khaki",
++        "lavender", "lavenderblush", "lawngreen", "lemonchiffon", "lightblue",
++        "lightcoral", "lightcyan", "lightgoldenrodyellow", "lightgray",
++        "lightgreen", "lightgrey", "lightpink", "lightsalmon", "lightseagreen",
++        "lightskyblue", "lightslategray", "lightslategrey", "lightsteelblue",
++        "lightyellow", "lime", "limegreen", "linen", "magenta", "maroon",
++        "mediumaquamarine", "mediumblue", "mediumorchid", "mediumpurple",
++        "mediumseagreen", "mediumslateblue", "mediumspringgreen",
++        "mediumturquoise", "mediumvioletred", "midnightblue", "mintcream",
++        "mistyrose", "moccasin", "navajowhite", "navy", "oldlace", "olive",
++        "olivedrab", "orange", "orangered", "orchid", "palegoldenrod",
++        "palegreen", "paleturquoise", "palevioletred", "papayawhip",
++        "peachpuff", "peru", "pink", "plum", "powderblue", "purple", "purple",
++        "red", "rosybrown", "royalblue", "saddlebrown", "salmon", "sandybrown",
++        "seagreen", "seashell", "sienna", "silver", "skyblue", "slateblue",
++        "slategray", "slategrey", "snow", "springgreen", "steelblue", "tan",
++        "teal", "thistle", "tomato", "transparent", "turquoise", "violet",
++        "wheat", "white", "whitesmoke", "yellow", "yellowgreen"];
++
++    var values = ["auto", "inherit", "normal", "pre", "nowrap", "left-side",
++        "far-left", "left", "center-left", "center", "center-right", "right",
++        "far-right", "right-side", "behind", "leftwards", "rightwards",
++        "scroll", "fixed", "top", "bottom", "repeat", "repeat-x", "repeat-y",
++        "no-repeat", "collapse", "separate", "none", "both", "open-quote",
++        "close-quote", "no-open-quote", "no-close-quote", "crosshair",
++        "default", "pointer", "move", "e-resize", "ne-resize", "nw-resize",
++        "n-resize", "se-resize", "sw-resize", "s-resize", "w-resize", "text",
++        "wait", "help", "progress", "ltr", "rtl", "inline", "block",
++        "list-item", "run-in", "inline-block", "table", "inline-table",
++        "table-row-group", "table-header-group", "table-footer-group",
++        "table-row", "table-column-group", "table-column", "table-cell",
++        "table-caption", "below", "level", "above", "higher", "lower", "show",
++        "hide", "italic", "oblique", "small-caps", "bold", "bolder", "lighter",
++        "inside", "outside", "disc", "circle", "square", "decimal",
++        "decimal-leading-zero", "lower-roman", "upper-roman", "lower-greek",
++        "lower-latin", "upper-latin", "armenian", "georgian", "lower-alpha",
++        "upper-alpha", "invert", "visible", "hidden", "always", "avoid",
++        "static", "relative", "absolute", "low", "x-low", "medium", "high",
++        "x-high", "mix", "once", "digits", "continuous", "code", "spell-out",
++        "x-slow", "slow", "fast", "x-fast", "x-faster", "justify", "underline",
++        "overline", "line-through", "blink", "capitalize", "uppercase",
++        "lowercase", "embed", "bidi-override", "baseline", "sub", "super",
++        "text-top", "middle", "text-bottom", "silent", "x-soft", "soft", "loud",
++        "x-loud", n + "px", n + "em", n + "pt", n + "%", n + "cm", n + "ex", n +
++          "in", n + "mm", n + "pc", n + "ms" + n + "s", n, n + "deg", n + "rad",
++        n + "grad", n + "Hz", n + "kHz", "'" + token + "'", token, "attr(" +
++          token + ")", "url('" + cfg.testImage + "')"];
++
++    values.push.apply(values, colors);
++    return rndElem(values);
++  }
++
++  function rnd(max, min) {
++    if (!max) {
++      return Math.random();
++    }
++
++    if (!min) {
++      min = 0;
++    }
++    return min + Math.floor(Math.random() * (max - min));
++  }
++
++  function rndElem(arr) {
++    return arr[rnd(arr.length-1)];
++  }
++
++  function rndChar() {
++    return String.fromCharCode(rnd(255));
++  }
++
++  window.addEventListener("load", function() {
++    var min = 3000;
++    var max = 7000;
++
++    setTimeout(function() {
++      generateStyleError();
++      setTimeout(arguments.callee, rnd(max,min));
++    }, rnd(max, min));
++
++    setTimeout(function() {
++      generateScriptError();
++      setTimeout(arguments.callee, rnd(max,min));
++    }, rnd(max, min));
++
++    setTimeout(function() {
++      generateScriptEvalError();
++      setTimeout(arguments.callee, rnd(max,min));
++    }, rnd(max, min));
++
++    setTimeout(function() {
++      generateScriptEventError();
++      setTimeout(arguments.callee, rnd(max,min));
++    }, rnd(max, min));
++
++    setTimeout(function() {
++      generateConsoleMessages();
++      setTimeout(arguments.callee, rnd(max,min));
++    }, rnd(max, min));
++
++    setTimeout(function() {
++      generateNetworkRequest();
++      setTimeout(arguments.callee, rnd(max,min));
++    }, rnd(max, min));
++
++  }, false);
++// --></script>
++</head>
++<body>
++  <p>Bug 594741 - Web Console stress test</p>
++  <div id="styles"></div>
++  <iframe src="test-network.html"></iframe>
++</body>

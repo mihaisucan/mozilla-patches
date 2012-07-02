@@ -1,0 +1,116 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1567,17 +1567,17 @@ HUD_SERVICE.prototype =
+     }
+ 
+     var outputNode = aHUD.querySelector(".hud-output-node");
+ 
+     while (outputNode.firstChild) {
+       outputNode.removeChild(outputNode.firstChild);
+     }
+ 
+-    outputNode.lastTimestamp = 0;
++    aHUD.lastTimestamp = 0;
+   },
+ 
+   /**
+    * get a unique ID from the sequence generator
+    *
+    * @returns integer
+    */
+   sequenceId: function HS_sequencerId()
+@@ -4284,17 +4284,21 @@ JSTerm.prototype = {
+   clearOutput: function JST_clearOutput()
+   {
+     let outputNode = this.outputNode;
+ 
+     while (outputNode.firstChild) {
+       outputNode.removeChild(outputNode.firstChild);
+     }
+ 
+-    outputNode.lastTimestamp = 0;
++    let hudBox = outputNode;
++    while (!hudBox.classList.contains("hud-box")) {
++      hudBox = hudBox.parentNode;
++    }
++    hudBox.lastTimestamp = 0;
+   },
+ 
+   /**
+    * Updates the size of the input field (command line) to fit its contents.
+    *
+    * @returns void
+    */
+   resizeInput: function JST_resizeInput()
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -96,16 +96,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js \
+ 	browser_webconsole_bug_595350_multiple_windows_and_tabs.js \
+ 	browser_webconsole_bug_594497_history_arrow_keys.js \
+ 	browser_webconsole_bug_588342_document_focus.js \
+ 	browser_webconsole_bug_595934_message_categories.js \
+ 	browser_webconsole_bug_601352_scroll.js \
+ 	browser_webconsole_bug_592442_closing_brackets.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
++	browser_webconsole_bug_587615_lastTimestamp.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_587615_lastTimestamp.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_587615_lastTimestamp.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_587615_lastTimestamp.js
+@@ -0,0 +1,45 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "data:text/html,test for bug 587615";
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let HUD = HUDService.hudReferences[hudId];
++  let HUDBox = HUD.HUDBox;
++
++  content.wrappedJSObject.console.log("hello world!");
++
++  isnot(HUDBox.lastTimestamp, 0, "display.lastTimestamp is not 0");
++
++  HUDService.clearDisplay(hudId);
++
++  is(HUDBox.lastTimestamp, 0, "display.lastTimestamp is 0");
++
++  content.wrappedJSObject.console.log("hello world 2!");
++
++  isnot(HUDBox.lastTimestamp, 0, "display.lastTimestamp is not 0");
++
++  HUD.jsterm.clearOutput();
++
++  is(HUDBox.lastTimestamp, 0, "display.lastTimestamp is 0");
++
++  finishTest();
++}
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoad, true);
++}
++

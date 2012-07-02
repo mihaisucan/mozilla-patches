@@ -1,0 +1,37 @@
+# HG changeset patch
+# Date 1309538211 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Parent 54a6bdbf5176a84934947678b0aae0e403bbbde1
+Bug 592469 - Web Console cleanup: part 3 - HUDService - remove getConsoleOutputNode()
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -2072,27 +2072,16 @@ HUD_SERVICE.prototype =
+         }
+       }, false);
+     }
+ 
+     ConsoleUtils.outputMessageNode(node, aHUDId);
+   },
+ 
+   /**
+-   * Get OutputNode by Id
+-   *
+-   * @param string aId
+-   * @returns nsIDOMNode (richlistbox)
+-   */
+-  getConsoleOutputNode: function HS_getConsoleOutputNode(aId)
+-  {
+-    return this.getHudReferenceById(aId).outputNode;
+-  },
+-
+-  /**
+    * Inform user that the Web Console API has been replaced by a script
+    * in a content page.
+    *
+    * @param string aHUDId
+    *        The ID of the Web Console to which to send the message.
+    * @return void
+    */
+   logWarningAboutReplacedAPI:

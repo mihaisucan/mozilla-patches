@@ -1,0 +1,2205 @@
+# HG changeset patch
+# Parent fdd30456c867ca1429a8ef16838380c279dbb329
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1249,42 +1249,31 @@ HUD_SERVICE.prototype =
+     let hudId = "hud_" + nBox.id;
+     let displayNode = nBox.querySelector("#" + hudId);
+ 
+     if (hudId in this.hudReferences && displayNode) {
+       if (!aAnimated) {
+         this.storeHeight(hudId);
+       }
+ 
+-      this.unregisterDisplay(displayNode);
++      this.unregisterDisplay(hudId);
+       window.focus();
+     }
+   },
+ 
+   /**
+    * Clear the specified HeadsUpDisplay
+    *
+-   * @param string|nsIDOMNode aHUD
+-   *        Either the ID of a HUD or the DOM node corresponding to an outer
+-   *        HUD box.
++   * @param string aHUD
++   *        The ID of a HUD.
+    * @returns void
+    */
+   clearDisplay: function HS_clearDisplay(aHUD)
+   {
+-    if (typeof(aHUD) === "string") {
+-      aHUD = this.getOutputNodeById(aHUD);
+-    }
+-
+-    var outputNode = aHUD.querySelector(".hud-output-node");
+-
+-    while (outputNode.firstChild) {
+-      outputNode.removeChild(outputNode.firstChild);
+-    }
+-
+-    aHUD.lastTimestamp = 0;
++    this.hudReferences[aHUD].jsterm.clearOutput();
+   },
+ 
+   /**
+    * get a unique ID from the sequence generator
+    *
+    * @returns integer
+    */
+   sequenceId: function HS_sequencerId()
+@@ -1381,18 +1370,17 @@ HUD_SERVICE.prototype =
+    * @param boolean aState
+    *        True if the filter named by @aMessageType is being turned on; false
+    *        otherwise.
+    * @returns void
+    */
+   adjustVisibilityForMessageType:
+   function HS_adjustVisibilityForMessageType(aHUDId, aMessageType, aState)
+   {
+-    let displayNode = this.getOutputNodeById(aHUDId);
+-    let outputNode = displayNode.querySelector(".hud-output-node");
++    let outputNode = this.hudReferences[aHUDId].outputNode;
+     let doc = outputNode.ownerDocument;
+ 
+     this.maintainScrollPosition(outputNode, function() {
+       this.liftNode(outputNode, function() {
+         let xpath = ".//*[contains(@class, 'hud-msg-node') and " +
+           "contains(@class, 'hud-" + aMessageType + "')]";
+         let result = doc.evaluate(xpath, outputNode, null,
+           Ci.nsIDOMXPathResult.UNORDERED_NODE_SNAPSHOT_TYPE, null);
+@@ -1479,18 +1467,17 @@ HUD_SERVICE.prototype =
+    * @param string aSearchString
+    *        The new search string.
+    * @returns void
+    */
+   adjustVisibilityOnSearchStringChange:
+   function HS_adjustVisibilityOnSearchStringChange(aHUDId, aSearchString)
+   {
+     let fn = this.buildXPathFunctionForString(aSearchString);
+-    let displayNode = this.getOutputNodeById(aHUDId);
+-    let outputNode = displayNode.querySelector(".hud-output-node");
++    let outputNode = this.hudReferences[aHUDId].outputNode;
+     let doc = outputNode.ownerDocument;
+ 
+     this.maintainScrollPosition(outputNode, function() {
+       this.liftNode(outputNode, function() {
+         let xpath = './/*[contains(@class, "hud-msg-node") and ' +
+           'not(contains(@class, "hud-filtered-by-string")) and not(' + fn + ')]';
+         let result = doc.evaluate(xpath, outputNode, null,
+           Ci.nsIDOMXPathResult.UNORDERED_NODE_SNAPSHOT_TYPE, null);
+@@ -1582,64 +1569,55 @@ HUD_SERVICE.prototype =
+     this.filterPrefs[aHUDId] = this.defaultFilterPrefs;
+     // init storage objects:
+     this.storage.createDisplay(aHUDId);
+   },
+ 
+   /**
+    * When a display is being destroyed, unregister it first
+    *
+-   * @param string|nsIDOMNode aHUD
+-   *        Either the ID of a HUD or the DOM node corresponding to an outer
+-   *        HUD box.
++   * @param string aHUD
++   *        The ID of a HUD.
+    * @returns void
+    */
+   unregisterDisplay: function HS_unregisterDisplay(aHUD)
+   {
+     // Remove children from the output. If the output is not cleared, there can
+     // be leaks as some nodes has node.onclick = function; set and GC can't
+     // remove the nodes then.
+     HUDService.clearDisplay(aHUD);
+ 
+-    var id, outputNode;
+-    if (typeof(aHUD) === "string") {
+-      id = aHUD;
+-      outputNode = this.getHeadsUpDisplay(aHUD);
+-    }
+-    else {
+-      id = aHUD.getAttribute("id");
+-      outputNode = aHUD;
+-    }
++    let hudBox = this.hudReferences[aHUD].HUDBox;
+ 
+     // remove HUD DOM node and
+     // remove display references from local registries get the outputNode
+-    var parent = outputNode.parentNode;
++    let parent = hudBox.parentNode;
+     var splitters = parent.querySelectorAll("splitter");
+     var len = splitters.length;
+     for (var i = 0; i < len; i++) {
+       if (splitters[i].getAttribute("class") == "hud-splitter") {
+         splitters[i].parentNode.removeChild(splitters[i]);
+         break;
+       }
+     }
+     // remove the DOM Nodes
+-    parent.removeChild(outputNode);
++    parent.removeChild(hudBox);
+ 
+     // remove the HeadsUpDisplay object from memory
+-    delete this.hudReferences[id];
++    delete this.hudReferences[aHUD];
+     // remove the related storage object
+-    this.storage.removeDisplay(id);
++    this.storage.removeDisplay(aHUD);
+ 
+     for (let windowID in this.windowIds) {
+-      if (this.windowIds[windowID] == id) {
++      if (this.windowIds[windowID] == aHUD) {
+         delete this.windowIds[windowID];
+       }
+     }
+ 
+-    this.unregisterActiveContext(id);
++    this.unregisterActiveContext(aHUD);
+ 
+     if (Object.keys(this.hudReferences).length == 0) {
+       this.suspend();
+     }
+   },
+ 
+   /**
+    * "Wake up" the Web Console activity. This is called when the first Web
+@@ -1694,61 +1672,41 @@ HUD_SERVICE.prototype =
+   shutdown: function HS_shutdown()
+   {
+     for (let hudId in this.hudReferences) {
+       this.unregisterDisplay(hudId);
+     }
+   },
+ 
+   /**
++   * Returns the HeadsUpDisplay object associated to a content window.
++   *
++   * @param nsIDOMWindow aContentWindow
++   * @returns object
++   */
++  getHudByWindow: function HS_getHudByWindow(aContentWindow)
++  {
++    let hudId = this.getHudIdByWindow(aContentWindow);
++    return hudId ? this.hudReferences[hudId] : null;
++  },
++
++  /**
+    * Returns the hudId that is corresponding to the hud activated for the
+    * passed aContentWindow. If there is no matching hudId null is returned.
+    *
+    * @param nsIDOMWindow aContentWindow
+    * @returns string or null
+    */
+   getHudIdByWindow: function HS_getHudIdByWindow(aContentWindow)
+   {
+     let windowId = this.getWindowId(aContentWindow);
+     return this.getHudIdByWindowId(windowId);
+   },
+ 
+   /**
+-   * Gets the Web Console DOM node, the .hud-box.
+-   *
+-   * @param string id
+-   *        The Heads Up Display DOM Id
+-   * @returns nsIDOMNode
+-   */
+-  getHeadsUpDisplay: function HS_getHeadsUpDisplay(aId)
+-  {
+-    return aId in this.hudReferences ? this.hudReferences[aId].HUDBox : null;
+-  },
+-
+-  /**
+-   * Gets the Web Console DOM node, the .hud-box.
+-   *
+-   * @param string aId
+-   * @returns nsIDOMNode
+-   */
+-  getOutputNodeById: function HS_getOutputNodeById(aId)
+-  {
+-    return this.getHeadsUpDisplay(aId);
+-  },
+-
+-  /**
+-   * Gets an array that contains all the HUD IDs.
+-   * @returns array
+-   */
+-  displaysIndex: function HS_displaysIndex()
+-  {
+-    return Object.keys(this.hudReferences);
+-  },
+-
+-  /**
+    * Returns the hudId that is corresponding to the given outer window ID.
+    *
+    * @param number aWindowId
+    *        the outer window ID
+    * @returns string the hudId
+    */
+   getHudIdByWindowId: function HS_getHudIdByWindowId(aWindowId)
+   {
+@@ -1757,19 +1715,17 @@ HUD_SERVICE.prototype =
+ 
+   /**
+    * get the current filter string for the HeadsUpDisplay
+    *
+    * @param string aHUDId
+    * @returns string
+    */
+   getFilterStringByHUDId: function HS_getFilterStringbyHUDId(aHUDId) {
+-    var hud = this.getHeadsUpDisplay(aHUDId);
+-    var filterStr = hud.querySelectorAll(".hud-filter-box")[0].value;
+-    return filterStr;
++    return this.hudReferences[aHUDId].filterBox.value;
+   },
+ 
+   /**
+    * Update the filter text in the internal tracking object for all
+    * filter strings
+    *
+    * @param nsIDOMNode aTextBoxNode
+    * @returns void
+@@ -1868,39 +1824,27 @@ HUD_SERVICE.prototype =
+         break;
+       default:
+         // noop
+         break;
+     }
+   },
+ 
+   /**
+-   * Get OutputNode by Id
+-   *
+-   * @param string aId
+-   * @returns nsIDOMNode
+-   */
+-  getConsoleOutputNode: function HS_getConsoleOutputNode(aId)
+-  {
+-    let displayNode = this.getHeadsUpDisplay(aId);
+-    return displayNode.querySelector(".hud-output-node");
+-  },
+-
+-  /**
+    * Inform user that the Web Console API has been replaced by a script
+    * in a content page.
+    *
+    * @param string aHUDId
+    * @returns void
+    */
+   logWarningAboutReplacedAPI:
+   function HS_logWarningAboutReplacedAPI(aHUDId)
+   {
+     let domId = "hud-log-node-" + this.sequenceId();
+-    let outputNode = this.getConsoleOutputNode(aHUDId);
++    let outputNode = this.hudReferences[aHUDId].outputNode;
+ 
+     let msgFormat = {
+       logLevel: "error",
+       activityObject: {},
+       hudId: aHUDId,
+       origin: "console-listener",
+       domId: domId,
+       message: this.getStr("ConsoleAPIDisabled"),
+@@ -1930,33 +1874,16 @@ HUD_SERVICE.prototype =
+ 
+   /**
+    * Registry of ApplicationHooks used by specified Gecko Apps
+    *
+    * @returns Specific Gecko 'ApplicationHooks' Object/Mixin
+    */
+   applicationHooks: null,
+ 
+-  getChromeWindowFromContentWindow:
+-  function HS_getChromeWindowFromContentWindow(aContentWindow)
+-  {
+-    if (!aContentWindow) {
+-      throw new Error("Cannot get contentWindow via nsILoadContext");
+-    }
+-    var win = aContentWindow.QueryInterface(Ci.nsIDOMWindow)
+-      .QueryInterface(Ci.nsIInterfaceRequestor)
+-      .getInterface(Ci.nsIWebNavigation)
+-      .QueryInterface(Ci.nsIDocShellTreeItem)
+-      .rootTreeItem
+-      .QueryInterface(Ci.nsIInterfaceRequestor)
+-      .getInterface(Ci.nsIDOMWindow)
+-      .QueryInterface(Ci.nsIDOMChromeWindow);
+-    return win;
+-  },
+-
+   /**
+    * Requests that haven't finished yet.
+    */
+   openRequests: {},
+ 
+   /**
+    * Assign a function to this property to listen for finished httpRequests.
+    * Used by unit tests.
+@@ -2261,18 +2188,17 @@ HUD_SERVICE.prototype =
+    *        The activity to log.
+    * @returns void
+    */
+   logNetActivity: function HS_logNetActivity(aType, aActivityObject)
+   {
+     var outputNode, hudId;
+     try {
+       hudId = aActivityObject.hudId;
+-      outputNode = this.getHeadsUpDisplay(hudId).
+-                                  querySelector(".hud-output-node");
++      outputNode = this.hudReferences[hudId].outputNode;
+ 
+       // get an id to attach to the dom node for lookup of node
+       // when updating the log entry with additional http transactions
+       var domId = "hud-log-node-" + this.sequenceId();
+ 
+       var message = { logLevel: aType,
+                       activityObj: aActivityObject,
+                       hudId: hudId,
+@@ -2455,39 +2381,16 @@ HUD_SERVICE.prototype =
+     var firefoxMixin = new JSTermFirefoxMixin(context, aParentNode);
+     var jsTerm = new JSTerm(context, aParentNode, firefoxMixin, aConsole);
+ 
+     // TODO: injection of additional functionality needs re-thinking/api
+     // see bug 559748
+   },
+ 
+   /**
+-   * Passed a HUDId, the corresponding window is returned
+-   *
+-   * @param string aHUDId
+-   * @returns nsIDOMWindow
+-   */
+-  getContentWindowFromHUDId: function HS_getContentWindowFromHUDId(aHUDId)
+-  {
+-    var hud = this.getHeadsUpDisplay(aHUDId);
+-    var nodes = hud.parentNode.childNodes;
+-
+-    for (var i = 0; i < nodes.length; i++) {
+-      var node = nodes[i];
+-
+-      if (node.localName == "stack" &&
+-          node.firstChild &&
+-          node.firstChild.contentWindow) {
+-        return node.firstChild.contentWindow;
+-      }
+-    }
+-    throw new Error("HS_getContentWindowFromHUD: Cannot get contentWindow");
+-  },
+-
+-  /**
+    * Creates a generator that always returns a unique number for use in the
+    * indexes
+    *
+    * @returns Generator
+    */
+   createSequencer: function HS_createSequencer(aInt)
+   {
+     function sequencer(aInt)
+@@ -2531,17 +2434,17 @@ HUD_SERVICE.prototype =
+     let xulDocument = aTab.ownerDocument;
+     let xulWindow = xulDocument.defaultView;
+     let gBrowser = xulWindow.gBrowser;
+     let linkedBrowser = aTab.linkedBrowser;
+     let notificationBox = gBrowser.getNotificationBox(linkedBrowser);
+     let hudId = "hud_" + notificationBox.getAttribute("id");
+     let outputNode = xulDocument.getElementById(hudId);
+     if (outputNode != null) {
+-      this.unregisterDisplay(outputNode);
++      this.unregisterDisplay(hudId);
+     }
+   },
+ 
+   /**
+    * onTabClose event handler function
+    *
+    * @param aEvent
+    * @returns void
+@@ -2689,17 +2592,17 @@ HUD_SERVICE.prototype =
+    * @param string aDirection Whether to animate the console appearing
+    *        (ANIMATE_IN) or disappearing (ANIMATE_OUT).
+    * @param function aCallback An optional callback, which will be called with
+    *        the "transitionend" event passed as a parameter once the animation
+    *        finishes.
+    */
+   animate: function HS_animate(aHUDId, aDirection, aCallback)
+   {
+-    let hudBox = this.getOutputNodeById(aHUDId);
++    let hudBox = this.hudReferences[aHUDId].HUDBox;
+     if (!hudBox.classList.contains("animated")) {
+       if (aCallback) {
+         aCallback();
+       }
+       return;
+     }
+ 
+     switch (aDirection) {
+@@ -2882,17 +2785,17 @@ function HeadsUpDisplay(aConfig)
+       throw new Error(this.ERRORS.PARENTNODE_NOT_FOUND);
+     }
+     this.parentNode = parentNode;
+   }
+ 
+   // create textNode Factory:
+   this.textFactory = NodeFactory("text", "xul", this.chromeDocument);
+ 
+-  this.chromeWindow = HUDService.getChromeWindowFromContentWindow(this.contentWindow);
++  this.chromeWindow = this.chromeDocument.defaultView;
+ 
+   // create a panel dynamically and attach to the parentNode
+   let hudBox = this.createHUD();
+ 
+   let splitter = this.chromeDocument.createElement("splitter");
+   splitter.setAttribute("class", "hud-splitter");
+ 
+   this.notificationBox.insertBefore(splitter,
+@@ -4980,20 +4883,19 @@ HeadsUpDisplayUICommands = {
+     return true;
+   },
+ 
+   command: function UIC_command(aButton) {
+     var filter = aButton.getAttribute("buttonType");
+     var hudId = aButton.getAttribute("hudId");
+     switch (filter) {
+       case "selectAll":
+-        let outputNode = HUDService.getOutputNodeById(hudId);
+-        let chromeWindow = outputNode.ownerDocument.defaultView;
+-        let commandController = chromeWindow.commandController;
+-        commandController.selectAll(outputNode);
++        let hud = HUDService.hudReferences[hudId];
++        let commandController = hud.chromeWindow.commandController;
++        commandController.selectAll(hud.outputNode);
+         break;
+       case "saveBodies": {
+         let checked = aButton.getAttribute("checked") === "true";
+         HUDService.saveRequestAndResponseBodies = checked;
+         break;
+       }
+     }
+   },
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -54,20 +54,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_588730_text_node_insertion.js \
+ 	browser_webconsole_bug_601667_filter_buttons.js \
+ 	browser_webconsole_bug_597136_external_script_errors.js \
+ 	browser_webconsole_bug_597136_network_requests_from_chrome.js \
+ 	browser_webconsole_completion.js \
+ 	browser_webconsole_console_logging_api.js \
+ 	browser_webconsole_consoleonpage.js \
+ 	browser_webconsole_chrome.js \
+-	browser_webconsole_display_accessors.js \
+ 	browser_webconsole_execution_scope.js \
+-	browser_webconsole_get_content_window_from_hud_id.js \
+-	browser_webconsole_get_heads_up_display.js \
+ 	browser_webconsole_history.js \
+ 	browser_webconsole_hud_getters.js \
+ 	browser_webconsole_js_input_and_output_styling.js \
+ 	browser_webconsole_js_input_expansion.js \
+ 	browser_webconsole_live_filtering_of_message_types.js \
+ 	browser_webconsole_live_filtering_on_search_strings.js \
+ 	browser_warn_user_about_replaced_api.js \
+ 	browser_webconsole_bug_586142_insert_newlines.js \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_warn_user_about_replaced_api.js b/toolkit/components/console/hudservice/tests/browser/browser_warn_user_about_replaced_api.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_warn_user_about_replaced_api.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_warn_user_about_replaced_api.js
+@@ -58,16 +58,15 @@ function testWarningPresent() {
+     testOpenWebConsole(true);
+     finishTest();
+   }, true);
+   browser.contentWindow.location = TEST_REPLACED_API_URI;
+ }
+ 
+ function testOpenWebConsole(shouldWarn) {
+   openConsole();
+-  is(HUDService.displaysIndex().length, 1, "WebConsole was opened");
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-  hud = HUDService.getHeadsUpDisplay(hudId);
++  hud = HUDService.getHudByWindow(content);
++  ok(hud, "WebConsole was opened");
+ 
+   let msg = (shouldWarn ? "found" : "didn't find") + " API replacement warning";
+-  testLogEntry(hud, "disabled", msg, false, !shouldWarn);
++  testLogEntry(hud.outputNode, "disabled", msg, false, !shouldWarn);
+ }
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_basic_net_logging.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_basic_net_logging.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_basic_net_logging.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_basic_net_logging.js
+@@ -46,29 +46,27 @@ const TEST_NETWORK_URI = "http://example
+ function test() {
+   addTab("data:text/html,Web Console basic network logging test");
+   browser.addEventListener("load", onLoad, true);
+ }
+ 
+ function onLoad(aEvent) {
+   browser.removeEventListener(aEvent.type, arguments.callee, true);
+   openConsole();
+-  hudId = HUDService.displaysIndex()[0];
++  outputNode = HUDService.getHudByWindow(content).outputNode;
+ 
+   browser.addEventListener("load", testBasicNetLogging, true);
+   content.location = TEST_NETWORK_URI;
+ }
+ 
+ function testBasicNetLogging(aEvent) {
+   browser.removeEventListener(aEvent.type, arguments.callee, true);
+ 
+-  hudBox = HUDService.getHeadsUpDisplay(hudId);
+-
+   executeSoon(function() {
+-    let text = hudBox.querySelector(".hud-output-node").textContent;
++    let text = outputNode.textContent;
+ 
+     isnot(text.indexOf("test-network.html"), -1, "found test-network.html");
+     isnot(text.indexOf("testscript.js"), -1, "found testscript.js");
+     isnot(text.indexOf("test-image.png"), -1, "found test-image.png");
+     isnot(text.indexOf("network console"), -1, "found network console");
+ 
+     finishTest();
+   });
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_578437_page_reload.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_578437_page_reload.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_578437_page_reload.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_578437_page_reload.js
+@@ -54,17 +54,16 @@ function onLoad() {
+   browser.addEventListener("DOMContentLoaded", testPageReload, false);
+   content.location.reload();
+ }
+ 
+ function testPageReload() {
+ 
+   browser.removeEventListener("DOMContentLoaded", testPageReload, false);
+ 
+-  let hudId = HUDService.displaysIndex()[0];
+   let console = browser.contentWindow.wrappedJSObject.console;
+ 
+   is(typeof console, "object", "window.console is an object, after page reload");
+   is(typeof console.log, "function", "console.log is a function");
+   is(typeof console.info, "function", "console.info is a function");
+   is(typeof console.warn, "function", "console.warn is a function");
+   is(typeof console.error, "function", "console.error is a function");
+   is(typeof console.exception, "function", "console.exception is a function");
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_579412_input_focus.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_579412_input_focus.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_579412_input_focus.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_579412_input_focus.js
+@@ -46,17 +46,15 @@ function test() {
+   addTab(TEST_URI);
+   browser.addEventListener("DOMContentLoaded", testInputFocus, false);
+ }
+ 
+ function testInputFocus() {
+   browser.removeEventListener("DOMContentLoaded", testInputFocus, false);
+ 
+   openConsole();
+-  let hudId = HUDService.displaysIndex()[0];
+-  let hudBox = HUDService.getHeadsUpDisplay(hudId);
+ 
+-  let inputNode = hudBox.querySelector(".jsterm-input-node");
++  let inputNode = HUDService.getHudByWindow(content).jsterm.inputNode;
+   ok(inputNode.getAttribute("focused"), "input node is focused");
+ 
+   finishTest();
+ }
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580001_closing_after_completion.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580001_closing_after_completion.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580001_closing_after_completion.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580001_closing_after_completion.js
+@@ -50,19 +50,17 @@ function test() {
+ }
+ 
+ function testClosingAfterCompletion() {
+   browser.removeEventListener("DOMContentLoaded",
+                               testClosingAfterCompletion, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-  hudBox = HUDService.getHeadsUpDisplay(hudId);
+-  let inputNode = hudBox.querySelector(".jsterm-input-node");
++  let inputNode = HUDService.getHudByWindow(content).jsterm.inputNode;
+ 
+   let errorWhileClosing = false;
+   function errorListener(evt) {
+     browser.removeEventListener("error", errorListener, false);
+     errorWhileClosing = true;
+   }
+ 
+   browser.addEventListener("error", errorListener, false);
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580030_errors_after_page_reload.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580030_errors_after_page_reload.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580030_errors_after_page_reload.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580030_errors_after_page_reload.js
+@@ -87,19 +87,17 @@ var consoleObserver = {
+     // Ignore errors we don't care about.
+     if (!(aMessage instanceof Ci.nsIScriptError) ||
+       aMessage.category != "content javascript") {
+       return;
+     }
+ 
+     Services.console.unregisterListener(this);
+ 
+-    hudId = HUDService.displaysIndex()[0];
+-    hud = HUDService.hudReferences[hudId];
+-    outputNode = hud.outputNode;
++    let outputNode = HUDService.getHudByWindow(content).outputNode;
+ 
+     executeSoon(function() {
+       let msg = "Found the error message after page reload";
+       testLogEntry(outputNode, "fooBazBaz", msg);
+       finishTest();
+     });
+   }
+ };
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580400_groups.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580400_groups.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580400_groups.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580400_groups.js
+@@ -47,19 +47,17 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testGroups, false);
+ }
+ 
+ function testGroups() {
+   browser.removeEventListener("DOMContentLoaded", testGroups, false);
+ 
+   openConsole();
+ 
+-  let hudId = HUDService.displaysIndex()[0];
+-
+-  let HUD = HUDService.hudReferences[hudId];
++  let HUD = HUDService.getHudByWindow(content);
+   let jsterm = HUD.jsterm;
+   let outputNode = jsterm.outputNode;
+ 
+   let timestamp0 = Date.now();
+   jsterm.execute("0");
+   is(outputNode.querySelectorAll(".hud-group").length, 1,
+     "one group exists after the first console message");
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_581231_close_button.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_581231_close_button.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_581231_close_button.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_581231_close_button.js
+@@ -17,22 +17,22 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testCloseButton, false);
+ }
+ 
+ function testCloseButton() {
+   browser.removeEventListener("DOMContentLoaded", testCloseButton, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-  hudBox = HUDService.getHeadsUpDisplay(hudId);
++  let hud = HUDService.getHudByWindow(content);
++  let hudId = hud.hudId;
+ 
+   HUDService.disableAnimation(hudId);
+   executeSoon(function() {
+-    let closeButton = hudBox.querySelector(".webconsole-close-button");
++    let closeButton = hud.HUDBox.querySelector(".webconsole-close-button");
+     ok(closeButton != null, "we have the close button");
+ 
+     // XXX: ASSERTION: ###!!! ASSERTION: XPConnect is being called on a scope without a 'Components' property!: 'Error', file /home/ddahl/code/moz/mozilla-central/mozilla-central/js/src/xpconnect/src/xpcwrappednativescope.cpp, line 795
+ 
+     EventUtils.synthesizeMouse(closeButton, 0, 0, {});
+ 
+     executeSoon(function (){
+       ok(!(hudId in HUDService.hudReferences), "the console is closed when " +
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_582201_duplicate_errors.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_582201_duplicate_errors.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_582201_duplicate_errors.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_582201_duplicate_errors.js
+@@ -48,17 +48,17 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testDuplicateErrors, false);
+ }
+ 
+ function testDuplicateErrors() {
+   browser.removeEventListener("DOMContentLoaded", testDuplicateErrors,
+                               false);
+   openConsole();
+ 
+-  let hudId = HUDService.displaysIndex()[0];
++  let hudId = HUDService.getHudIdByWindow(content);
+   HUDService.clearDisplay(hudId);
+ 
+   Services.console.registerListener(consoleObserver);
+ 
+   content.location.reload();
+ }
+ 
+ var consoleObserver = {
+@@ -69,19 +69,17 @@ var consoleObserver = {
+     // we ignore errors we don't care about
+     if (!(aMessage instanceof Ci.nsIScriptError) ||
+       aMessage.category != "content javascript") {
+       return;
+     }
+ 
+     Services.console.unregisterListener(this);
+ 
+-    hudId = HUDService.displaysIndex()[0];
+-    hud = HUDService.hudReferences[hudId];
+-    outputNode = hud.outputNode;
++    let outputNode = HUDService.getHudByWindow(content).outputNode;
+ 
+     executeSoon(function () {
+       var text = outputNode.textContent;
+       var error1pos = text.indexOf("fooDuplicateError1");
+       ok(error1pos > -1, "found fooDuplicateError1");
+       if (error1pos > -1) {
+         ok(text.indexOf("fooDuplicateError1", error1pos + 1) == -1,
+           "no duplicate for fooDuplicateError1");
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_583816_tab_focus.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_583816_tab_focus.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_583816_tab_focus.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_583816_tab_focus.js
+@@ -5,29 +5,27 @@
+  *
+  * Contributor(s):
+  *  Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
+ 
+-let inputNode;
++let HUD, inputNode;
+ 
+ function tabLoad(aEvent) {
+   browser.removeEventListener(aEvent.type, arguments.callee, true);
+ 
+   waitForFocus(function() {
+     openConsole();
+ 
+-    let hudId = HUDService.getHudIdByWindow(content);
+-    HUD = HUDService.hudReferences[hudId];
++    HUD = HUDService.getHudByWindow(content);
+ 
+-    let display = HUDService.getOutputNodeById(hudId);
+-    inputNode = display.querySelector(".jsterm-input-node");
++    inputNode = HUD.jsterm.inputNode;
+ 
+     inputNode.focus();
+     executeSoon(function() {
+       is(inputNode.getAttribute("focused"), "true", "inputNode is focused");
+       HUD.jsterm.setInputValue("doc");
+       inputNode.addEventListener("keyup", firstTab, false);
+       EventUtils.synthesizeKey("VK_TAB", {});
+     });
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_585237_line_limit.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_585237_line_limit.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_585237_line_limit.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_585237_line_limit.js
+@@ -1,15 +1,16 @@
+ /* vim:set ts=2 sw=2 sts=2 et: */
+ /* ***** BEGIN LICENSE BLOCK *****
+  * Any copyright is dedicated to the Public Domain.
+  * http://creativecommons.org/publicdomain/zero/1.0/
+  *
+  * Contributor(s):
+  *  Patrick Walton <pcwalton@mozilla.com>
++ *  Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ // Tests that the Web Console limits the number of lines displayed according to
+ // the user's preferences.
+ 
+ const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
+ 
+@@ -19,19 +20,18 @@ function test() {
+                                             false);
+ }
+ 
+ function testLineLimit() {
+   browser.removeEventListener("DOMContentLoaded",testLineLimit, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
++  outputNode = HUDService.getHudByWindow(content).outputNode;
+   let console = browser.contentWindow.wrappedJSObject.console;
+-  hudBox = HUDService.getHeadsUpDisplay(hudId);
+ 
+   let prefBranch = Services.prefs.getBranch("devtools.hud.");
+   prefBranch.setIntPref("loglimit", 20);
+ 
+   for (let i = 0; i < 20; i++) {
+     console.log("foo");
+   }
+   is(countMessageNodes(), 20, "there are 20 message nodes in the output " +
+@@ -58,18 +58,14 @@ function testLineLimit() {
+      "log limit is set to zero");
+ 
+   prefBranch.clearUserPref("loglimit");
+   prefBranch = console = null;
+   finishTest();
+ }
+ 
+ function countMessageNodes() {
+-  let hudId = HUDService.displaysIndex()[0];
+-  let hudBox = HUDService.getHeadsUpDisplay(hudId);
+-  return hudBox.querySelectorAll(".hud-msg-node").length;
++  return outputNode.querySelectorAll(".hud-msg-node").length;
+ }
+ 
+ function countGroupNodes() {
+-  let hudId = HUDService.displaysIndex()[0];
+-  let hudBox = HUDService.getHeadsUpDisplay(hudId);
+-  return hudBox.querySelectorAll(".hud-group").length;
++  return outputNode.querySelectorAll(".hud-group").length;
+ }
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586142_insert_newlines.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586142_insert_newlines.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586142_insert_newlines.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586142_insert_newlines.js
+@@ -1,15 +1,16 @@
+ /* vim:set ts=2 sw=2 sts=2 et: */
+ /* ***** BEGIN LICENSE BLOCK *****
+  * Any copyright is dedicated to the Public Domain.
+  * http://creativecommons.org/publicdomain/zero/1.0/
+  *
+  * Contributor(s):
+  *  Patrick Walton <pcwalton@mozilla.com>
++ *  Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ // Tests that newlines are present in the output of the console, so that
+ // copying works properly.
+ 
+ const TEST_URI = "http://example.com/";
+ 
+@@ -22,34 +23,27 @@ function test()
+ function onLoad() {
+   browser.removeEventListener("DOMContentLoaded", onLoad,
+                                                false);
+   executeSoon(testNewlines);
+ }
+ 
+ function testNewlines() {
+   openConsole();
+-  hudId = HUDService.displaysIndex()[0];
+-  ok(hudId != null, "we have the HUD ID");
++  hud = HUDService.getHudByWindow(content);
++  HUDService.clearDisplay(hud.hudId);
+ 
+-  HUDService.clearDisplay(hudId);
+-
+-  let contentWindow = browser.contentWindow;
+-  let console = contentWindow.wrappedJSObject.console;
++  let console = content.wrappedJSObject.console;
+   ok(console != null, "we have the console object");
+ 
+   for (let i = 0; i < 20; i++) {
+     console.log("Hello world!");
+   }
+ 
+-  let hudNode = HUDService.getOutputNodeById(hudId);
+-  let outputNode = hudNode.querySelector(".hud-output-node");
+-  ok(outputNode != null, "we have the output node");
+-
+-  let labels = outputNode.querySelectorAll("label");
++  let labels = hud.outputNode.querySelectorAll("label");
+   is(labels.length, 20, "we found 20 labels in the output node");
+ 
+   for (let i = 0; i < labels.length; i++) {
+     let value = labels[i].textContent;
+     is(value[value.length - 1], "\n", "the value of label " + i + " ends " +
+        "with a newline");
+   }
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586388_select_all.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586388_select_all.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586388_select_all.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586388_select_all.js
+@@ -16,26 +16,25 @@ function test() {
+                            testSelectionWhenMovingBetweenBoxes, false);
+ }
+ 
+ function testSelectionWhenMovingBetweenBoxes() {
+   browser.removeEventListener("DOMContentLoaded",
+                               testSelectionWhenMovingBetweenBoxes, false);
+   openConsole();
+ 
+-  let hudId = HUDService.displaysIndex()[0];
+-  let jsterm = HUDService.hudReferences[hudId].jsterm;
++  let jsterm = HUDService.getHudByWindow(content).jsterm;
+ 
+   // Fill the console with some output.
+   jsterm.clearOutput();
+   jsterm.execute("1 + 2");
+   jsterm.execute("3 + 4");
+   jsterm.execute("5 + 6");
+ 
+-  outputNode = jsterm.outputNode;
++  let outputNode = jsterm.outputNode;
+   let groupNode = outputNode.querySelector(".hud-group");
+ 
+   ok(groupNode.childNodes.length >= 3, "the output node has children after " +
+      "executing some JavaScript");
+ 
+   // Test that the global Firefox "Select All" functionality (e.g. Edit >
+   // Select All) works properly in the Web Console.
+   let selection = window.getSelection();
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_587617_output_copy.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_587617_output_copy.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_587617_output_copy.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_587617_output_copy.js
+@@ -16,22 +16,20 @@ function test() {
+ }
+ 
+ function tabLoaded() {
+   browser.removeEventListener("load", tabLoaded, true);
+   openConsole();
+ 
+   // See bugs 574036, 586386 and 587617.
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-  let HUD = HUDService.hudReferences[hudId].HUDBox;
+-  let filterBox = HUD.querySelector(".hud-filter-box");
+-  outputNode = HUD.querySelector(".hud-output-node");
++  let HUD = HUDService.getHudByWindow(content);
++  let outputNode = HUD.outputNode;
+   let selection = getSelection();
+-  let jstermInput = HUD.querySelector(".jsterm-input-node");
++  let jstermInput = HUD.jsterm.inputNode;
+   let console = browser.contentWindow.wrappedJSObject.console;
+   let contentSelection = browser.contentWindow.wrappedJSObject.getSelection();
+ 
+   let make_selection = function () {
+     let controller =
+       top.document.commandDispatcher.
+       getControllerForCommand("cmd_copy");
+     is(controller.isCommandEnabled("cmd_copy"), false, "cmd_copy is disabled");
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_588730_text_node_insertion.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_588730_text_node_insertion.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_588730_text_node_insertion.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_588730_text_node_insertion.js
+@@ -50,19 +50,17 @@ function test() {
+ 
+ // Test for bug 588730: Adding a text node to an existing label element causes
+ // warnings
+ function testTextNodeInsertion() {
+   browser.removeEventListener("DOMContentLoaded", testTextNodeInsertion,
+                               false);
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-  hudBox = HUDService.getHeadsUpDisplay(hudId);
+-  let outputNode = hudBox.querySelector(".hud-output-node");
++  let outputNode = HUDService.getHudByWindow(content).outputNode;
+ 
+   let label = document.createElementNS(
+     "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul", "label");
+   outputNode.appendChild(label);
+ 
+   let error = false;
+   let listener = {
+     observe: function(aMessage) {
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_588967_input_expansion.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_588967_input_expansion.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_588967_input_expansion.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_588967_input_expansion.js
+@@ -43,19 +43,17 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testInputExpansion, false);
+ }
+ 
+ function testInputExpansion() {
+   browser.removeEventListener("DOMContentLoaded", testInputExpansion, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-  hudBox = HUDService.getHeadsUpDisplay(hudId);
+-  let input = hudBox.querySelector(".jsterm-input-node");
++  let input = HUDService.getHudByWindow(content).jsterm.inputNode;
+ 
+   input.focus();
+ 
+   is(input.getAttribute("multiline"), "true", "multiline is enabled");
+ 
+   let ordinaryHeight = input.clientHeight;
+ 
+   // Tests if the inputNode expands.
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_589162_css_filter.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_589162_css_filter.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_589162_css_filter.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_589162_css_filter.js
+@@ -11,26 +11,24 @@
+ 
+ const TEST_URI = "data:text/html,<div style='font-size:3em;" +
+   "foobarCssParser:baz'>test CSS parser filter</div>";
+ 
+ function onContentLoaded()
+ {
+   browser.removeEventListener("load", arguments.callee, true);
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-  HUD = HUDService.hudReferences[hudId].HUDBox;
+-  let filterBox = HUD.querySelector(".hud-filter-box");
+-  let outputNode = HUD.querySelector(".hud-output-node");
++  let HUD = HUDService.getHudByWindow(content);
++  let hudId = HUD.hudId;
++  let outputNode = HUD.outputNode;
+ 
+   let msg = "the unknown CSS property warning is displayed";
+   testLogEntry(outputNode, "foobarCssParser", msg, true);
+ 
+   HUDService.setFilterState(hudId, "cssparser", false);
+-  let nodes = HUD.querySelectorAll(".hud-msg-node");
+ 
+   executeSoon(
+     function (){
+       HUDService.setFilterState(hudId, "cssparser", false);
+ 
+       let msg = "the unknown CSS property warning is not displayed, " +
+                 "after filtering";
+       testLogEntry(outputNode, "foobarCssParser", msg, true, true);
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_592442_closing_brackets.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_592442_closing_brackets.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_592442_closing_brackets.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_592442_closing_brackets.js
+@@ -17,18 +17,18 @@ function test() {
+   addTab("data:text/html,test for bug 592442");
+   browser.addEventListener("load", testExtraneousClosingBrackets, true);
+ }
+ 
+ function testExtraneousClosingBrackets(aEvent) {
+   browser.removeEventListener(aEvent.type, arguments.callee, true);
+ 
+   openConsole();
+-  let hudId = HUDService.displaysIndex()[0];
+-  let jsterm = HUDService.hudReferences[hudId].jsterm;
++
++  let jsterm = HUDService.getHudByWindow(content).jsterm;
+ 
+   jsterm.setInputValue("document.getElementById)");
+ 
+   let error = false;
+   try {
+     jsterm.complete(jsterm.COMPLETE_HINT_ONLY);
+   }
+   catch (ex) {
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_593003_iframe_wrong_hud.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_593003_iframe_wrong_hud.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_593003_iframe_wrong_hud.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_593003_iframe_wrong_hud.js
+@@ -84,29 +84,25 @@ function tab2Loaded(aEvent) {
+ 
+   tab1.linkedBrowser.addEventListener("load", tab1Reloaded, true);
+   tab1.linkedBrowser.contentWindow.location.reload();
+ }
+ 
+ function tab1Reloaded(aEvent) {
+   tab1.linkedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
+ 
+-  let hudId1 = HUDService.getHudIdByWindow(tab1.linkedBrowser.contentWindow);
+-
+-  let display1 = HUDService.getOutputNodeById(hudId1);
+-  let outputNode1 = display1.querySelector(".hud-output-node");
++  let hud1 = HUDService.getHudByWindow(tab1.linkedBrowser.contentWindow);
++  let outputNode1 = hud1.outputNode;
+ 
+   let msg = "Found the iframe network request in tab1";
+   testLogEntry(outputNode1, TEST_IFRAME_URI, msg, true);
+ 
+-  let hudId2 = HUDService.getHudIdByWindow(tab2.linkedBrowser.contentWindow);
+-  let display2 = HUDService.getOutputNodeById(hudId2);
+-  let outputNode2 = display2.querySelector(".hud-output-node");
++  let hud2 = HUDService.getHudByWindow(tab2.linkedBrowser.contentWindow);
++  let outputNode2 = hud2.outputNode;
+ 
+-  isnot(display1, display2, "the two HUD displays must be different");
+   isnot(outputNode1, outputNode2,
+         "the two HUD outputNodes must be different");
+ 
+   msg = "Didn't find the iframe network request in tab2";
+   testLogEntry(outputNode2, TEST_IFRAME_URI, msg, true, true);
+ 
+   HUDService.deactivateHUDForContext(tab2);
+   gBrowser.removeTab(tab2);
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594477_clickable_output.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594477_clickable_output.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594477_clickable_output.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594477_clickable_output.js
+@@ -13,21 +13,19 @@ let HUD;
+ 
+ let outputItem;
+ 
+ function tabLoad1(aEvent) {
+   browser.removeEventListener(aEvent.type, arguments.callee, true);
+ 
+   openConsole();
+ 
+-  let hudId = HUDService.getHudIdByWindow(browser.contentWindow);
+-  HUD = HUDService.hudReferences[hudId];
++  HUD = HUDService.getHudByWindow(content);
+ 
+-  let display = HUDService.getOutputNodeById(hudId);
+-  outputNode = display.querySelector(".hud-output-node");
++  outputNode = HUD.outputNode;
+ 
+   browser.addEventListener("load", tabLoad2, true);
+ 
+   // Reload so we get some output in the console.
+   browser.contentWindow.location.reload();
+   log(document);
+ }
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594497_history_arrow_keys.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594497_history_arrow_keys.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594497_history_arrow_keys.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594497_history_arrow_keys.js
+@@ -5,29 +5,28 @@
+  *
+  * Contributor(s):
+  *  Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
+ 
+-let inputNode, testKey, values, pos;
++let inputNode, testKey, values, pos, HUD;
+ 
+ function tabLoad(aEvent) {
+   browser.removeEventListener(aEvent.type, arguments.callee, true);
+ 
+   waitForFocus(function() {
+     openConsole();
+ 
+     let hudId = HUDService.getHudIdByWindow(content);
+     HUD = HUDService.hudReferences[hudId];
+ 
+-    let display = HUDService.getOutputNodeById(hudId);
+-    inputNode = display.querySelector(".jsterm-input-node");
++    inputNode = HUD.jsterm.inputNode;
+ 
+     inputNode.focus();
+ 
+     ok(!inputNode.value, "inputNode.value is empty");
+ 
+     values = ["document", "window", "document.body"];
+     values.push(values.join(";\n"), "document.location");
+ 
+@@ -117,17 +116,17 @@ function testMore() {
+ 
+     testEnd();
+   }, false);
+ 
+   EventUtils.synthesizeKey("VK_DOWN", {});
+ }
+ 
+ function testEnd() {
+-  inputNode = testKey = values = pos = null;
++  HUD = inputNode = testKey = values = pos = null;
+   executeSoon(finishTest);
+ }
+ 
+ function test() {
+   addTab(TEST_URI);
+   browser.addEventListener("load", tabLoad, true);
+ }
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595350_multiple_windows_and_tabs.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595350_multiple_windows_and_tabs.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595350_multiple_windows_and_tabs.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595350_multiple_windows_and_tabs.js
+@@ -57,27 +57,27 @@ function performTest() {
+     let tab = openTabs[i];
+     HUDService.activateHUDForContext(tab);
+     let hudId = HUDService.getHudIdByWindow(tab.linkedBrowser.contentWindow);
+     ok(hudId, "HUD is open for tab " + i);
+     let HUD = HUDService.hudReferences[hudId];
+     HUD.console.log("message for tab " + i);
+   }
+ 
+-  let displays = HUDService.displaysIndex();
++  let displays = Object.keys(HUDService.hudReferences);
+   is(displays.length, 4, "four displays found");
+ 
+   win2.close();
+ 
+   executeSoon(function() {
+     win1.gBrowser.removeTab(openTabs[0]);
+     win1.gBrowser.removeTab(openTabs[1]);
+ 
+     executeSoon(function() {
+-      displays = HUDService.displaysIndex();
++      displays = Object.keys(HUDService.hudReferences);
+       is(displays.length, 0, "no displays found");
+       ok(!HUDService.storage, "no storage found");
+       ok(!HUDService.httpObserver, "no httpObserver found");
+ 
+       displays = openTabs = win1 = win2 = null;
+ 
+       finishTest();
+     });
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597136_external_script_errors.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597136_external_script_errors.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597136_external_script_errors.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597136_external_script_errors.js
+@@ -29,17 +29,16 @@ function contentLoaded(aEvent) {
+   browser.removeEventListener("load", contentLoaded, true);
+ 
+   let button = content.document.querySelector("button");
+   EventUtils.sendMouseEvent({ type: "click" }, button, content);
+   executeSoon(buttonClicked);
+ }
+ 
+ function buttonClicked() {
+-  let hudId = HUDService.getHudIdByWindow(content);
+-  let outputNode = HUDService.getOutputNodeById(hudId);
++  let outputNode = HUDService.getHudByWindow(content).outputNode;
+ 
+   let msg = "the error from the external script was logged";
+   testLogEntry(outputNode, "bogus", msg);
+ 
+   finishTest();
+ }
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601667_filter_buttons.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601667_filter_buttons.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601667_filter_buttons.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601667_filter_buttons.js
+@@ -9,18 +9,19 @@ function test() {
+   addTab(TEST_URI);
+   browser.addEventListener("load", testFilterButtons, true);
+ }
+ 
+ function testFilterButtons() {
+   browser.removeEventListener("load", testFilterButtons, true);
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-  hudBox = HUDService.hudReferences[hudId].HUDBox;
++  let hud = HUDService.getHudByWindow(content);
++  hudId = hud.hudId;
++  hudBox = hud.HUDBox;
+ 
+   testMenuFilterButton("net");
+   testMenuFilterButton("css");
+   testMenuFilterButton("js");
+   testMenuFilterButton("webdev");
+ 
+   finishTest();
+ }
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_chrome.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_chrome.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_chrome.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_chrome.js
+@@ -17,16 +17,17 @@
+  * The Initial Developer of the Original Code is Mozilla Foundation.
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *  Rob Campbell <rcampbell@mozilla.com>
+  *  Patrick Walton <pwalton@mozilla.com>
+  *  David Dahl <ddahl@mozilla.com>
++ *  Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -46,32 +47,28 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testChrome, false);
+ }
+ 
+ function testChrome() {
+   browser.removeEventListener("DOMContentLoaded", testChrome, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-  hud = HUDService.hudReferences[hudId];
++  let hud = HUDService.getHudByWindow(content);
+   ok(hud, "we have a console");
+   
+-  hudBox = HUDService.getHeadsUpDisplay(hudId);
+-  ok(hudBox, "we have the console display");
+-  
++  ok(hud.HUDBox, "we have the console display");
++
+   let jsterm = hud.jsterm;
+   ok(jsterm, "we have a jsterm");
+ 
+   let input = jsterm.inputNode;
+-  let outputNode = hudBox.querySelector(".jsterm-input-node");
+-  ok(outputNode, "we have an output node");
++  ok(hud.outputNode, "we have an output node");
+ 
+   // Test typing 'docu'.
+   input.value = "docu";
+   input.setSelectionRange(4, 4);
+   jsterm.complete(jsterm.COMPLETE_HINT_ONLY);
+   is(jsterm.completeNode.value, "    ment", "'docu' completion");
+ 
+-  HUD = jsterm = input = null;
+   finishTest();
+ }
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_completion.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_completion.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_completion.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_completion.js
+@@ -47,20 +47,17 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testCompletion, false);
+ }
+ 
+ function testCompletion() {
+   browser.removeEventListener("DOMContentLoaded", testCompletion, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-
+-  var HUD = HUDService.hudReferences[hudId];
+-  var jsterm = HUD.jsterm;
++  var jsterm = HUDService.getHudByWindow(content).jsterm;
+   var input = jsterm.inputNode;
+ 
+   // Test typing 'docu'.
+   input.value = "docu";
+   input.setSelectionRange(4, 4);
+   jsterm.complete(jsterm.COMPLETE_HINT_ONLY);
+   is(input.value, "docu", "'docu' completion");
+   is(jsterm.completeNode.value, "    ment", "'docu' completion");
+@@ -95,12 +92,12 @@ function testCompletion() {
+   jsterm.history.splice(0);   // workaround for bug 592552
+ 
+   input.value = "docu";
+   jsterm.complete(jsterm.COMPLETE_HINT_ONLY);
+   is(jsterm.completeNode.value, "    ment", "'docu' completion");
+   jsterm.execute();
+   is(jsterm.completeNode.value, "", "clear completion on execute()");
+ 
+-  HUD = jsterm = input = null;
++  jsterm = input = null;
+   finishTest();
+ }
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_console_extras.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_console_extras.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_console_extras.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_console_extras.js
+@@ -51,18 +51,15 @@ function onLoad() {
+   let button = doc.querySelector("button");
+   ok(button, "we have the button");
+   EventUtils.sendMouseEvent({ type: "click" }, button, content);
+   executeSoon(testButtonClicked);
+ }
+ 
+ function testButtonClicked()
+ {
+-  let hudId = HUDService.displaysIndex()[0];
+-  let console = browser.contentWindow.wrappedJSObject.console;
+-  let hudBox = HUDService.getHeadsUpDisplay(hudId);
+-  let outputNode = hudBox.querySelector(".hud-output-node");
++  let outputNode = HUDService.getHudByWindow(content).outputNode;
+   let nodes = outputNode.querySelectorAll(".hud-msg-node");
+   is(nodes.length, 2, "two nodes");
+   ok(/start/.test(nodes[0].textContent), "start found");
+   ok(/end/.test(nodes[1].textContent), "end found - complete!");
+   finishTest();
+ }
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_console_logging_api.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_console_logging_api.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_console_logging_api.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_console_logging_api.js
+@@ -47,68 +47,67 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", onLoad, false);
+ }
+ 
+ function onLoad() {
+   browser.removeEventListener("DOMContentLoaded", onLoad, false);
+ 
+   openConsole();
+ 
++  hud = HUDService.getHudByWindow(content);
++  hudId = hud.hudId;
++  outputNode = hud.outputNode;
++
+   testConsoleLoggingAPI("log");
+   testConsoleLoggingAPI("info");
+   testConsoleLoggingAPI("warn");
+   testConsoleLoggingAPI("error");
+ 
+   finishTest();
+ }
+ 
+ function testConsoleLoggingAPI(aMethod) {
+-  let hudId = HUDService.displaysIndex()[0];
+   let console = browser.contentWindow.wrappedJSObject.console;
+-  let hudBox = HUDService.getHeadsUpDisplay(hudId);
+-  let outputNode = hudBox.querySelector(".hud-output-node");
+ 
+   HUDService.clearDisplay(hudId);
+ 
+-  setStringFilter(hudId, "foo");
++  setStringFilter("foo");
+   console[aMethod]("foo-bar-baz");
+   console[aMethod]("bar-baz");
+ 
+   var nodes = outputNode.querySelectorAll(".hud-filtered-by-string");
+ 
+   is(nodes.length, 1, "1 hidden " + aMethod  + " node found (via classList)");
+ 
+   HUDService.clearDisplay(hudId);
+ 
+   // now toggle the current method off - make sure no visible message
+ 
+   // TODO: move all filtering tests into a separate test file: see bug 608135
+-  setStringFilter(hudId, "");
++  setStringFilter("");
+   HUDService.setFilterState(hudId, aMethod, false);
+   console[aMethod]("foo-bar-baz");
+   nodes = outputNode.querySelectorAll("label");
+ 
+   is(nodes.length, 1,  aMethod + " logging turned off, 1 message hidden");
+ 
+   HUDService.clearDisplay(hudId);
+   HUDService.setFilterState(hudId, aMethod, true);
+   console[aMethod]("foo-bar-baz");
+   nodes = outputNode.querySelectorAll("label");
+ 
+   is(nodes.length, 1, aMethod + " logging turned on, 1 message shown");
+ 
+   HUDService.clearDisplay(hudId);
+-  setStringFilter(hudId, "");
++  setStringFilter("");
+ 
+   // test for multiple arguments.
+   console[aMethod]("foo", "bar");
+ 
+   let node = outputNode.querySelector(".hud-msg-node");
+   ok(/"foo" "bar"/.test(node.textContent),
+     "Emitted both console arguments");
+ }
+ 
+-function setStringFilter(aId, aValue) {
+-  let hudBox = HUDService.getHeadsUpDisplay(aId);
+-  hudBox.querySelector(".hud-filter-box").value = aValue;
+-  HUDService.adjustVisibilityOnSearchStringChange(aId, aValue);
++function setStringFilter(aValue) {
++  hud.filterBox.value = aValue;
++  HUDService.adjustVisibilityOnSearchStringChange(hudId, aValue);
+ }
+-
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_consoleonpage.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_consoleonpage.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_consoleonpage.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_consoleonpage.js
+@@ -18,20 +18,19 @@ function test()
+     browser.removeEventListener("load", arguments.callee, true);
+     testOpenWebConsole();
+   }, true);
+ }
+ 
+ function testOpenWebConsole()
+ {
+   openConsole();
+-  is(HUDService.displaysIndex().length, 1, "WebConsole was opened");
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-  hud = HUDService.hudReferences[hudId];
++  hud = HUDService.getHudByWindow(content);
++  ok(hud, "WebConsole was opened");
+ 
+   testOwnConsole();
+ }
+ 
+ function testConsoleOnPage(console) {
+   isnot(console, undefined, "Console object defined on page");
+   is(console.foo, "bar", "Custom console is not overwritten");
+ }
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_display_accessors.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_display_accessors.js
+deleted file mode 100644
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_display_accessors.js
++++ /dev/null
+@@ -1,67 +0,0 @@
+-/* vim:set ts=2 sw=2 sts=2 et: */
+-/* ***** BEGIN LICENSE BLOCK *****
+- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
+- *
+- * The contents of this file are subject to the Mozilla Public License Version
+- * 1.1 (the "License"); you may not use this file except in compliance with
+- * the License. You may obtain a copy of the License at
+- * http://www.mozilla.org/MPL/
+- *
+- * Software distributed under the License is distributed on an "AS IS" basis,
+- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+- * for the specific language governing rights and limitations under the
+- * License.
+- *
+- * The Original Code is DevTools test code.
+- *
+- * The Initial Developer of the Original Code is Mozilla Foundation.
+- * Portions created by the Initial Developer are Copyright (C) 2010
+- * the Initial Developer. All Rights Reserved.
+- *
+- * Contributor(s):
+- *  David Dahl <ddahl@mozilla.com>
+- *  Patrick Walton <pcwalton@mozilla.com>
+- *  Julian Viereck <jviereck@mozilla.com>
+- *  Mihai Sucan <mihai.sucan@gmail.com>
+- *
+- * Alternatively, the contents of this file may be used under the terms of
+- * either the GNU General Public License Version 2 or later (the "GPL"), or
+- * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+- * in which case the provisions of the GPL or the LGPL are applicable instead
+- * of those above. If you wish to allow use of your version of this file only
+- * under the terms of either the GPL or the LGPL, and not to allow others to
+- * use your version of this file under the terms of the MPL, indicate your
+- * decision by deleting the provisions above and replace them with the notice
+- * and other provisions required by the GPL or the LGPL. If you do not delete
+- * the provisions above, a recipient may use your version of this file under
+- * the terms of any one of the MPL, the GPL or the LGPL.
+- *
+- * ***** END LICENSE BLOCK ***** */
+-
+-// Tests that HUDService.displays() and HUDService.displaysIndex() work.
+-
+-const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
+-
+-function test() {
+-  addTab(TEST_URI);
+-  browser.addEventListener("DOMContentLoaded", testDisplayAccessors, false);
+-}
+-
+-function testDisplayAccessors() {
+-  browser.removeEventListener("DOMContentLoaded", testDisplayAccessors,
+-                              false);
+-
+-  openConsole();
+-
+-  var idx = HUDService.displaysIndex();
+-
+-  let hudId = idx[0];
+-
+-  ok(typeof idx == "object", "displays is an object");
+-  ok(typeof idx.push == "function", "displaysIndex is an array");
+-
+-  var len = idx.length;
+-  ok(idx.length > 0, "idx.length > 0: " + len);
+-
+-  finishTest();
+-}
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_execution_scope.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_execution_scope.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_execution_scope.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_execution_scope.js
+@@ -48,20 +48,17 @@ function test() {
+ }
+ 
+ function testExecutionScope() {
+   browser.removeEventListener("DOMContentLoaded", testExecutionScope,
+                               false);
+ 
+   openConsole();
+ 
+-  let hudId = HUDService.displaysIndex()[0];
+-
+-  let HUD = HUDService.hudReferences[hudId];
+-  let jsterm = HUD.jsterm;
++  let jsterm = HUDService.getHudByWindow(content).jsterm;
+ 
+   jsterm.clearOutput();
+   jsterm.execute("location;");
+ 
+   let nodes = jsterm.outputNode.querySelectorAll(".hud-msg-node");
+   is(nodes.length, 1, "Three children in output");
+ 
+   is(/location;/.test(nodes[0].textContent), true,
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_get_content_window_from_hud_id.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_get_content_window_from_hud_id.js
+deleted file mode 100644
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_get_content_window_from_hud_id.js
++++ /dev/null
+@@ -1,64 +0,0 @@
+-/* vim:set ts=2 sw=2 sts=2 et: */
+-/* ***** BEGIN LICENSE BLOCK *****
+- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
+- *
+- * The contents of this file are subject to the Mozilla Public License Version
+- * 1.1 (the "License"); you may not use this file except in compliance with
+- * the License. You may obtain a copy of the License at
+- * http://www.mozilla.org/MPL/
+- *
+- * Software distributed under the License is distributed on an "AS IS" basis,
+- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+- * for the specific language governing rights and limitations under the
+- * License.
+- *
+- * The Original Code is DevTools test code.
+- *
+- * The Initial Developer of the Original Code is Mozilla Foundation.
+- * Portions created by the Initial Developer are Copyright (C) 2010
+- * the Initial Developer. All Rights Reserved.
+- *
+- * Contributor(s):
+- *  David Dahl <ddahl@mozilla.com>
+- *  Patrick Walton <pcwalton@mozilla.com>
+- *  Julian Viereck <jviereck@mozilla.com>
+- *  Mihai Sucan <mihai.sucan@gmail.com>
+- *
+- * Alternatively, the contents of this file may be used under the terms of
+- * either the GNU General Public License Version 2 or later (the "GPL"), or
+- * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+- * in which case the provisions of the GPL or the LGPL are applicable instead
+- * of those above. If you wish to allow use of your version of this file only
+- * under the terms of either the GPL or the LGPL, and not to allow others to
+- * use your version of this file under the terms of the MPL, indicate your
+- * decision by deleting the provisions above and replace them with the notice
+- * and other provisions required by the GPL or the LGPL. If you do not delete
+- * the provisions above, a recipient may use your version of this file under
+- * the terms of any one of the MPL, the GPL or the LGPL.
+- *
+- * ***** END LICENSE BLOCK ***** */
+-
+-// Tests the HUDService.getContentWindowFromHUDId() method.
+-
+-const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
+-
+-function test() {
+-  addTab(TEST_URI);
+-  browser.addEventListener("DOMContentLoaded",
+-                           testGetContentWindowFromHUDId, false);
+-}
+-
+-function testGetContentWindowFromHUDId() {
+-  browser.removeEventListener("DOMContentLoaded",
+-                              testGetContentWindowFromHUDId, false);
+-
+-  openConsole();
+-
+-  let hudId = HUDService.displaysIndex()[0];
+-
+-  let window = HUDService.getContentWindowFromHUDId(hudId);
+-  ok(window.document, "we have a contentWindow");
+-
+-  finishTest();
+-}
+-
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_get_heads_up_display.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_get_heads_up_display.js
+deleted file mode 100644
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_get_heads_up_display.js
++++ /dev/null
+@@ -1,60 +0,0 @@
+-/* vim:set ts=2 sw=2 sts=2 et: */
+-/* ***** BEGIN LICENSE BLOCK *****
+- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
+- *
+- * The contents of this file are subject to the Mozilla Public License Version
+- * 1.1 (the "License"); you may not use this file except in compliance with
+- * the License. You may obtain a copy of the License at
+- * http://www.mozilla.org/MPL/
+- *
+- * Software distributed under the License is distributed on an "AS IS" basis,
+- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+- * for the specific language governing rights and limitations under the
+- * License.
+- *
+- * The Original Code is DevTools test code.
+- *
+- * The Initial Developer of the Original Code is Mozilla Foundation.
+- * Portions created by the Initial Developer are Copyright (C) 2010
+- * the Initial Developer. All Rights Reserved.
+- *
+- * Contributor(s):
+- *  David Dahl <ddahl@mozilla.com>
+- *  Patrick Walton <pcwalton@mozilla.com>
+- *  Julian Viereck <jviereck@mozilla.com>
+- *  Mihai Sucan <mihai.sucan@gmail.com>
+- *
+- * Alternatively, the contents of this file may be used under the terms of
+- * either the GNU General Public License Version 2 or later (the "GPL"), or
+- * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+- * in which case the provisions of the GPL or the LGPL are applicable instead
+- * of those above. If you wish to allow use of your version of this file only
+- * under the terms of either the GPL or the LGPL, and not to allow others to
+- * use your version of this file under the terms of the MPL, indicate your
+- * decision by deleting the provisions above and replace them with the notice
+- * and other provisions required by the GPL or the LGPL. If you do not delete
+- * the provisions above, a recipient may use your version of this file under
+- * the terms of any one of the MPL, the GPL or the LGPL.
+- *
+- * ***** END LICENSE BLOCK ***** */
+-
+-// Tests the HUDService.getHeadsUpDisplay() method.
+-
+-const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
+-
+-function test() {
+-  addTab(TEST_URI);
+-  browser.addEventListener("DOMContentLoaded", testGetHeadsUpDisplay,
+-                           false);
+-}
+-
+-function testGetHeadsUpDisplay() {
+-  browser.removeEventListener("DOMContentLoaded", testGetHeadsUpDisplay,
+-                              false);
+-  openConsole();
+-  hudId = HUDService.displaysIndex()[0];
+-  hud = HUDService.getHeadsUpDisplay(hudId);
+-  ok(hud.getAttribute("id") == hudId, "found HUD node by Id.");
+-  finishTest();
+-}
+-
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_history.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_history.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_history.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_history.js
+@@ -51,19 +51,17 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testHistory, false);
+ }
+ 
+ function testHistory() {
+   browser.removeEventListener("DOMContentLoaded", testHistory, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-  let HUD = HUDService.hudReferences[hudId];
+-  let jsterm = HUD.jsterm;
++  let jsterm = HUDService.getHudByWindow(content).jsterm;
+   let input = jsterm.inputNode;
+ 
+   let executeList = ["document", "window", "window.location"];
+ 
+   for each (var item in executeList) {
+     input.value = item;
+     jsterm.execute();
+   }
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_hud_getters.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_hud_getters.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_hud_getters.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_hud_getters.js
+@@ -48,19 +48,17 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testHUDGetters, false);
+ }
+ 
+ function testHUDGetters() {
+   browser.removeEventListener("DOMContentLoaded", testHUDGetters, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-
+-  var HUD = HUDService.hudReferences[hudId];
++  var HUD = HUDService.getHudByWindow(content);
+   var jsterm = HUD.jsterm;
+   var klass = jsterm.inputNode.getAttribute("class");
+   ok(klass == "jsterm-input-node", "We have the input node.");
+ 
+   var hudconsole = HUD.console;
+   is(typeof hudconsole, "object", "HUD.console is an object");
+   is(typeof hudconsole.log, "function", "HUD.console.log is a function");
+   is(typeof hudconsole.info, "function", "HUD.console.info is a function");
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_js_input_and_output_styling.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_js_input_and_output_styling.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_js_input_and_output_styling.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_js_input_and_output_styling.js
+@@ -50,19 +50,17 @@ function test() {
+ }
+ 
+ function testJSInputAndOutputStyling() {
+   browser.removeEventListener("DOMContentLoaded",
+                               testJSInputAndOutputStyling, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-
+-  let jsterm = HUDService.hudReferences[hudId].jsterm;
++  let jsterm = HUDService.getHudByWindow(content).jsterm;
+ 
+   jsterm.clearOutput();
+   jsterm.execute("2 + 2");
+ 
+   let nodes = jsterm.outputNode.querySelectorAll(".hud-msg-node");
+   let jsInputNode = nodes[0];
+   isnot(jsInputNode.textContent.indexOf("2 + 2"), -1,
+     "JS input node contains '2 + 2'");
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_js_input_expansion.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_js_input_expansion.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_js_input_expansion.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_js_input_expansion.js
+@@ -48,20 +48,17 @@ function test() {
+ }
+ 
+ function testJSInputExpansion() {
+   browser.removeEventListener("DOMContentLoaded", testJSInputExpansion,
+                               false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-
+-  let HUD = HUDService.hudReferences[hudId];
+-  let jsterm = HUD.jsterm;
++  let jsterm = HUDService.getHudByWindow(content).jsterm;
+   let input = jsterm.inputNode;
+   input.focus();
+ 
+   is(input.getAttribute("multiline"), "true", "multiline is enabled");
+   // Tests if the inputNode expands.
+   input.value = "hello\nworld\n";
+   let length = input.value.length;
+   input.selectionEnd = length;
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_jsterm.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_jsterm.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_jsterm.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_jsterm.js
+@@ -55,21 +55,17 @@ function checkResult(msg, desc, lines) {
+ }
+ 
+ function testJSTerm()
+ {
+   browser.removeEventListener("DOMContentLoaded", testJSTerm, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-  let hudBox = HUDService.getHeadsUpDisplay(hudId);
+-  hud = HUDService.hudReferences[hudId];
+-  jsterm = hud.jsterm;
+-  let outputNode = hudBox.querySelector(".hud-output-node");
++  jsterm = HUDService.getHudByWindow(content).jsterm;
+ 
+   jsterm.clearOutput();
+   jsterm.execute("'id=' + $('header').getAttribute('id')");
+   checkResult('"id=header"', "$() worked", 1);
+ 
+   jsterm.clearOutput();
+   jsterm.execute("headerQuery = $$('h1')");
+   jsterm.execute("'length=' + headerQuery.length");
+@@ -140,10 +136,11 @@ function testJSTerm()
+   is(labels.length, 1, "one line of output for keys(window)");
+ 
+   jsterm.clearOutput();
+   jsterm.execute("pprint('hi')");
+   // Doesn't conform to checkResult format, bug 614561
+   let label = jsterm.outputNode.querySelector(".jsterm-output-line");
+   is(label.textContent.trim(), '0: "h"\n  1: "i"', 'pprint("hi") worked');
+ 
++  jsterm = null;
+   finishTest();
+ }
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_live_filtering_of_message_types.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_live_filtering_of_message_types.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_live_filtering_of_message_types.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_live_filtering_of_message_types.js
+@@ -49,44 +49,38 @@ function test() {
+ }
+ 
+ function testLiveFilteringOfMessageTypes() {
+   browser.removeEventListener("DOMContentLoaded",
+                               testLiveFilteringOfMessageTypes, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
++  hud = HUDService.getHudByWindow(content);
+   let console = browser.contentWindow.wrappedJSObject.console;
+-  let hudBox = HUDService.getHeadsUpDisplay(hudId);
+-  let outputNode = hudBox.querySelector(".hud-output-node");
+ 
+   for (let i = 0; i < 50; i++) {
+     console.log("http://www.example.com/");
+   }
+ 
+-  HUDService.setFilterState(hudId, "log", false);
++  HUDService.setFilterState(hud.hudId, "log", false);
+   is(countMessageNodes(), 0, "the log nodes are hidden when the " +
+     "corresponding filter is switched off");
+ 
+-  HUDService.setFilterState(hudId, "log", true);
++  HUDService.setFilterState(hud.hudId, "log", true);
+   isnot(countMessageNodes(), 0, "the log nodes reappear when the " +
+     "corresponding filter is switched on");
+ 
+   finishTest();
+ }
+ 
+ function countMessageNodes() {
+-  let hudId = HUDService.displaysIndex()[0];
+-  let hudBox = HUDService.getHeadsUpDisplay(hudId);
+-  let outputNode = hudBox.querySelector(".hud-output-node");
+-
+-  let messageNodes = outputNode.querySelectorAll(".hud-log");
++  let messageNodes = hud.outputNode.querySelectorAll(".hud-log");
+   let displayedMessageNodes = 0;
+-  let view = outputNode.ownerDocument.defaultView;
++  let view = hud.chromeWindow;
+   for (let i = 0; i < messageNodes.length; i++) {
+     let computedStyle = view.getComputedStyle(messageNodes[i], null);
+     if (computedStyle.display !== "none") {
+       displayedMessageNodes++;
+     }
+   }
+ 
+   return displayedMessageNodes;
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_live_filtering_on_search_strings.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_live_filtering_on_search_strings.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_live_filtering_on_search_strings.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_live_filtering_on_search_strings.js
+@@ -49,20 +49,18 @@ function test() {
+ }
+ 
+ function testLiveFilteringOnSearchStrings() {
+   browser.removeEventListener("DOMContentLoaded",
+                               testLiveFilteringOnSearchStrings, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
++  hud = HUDService.getHudByWindow(content);
+   let console = browser.contentWindow.wrappedJSObject.console;
+-  let hudBox = HUDService.getHeadsUpDisplay(hudId);
+-  let outputNode = hudBox.querySelector(".hud-output-node");
+ 
+   for (let i = 0; i < 50; i++) {
+     console.log("http://www.example.com/");
+   }
+ 
+   setStringFilter("http");
+   isnot(countMessageNodes(), 0, "the log nodes are not hidden when the " +
+     "search string is set to \"http\"");
+@@ -102,34 +100,29 @@ function testLiveFilteringOnSearchString
+   setStringFilter("foo\"bar'baz\"boo'");
+   is(countMessageNodes(), 0, "the log nodes are hidden when searching for " +
+     "the string \"foo\"bar'baz\"boo'\"");
+ 
+   finishTest();
+ }
+ 
+ function countMessageNodes() {
+-  let hudId = HUDService.displaysIndex()[0];
+-  let hudBox = HUDService.getHeadsUpDisplay(hudId);
+-  let outputNode = hudBox.querySelector(".hud-output-node");
++  let outputNode = hud.outputNode;
+ 
+   let messageNodes = outputNode.querySelectorAll(".hud-log");
+   let displayedMessageNodes = 0;
+-  let view = outputNode.ownerDocument.defaultView;
++  let view = hud.chromeWindow;
+   for (let i = 0; i < messageNodes.length; i++) {
+     let computedStyle = view.getComputedStyle(messageNodes[i], null);
+     if (computedStyle.display !== "none") {
+       displayedMessageNodes++;
+     }
+   }
+ 
+   return displayedMessageNodes;
+ }
+ 
+ function setStringFilter(aValue)
+ {
+-  let hudId = HUDService.displaysIndex()[0];
+-  let hudBox = HUDService.getHeadsUpDisplay(hudId);
+-
+-  hudBox.querySelector(".hud-filter-box").value = aValue;
+-  HUDService.adjustVisibilityOnSearchStringChange(hudId, aValue);
++  hud.filterBox.value = aValue;
++  HUDService.adjustVisibilityOnSearchStringChange(hud.hudId, aValue);
+ }
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_log_node_classes.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_log_node_classes.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_log_node_classes.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_log_node_classes.js
+@@ -49,20 +49,18 @@ function test() {
+ }
+ 
+ function testLogNodeClasses() {
+   browser.removeEventListener("DOMContentLoaded", testLogNodeClasses,
+                               false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+   let console = browser.contentWindow.wrappedJSObject.console;
+-  hudBox = HUDService.getHeadsUpDisplay(hudId);
+-  outputNode = hudBox.querySelector(".hud-output-node");
++  let outputNode = HUDService.getHudByWindow(content).outputNode;
+ 
+   ok(console, "console exists");
+   console.log("I am a log message");
+   console.error("I am an error");
+   console.info("I am an info message");
+   console.warn("I am a warning  message");
+ 
+   let domLogEntries =
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_netlogging.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_netlogging.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_netlogging.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_netlogging.js
+@@ -24,20 +24,18 @@ let lastRequest = null;
+ function test()
+ {
+   addTab("data:text/html,Web Console network logging tests");
+ 
+   browser.addEventListener("load", function() {
+     browser.removeEventListener("load", arguments.callee, true);
+ 
+     openConsole();
+-    is(HUDService.displaysIndex().length, 1, "Web Console was opened");
+-
+-    hudId = HUDService.displaysIndex()[0];
+-    hud = HUDService.getHeadsUpDisplay(hudId);
++    hud = HUDService.getHudByWindow(content);
++    ok(hud, "Web Console was opened");
+ 
+     HUDService.lastFinishedRequestCallback = function(aRequest) {
+       lastRequest = aRequest;
+     };
+ 
+     executeSoon(testPageLoad);
+   }, true);
+ }
+@@ -149,18 +147,17 @@ function testFormSubmission()
+   ok(form, "we have the HTML form");
+   form.submit();
+ }
+ 
+ function testNetworkPanel()
+ {
+   // Open the NetworkPanel. The functionality of the NetworkPanel is tested
+   // within separate test files.
+-  let filterBox = hud.querySelector(".hud-filter-box");
+-  let networkPanel = HUDService.openNetworkPanel(filterBox, lastRequest);
++  let networkPanel = HUDService.openNetworkPanel(hud.filterBox, lastRequest);
+   is(networkPanel, lastRequest.panels[0].get(),
+     "Network panel stored on lastRequest object");
+ 
+   networkPanel.panel.addEventListener("load", function(aEvent) {
+     networkPanel.panel.removeEventListener(aEvent.type, arguments.callee,
+       true);
+ 
+     ok(true, "NetworkPanel was opened");
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_network_panel.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_network_panel.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_network_panel.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_network_panel.js
+@@ -86,19 +86,17 @@ function checkNodeKeyValue(aPanel, aId, 
+   let node = aPanel.document.getElementById(aId);
+ 
+   let testHTML = '<span xmlns="http://www.w3.org/1999/xhtml" class="property-name">' + aKey + ':</span>';
+   testHTML += '<span xmlns="http://www.w3.org/1999/xhtml" class="property-value">' + aValue + '</span>';
+   isnot(node.innerHTML.indexOf(testHTML), -1, "checking content of " + aId);
+ }
+ 
+ function testGen() {
+-  let hudId = HUDService.displaysIndex()[0];
+-  let hudBox = HUDService.getHeadsUpDisplay(hudId);
+-  let filterBox = hudBox.querySelector(".hud-filter-box");
++  let filterBox = HUDService.getHudByWindow(content).filterBox;
+ 
+   var httpActivity = {
+     url: "http://www.testpage.com",
+     method: "GET",
+ 
+     panels: [],
+     request: {
+       header: {
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_null_and_undefined_output.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_null_and_undefined_output.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_null_and_undefined_output.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_null_and_undefined_output.js
+@@ -50,21 +50,18 @@ function test() {
+ }
+ 
+ function testNullAndUndefinedOutput() {
+   browser.removeEventListener("DOMContentLoaded",
+                               testNullAndUndefinedOutput, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-
+-  let HUD = HUDService.hudReferences[hudId];
+-  let jsterm = HUD.jsterm;
+-  outputNode = jsterm.outputNode;
++  let jsterm = HUDService.getHudByWindow(content).jsterm;
++  let outputNode = jsterm.outputNode;
+ 
+   jsterm.clearOutput();
+   jsterm.execute("null;");
+ 
+   let nodes = outputNode.querySelectorAll(".hud-msg-node");
+   is(nodes.length, 2, "2 nodes in output");
+   ok(nodes[1].textContent.indexOf("null") > -1, "'null' printed to output");
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_output_order.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_output_order.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_output_order.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_output_order.js
+@@ -48,21 +48,18 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testOutputOrder, false);
+ }
+ 
+ function testOutputOrder() {
+   browser.removeEventListener("DOMContentLoaded", testOutputOrder, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-
+-  let HUD = HUDService.hudReferences[hudId];
+-  let jsterm = HUD.jsterm;
+-  outputNode = jsterm.outputNode;
++  let jsterm = HUDService.getHudByWindow(content).jsterm;
++  let outputNode = jsterm.outputNode;
+ 
+   jsterm.clearOutput();
+   jsterm.execute("console.log('foo', 'bar');");
+ 
+   let nodes = outputNode.querySelectorAll(".hud-msg-node");
+   is(nodes.length, 3, "3 children in output");
+ 
+   let executedStringFirst =
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_property_panel.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_property_panel.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_property_panel.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_property_panel.js
+@@ -48,20 +48,17 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testPropertyPanel, false);
+ }
+ 
+ function testPropertyPanel() {
+   browser.removeEventListener("DOMContentLoaded", testPropertyPanel, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-
+-  var HUD = HUDService.hudReferences[hudId];
+-  var jsterm = HUD.jsterm;
++  var jsterm = HUDService.getHudByWindow(content).jsterm;
+ 
+   let propPanel = jsterm.openPropertyPanel("Test", [
+     1,
+     /abc/,
+     null,
+     undefined,
+     function test() {},
+     {}
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_property_provider.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_property_provider.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_property_provider.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_property_provider.js
+@@ -49,19 +49,17 @@ function test() {
+ }
+ 
+ function testPropertyProvider() {
+   browser.removeEventListener("DOMContentLoaded", testPropertyProvider,
+                               false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-
+-  var HUD = HUDService.hudReferences[hudId];
++  var HUD = HUDService.getHudByWindow(content);
+   var jsterm = HUD.jsterm;
+   var context = jsterm.sandbox.window;
+   var completion;
+ 
+   // Test if the propertyProvider can be accessed from the jsterm object.
+   ok (jsterm.propertyProvider !== undefined, "JSPropertyProvider is defined");
+ 
+   completion = jsterm.propertyProvider(context, "thisIsNotDefined");
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_registries.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_registries.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_registries.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_registries.js
+@@ -48,20 +48,18 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testRegistries, false);
+ }
+ 
+ function testRegistries() {
+   browser.removeEventListener("DOMContentLoaded", testRegistries, false);
+ 
+   openConsole();
+ 
+-  var displaysIdx = HUDService.displaysIndex();
+-  ok(displaysIdx.length == 1, "one display id found");
+-
+-  var display = displaysIdx[0];
+-  ok(HUDService.hudReferences[display], "we have a HUD");
++  let hud = HUDService.getHudByWindow(content);
++  ok(hud, "we have a HUD");
++  ok(HUDService.hudReferences[hud.hudId], "we have a HUD in hudReferences");
+ 
+   let windowID = HUDService.getWindowId(content);
+-  is(HUDService.windowIds[windowID], display, "windowIds is working");
++  is(HUDService.windowIds[windowID], hud.hudId, "windowIds are working");
+ 
+   finishTest();
+ }
+ 

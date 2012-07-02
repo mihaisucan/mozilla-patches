@@ -1,0 +1,97 @@
+# HG changeset patch
+# Parent a0b6f6695ccdd66a6a5c3a56941fe181899c0dd8
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1672,38 +1672,41 @@ HUD_SERVICE.prototype =
+   shutdown: function HS_shutdown()
+   {
+     for (let hudId in this.hudReferences) {
+       this.unregisterDisplay(hudId);
+     }
+   },
+ 
+   /**
++   * Returns the HeadsUpDisplay object associated to a content window.
++   *
++   * @param nsIDOMWindow aContentWindow
++   * @returns object
++   */
++  getHudByWindow: function HS_getHudByWindow(aContentWindow)
++  {
++    let hudId = this.getHudIdByWindow(aContentWindow);
++    return hudId ? this.hudReferences[hudId] : null;
++  },
++
++  /**
+    * Returns the hudId that is corresponding to the hud activated for the
+    * passed aContentWindow. If there is no matching hudId null is returned.
+    *
+    * @param nsIDOMWindow aContentWindow
+    * @returns string or null
+    */
+   getHudIdByWindow: function HS_getHudIdByWindow(aContentWindow)
+   {
+     let windowId = this.getWindowId(aContentWindow);
+     return this.getHudIdByWindowId(windowId);
+   },
+ 
+   /**
+-   * Gets an array that contains all the HUD IDs.
+-   * @returns array
+-   */
+-  displaysIndex: function HS_displaysIndex()
+-  {
+-    return Object.keys(this.hudReferences);
+-  },
+-
+-  /**
+    * Returns the hudId that is corresponding to the given outer window ID.
+    *
+    * @param number aWindowId
+    *        the outer window ID
+    * @returns string the hudId
+    */
+   getHudIdByWindowId: function HS_getHudIdByWindowId(aWindowId)
+   {
+@@ -2378,39 +2381,16 @@ HUD_SERVICE.prototype =
+     var firefoxMixin = new JSTermFirefoxMixin(context, aParentNode);
+     var jsTerm = new JSTerm(context, aParentNode, firefoxMixin, aConsole);
+ 
+     // TODO: injection of additional functionality needs re-thinking/api
+     // see bug 559748
+   },
+ 
+   /**
+-   * Passed a HUDId, the corresponding window is returned
+-   *
+-   * @param string aHUDId
+-   * @returns nsIDOMWindow
+-   */
+-  getContentWindowFromHUDId: function HS_getContentWindowFromHUDId(aHUDId)
+-  {
+-    var hud = this.getHeadsUpDisplay(aHUDId);
+-    var nodes = hud.parentNode.childNodes;
+-
+-    for (var i = 0; i < nodes.length; i++) {
+-      var node = nodes[i];
+-
+-      if (node.localName == "stack" &&
+-          node.firstChild &&
+-          node.firstChild.contentWindow) {
+-        return node.firstChild.contentWindow;
+-      }
+-    }
+-    throw new Error("HS_getContentWindowFromHUD: Cannot get contentWindow");
+-  },
+-
+-  /**
+    * Creates a generator that always returns a unique number for use in the
+    * indexes
+    *
+    * @returns Generator
+    */
+   createSequencer: function HS_createSequencer(aInt)
+   {
+     function sequencer(aInt)

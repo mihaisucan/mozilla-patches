@@ -1,0 +1,4692 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1316033766 -10800
+# Node ID 950f6f52c94acda9c2a7fa2692bae70272005f73
+# Parent  846f2fbc411070d92c118c05b60d63c27cc0cd19
+Bug 673148 - Web Console in e10s mode
+
+diff --git a/browser/base/content/browser.js b/browser/base/content/browser.js
+--- a/browser/base/content/browser.js
++++ b/browser/base/content/browser.js
+@@ -8571,16 +8571,17 @@ var TabContextMenu = {
+ 
+     // Hide "Move to Group" if it's a pinned tab.
+     document.getElementById("context_tabViewMenu").hidden =
+       (this.contextTab.pinned || !TabView.firstUseExperienced);
+   }
+ };
+ 
+ XPCOMUtils.defineLazyGetter(this, "HUDConsoleUI", function () {
++  dump("lazy get HUDConsoleUI\n");
+   Cu.import("resource:///modules/HUDService.jsm");
+   try {
+     return HUDService.consoleUI;
+   }
+   catch (ex) {
+     Components.utils.reportError(ex);
+   }
+ });
+diff --git a/browser/devtools/jar.mn b/browser/devtools/jar.mn
+--- a/browser/devtools/jar.mn
++++ b/browser/devtools/jar.mn
+@@ -1,7 +1,8 @@
+ browser.jar:
+     content/browser/NetworkPanel.xhtml            (webconsole/NetworkPanel.xhtml)
+ *   content/browser/scratchpad.xul                (scratchpad/scratchpad.xul)
+ *   content/browser/scratchpad.js                 (scratchpad/scratchpad.js)
+     content/browser/csshtmltree.xhtml             (styleinspector/csshtmltree.xhtml)
+     content/browser/orion.js                      (sourceeditor/orion/orion.js)
+     content/browser/orion.css                     (sourceeditor/orion/orion.css)
++    content/browser/HUDService-content.js         (webconsole/HUDService-content.js)
+diff --git a/browser/devtools/webconsole/HUDService-content.js b/browser/devtools/webconsole/HUDService-content.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/webconsole/HUDService-content.js
+@@ -0,0 +1,532 @@
++/* -*- Mode: js2; js2-basic-offset: 2; indent-tabs-mode: nil; -*- */
++/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Web Console.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Mihai Sucan <mihai.sucan@gmail.com> (original author)
++ *   David Dahl <ddahl@mozilla.com>
++ *   Rob Campbell <rcampbell@mozilla.com>
++ *   Johnathan Nightingale <jnightingale@mozilla.com>
++ *   Patrick Walton <pcwalton@mozilla.com>
++ *   Julian Viereck <jviereck@mozilla.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++(function() {
++let Cc = Components.classes;
++let Ci = Components.interfaces;
++let Cu = Components.utils;
++
++Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++
++XPCOMUtils.defineLazyGetter(this, "WebConsoleUtils", function () {
++  let obj = {};
++  Cu.import("resource:///modules/WebConsoleUtils.jsm", obj);
++  return obj.WebConsoleUtils;
++});
++
++XPCOMUtils.defineLazyGetter(this, "JSPropertyProvider", function () {
++  let obj = {};
++  Cu.import("resource:///modules/WebConsoleUtils.jsm", obj);
++  return obj.JSPropertyProvider;
++});
++
++let gObjectCache = {};
++
++// FIXME: JSTermHelpers do not work yet.
++/**
++ * JSTermHelper
++ *
++ * Defines a set of functions ("helper functions") that are available from the
++ * WebConsole but not from the webpage.
++ * A list of helper functions used by Firebug can be found here:
++ *   http://getfirebug.com/wiki/index.php/Command_Line_API
++ */
++function JSTermHelper(aJSTerm)
++{
++  /**
++   * Returns the result of document.getElementById(aId).
++   *
++   * @param string aId
++   *        A string that is passed to window.document.getElementById.
++   * @returns nsIDOMNode or null
++   */
++  aJSTerm.sandbox.$ = function JSTH_$(aId)
++  {
++    try {
++      return aJSTerm.window.document.getElementById(aId);
++    }
++    catch (ex) {
++      aJSTerm.console.error(ex.message);
++    }
++  };
++
++  /**
++   * Returns the result of document.querySelectorAll(aSelector).
++   *
++   * @param string aSelector
++   *        A string that is passed to window.document.querySelectorAll.
++   * @returns array of nsIDOMNode
++   */
++  aJSTerm.sandbox.$$ = function JSTH_$$(aSelector)
++  {
++    try {
++      return aJSTerm.window.document.querySelectorAll(aSelector);
++    }
++    catch (ex) {
++      aJSTerm.console.error(ex.message);
++    }
++  };
++
++  /**
++   * Runs a xPath query and returns all matched nodes.
++   *
++   * @param string aXPath
++   *        xPath search query to execute.
++   * @param [optional] nsIDOMNode aContext
++   *        Context to run the xPath query on. Uses window.document if not set.
++   * @returns array of nsIDOMNode
++   */
++  aJSTerm.sandbox.$x = function JSTH_$x(aXPath, aContext)
++  {
++    let nodes = [];
++    let doc = aJSTerm.window.document;
++    let aContext = aContext || doc;
++
++    try {
++      let results = doc.evaluate(aXPath, aContext, null,
++                                 Ci.nsIDOMXPathResult.ANY_TYPE, null);
++      let node;
++      while (node = results.iterateNext()) {
++        nodes.push(node);
++      }
++    }
++    catch (ex) {
++      aJSTerm.console.error(ex.message);
++    }
++
++    return nodes;
++  };
++
++  /**
++   * Returns the currently selected object in the highlighter.
++   *
++   * @returns nsIDOMNode or null
++   */
++  Object.defineProperty(aJSTerm.sandbox, "$0", {
++    get: function() {
++      let mw = HUDService.currentContext();
++      try {
++        return mw.InspectorUI.selection;
++      }
++      catch (ex) {
++        aJSTerm.console.error(ex.message);
++      }
++    },
++    enumerable: true,
++    configurable: false
++  });
++
++  /**
++   * Clears the output of the JSTerm.
++   */
++  aJSTerm.sandbox.clear = function JSTH_clear()
++  {
++    aJSTerm.helperEvaluated = true;
++    aJSTerm.clearOutput();
++  };
++
++  /**
++   * Returns the result of Object.keys(aObject).
++   *
++   * @param object aObject
++   *        Object to return the property names from.
++   * @returns array of string
++   */
++  aJSTerm.sandbox.keys = function JSTH_keys(aObject)
++  {
++    try {
++      return Object.keys(WebConsoleUtils.unwrap(aObject));
++    }
++    catch (ex) {
++      aJSTerm.console.error(ex.message);
++    }
++  };
++
++  /**
++   * Returns the values of all properties on aObject.
++   *
++   * @param object aObject
++   *        Object to display the values from.
++   * @returns array of string
++   */
++  aJSTerm.sandbox.values = function JSTH_values(aObject)
++  {
++    let arrValues = [];
++    let obj = WebConsoleUtils.unwrap(aObject);
++
++    try {
++      for (let prop in obj) {
++        arrValues.push(obj[prop]);
++      }
++    }
++    catch (ex) {
++      aJSTerm.console.error(ex.message);
++    }
++    return arrValues;
++  };
++
++  /**
++   * Opens a help window in MDC
++   */
++  aJSTerm.sandbox.help = function JSTH_help()
++  {
++    aJSTerm.helperEvaluated = true;
++    aJSTerm.window.open(
++        "https://developer.mozilla.org/AppLinks/WebConsoleHelp?locale=" +
++        aJSTerm.window.navigator.language, "help", "");
++  };
++
++  /**
++   * Inspects the passed aObject. This is done by opening the PropertyPanel.
++   *
++   * @param object aObject
++   *        Object to inspect.
++   * @returns void
++   */
++  aJSTerm.sandbox.inspect = function JSTH_inspect(aObject)
++  {
++    aJSTerm.helperEvaluated = true;
++    let propPanel =
++      aJSTerm.openPropertyPanel(null, WebConsoleUtils.unwrap(aObject));
++    propPanel.panel.setAttribute("hudId", aJSTerm.hudId);
++  };
++
++  /**
++   * Inspects the passed aNode in the style inspector.
++   *
++   * @param object aNode
++   *        aNode to inspect.
++   * @returns void
++   */
++  aJSTerm.sandbox.inspectstyle = function JSTH_inspectstyle(aNode)
++  {
++    let errstr = null;
++    aJSTerm.helperEvaluated = true;
++
++    if (!Services.prefs.getBoolPref("devtools.styleinspector.enabled")) {
++      errstr = HUDService.getStr("inspectStyle.styleInspectorNotEnabled");
++    } else if (!aNode) {
++      errstr = HUDService.getStr("inspectStyle.nullObjectPassed");
++    } else if (!(aNode instanceof Ci.nsIDOMNode)) {
++      errstr = HUDService.getStr("inspectStyle.mustBeDomNode");
++    } else if (!(aNode.style instanceof Ci.nsIDOMCSSStyleDeclaration)) {
++      errstr = HUDService.getStr("inspectStyle.nodeHasNoStyleProps");
++    }
++
++    if (!errstr) {
++      let stylePanel = StyleInspector.createPanel();
++      stylePanel.setAttribute("hudToolId", aJSTerm.hudId);
++      stylePanel.selectNode(aNode, true);
++    } else {
++      aJSTerm.writeOutput(errstr + "\n", CATEGORY_OUTPUT, SEVERITY_ERROR);
++    }
++  };
++
++  /**
++   * Prints aObject to the output.
++   *
++   * @param object aObject
++   *        Object to print to the output.
++   * @returns void
++   */
++  aJSTerm.sandbox.pprint = function JSTH_pprint(aObject)
++  {
++    aJSTerm.helperEvaluated = true;
++    if (aObject === null || aObject === undefined || aObject === true ||
++        aObject === false) {
++      aJSTerm.console.error(HUDService.getStr("helperFuncUnsupportedTypeError"));
++      return;
++    }
++    else if (typeof aObject == "function") {
++      aJSTerm.writeOutput(aObject + "\n", CATEGORY_OUTPUT, SEVERITY_LOG);
++      return;
++    }
++
++    let output = [];
++    let pairs = WebConsoleUtils.namesAndValuesOf(WebConsoleUtils.unwrap(aObject));
++
++    pairs.forEach(function(pair) {
++      output.push("  " + pair.display);
++    });
++
++    aJSTerm.writeOutput(output.join("\n"), CATEGORY_OUTPUT, SEVERITY_LOG);
++  };
++
++  /**
++   * Print a string to the output, as-is.
++   *
++   * @param string aString
++   *        A string you want to output.
++   * @returns void
++   */
++  aJSTerm.sandbox.print = function JSTH_print(aString)
++  {
++    aJSTerm.helperEvaluated = true;
++    aJSTerm.writeOutput("" + aString, CATEGORY_OUTPUT, SEVERITY_LOG);
++  };
++}
++
++let JSTerm = {
++  window: content,
++  console: content.console,
++  sandbox: null,
++  hudId: null,
++  _sequence: 0,
++
++  get sequenceId() ++this._sequence,
++
++  init: function JST_init()
++  {
++    // create a JS Sandbox out of this.context
++    this.sandbox = new Cu.Sandbox(this.window,
++      { sandboxPrototype: this.window, wantXrays: false });
++    this.sandbox.console = this.console;
++
++    JSTermHelper(this);
++
++    addMessageListener("JSTerm:Init", this);
++    addMessageListener("JSTerm:Destroy", this);
++    addMessageListener("JSTerm:EvalRequest", this);
++    addMessageListener("JSTerm:GetEvalObject", this);
++    addMessageListener("JSTerm:ClearObjectCache", this);
++    addMessageListener("JSTerm:Autocomplete", this);
++  },
++
++  receiveMessage: function JST_receiveMessage(aMessage)
++  {
++    if (!aMessage.json || (aMessage.name != "JSTerm:Init" &&
++                           aMessage.json.hudId != this.hudId)) {
++      Cu.reportError("JSTerm content: received message " + aMessage.name +
++                     " from wrong hudId.");
++      return;
++    }
++
++    dump("JST_receiveMessage content " + aMessage.name + "\n");
++    switch (aMessage.name) {
++      case "JSTerm:Init":
++        this.hudId = aMessage.json.hudId;
++        break;
++      case "JSTerm:Destroy":
++        this.destroy();
++        break;
++      case "JSTerm:EvalRequest":
++        this.handleEvalRequest(aMessage.json);
++        break;
++      case "JSTerm:GetEvalObject":
++        this.handleGetEvalObject(aMessage.json);
++        break;
++      case "JSTerm:ClearObjectCache":
++        this.handleClearObjectCache(aMessage.json);
++        break;
++      case "JSTerm:Autocomplete":
++        this.handleAutocomplete(aMessage.json);
++        break;
++    }
++  },
++
++  handleEvalRequest: function JST_handleEvalRequest(aRequest)
++  {
++    dump("JST_handleEvalRequest content evalId " + aRequest.id + " resultCacheId " + aRequest.resultCacheId + "\n");
++    let id = aRequest.id;
++    let input = aRequest.str;
++    let result, error = null;
++
++    this.helperEvaluated = false;
++    try {
++      result = this.evalInSandbox(input);
++    }
++    catch (ex) {
++      error = ex;
++    }
++
++    let inspectable = !error && WebConsoleUtils.isResultInspectable(result);
++    let resultString = !error ? WebConsoleUtils.formatResult(result) : undefined;
++
++    let message = {
++      hudId: this.hudId,
++      id: id,
++      input: input,
++      resultString: resultString,
++      error: error,
++      errorMessage: error ? error.toString() : null,
++      inspectable: inspectable,
++      helperResult: this.helperEvaluated,
++    };
++
++    if (inspectable) {
++      message.childrenCacheId = aRequest.resultCacheId;
++      message.resultObject =
++        this.prepareEvalResultObject(message.childrenCacheId, result);
++    }
++
++    sendAsyncMessage("JSTerm:EvalResult", message);
++  },
++
++  handleGetEvalObject: function JST_handleGetEvalObject(aRequest)
++  {
++    dump("JST_handleGetEvalObject id " + aRequest.id + " inCache " + (aRequest.cacheId in gObjectCache) + " cacheId " + aRequest.cacheId + " objectId " + aRequest.objectId + " resultCacheId " + aRequest.resultCacheId + "\n");
++    if (aRequest.cacheId in gObjectCache &&
++        aRequest.objectId in gObjectCache[aRequest.cacheId]) {
++      let object = gObjectCache[aRequest.cacheId][aRequest.objectId];
++      let resultCacheId = aRequest.resultCacheId || aRequest.cacheId;
++      let message = {
++        hudId: this.hudId,
++        id: aRequest.id,
++        cacheId: aRequest.cacheId,
++        objectId: aRequest.objectId,
++        object: this.prepareEvalResultObject(resultCacheId, object),
++        childrenCacheId: resultCacheId,
++      };
++      sendAsyncMessage("JSTerm:EvalObject", message);
++    }
++    else {
++      Cu.reportError("JSTerm:GetEvalObject request " + aRequest.id +
++                     ": stale object.");
++    }
++  },
++
++  handleClearObjectCache: function JST_handleClearObjectCache(aRequest)
++  {
++    if (aRequest.cacheId in gObjectCache) {
++      dump("JST_handleClearObjectCache " + aRequest.cacheId + "\n");
++      delete gObjectCache[aRequest.cacheId];
++    }
++    else {
++      dump("JST_handleClearObjectCache " + aRequest.cacheId + " not found\n");
++    }
++  },
++
++  prepareEvalResultObject:
++  function JST_prepareEvalResultObject(aCacheId, aObject)
++  {
++    // Cache the properties that have inspectable values.
++    let propCache = gObjectCache[aCacheId] || {};
++    let result = WebConsoleUtils.namesAndValuesOf(aObject, propCache);
++    if (!(aCacheId in gObjectCache) && Object.keys(propCache).length > 0) {
++      gObjectCache[aCacheId] = propCache;
++    }
++
++    dump("prepareEvalResultObject inCache " + (aCacheId in gObjectCache) + " propCache for " + aCacheId + ": " + Object.keys(propCache) + "\n");
++
++    return result;
++  },
++
++  handleAutocomplete: function JST_handleAutocomplete(aRequest)
++  {
++    let result = JSPropertyProvider(this.window, aRequest.input) || {};
++    let message = {
++      hudId: this.hudId,
++      id: aRequest.id,
++      input: aRequest.input,
++      matches: result.matches || [],
++      matchProp: result.matchProp,
++    };
++    sendAsyncMessage("JSTerm:AutocompleteProperties", message);
++  },
++
++  /**
++   * Evaluates a string in the sandbox.
++   *
++   * @param string aString
++   *        String to evaluate in the sandbox.
++   * @returns something
++   *          The result of the evaluation.
++   */
++  evalInSandbox: function JST_evalInSandbox(aString)
++  {
++    // The help function needs to be easy to guess, so we make the () optional
++    if (aString.trim() == "help" || aString.trim() == "?") {
++      aString = "help()";
++    }
++
++    let window = WebConsoleUtils.unwrap(this.sandbox.window);
++    let $ = null, $$ = null;
++
++    // We prefer to execute the page-provided implementations for the $() and
++    // $$() functions.
++    if (typeof window.$ == "function") {
++      $ = this.sandbox.$;
++      delete this.sandbox.$;
++    }
++    if (typeof window.$$ == "function") {
++      $$ = this.sandbox.$$;
++      delete this.sandbox.$$;
++    }
++
++    let result = Cu.evalInSandbox(aString, this.sandbox, "1.8",
++                                  "Web Console", 1);
++
++    if ($) {
++      this.sandbox.$ = $;
++    }
++    if ($$) {
++      this.sandbox.$$ = $$;
++    }
++
++    return result;
++  },
++
++  destroy: function JST_destroy()
++  {
++    this.hudId = null;
++    delete this.sandbox;
++    delete this.window;
++    delete this.console;
++
++    removeMessageListener("JSTerm:Init", this);
++    removeMessageListener("JSTerm:Destroy", this);
++    removeMessageListener("JSTerm:EvalRequest", this);
++    removeMessageListener("JSTerm:GetEvalObject", this);
++    removeMessageListener("JSTerm:ClearObjectCache", this);
++    removeMessageListener("JSTerm:Autocomplete", this);
++
++    dump("JST_destroy gObjectCache " + Object.keys(gObjectCache) + "\n");
++
++    gObjectCache = {};
++    JSTerm = null;
++  },
++};
++
++JSTerm.init();
++})();
+diff --git a/browser/devtools/webconsole/HUDService.jsm b/browser/devtools/webconsole/HUDService.jsm
+--- a/browser/devtools/webconsole/HUDService.jsm
++++ b/browser/devtools/webconsole/HUDService.jsm
+@@ -38,26 +38,27 @@
+  * use your version of this file under the terms of the MPL, indicate your
+  * decision by deleting the provisions above and replace them with the notice
+  * and other provisions required by the GPL or the LGPL. If you do not delete
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
++dump("HUDService init 0\n");
++
+ const Cc = Components.classes;
+ const Ci = Components.interfaces;
+ const Cu = Components.utils;
+ 
+ const CONSOLEAPI_CLASS_ID = "{b49c18f8-3379-4fc0-8c90-d7772c1a9ff3}";
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource:///modules/NetworkHelper.jsm");
+-Cu.import("resource:///modules/PropertyPanel.jsm");
+ 
+ var EXPORTED_SYMBOLS = ["HUDService", "ConsoleUtils"];
+ 
+ XPCOMUtils.defineLazyServiceGetter(this, "scriptError",
+                                    "@mozilla.org/scripterror;1",
+                                    "nsIScriptError");
+ 
+ XPCOMUtils.defineLazyServiceGetter(this, "activityDistributor",
+@@ -100,20 +101,20 @@ XPCOMUtils.defineLazyGetter(this, "Autoc
+     Cu.import("resource:///modules/AutocompletePopup.jsm", obj);
+   }
+   catch (err) {
+     Cu.reportError(err);
+   }
+   return obj.AutocompletePopup;
+ });
+ 
+-XPCOMUtils.defineLazyGetter(this, "namesAndValuesOf", function () {
+-  var obj = {};
+-  Cu.import("resource:///modules/PropertyPanel.jsm", obj);
+-  return obj.namesAndValuesOf;
++XPCOMUtils.defineLazyGetter(this, "WebConsoleUtils", function () {
++  let obj = {};
++  Cu.import("resource:///modules/WebConsoleUtils.jsm", obj);
++  return obj.WebConsoleUtils;
+ });
+ 
+ function LogFactory(aMessagePrefix)
+ {
+   function log(aMessage) {
+     var _msg = aMessagePrefix + " " + aMessage + "\n";
+     dump(_msg);
+   }
+@@ -237,18 +238,18 @@ const MINIMUM_CONSOLE_HEIGHT = 150;
+ 
+ // Minimum page height, in pixels. This prevents the Web Console from
+ // remembering a height that covers the whole page.
+ const MINIMUM_PAGE_HEIGHT = 50;
+ 
+ // The default console height, as a ratio from the content window inner height.
+ const DEFAULT_CONSOLE_HEIGHT = 0.33;
+ 
+-// Constant used when checking the typeof objects.
+-const TYPEOF_FUNCTION = "function";
++// This script is inserted into the content process.
++const CONTENT_SCRIPT_URL = "chrome://browser/content/HUDService-content.js";
+ 
+ const ERRORS = { LOG_MESSAGE_MISSING_ARGS:
+                  "Missing arguments: aMessage, aConsoleNode and aMessageNode are required.",
+                  CANNOT_GET_HUD: "Cannot getHeads Up Display with provided ID",
+                  MISSING_ARGS: "Missing arguments",
+                  LOG_OUTPUT_FAILED: "Log Failure: Could not append messageNode to outputNode",
+ };
+ 
+@@ -565,31 +566,16 @@ function createElement(aDocument, aTag, 
+  */
+ function createAndAppendElement(aParent, aTag, aAttributes)
+ {
+   let node = createElement(aParent.ownerDocument, aTag, aAttributes);
+   aParent.appendChild(node);
+   return node;
+ }
+ 
+-/**
+- * Convenience function to unwrap a wrapped object.
+- *
+- * @param aObject the object to unwrap
+- */
+-
+-function unwrap(aObject)
+-{
+-  try {
+-    return XPCNativeWrapper.unwrap(aObject);
+-  } catch(e) {
+-    return aObject;
+-  }
+-}
+-
+ ///////////////////////////////////////////////////////////////////////////
+ //// NetworkPanel
+ 
+ /**
+  * Creates a new NetworkPanel.
+  *
+  * @param nsIDOMNode aParent
+  *        Parent node to append the created panel to.
+@@ -1229,29 +1215,34 @@ function pruneConsoleOutputIfNecessary(a
+   let oldScrollHeight = scrollBox.scrollHeight;
+   let scrolledToBottom = ConsoleUtils.isOutputScrolledToBottom(outputNode);
+ 
+   // Prune the nodes.
+   let messageNodes = outputNode.querySelectorAll(".webconsole-msg-" +
+       CATEGORY_CLASS_FRAGMENTS[aCategory]);
+   let removeNodes = messageNodes.length - logLimit;
+   for (let i = 0; i < removeNodes; i++) {
+-    if (messageNodes[i].classList.contains("webconsole-msg-cssparser")) {
+-      let desc = messageNodes[i].childNodes[2].textContent;
++    let node = messageNodes[i];
++    if (node._evalCacheId && !node._panelOpen) {
++      hudRef.jsterm.clearObjectCache(node._evalCacheId);
++    }
++
++    if (node.classList.contains("webconsole-msg-cssparser")) {
++      let desc = node.childNodes[2].textContent;
+       let location = "";
+-      if (messageNodes[i].childNodes[4]) {
+-        location = messageNodes[i].childNodes[4].getAttribute("title");
++      if (node.childNodes[4]) {
++        location = node.childNodes[4].getAttribute("title");
+       }
+       delete hudRef.cssNodes[desc + location];
+     }
+-    else if (messageNodes[i].classList.contains("webconsole-msg-inspector")) {
+-      hudRef.pruneConsoleDirNode(messageNodes[i]);
++    else if (node.classList.contains("webconsole-msg-inspector")) {
++      hudRef.pruneConsoleDirNode(node);
+       continue;
+     }
+-    messageNodes[i].parentNode.removeChild(messageNodes[i]);
++    node.parentNode.removeChild(node);
+   }
+ 
+   if (!scrolledToBottom && removeNodes > 0 &&
+       oldScrollHeight != scrollBox.scrollHeight) {
+     scrollBox.scrollTop -= oldScrollHeight - scrollBox.scrollHeight;
+   }
+ 
+   return logLimit;
+@@ -1281,22 +1272,16 @@ function HUD_SERVICE()
+   this.lastConsoleHeight = Services.prefs.getIntPref("devtools.hud.height");
+ 
+   // Network response bodies are piped through a buffer of the given size (in
+   // bytes).
+   this.responsePipeSegmentSize =
+     Services.prefs.getIntPref("network.buffer.cache.size");
+ 
+   /**
+-   * Collection of HUDIds that map to the tabs/windows/contexts
+-   * that a HeadsUpDisplay can be activated for.
+-   */
+-  this.activatedContexts = [];
+-
+-  /**
+    * Collection of outer window IDs mapping to HUD IDs.
+    */
+   this.windowIds = {};
+ 
+   /**
+    * Each HeadsUpDisplay has a set of filter preferences
+    */
+   this.filterPrefs = {};
+@@ -1395,122 +1380,90 @@ HUD_SERVICE.prototype =
+ 
+   /**
+    * Whether to save the bodies of network requests and responses. Disabled by
+    * default to save memory.
+    */
+   saveRequestAndResponseBodies: false,
+ 
+   /**
+-   * Tell the HUDService that a HeadsUpDisplay can be activated
+-   * for the window or context that has 'aContextDOMId' node id
+-   *
+-   * @param string aContextDOMId
+-   * @return void
+-   */
+-  registerActiveContext: function HS_registerActiveContext(aContextDOMId)
+-  {
+-    this.activatedContexts.push(aContextDOMId);
+-  },
+-
+-  /**
+    * Firefox-specific current tab getter
+    *
+    * @returns nsIDOMWindow
+    */
+   currentContext: function HS_currentContext() {
+     return this.mixins.getCurrentContext();
+   },
+ 
+   /**
+-   * Tell the HUDService that a HeadsUpDisplay should be deactivated
+-   *
+-   * @param string aContextDOMId
+-   * @return void
+-   */
+-  unregisterActiveContext: function HS_deregisterActiveContext(aContextDOMId)
+-  {
+-    var domId = aContextDOMId.split("_")[1];
+-    var idx = this.activatedContexts.indexOf(domId);
+-    if (idx > -1) {
+-      this.activatedContexts.splice(idx, 1);
+-    }
+-  },
+-
+-  /**
+-   * Tells callers that a HeadsUpDisplay can be activated for the context
+-   *
+-   * @param string aContextDOMId
+-   * @return boolean
+-   */
+-  canActivateContext: function HS_canActivateContext(aContextDOMId)
+-  {
+-    var domId = aContextDOMId.split("_")[1];
+-    for (var idx in this.activatedContexts) {
+-      if (this.activatedContexts[idx] == domId){
+-        return true;
+-      }
+-    }
+-    return false;
+-  },
+-
+-  /**
+    * Activate a HeadsUpDisplay for the given tab context.
+    *
+-   * @param Element aContext the tab element.
+-   * @param boolean aAnimated animate opening the Web Console?
++   * @param nsIDOMElement aContext
++   *        The xul:tab element.
++   * @param boolean aAnimated
++   *        True if you want to animate the opening of the Web Console,
++   *        otherwise false.
+    * @returns void
+    */
+   activateHUDForContext: function HS_activateHUDForContext(aContext, aAnimated)
+   {
++    dump("activateHUDForContext 1\n");
+     this.wakeup();
+-
+-    let window = aContext.linkedBrowser.contentWindow;
+-    let nBox = aContext.ownerDocument.defaultView.
+-      getNotificationBox(window);
+-    this.registerActiveContext(nBox.id);
+-    this.windowInitializer(window);
+-
+-    let hudId = "hud_" + nBox.id;
+-    let hudRef = this.hudReferences[hudId];
++    dump("activateHUDForContext 2\n");
++
++    let hudId = "hud_" + aContext.linkedPanel;
++    let window = aContext.ownerDocument.defaultView;
++    let gBrowser = window.gBrowser;
++
++    // TODO: check that this works as intended
++    gBrowser.tabContainer.addEventListener("TabClose", this.onTabClose, false);
++    window.addEventListener("unload", this.onWindowUnload, false);
++
++    this.registerDisplay(hudId);
++    let hud = new HeadsUpDisplay(aContext);
++    this.hudReferences[hudId] = hud;
++
++    // FIXME: Need to detect that the console component has been paved over.
++    //let consoleObject = WebConsoleUtils.unwrap(aContentWindow).console;
++    //if (!("__mozillaConsole__" in consoleObject))
++    //  this.logWarningAboutReplacedAPI(hudId);
++
++    // FIXME: register the controller to handle "select all" properly
++    //this.createController(xulWindow);
++
++    let hudRef = this.getHudReferenceById(hudId);
+ 
+     if (!aAnimated || hudRef.consolePanel) {
+       this.disableAnimation(hudId);
+     }
++
++    let id = ConsoleUtils.supString(hudId);
++    Services.obs.notifyObservers(id, "web-console-created", null);
++
++    dump("activateHUDForContext end\n");
+   },
+ 
+   /**
+    * Deactivate a HeadsUpDisplay for the given tab context.
+    *
+    * @param nsIDOMWindow aContext
+    * @param aAnimated animate closing the web console?
+    * @returns void
+    */
+   deactivateHUDForContext: function HS_deactivateHUDForContext(aContext, aAnimated)
+   {
+-    let browser = aContext.linkedBrowser;
+-    let window = browser.contentWindow;
+-    let chromeDocument = aContext.ownerDocument;
+-    let nBox = chromeDocument.defaultView.getNotificationBox(window);
+-    let hudId = "hud_" + nBox.id;
+-    let displayNode = chromeDocument.getElementById(hudId);
+-
+-    if (hudId in this.hudReferences && displayNode) {
+-      if (!aAnimated) {
+-        this.storeHeight(hudId);
+-      }
+-
+-      let hud = this.hudReferences[hudId];
+-      browser.webProgress.removeProgressListener(hud.progressListener);
+-      delete hud.progressListener;
+-
+-      this.unregisterDisplay(hudId);
+-
+-      window.focus();
+-    }
++    let hudId = "hud_" + aContext.linkedPanel;
++
++    if (!aAnimated) {
++      this.storeHeight(hudId);
++    }
++
++    this.unregisterDisplay(hudId);
++
++    // FIXME window.focus();
+   },
+ 
+   /**
+    * get a unique ID from the sequence generator
+    *
+    * @returns integer
+    */
+   sequenceId: function HS_sequencerId()
+@@ -1698,28 +1651,16 @@ HUD_SERVICE.prototype =
+         node.classList.add("hud-filtered-by-string");
+       }
+     }
+ 
+     this.regroupOutput(outputNode);
+   },
+ 
+   /**
+-   * Register a reference of each HeadsUpDisplay that is created
+-   */
+-  registerHUDReference:
+-  function HS_registerHUDReference(aHUD)
+-  {
+-    this.hudReferences[aHUD.hudId] = aHUD;
+-
+-    let id = ConsoleUtils.supString(aHUD.hudId);
+-    Services.obs.notifyObservers(id, "web-console-created", null);
+-  },
+-
+-  /**
+    * Register a new Heads Up Display
+    *
+    * @returns void
+    */
+   registerDisplay: function HS_registerDisplay(aHUDId)
+   {
+     // register a display DOM node Id with the service.
+     if (!aHUDId){
+@@ -1739,50 +1680,50 @@ HUD_SERVICE.prototype =
+    */
+   unregisterDisplay: function HS_unregisterDisplay(aHUDId)
+   {
+     let hud = this.getHudReferenceById(aHUDId);
+ 
+     // Remove children from the output. If the output is not cleared, there can
+     // be leaks as some nodes has node.onclick = function; set and GC can't
+     // remove the nodes then.
+-    hud.jsterm.clearOutput();
+ 
+     hud.destroy();
+ 
++    /* FIXME
++    browser.webProgress.removeProgressListener(hud.progressListener);
++    delete hud.progressListener;
++    */
++
+     // Make sure that the console panel does not try to call
+     // deactivateHUDForContext() again.
+     hud.consoleWindowUnregisterOnHide = false;
+ 
+     // Remove the HUDBox and the consolePanel if the Web Console is inside a
+     // floating panel.
+     hud.HUDBox.parentNode.removeChild(hud.HUDBox);
+     if (hud.consolePanel) {
+       hud.consolePanel.parentNode.removeChild(hud.consolePanel);
+     }
+ 
+     if (hud.splitter.parentNode) {
+       hud.splitter.parentNode.removeChild(hud.splitter);
+     }
+ 
+-    hud.jsterm.autocompletePopup.destroy();
+-
+     delete this.hudReferences[aHUDId];
+ 
+     // remove the related storage object
+     this.storage.removeDisplay(aHUDId);
+ 
+     for (let windowID in this.windowIds) {
+       if (this.windowIds[windowID] == aHUDId) {
+         delete this.windowIds[windowID];
+       }
+     }
+ 
+-    this.unregisterActiveContext(aHUDId);
+-
+     let popupset = hud.chromeDocument.getElementById("mainPopupSet");
+     let panels = popupset.querySelectorAll("panel[hudId=" + aHUDId + "]");
+     for (let i = 0; i < panels.length; i++) {
+       panels[i].hidePopup();
+     }
+     panels = popupset.querySelectorAll("panel[hudToolId=" + aHUDId + "]");
+     for (let i = 0; i < panels.length; i++) {
+       panels[i].hidePopup();
+@@ -1948,17 +1889,17 @@ HUD_SERVICE.prototype =
+    *        The message reported by the console service.
+    * @return void
+    */
+   logConsoleAPIMessage: function HS_logConsoleAPIMessage(aHUDId, aMessage)
+   {
+     // Pipe the message to createMessageNode().
+     let hud = HUDService.hudReferences[aHUDId];
+     function formatResult(x) {
+-      return (typeof(x) == "string") ? x : hud.jsterm.formatResult(x);
++      return (typeof(x) == "string") ? x : WebConsoleUtils.formatResult(x);
+     }
+ 
+     let body = null;
+     let clipboardText = null;
+     let sourceURL = null;
+     let sourceLine = 0;
+     let level = aMessage.level;
+     let args = aMessage.arguments;
+@@ -1971,17 +1912,17 @@ HUD_SERVICE.prototype =
+       case "debug":
+         let mappedArguments = Array.map(args, formatResult);
+         body = Array.join(mappedArguments, " ");
+         sourceURL = aMessage.filename;
+         sourceLine = aMessage.lineNumber;
+         break;
+ 
+       case "trace":
+-        let filename = ConsoleUtils.abbreviateSourceURL(args[0].filename);
++        let filename = WebConsoleUtils.abbreviateSourceURL(args[0].filename);
+         let functionName = args[0].functionName ||
+                            this.getStr("stacktrace.anonymousFunction");
+         let lineNumber = args[0].lineNumber;
+ 
+         body = this.getFormatStr("stacktrace.outputMessage",
+                                  [filename, functionName, lineNumber]);
+ 
+         sourceURL = args[0].filename;
+@@ -1994,17 +1935,17 @@ HUD_SERVICE.prototype =
+                            aFrame.functionName + " :: " +
+                            aFrame.lineNumber + "\n";
+         });
+ 
+         clipboardText = clipboardText.trimRight();
+         break;
+ 
+       case "dir":
+-        body = unwrap(args[0]);
++        body = WebConsoleUtils.unwrap(args[0]);
+         clipboardText = body.toString();
+         sourceURL = aMessage.filename;
+         sourceLine = aMessage.lineNumber;
+         break;
+ 
+       default:
+         Cu.reportError("Unknown Console API log level: " + level);
+         return;
+@@ -2036,16 +1977,17 @@ HUD_SERVICE.prototype =
+       node.addEventListener("click", function(aEvent) {
+         if (aEvent.detail != 1 || aEvent.button != 0 ||
+             (this._startX != aEvent.clientX &&
+              this._startY != aEvent.clientY)) {
+           return;
+         }
+ 
+         if (!this._panelOpen) {
++          // FIXME: update for e10s.
+           let propPanel = hud.jsterm.openPropertyPanel(null,
+                                                        node._stacktrace,
+                                                        this);
+           propPanel.panel.setAttribute("hudId", aHUDId);
+           this._panelOpen = true;
+         }
+       }, false);
+     }
+@@ -2580,39 +2522,16 @@ HUD_SERVICE.prototype =
+                                                      null,
+                                                      clipboardText);
+ 
+     ConsoleUtils.outputMessageNode(messageNode, aActivityObject.hudId);
+     return messageNode;
+   },
+ 
+   /**
+-   * Initialize the JSTerm object to create a JS Workspace by attaching the UI
+-   * into the given parent node, using the mixin.
+-   *
+-   * @param nsIDOMWindow aContext the context used for evaluating user input
+-   * @param nsIDOMNode aParentNode where to attach the JSTerm
+-   * @param object aConsole
+-   *        Console object used within the JSTerm instance to report errors
+-   *        and log data (by calling console.error(), console.log(), etc).
+-   */
+-  initializeJSTerm: function HS_initializeJSTerm(aContext, aParentNode, aConsole)
+-  {
+-    // create Initial JS Workspace:
+-    var context = Cu.getWeakReference(aContext);
+-
+-    // Attach the UI into the target parent node using the mixin.
+-    var firefoxMixin = new JSTermFirefoxMixin(context, aParentNode);
+-    var jsTerm = new JSTerm(context, aParentNode, firefoxMixin, aConsole);
+-
+-    // TODO: injection of additional functionality needs re-thinking/api
+-    // see bug 559748
+-  },
+-
+-  /**
+    * Creates a generator that always returns a unique number for use in the
+    * indexes
+    *
+    * @returns Generator
+    */
+   createSequencer: function HS_createSequencer(aInt)
+   {
+     function sequencer(aInt)
+@@ -2688,119 +2607,16 @@ HUD_SERVICE.prototype =
+ 
+     if (window.webConsoleCommandController) {
+       window.controllers.removeController(window.webConsoleCommandController);
+       window.webConsoleCommandController = null;
+     }
+   },
+ 
+   /**
+-   * windowInitializer - checks what Gecko app is running and inits the HUD
+-   *
+-   * @param nsIDOMWindow aContentWindow
+-   * @returns void
+-   */
+-  windowInitializer: function HS_WindowInitalizer(aContentWindow)
+-  {
+-    var xulWindow = aContentWindow.QueryInterface(Ci.nsIInterfaceRequestor)
+-      .getInterface(Ci.nsIWebNavigation)
+-                      .QueryInterface(Ci.nsIDocShell)
+-                      .chromeEventHandler.ownerDocument.defaultView;
+-
+-    let xulWindow = unwrap(xulWindow);
+-
+-    let docElem = xulWindow.document.documentElement;
+-    if (!docElem || docElem.getAttribute("windowtype") != "navigator:browser" ||
+-        !xulWindow.gBrowser) {
+-      // Do not do anything unless we have a browser window.
+-      // This may be a view-source window or other type of non-browser window.
+-      return;
+-    }
+-
+-    let gBrowser = xulWindow.gBrowser;
+-
+-    let _browser = gBrowser.
+-      getBrowserForDocument(aContentWindow.top.document);
+-
+-    // ignore newly created documents that don't belong to a tab's browser
+-    if (!_browser) {
+-      return;
+-    }
+-
+-    let nBox = gBrowser.getNotificationBox(_browser);
+-    let nBoxId = nBox.getAttribute("id");
+-    let hudId = "hud_" + nBoxId;
+-    let windowUI = nBox.ownerDocument.getElementById("console_window_" + hudId);
+-    if (windowUI) {
+-      // The Web Console popup is already open, no need to continue.
+-      if (aContentWindow == aContentWindow.top) {
+-        let hud = this.hudReferences[hudId];
+-        hud.reattachConsole(aContentWindow);
+-      }
+-      return;
+-    }
+-
+-    if (!this.canActivateContext(hudId)) {
+-      return;
+-    }
+-
+-    xulWindow.addEventListener("unload", this.onWindowUnload, false);
+-    gBrowser.tabContainer.addEventListener("TabClose", this.onTabClose, false);
+-
+-    this.registerDisplay(hudId);
+-
+-    let hudNode;
+-    let childNodes = nBox.childNodes;
+-
+-    for (let i = 0; i < childNodes.length; i++) {
+-      let id = childNodes[i].getAttribute("id");
+-      // `id` is a string with the format "hud_<number>".
+-      if (id.split("_")[0] == "hud") {
+-        hudNode = childNodes[i];
+-        break;
+-      }
+-    }
+-
+-    let hud;
+-    // If there is no HUD for this tab create a new one.
+-    if (!hudNode) {
+-      // get nBox object and call new HUD
+-      let config = { parentNode: nBox,
+-                     contentWindow: aContentWindow
+-                   };
+-
+-      hud = new HeadsUpDisplay(config);
+-
+-      HUDService.registerHUDReference(hud);
+-      let windowId = this.getWindowId(aContentWindow.top);
+-      this.windowIds[windowId] = hudId;
+-
+-      hud.progressListener = new ConsoleProgressListener(hudId);
+-
+-      _browser.webProgress.addProgressListener(hud.progressListener,
+-        Ci.nsIWebProgress.NOTIFY_STATE_ALL);
+-    }
+-    else {
+-      hud = this.hudReferences[hudId];
+-      if (aContentWindow == aContentWindow.top) {
+-        // TODO: name change?? doesn't actually re-attach the console
+-        hud.reattachConsole(aContentWindow);
+-      }
+-    }
+-
+-    // Need to detect that the console component has been paved over.
+-    let consoleObject = unwrap(aContentWindow).console;
+-    if (!("__mozillaConsole__" in consoleObject))
+-      this.logWarningAboutReplacedAPI(hudId);
+-
+-    // register the controller to handle "select all" properly
+-    this.createController(xulWindow);
+-  },
+-
+-  /**
+    * Adds the command controller to the XUL window if it's not already present.
+    *
+    * @param nsIDOMWindow aWindow
+    *        The browser XUL window.
+    * @returns void
+    */
+   createController: function HUD_createController(aWindow)
+   {
+@@ -2864,18 +2680,18 @@ HUD_SERVICE.prototype =
+   /**
+    * Reset the height of the Web Console.
+    *
+    * @param string aHUDId The ID of the Web Console.
+    */
+   resetHeight: function HS_resetHeight(aHUDId)
+   {
+     let HUD = this.hudReferences[aHUDId];
+-    let innerHeight = HUD.contentWindow.innerHeight;
+-    let chromeWindow = HUD.chromeDocument.defaultView;
++    let innerHeight = HUD.browser.innerHeight;
++    let chromeWindow = HUD.chromeWindow;
+     if (!HUD.consolePanel) {
+       let splitterStyle = chromeWindow.getComputedStyle(HUD.splitter, null);
+       innerHeight += parseInt(splitterStyle.height) +
+                      parseInt(splitterStyle.borderTopWidth) +
+                      parseInt(splitterStyle.borderBottomWidth);
+     }
+ 
+     let boxStyle = chromeWindow.getComputedStyle(HUD.HUDBox, null);
+@@ -2960,159 +2776,63 @@ HUD_SERVICE.prototype =
+     clipboardHelper.copyString(strings.join("\n"));
+   }
+ };
+ 
+ //////////////////////////////////////////////////////////////////////////
+ // HeadsUpDisplay
+ //////////////////////////////////////////////////////////////////////////
+ 
+-/*
++/**
+  * HeadsUpDisplay is an interactive console initialized *per tab*  that
+  * displays console log data as well as provides an interactive terminal to
+  * manipulate the current tab's document content.
+- * */
+-function HeadsUpDisplay(aConfig)
++ *
++ * @param nsIDOMElement aTab
++ *        The xul:tab for which you want the HeadsUpDisplay object.
++ */
++function HeadsUpDisplay(aTab)
+ {
+-  // sample config: { parentNode: aDOMNode,
+-  //                  // or
+-  //                  parentNodeId: "myHUDParent123",
+-  //
+-  //                  placement: "appendChild"
+-  //                  // or
+-  //                  placement: "insertBefore",
+-  //                  placementChildNodeIndex: 0,
+-  //                }
+-
+-  this.HUDBox = null;
+-
+-  if (aConfig.parentNode) {
+-    // TODO: need to replace these DOM calls with internal functions
+-    // that operate on each application's node structure
+-    // better yet, we keep these functions in a "bridgeModule" or the HUDService
+-    // to keep a registry of nodeGetters for each application
+-    // see bug 568647
+-    this.parentNode = aConfig.parentNode;
+-    this.notificationBox = aConfig.parentNode;
+-    this.chromeDocument = aConfig.parentNode.ownerDocument;
+-    this.contentWindow = aConfig.contentWindow;
+-    this.uriSpec = aConfig.contentWindow.location.href;
+-    this.hudId = "hud_" + aConfig.parentNode.getAttribute("id");
+-  }
+-  else {
+-    // parentNodeId is the node's id where we attach the HUD
+-    // TODO: is the "navigator:browser" below used in all Gecko Apps?
+-    // see bug 568647
+-    let windowEnum = Services.wm.getEnumerator("navigator:browser");
+-    let parentNode;
+-    let contentDocument;
+-    let contentWindow;
+-    let chromeDocument;
+-
+-    // TODO: the following  part is still very Firefox specific
+-    // see bug 568647
+-
+-    while (windowEnum.hasMoreElements()) {
+-      let window = windowEnum.getNext();
+-      try {
+-        let gBrowser = window.gBrowser;
+-        let _browsers = gBrowser.browsers;
+-        let browserLen = _browsers.length;
+-
+-        for (var i = 0; i < browserLen; i++) {
+-          var _notificationBox = gBrowser.getNotificationBox(_browsers[i]);
+-          this.notificationBox = _notificationBox;
+-
+-          if (_notificationBox.getAttribute("id") == aConfig.parentNodeId) {
+-            this.parentNodeId = _notificationBox.getAttribute("id");
+-            this.hudId = "hud_" + this.parentNodeId;
+-
+-            parentNode = _notificationBox;
+-
+-            this.contentDocument =
+-              _notificationBox.childNodes[0].contentDocument;
+-            this.contentWindow =
+-              _notificationBox.childNodes[0].contentWindow;
+-            this.uriSpec = aConfig.contentWindow.location.href;
+-
+-            this.chromeDocument =
+-              _notificationBox.ownerDocument;
+-
+-            break;
+-          }
+-        }
+-      }
+-      catch (ex) {
+-        Cu.reportError(ex);
+-      }
+-
+-      if (parentNode) {
+-        break;
+-      }
+-    }
+-    if (!parentNode) {
+-      throw new Error(this.ERRORS.PARENTNODE_NOT_FOUND);
+-    }
+-    this.parentNode = parentNode;
+-    this.notificationBox = parentNode;
+-  }
+-
+-  // create textNode Factory:
+-  this.textFactory = NodeFactory("text", "xul", this.chromeDocument);
+-
++  this.tab = aTab;
++  this.hudId = "hud_" + this.tab.linkedPanel;
++  this.chromeDocument = this.tab.ownerDocument;
+   this.chromeWindow = this.chromeDocument.defaultView;
++  this.notificationBox = this.chromeDocument.getElementById(this.tab.linkedPanel);
++  this.browser = this.tab.linkedBrowser;
+ 
+   // create a panel dynamically and attach to the parentNode
+   this.createHUD();
+ 
+   this.HUDBox.lastTimestamp = 0;
++
+   // create the JSTerm input element
+-  try {
+-    this.createConsoleInput(this.contentWindow, this.consoleWrap, this.outputNode);
+-    this.jsterm.inputNode.focus();
+-  }
+-  catch (ex) {
+-    Cu.reportError(ex);
+-  }
++  this.jsterm = new JSTerm(this);
++  this.jsterm.inputNode.focus();
+ 
+   // A cache for tracking repeated CSS Nodes.
+   this.cssNodes = {};
++
++  /* FIXME
++  let browser = this.tab.linkedBrowser;
++  this.progressListener = new ConsoleProgressListener(this.hudId);
++  browser.webProgress.addProgressListener(this.progressListener,
++    Ci.nsIWebProgress.NOTIFY_STATE_ALL);
++  */
+ }
+ 
+ HeadsUpDisplay.prototype = {
+ 
+   consolePanel: null,
+ 
+   get mainPopupSet()
+   {
+     return this.chromeDocument.getElementById("mainPopupSet");
+   },
+ 
+   /**
+-   * Get the tab associated to the HeadsUpDisplay object.
+-   */
+-  get tab()
+-  {
+-    // TODO: we should only keep a reference to the tab object and use
+-    // getters to determine the rest of objects we need - the chrome window,
+-    // document, etc. We should simplify the entire code to use only a single
+-    // tab object ref. See bug 656231.
+-    let tab = null;
+-    let id = this.notificationBox.id;
+-    Array.some(this.chromeDocument.defaultView.gBrowser.tabs, function(aTab) {
+-      if (aTab.linkedPanel == id) {
+-        tab = aTab;
+-        return true;
+-      }
+-    });
+-
+-    return tab;
+-  },
+-
+-  /**
+    * Create a panel to open the web console if it should float above
+    * the content in its own window.
+    */
+   createOwnWindowPanel: function HUD_createOwnWindowPanel()
+   {
+     if (this.uiInOwnWindow) {
+       return this.consolePanel;
+     }
+@@ -3396,68 +3116,20 @@ HeadsUpDisplay.prototype = {
+    */
+   getFormatStr: function HUD_getFormatStr(aName, aArray)
+   {
+     return stringBundle.formatStringFromName(aName, aArray, aArray.length);
+   },
+ 
+   /**
+    * The JSTerm object that contains the console's inputNode
+-   *
+    */
+   jsterm: null,
+ 
+   /**
+-   * creates and attaches the console input node
+-   *
+-   * @param nsIDOMWindow aWindow
+-   * @returns void
+-   */
+-  createConsoleInput:
+-  function HUD_createConsoleInput(aWindow, aParentNode, aExistingConsole)
+-  {
+-    var context = Cu.getWeakReference(aWindow);
+-
+-    if (appName() == "FIREFOX") {
+-      let mixin = new JSTermFirefoxMixin(context, aParentNode,
+-                                         aExistingConsole);
+-      this.jsterm = new JSTerm(context, aParentNode, mixin, this.console);
+-    }
+-    else {
+-      throw new Error("Unsupported Gecko Application");
+-    }
+-  },
+-
+-  /**
+-   * Re-attaches a console when the contentWindow is recreated
+-   *
+-   * @param nsIDOMWindow aContentWindow
+-   * @returns void
+-   */
+-  reattachConsole: function HUD_reattachConsole(aContentWindow)
+-  {
+-    this.contentWindow = aContentWindow;
+-    this.contentDocument = this.contentWindow.document;
+-    this.uriSpec = this.contentWindow.location.href;
+-
+-    if (this.consolePanel) {
+-      this.consolePanel.label = this.getPanelTitle();
+-    }
+-
+-    if (!this.jsterm) {
+-      this.createConsoleInput(this.contentWindow, this.consoleWrap, this.outputNode);
+-    }
+-    else {
+-      this.jsterm.context = Cu.getWeakReference(this.contentWindow);
+-      this.jsterm.console = this.console;
+-      this.jsterm.createSandbox();
+-    }
+-  },
+-
+-  /**
+    * Shortcut to make XUL nodes
+    *
+    * @param string aTag
+    * @returns nsIDOMNode
+    */
+   makeXULNode:
+   function HUD_makeXULNode(aTag)
+   {
+@@ -3466,35 +3138,32 @@ HeadsUpDisplay.prototype = {
+ 
+   /**
+    * Build the UI of each HeadsUpDisplay
+    *
+    * @returns nsIDOMNode
+    */
+   makeHUDNodes: function HUD_makeHUDNodes()
+   {
+-    let self = this;
+-
+     this.splitter = this.makeXULNode("splitter");
+     this.splitter.setAttribute("class", "hud-splitter");
+ 
+     this.HUDBox = this.makeXULNode("vbox");
+     this.HUDBox.setAttribute("id", this.hudId);
+     this.HUDBox.setAttribute("class", "hud-box animated");
+     this.HUDBox.style.height = 0;
+ 
+     let outerWrap = this.makeXULNode("vbox");
+     outerWrap.setAttribute("class", "hud-outer-wrapper");
+     outerWrap.setAttribute("flex", "1");
+ 
+     let consoleCommandSet = this.makeXULNode("commandset");
+     outerWrap.appendChild(consoleCommandSet);
+ 
+     let consoleWrap = this.makeXULNode("vbox");
+-    this.consoleWrap = consoleWrap;
+     consoleWrap.setAttribute("class", "hud-console-wrapper");
+     consoleWrap.setAttribute("flex", "1");
+ 
+     this.outputNode = this.makeXULNode("richlistbox");
+     this.outputNode.setAttribute("class", "hud-output-node");
+     this.outputNode.setAttribute("flex", "1");
+     this.outputNode.setAttribute("orient", "vertical");
+     this.outputNode.setAttribute("context", this.hudId + "-output-contextmenu");
+@@ -3507,32 +3176,32 @@ HeadsUpDisplay.prototype = {
+     this.filterBox = this.makeXULNode("textbox");
+     this.filterBox.setAttribute("class", "compact hud-filter-box");
+     this.filterBox.setAttribute("hudId", this.hudId);
+     this.filterBox.setAttribute("placeholder", this.getStr("stringFilter"));
+     this.filterBox.setAttribute("type", "search");
+ 
+     this.setFilterTextBoxEvents();
+ 
+-    this.createConsoleMenu(this.consoleWrap);
++    this.createConsoleMenu(consoleWrap);
+ 
+     this.filterPrefs = HUDService.getDefaultFilterPrefs(this.hudId);
+ 
+     let consoleFilterToolbar = this.makeFilterToolbar();
+     consoleFilterToolbar.setAttribute("id", "viewGroup");
+     this.consoleFilterToolbar = consoleFilterToolbar;
+     consoleWrap.appendChild(consoleFilterToolbar);
+ 
+     consoleWrap.appendChild(this.outputNode);
+ 
+     outerWrap.appendChild(consoleWrap);
+ 
+     this.HUDBox.lastTimestamp = 0;
+ 
+-    this.jsTermParentNode = outerWrap;
++    this.jsTermParentNode = consoleWrap;
+     this.HUDBox.appendChild(outerWrap);
+ 
+     return this.HUDBox;
+   },
+ 
+   /**
+    * sets the click events for all binary toggle filter buttons
+    *
+@@ -3878,28 +3547,16 @@ HeadsUpDisplay.prototype = {
+       let positionPref = Services.prefs.getCharPref("devtools.webconsole.position");
+       this.positionConsole(positionPref);
+     }
+     return this.HUDBox;
+   },
+ 
+   uiInOwnWindow: false,
+ 
+-  get console() { return this.contentWindow.wrappedJSObject.console; },
+-
+-  getLogCount: function HUD_getLogCount()
+-  {
+-    return this.outputNode.childNodes.length;
+-  },
+-
+-  getLogNodes: function HUD_getLogNodes()
+-  {
+-    return this.outputNode.childNodes;
+-  },
+-
+   ERRORS: {
+     HUD_BOX_DOES_NOT_EXIST: "Heads Up Display does not exist",
+     TAB_ID_REQUIRED: "Tab DOM ID is required",
+     PARENTNODE_NOT_FOUND: "parentNode element not found"
+   },
+ 
+   /**
+    * Destroy the HUD object. Call this method to avoid memory leaks when the Web
+@@ -3988,776 +3645,357 @@ function NodeFactory(aFactoryType, ignor
+     }
+   }
+   else {
+     throw new Error('NodeFactory: Unknown factory type: ' + aFactoryType);
+   }
+ }
+ 
+ //////////////////////////////////////////////////////////////////////////
+-// JS Completer
+-//////////////////////////////////////////////////////////////////////////
+-
+-const STATE_NORMAL = 0;
+-const STATE_QUOTE = 2;
+-const STATE_DQUOTE = 3;
+-
+-const OPEN_BODY = '{[('.split('');
+-const CLOSE_BODY = '}])'.split('');
+-const OPEN_CLOSE_BODY = {
+-  '{': '}',
+-  '[': ']',
+-  '(': ')'
+-};
+-
+-/**
+- * Analyses a given string to find the last statement that is interesting for
+- * later completion.
+- *
+- * @param   string aStr
+- *          A string to analyse.
+- *
+- * @returns object
+- *          If there was an error in the string detected, then a object like
+- *
+- *            { err: "ErrorMesssage" }
+- *
+- *          is returned, otherwise a object like
+- *
+- *            {
+- *              state: STATE_NORMAL|STATE_QUOTE|STATE_DQUOTE,
+- *              startPos: index of where the last statement begins
+- *            }
+- */
+-function findCompletionBeginning(aStr)
+-{
+-  let bodyStack = [];
+-
+-  let state = STATE_NORMAL;
+-  let start = 0;
+-  let c;
+-  for (let i = 0; i < aStr.length; i++) {
+-    c = aStr[i];
+-
+-    switch (state) {
+-      // Normal JS state.
+-      case STATE_NORMAL:
+-        if (c == '"') {
+-          state = STATE_DQUOTE;
+-        }
+-        else if (c == '\'') {
+-          state = STATE_QUOTE;
+-        }
+-        else if (c == ';') {
+-          start = i + 1;
+-        }
+-        else if (c == ' ') {
+-          start = i + 1;
+-        }
+-        else if (OPEN_BODY.indexOf(c) != -1) {
+-          bodyStack.push({
+-            token: c,
+-            start: start
+-          });
+-          start = i + 1;
+-        }
+-        else if (CLOSE_BODY.indexOf(c) != -1) {
+-          var last = bodyStack.pop();
+-          if (!last || OPEN_CLOSE_BODY[last.token] != c) {
+-            return {
+-              err: "syntax error"
+-            };
+-          }
+-          if (c == '}') {
+-            start = i + 1;
+-          }
+-          else {
+-            start = last.start;
+-          }
+-        }
+-        break;
+-
+-      // Double quote state > " <
+-      case STATE_DQUOTE:
+-        if (c == '\\') {
+-          i ++;
+-        }
+-        else if (c == '\n') {
+-          return {
+-            err: "unterminated string literal"
+-          };
+-        }
+-        else if (c == '"') {
+-          state = STATE_NORMAL;
+-        }
+-        break;
+-
+-      // Single quoate state > ' <
+-      case STATE_QUOTE:
+-        if (c == '\\') {
+-          i ++;
+-        }
+-        else if (c == '\n') {
+-          return {
+-            err: "unterminated string literal"
+-          };
+-          return;
+-        }
+-        else if (c == '\'') {
+-          state = STATE_NORMAL;
+-        }
+-        break;
+-    }
+-  }
+-
+-  return {
+-    state: state,
+-    startPos: start
+-  };
+-}
+-
+-/**
+- * Provides a list of properties, that are possible matches based on the passed
+- * scope and inputValue.
+- *
+- * @param object aScope
+- *        Scope to use for the completion.
+- *
+- * @param string aInputValue
+- *        Value that should be completed.
+- *
+- * @returns null or object
+- *          If no completion valued could be computed, null is returned,
+- *          otherwise a object with the following form is returned:
+- *            {
+- *              matches: [ string, string, string ],
+- *              matchProp: Last part of the inputValue that was used to find
+- *                         the matches-strings.
+- *            }
+- */
+-function JSPropertyProvider(aScope, aInputValue)
+-{
+-  let obj = unwrap(aScope);
+-
+-  // Analyse the aInputValue and find the beginning of the last part that
+-  // should be completed.
+-  let beginning = findCompletionBeginning(aInputValue);
+-
+-  // There was an error analysing the string.
+-  if (beginning.err) {
+-    return null;
+-  }
+-
+-  // If the current state is not STATE_NORMAL, then we are inside of an string
+-  // which means that no completion is possible.
+-  if (beginning.state != STATE_NORMAL) {
+-    return null;
+-  }
+-
+-  let completionPart = aInputValue.substring(beginning.startPos);
+-
+-  // Don't complete on just an empty string.
+-  if (completionPart.trim() == "") {
+-    return null;
+-  }
+-
+-  let properties = completionPart.split('.');
+-  let matchProp;
+-  if (properties.length > 1) {
+-    matchProp = properties.pop().trimLeft();
+-    for (let i = 0; i < properties.length; i++) {
+-      let prop = properties[i].trim();
+-
+-      // If obj is undefined or null, then there is no chance to run completion
+-      // on it. Exit here.
+-      if (typeof obj === "undefined" || obj === null) {
+-        return null;
+-      }
+-
+-      // Check if prop is a getter function on obj. Functions can change other
+-      // stuff so we can't execute them to get the next object. Stop here.
+-      if (isNonNativeGetter(obj, prop)) {
+-        return null;
+-      }
+-      try {
+-        obj = obj[prop];
+-      }
+-      catch (ex) {
+-        return null;
+-      }
+-    }
+-  }
+-  else {
+-    matchProp = properties[0].trimLeft();
+-  }
+-
+-  // If obj is undefined or null, then there is no chance to run
+-  // completion on it. Exit here.
+-  if (typeof obj === "undefined" || obj === null) {
+-    return null;
+-  }
+-
+-  // Skip Iterators and Generators.
+-  if (isIteratorOrGenerator(obj)) {
+-    return null;
+-  }
+-
+-  let matches = [];
+-  for (let prop in obj) {
+-    if (prop.indexOf(matchProp) == 0) {
+-      matches.push(prop);
+-    }
+-  }
+-
+-  return {
+-    matchProp: matchProp,
+-    matches: matches.sort(),
+-  };
+-}
+-
+-function isIteratorOrGenerator(aObject)
+-{
+-  if (aObject === null) {
+-    return false;
+-  }
+-
+-  if (typeof aObject == "object") {
+-    if (typeof aObject.__iterator__ == "function" ||
+-        aObject.constructor && aObject.constructor.name == "Iterator") {
+-      return true;
+-    }
+-
+-    try {
+-      let str = aObject.toString();
+-      if (typeof aObject.next == "function" &&
+-          str.indexOf("[object Generator") == 0) {
+-        return true;
+-      }
+-    }
+-    catch (ex) {
+-      // window.history.next throws in the typeof check above.
+-      return false;
+-    }
+-  }
+-
+-  return false;
+-}
+-
+-//////////////////////////////////////////////////////////////////////////
+ // JSTerm
+ //////////////////////////////////////////////////////////////////////////
+ 
+ /**
+- * JSTermHelper
++ * Create a JSTerminal or attach a JSTerm input node to an existing
++ * HeadsUpDisplay object.
+  *
+- * Defines a set of functions ("helper functions") that are available from the
+- * WebConsole but not from the webpage.
+- * A list of helper functions used by Firebug can be found here:
+- *   http://getfirebug.com/wiki/index.php/Command_Line_API
++ * @constructor
++ * @param object aHUD
++ *        The HeadsUpDisplay object to attach to.
+  */
+-function JSTermHelper(aJSTerm)
++function JSTerm(aHUD)
+ {
+-  /**
+-   * Returns the result of document.getElementById(aId).
+-   *
+-   * @param string aId
+-   *        A string that is passed to window.document.getElementById.
+-   * @returns nsIDOMNode or null
+-   */
+-  aJSTerm.sandbox.$ = function JSTH_$(aId)
+-  {
+-    try {
+-      return aJSTerm._window.document.getElementById(aId);
+-    }
+-    catch (ex) {
+-      aJSTerm.console.error(ex.message);
+-    }
+-  };
+-
+-  /**
+-   * Returns the result of document.querySelectorAll(aSelector).
+-   *
+-   * @param string aSelector
+-   *        A string that is passed to window.document.querySelectorAll.
+-   * @returns array of nsIDOMNode
+-   */
+-  aJSTerm.sandbox.$$ = function JSTH_$$(aSelector)
+-  {
+-    try {
+-      return aJSTerm._window.document.querySelectorAll(aSelector);
+-    }
+-    catch (ex) {
+-      aJSTerm.console.error(ex.message);
+-    }
+-  };
+-
+-  /**
+-   * Runs a xPath query and returns all matched nodes.
+-   *
+-   * @param string aXPath
+-   *        xPath search query to execute.
+-   * @param [optional] nsIDOMNode aContext
+-   *        Context to run the xPath query on. Uses window.document if not set.
+-   * @returns array of nsIDOMNode
+-   */
+-  aJSTerm.sandbox.$x = function JSTH_$x(aXPath, aContext)
+-  {
+-    let nodes = [];
+-    let doc = aJSTerm._window.document;
+-    let aContext = aContext || doc;
+-
+-    try {
+-      let results = doc.evaluate(aXPath, aContext, null,
+-                                  Ci.nsIDOMXPathResult.ANY_TYPE, null);
+-
+-      let node;
+-      while (node = results.iterateNext()) {
+-        nodes.push(node);
+-      }
+-    }
+-    catch (ex) {
+-      aJSTerm.console.error(ex.message);
+-    }
+-
+-    return nodes;
+-  };
+-
+-  /**
+-   * Returns the currently selected object in the highlighter.
+-   *
+-   * @returns nsIDOMNode or null
+-   */
+-  Object.defineProperty(aJSTerm.sandbox, "$0", {
+-    get: function() {
+-      let mw = HUDService.currentContext();
+-      try {
+-        return mw.InspectorUI.selection;
+-      }
+-      catch (ex) {
+-        aJSTerm.console.error(ex.message);
+-      }
+-    },
+-    enumerable: true,
+-    configurable: false
+-  });
+-
+-  /**
+-   * Clears the output of the JSTerm.
+-   */
+-  aJSTerm.sandbox.clear = function JSTH_clear()
+-  {
+-    aJSTerm.helperEvaluated = true;
+-    aJSTerm.clearOutput();
+-  };
+-
+-  /**
+-   * Returns the result of Object.keys(aObject).
+-   *
+-   * @param object aObject
+-   *        Object to return the property names from.
+-   * @returns array of string
+-   */
+-  aJSTerm.sandbox.keys = function JSTH_keys(aObject)
+-  {
+-    try {
+-      return Object.keys(unwrap(aObject));
+-    }
+-    catch (ex) {
+-      aJSTerm.console.error(ex.message);
+-    }
+-  };
+-
+-  /**
+-   * Returns the values of all properties on aObject.
+-   *
+-   * @param object aObject
+-   *        Object to display the values from.
+-   * @returns array of string
+-   */
+-  aJSTerm.sandbox.values = function JSTH_values(aObject)
+-  {
+-    let arrValues = [];
+-    let obj = unwrap(aObject);
+-
+-    try {
+-      for (let prop in obj) {
+-        arrValues.push(obj[prop]);
+-      }
+-    }
+-    catch (ex) {
+-      aJSTerm.console.error(ex.message);
+-    }
+-    return arrValues;
+-  };
+-
+-  /**
+-   * Opens a help window in MDC
+-   */
+-  aJSTerm.sandbox.help = function JSTH_help()
+-  {
+-    aJSTerm.helperEvaluated = true;
+-    aJSTerm._window.open(
+-        "https://developer.mozilla.org/AppLinks/WebConsoleHelp?locale=" +
+-        aJSTerm._window.navigator.language, "help", "");
+-  };
+-
+-  /**
+-   * Inspects the passed aObject. This is done by opening the PropertyPanel.
+-   *
+-   * @param object aObject
+-   *        Object to inspect.
+-   * @returns void
+-   */
+-  aJSTerm.sandbox.inspect = function JSTH_inspect(aObject)
+-  {
+-    aJSTerm.helperEvaluated = true;
+-    let propPanel = aJSTerm.openPropertyPanel(null, unwrap(aObject));
+-    propPanel.panel.setAttribute("hudId", aJSTerm.hudId);
+-  };
+-
+-  /**
+-   * Inspects the passed aNode in the style inspector.
+-   *
+-   * @param object aNode
+-   *        aNode to inspect.
+-   * @returns void
+-   */
+-  aJSTerm.sandbox.inspectstyle = function JSTH_inspectstyle(aNode)
+-  {
+-    let errstr = null;
+-    aJSTerm.helperEvaluated = true;
+-
+-    if (!Services.prefs.getBoolPref("devtools.styleinspector.enabled")) {
+-      errstr = HUDService.getStr("inspectStyle.styleInspectorNotEnabled");
+-    } else if (!aNode) {
+-      errstr = HUDService.getStr("inspectStyle.nullObjectPassed");
+-    } else if (!(aNode instanceof Ci.nsIDOMNode)) {
+-      errstr = HUDService.getStr("inspectStyle.mustBeDomNode");
+-    } else if (!(aNode.style instanceof Ci.nsIDOMCSSStyleDeclaration)) {
+-      errstr = HUDService.getStr("inspectStyle.nodeHasNoStyleProps");
+-    }
+-
+-    if (!errstr) {
+-      let stylePanel = StyleInspector.createPanel();
+-      stylePanel.setAttribute("hudToolId", aJSTerm.hudId);
+-      stylePanel.selectNode(aNode, true);
+-    } else {
+-      aJSTerm.writeOutput(errstr + "\n", CATEGORY_OUTPUT, SEVERITY_ERROR);
+-    }
+-  };
+-
+-  /**
+-   * Prints aObject to the output.
+-   *
+-   * @param object aObject
+-   *        Object to print to the output.
+-   * @returns void
+-   */
+-  aJSTerm.sandbox.pprint = function JSTH_pprint(aObject)
+-  {
+-    aJSTerm.helperEvaluated = true;
+-    if (aObject === null || aObject === undefined || aObject === true || aObject === false) {
+-      aJSTerm.console.error(HUDService.getStr("helperFuncUnsupportedTypeError"));
+-      return;
+-    }
+-    else if (typeof aObject === TYPEOF_FUNCTION) {
+-      aJSTerm.writeOutput(aObject + "\n", CATEGORY_OUTPUT, SEVERITY_LOG);
+-      return;
+-    }
+-
+-    let output = [];
+-    let pairs = namesAndValuesOf(unwrap(aObject));
+-
+-    pairs.forEach(function(pair) {
+-      output.push("  " + pair.display);
+-    });
+-
+-    aJSTerm.writeOutput(output.join("\n"), CATEGORY_OUTPUT, SEVERITY_LOG);
+-  };
+-
+-  /**
+-   * Print a string to the output, as-is.
+-   *
+-   * @param string aString
+-   *        A string you want to output.
+-   * @returns void
+-   */
+-  aJSTerm.sandbox.print = function JSTH_print(aString)
+-  {
+-    aJSTerm.helperEvaluated = true;
+-    aJSTerm.writeOutput("" + aString, CATEGORY_OUTPUT, SEVERITY_LOG);
+-  };
+-}
+-
+-/**
+- * JSTerm
+- *
+- * JavaScript Terminal: creates input nodes for console code interpretation
+- * and 'JS Workspaces'
+- */
+-
+-/**
+- * Create a JSTerminal or attach a JSTerm input node to an existing output node,
+- * given by the parent node.
+- *
+- * @param object aContext
+- *        Usually nsIDOMWindow, but doesn't have to be
+- * @param nsIDOMNode aParentNode where to attach the JSTerm
+- * @param object aMixin
+- *        Gecko-app (or Jetpack) specific utility object
+- * @param object aConsole
+- *        Console object to use within the JSTerm.
+- */
+-function JSTerm(aContext, aParentNode, aMixin, aConsole)
+-{
+-  // set the context, attach the UI by appending to aParentNode
+-
+-  this.application = appName();
+-  this.context = aContext;
+-  this.parentNode = aParentNode;
+-  this.mixins = aMixin;
+-  this.console = aConsole;
+-
+-  this.setTimeout = aParentNode.ownerDocument.defaultView.setTimeout;
+-
+-  let node = aParentNode;
+-  while (!node.hasAttribute("id")) {
+-    node = node.parentNode;
+-  }
+-  this.hudId = node.getAttribute("id");
+-
++  this.hud = aHUD;
++  this.hudId = this.hud.hudId;
++  this.parentNode = this.hud.jsTermParentNode;
++  this.messageManager = this.hud.browser.messageManager;
++
++  // track callback functions registered for specific async requests sent to the
++  // content process.
++  this.asyncRequests = {};
++
++  this.lastCompletion = {};
++  this.history = [];
+   this.historyIndex = 0;
+   this.historyPlaceHolder = 0;  // this.history.length;
+-  this.log = LogFactory("*** JSTerm:");
+-  this.autocompletePopup = new AutocompletePopup(aParentNode.ownerDocument);
++  this.autocompletePopup = new AutocompletePopup(this.parentNode.ownerDocument);
+   this.autocompletePopup.onSelect = this.onAutocompleteSelect.bind(this);
+   this.autocompletePopup.onClick = this.acceptProposedCompletion.bind(this);
+   this.init();
+ }
+ 
+ JSTerm.prototype = {
+-
+-  propertyProvider: JSPropertyProvider,
+-
+   COMPLETE_FORWARD: 0,
+   COMPLETE_BACKWARD: 1,
+   COMPLETE_HINT_ONLY: 2,
+ 
+   init: function JST_init()
+   {
+-    this.createSandbox();
+-
+-    this.inputNode = this.mixins.inputNode;
+-    this.outputNode = this.mixins.outputNode;
+-    this.completeNode = this.mixins.completeNode;
++    this.setupMessageManager();
++
++    this.generateUI();
+ 
+     this._keyPress = this.keyPress.bind(this);
+     this._inputEventHandler = this.inputEventHandler.bind(this);
+ 
+-    this.inputNode.addEventListener("keypress",
+-      this._keyPress, false);
+-    this.inputNode.addEventListener("input",
+-      this._inputEventHandler, false);
+-    this.inputNode.addEventListener("keyup",
+-      this._inputEventHandler, false);
++    this.inputNode.addEventListener("keypress", this._keyPress, false);
++    this.inputNode.addEventListener("input", this._inputEventHandler, false);
++    this.inputNode.addEventListener("keyup", this._inputEventHandler, false);
+   },
+ 
+-  get codeInputString()
+-  {
+-    return this.inputNode.value;
+-  },
+-
++  /**
++   * Generates and attaches the UI for an entire JS Workspace or
++   * just the input node used under the console output
++   */
+   generateUI: function JST_generateUI()
+   {
+-    this.mixins.generateUI();
++    this.completeNode = this.hud.makeXULNode("textbox");
++    this.completeNode.setAttribute("class", "jsterm-complete-node");
++    this.completeNode.setAttribute("multiline", "true");
++    this.completeNode.setAttribute("rows", "1");
++
++    this.inputNode = this.hud.makeXULNode("textbox");
++    this.inputNode.setAttribute("class", "jsterm-input-node");
++    this.inputNode.setAttribute("multiline", "true");
++    this.inputNode.setAttribute("rows", "1");
++
++    let inputStack = this.hud.makeXULNode("stack");
++    inputStack.setAttribute("class", "jsterm-stack-node");
++    inputStack.setAttribute("flex", "1");
++    inputStack.appendChild(this.completeNode);
++    inputStack.appendChild(this.inputNode);
++
++    let term = this.hud.makeXULNode("hbox");
++    term.setAttribute("class", "jsterm-input-container");
++    term.setAttribute("style", "direction: ltr;");
++    term.appendChild(inputStack);
++
++    this.parentNode.appendChild(term);
+   },
+ 
+-  attachUI: function JST_attachUI()
++  setupMessageManager: function JST_setupMessageManager()
+   {
+-    this.mixins.attachUI();
++    this.messageManager.loadFrameScript(CONTENT_SCRIPT_URL, true);
++    this.messageManager.addMessageListener("JSTerm:EvalResult", this);
++    this.messageManager.addMessageListener("JSTerm:EvalObject", this);
++    this.messageManager.addMessageListener("JSTerm:AutocompleteProperties", this);
++    this.sendMessageToContent("JSTerm:Init", {hudId: this.hudId});
+   },
+ 
+-  createSandbox: function JST_setupSandbox()
++  receiveMessage: function JST_receiveMessage(aMessage)
+   {
+-    // create a JS Sandbox out of this.context
+-    this.sandbox = new Cu.Sandbox(this._window,
+-      { sandboxPrototype: this._window, wantXrays: false });
+-    this.sandbox.console = this.console;
+-    JSTermHelper(this);
++    if (!aMessage.json || aMessage.json.hudId != this.hudId) {
++      Cu.reportError("JSTerm: received message " + aMessage.name +
++                     " from wrong hudId.");
++      return;
++    }
++
++    dump("JST_receiveMessage chrome " + aMessage.name + "\n");
++
++    switch (aMessage.name) {
++      case "JSTerm:EvalResult":
++      case "JSTerm:EvalObject":
++      case "JSTerm:AutocompleteProperties":
++        this.receiveMessageWithCallback(aMessage.json);
++        break;
++    }
+   },
+ 
+-  get _window()
++  receiveMessageWithCallback: function JST_receiveMessageWithCallback(aResponse)
+   {
+-    return this.context.get().QueryInterface(Ci.nsIDOMWindow);
++    if (aResponse.id in this.asyncRequests) {
++      let request = this.asyncRequests[aResponse.id];
++      dump("JST_receiveMessageWithCallback id " + aResponse.id + " name " + request.name + "\n");
++      request.callback(aResponse, request.message);
++      delete this.asyncRequests[aResponse.id];
++    }
++    else {
++      Cu.reportError("receiveMessageWithCallback response for stale request #" + aResponse.id);
++    }
+   },
+ 
++  sendMessageToContent:
++  function JST_sendMessageToContent(aName, aMessage, aCallback)
++  {
++    aMessage.hudId = this.hudId;
++    if (!aMessage.id) {
++      aMessage.id = HUDService.sequenceId();
++    }
++
++    dump("JST_sendMessageToContent " + aName + " id " + aMessage.id + "\n");
++
++    if (aCallback) {
++      this.asyncRequests[aMessage.id] = {
++        name: aName,
++        message: aMessage,
++        callback: aCallback,
++      };
++    }
++
++    this.messageManager.sendAsyncMessage(aName, aMessage);
++  },
++
+   /**
+-   * Evaluates a string in the sandbox.
++   * Asynchronously evaluate a string in the content process sandbox.
+    *
+    * @param string aString
+    *        String to evaluate in the sandbox.
+-   * @returns something
+-   *          The result of the evaluation.
++   * @returns void
+    */
+-  evalInSandbox: function JST_evalInSandbox(aString)
++  evalInContentSandbox: function JST_evalInContentSandbox(aString, aCallback)
+   {
+-    // The help function needs to be easy to guess, so we make the () optional
+-    if (aString.trim() === "help" || aString.trim() === "?") {
+-      aString = "help()";
+-    }
+-
+-    let window = unwrap(this.sandbox.window);
+-    let $ = null, $$ = null;
+-
+-    // We prefer to execute the page-provided implementations for the $() and
+-    // $$() functions.
+-    if (typeof window.$ == "function") {
+-      $ = this.sandbox.$;
+-      delete this.sandbox.$;
+-    }
+-    if (typeof window.$$ == "function") {
+-      $$ = this.sandbox.$$;
+-      delete this.sandbox.$$;
+-    }
+-
+-    let result = Cu.evalInSandbox(aString, this.sandbox, "1.8", "Web Console", 1);
+-
+-    if ($) {
+-      this.sandbox.$ = $;
+-    }
+-    if ($$) {
+-      this.sandbox.$$ = $$;
+-    }
+-
+-    return result;
++    let message = {
++      str: aString,
++      resultCacheId: HUDService.sequenceId(),
++    };
++
++    this.sendMessageToContent("JSTerm:EvalRequest", message, aCallback);
+   },
+ 
++  executeResultCallback: function JST_executeResultCallback(aResponse)
++  {
++    let errorMessage = aResponse.errorMessage;
++    let resultString = aResponse.resultString;
++
++    // Hide undefined results coming from JSTerm helper functions.
++    if (!errorMessage && resultString == "undefined" &&
++        aResponse.helperResult && !aResponse.inspectable) {
++      return;
++    }
++
++    if (aResponse.errorMessage) {
++      this.writeOutput(aResponse.errorMessage, CATEGORY_OUTPUT, SEVERITY_ERROR);
++    }
++    else if (aResponse.inspectable) {
++      this.writeOutputJS(aResponse);
++    }
++    else {
++      this.writeOutput(aResponse.resultString, CATEGORY_OUTPUT, SEVERITY_LOG);
++    }
++  },
+ 
+   execute: function JST_execute(aExecuteString)
+   {
+     // attempt to execute the content of the inputNode
+     aExecuteString = aExecuteString || this.inputNode.value;
+     if (!aExecuteString) {
+       this.writeOutput("no value to execute", CATEGORY_OUTPUT, SEVERITY_LOG);
+       return;
+     }
+ 
+     this.writeOutput(aExecuteString, CATEGORY_INPUT, SEVERITY_LOG);
+ 
+-    try {
+-      this.helperEvaluated = false;
+-      let result = this.evalInSandbox(aExecuteString);
+-
+-      // Hide undefined results coming from helpers.
+-      let shouldShow = !(result === undefined && this.helperEvaluated);
+-      if (shouldShow) {
+-        let inspectable = this.isResultInspectable(result);
+-        let resultString = this.formatResult(result);
+-
+-        if (inspectable) {
+-          this.writeOutputJS(aExecuteString, result, resultString);
+-        }
+-        else {
+-          this.writeOutput(resultString, CATEGORY_OUTPUT, SEVERITY_LOG);
+-        }
+-      }
+-    }
+-    catch (ex) {
+-      this.writeOutput("" + ex, CATEGORY_OUTPUT, SEVERITY_ERROR);
+-    }
++    this.evalInContentSandbox(aExecuteString,
++                              this.executeResultCallback.bind(this));
+ 
+     this.history.push(aExecuteString);
+     this.historyIndex++;
+     this.historyPlaceHolder = this.history.length;
+     this.setInputValue("");
+     this.clearCompletion();
+   },
+ 
+   /**
+    * Opens a new PropertyPanel. The panel has two buttons: "Update" reexecutes
+    * the passed aEvalString and places the result inside of the tree. The other
+    * button closes the panel.
+    *
+-   * @param string aEvalString
+-   *        String that was used to eval the aOutputObject. Used as title
+-   *        and to update the tree content.
+-   * @param object aOutputObject
+-   *        Object to display/inspect inside of the tree.
++   * @param object aResponse
++   *        The response object to display/inspect inside of the tree.
+    * @param nsIDOMNode aAnchor
+    *        A node to popup the panel next to (using "after_pointer").
+    * @returns object the created and opened propertyPanel.
+    */
+-  openPropertyPanel: function JST_openPropertyPanel(aEvalString, aOutputObject,
+-                                                    aAnchor)
++  openPropertyPanel: function JST_openPropertyPanel(aResponse, aAnchor)
+   {
+     let self = this;
+     let propPanel;
+     // The property panel has one button:
+     //    `Update`: reexecutes the string executed on the command line. The
+     //    result will be inspected by this panel.
+     let buttons = [];
+ 
+     // If there is a evalString passed to this function, then add a `Update`
+     // button to the panel so that the evalString can be reexecuted to update
+     // the content of the panel.
+-    if (aEvalString !== null) {
++    if (aResponse.input) {
++      let updateResultCallback = function onPanelUpdate(aNewResponse){
++        if (aNewResponse.errorMessage) {
++          this.writeOutput(aNewResponse.errorMessage, CATEGORY_OUTPUT,
++                           SEVERITY_ERROR);
++          return;
++        }
++        if (!aNewResponse.inspectable) {
++          // TODO: decide what to do here. clear treeView.data? output an error?
++          return;
++        }
++
++        this.clearObjectCache(rootObject.panelCacheId);
++        this.clearObjectCache(rootObject.rootCacheId);
++
++        propPanel.treeView.data = null;
++
++        if (aAnchor._evalCacheId) {
++          aAnchor._evalCacheId = aNewResponse.childrenCacheId;
++        }
++
++        aResponse.id = aNewResponse.id;
++        aResponse.childrenCacheId = aNewResponse.childrenCacheId;
++        aResponse.resultObject = aNewResponse.resultObject;
++        aResponse.resultString = aNewResponse.resultString;
++
++        rootObject.rootCacheId = aResponse.childrenCacheId;
++        rootObject.object = aResponse.resultObject;
++
++        // TODO: This updates the value of the tree.
++        // However, the states of opened nodes is not saved.
++        // See bug 586246.
++        propPanel.treeView.data = rootObject;
++      }.bind(this);
++
+       buttons.push({
+         label: HUDService.getStr("update.button"),
+         accesskey: HUDService.getStr("update.accesskey"),
+-        oncommand: function () {
+-          try {
+-            var result = self.evalInSandbox(aEvalString);
+-
+-            if (result !== undefined) {
+-              // TODO: This updates the value of the tree.
+-              // However, the states of opened nodes is not saved.
+-              // See bug 586246.
+-              propPanel.treeView.data = result;
+-            }
+-          }
+-          catch (ex) {
+-            self.console.error(ex);
+-          }
+-        }
++        oncommand: this.evalInContentSandbox.bind(this, aResponse.input,
++                                                  updateResultCallback),
+       });
+     }
+ 
+-    let doc = self.parentNode.ownerDocument;
++    let doc = this.parentNode.ownerDocument;
+     let parent = doc.getElementById("mainPopupSet");
+-    let title = (aEvalString
+-        ? HUDService.getFormatStr("jsPropertyInspectTitle", [aEvalString])
+-        : HUDService.getStr("jsPropertyTitle"));
+-
+-    propPanel = new PropertyPanel(parent, doc, title, aOutputObject, buttons);
++    let title = aResponse.input
++        ? HUDService.getFormatStr("jsPropertyInspectTitle", [aResponse.input])
++        : HUDService.getStr("jsPropertyTitle");
++
++    let rootObject = {
++      // this is where the resultObject children are cached.
++      rootCacheId: aResponse.childrenCacheId,
++      object: aResponse.resultObject,
++
++      // this is where all objects retrieved by the panel will be cached.
++      panelCacheId: HUDService.sequenceId(),
++    };
++
++    propPanel = new PropertyPanel(parent, doc, title, buttons, rootObject,
++      this.propertyPanelObjectProvider.bind(this));
++
+     propPanel.linkNode = aAnchor;
+ 
+     let panel = propPanel.panel;
++    panel.addEventListener("popuphidden", function onPopupHide() {
++      panel.removeEventListener("popuphidden", onPopupHide, false);
++      dump("panel popuphidden panelCacheId " + rootObject.panelCacheId + " aAnchor.parentNode " + aAnchor.parentNode + " _evalCacheId " + aAnchor._evalCacheId + "\n");
++      self.clearObjectCache(rootObject.panelCacheId);
++
++      if (!aAnchor.parentNode && aAnchor._evalCacheId) {
++        self.clearObjectCache(aAnchor._evalCacheId);
++      }
++    }, false);
++
+     panel.openPopup(aAnchor, "after_pointer", 0, 0, false, false);
+     panel.sizeTo(350, 450);
+     return propPanel;
+   },
+ 
++  propertyPanelObjectProvider:
++  function JST_propertyPanelObjectProvider(aCacheId, aObjectId, aResultCacheId, aCallback) {
++    let message = {
++      cacheId: aCacheId,
++      objectId: aObjectId,
++      resultCacheId: aResultCacheId,
++    };
++
++    dump("objectProvider " + message.id + " cacheId " + message.cacheId + " objectId " + message.objectId + " resultCacheId " + message.resultCacheId + "\n");
++
++    this.sendMessageToContent("JSTerm:GetEvalObject", message, aCallback);
++  },
++
++  clearObjectCache: function JST_clearObjectCache(aCacheId)
++  {
++    dump("JST_clearObjectCache " + aCacheId + "\n");
++
++    let message = {cacheId: aCacheId};
++
++    this.sendMessageToContent("JSTerm:ClearObjectCache", message);
++  },
++
+   /**
+    * Writes a JS object to the JSTerm outputNode. If the user clicks on the
+    * written object, openPropertyPanel is called to open up a panel to inspect
+    * the object.
+    *
+-   * @param string aEvalString
+-   *        String that was evaluated to get the aOutputObject.
+-   * @param object aResultObject
+-   *        The evaluation result object.
+-   * @param object aOutputString
+-   *        The output string to be written to the outputNode.
++   * @param object aResponse
++   *        The evaluation result object, coming from the content process.
+    */
+-  writeOutputJS: function JST_writeOutputJS(aEvalString, aOutputObject, aOutputString)
++  writeOutputJS: function JST_writeOutputJS(aResponse)
+   {
+     let node = ConsoleUtils.createMessageNode(this.parentNode.ownerDocument,
+                                               CATEGORY_OUTPUT,
+                                               SEVERITY_LOG,
+-                                              aOutputString);
++                                              aResponse.resultString);
+ 
+     let linkNode = node.querySelector(".webconsole-msg-body");
+ 
+     linkNode.classList.add("hud-clickable");
+     linkNode.setAttribute("aria-haspopup", "true");
+ 
+     // Make the object bring up the property panel.
+     node.addEventListener("mousedown", function(aEvent) {
+@@ -4768,23 +4006,27 @@ JSTerm.prototype = {
+     let self = this;
+     node.addEventListener("click", function(aEvent) {
+       if (aEvent.detail != 1 || aEvent.button != 0 ||
+           (this._startX != aEvent.clientX &&
+            this._startY != aEvent.clientY)) {
+         return;
+       }
+ 
++      dump("click evalId " + aResponse.id + "\n");
++
+       if (!this._panelOpen) {
+-        let propPanel = self.openPropertyPanel(aEvalString, aOutputObject, this);
++        let propPanel = self.openPropertyPanel(aResponse, this);
+         propPanel.panel.setAttribute("hudId", self.hudId);
+         this._panelOpen = true;
+       }
+     }, false);
+ 
++    node._evalCacheId = aResponse.childrenCacheId;
++
+     ConsoleUtils.outputMessageNode(node, this.hudId);
+   },
+ 
+   /**
+    * Writes a message to the HUD that originates from the interactive
+    * JavaScript console.
+    *
+    * @param string aOutputMessage
+@@ -4799,150 +4041,38 @@ JSTerm.prototype = {
+   {
+     let node = ConsoleUtils.createMessageNode(this.parentNode.ownerDocument,
+                                               aCategory, aSeverity,
+                                               aOutputMessage);
+ 
+     ConsoleUtils.outputMessageNode(node, this.hudId);
+   },
+ 
+-  /**
+-   * Format the jsterm execution result based on its type.
+-   *
+-   * @param mixed aResult
+-   *        The evaluation result object you want displayed.
+-   * @returns string
+-   *          The string that can be displayed.
+-   */
+-  formatResult: function JST_formatResult(aResult)
+-  {
+-    let output = "";
+-    let type = this.getResultType(aResult);
+-
+-    switch (type) {
+-      case "string":
+-        output = this.formatString(aResult);
+-        break;
+-      case "boolean":
+-      case "date":
+-      case "error":
+-      case "number":
+-      case "regexp":
+-        output = aResult.toString();
+-        break;
+-      case "null":
+-      case "undefined":
+-        output = type;
+-        break;
+-      default:
+-        if (aResult.toSource) {
+-          try {
+-            output = aResult.toSource();
+-          } catch (ex) { }
+-        }
+-        if (!output || output == "({})") {
+-          output = aResult.toString();
+-        }
+-        break;
+-    }
+-
+-    return output;
+-  },
+-
+-  /**
+-   * Format a string for output.
+-   *
+-   * @param string aString
+-   *        The string you want to display.
+-   * @returns string
+-   *          The string that can be displayed.
+-   */
+-  formatString: function JST_formatString(aString)
+-  {
+-    function isControlCode(c) {
+-      // See http://en.wikipedia.org/wiki/C0_and_C1_control_codes
+-      // C0 is 0x00-0x1F, C1 is 0x80-0x9F (inclusive).
+-      // We also include DEL (U+007F) and NBSP (U+00A0), which are not strictly
+-      // in C1 but border it.
+-      return (c <= 0x1F) || (0x7F <= c && c <= 0xA0);
+-    }
+-
+-    function replaceFn(aMatch, aType, aHex) {
+-      // Leave control codes escaped, but unescape the rest of the characters.
+-      let c = parseInt(aHex, 16);
+-      return isControlCode(c) ? aMatch : String.fromCharCode(c);
+-    }
+-
+-    let output = uneval(aString).replace(/\\(x)([0-9a-fA-F]{2})/g, replaceFn)
+-                 .replace(/\\(u)([0-9a-fA-F]{4})/g, replaceFn);
+-
+-    return output;
+-  },
+-
+-  /**
+-   * Determine if the jsterm execution result is inspectable or not.
+-   *
+-   * @param mixed aResult
+-   *        The evaluation result object you want to check if it is inspectable.
+-   * @returns boolean
+-   *          True if the object is inspectable or false otherwise.
+-   */
+-  isResultInspectable: function JST_isResultInspectable(aResult)
+-  {
+-    let isEnumerable = false;
+-
+-    // Skip Iterators and Generators.
+-    if (isIteratorOrGenerator(aResult)) {
+-      return false;
+-    }
+-
+-    for (let p in aResult) {
+-      isEnumerable = true;
+-      break;
+-    }
+-
+-    return isEnumerable && typeof(aResult) != "string";
+-  },
+-
+-  /**
+-   * Determine the type of the jsterm execution result.
+-   *
+-   * @param mixed aResult
+-   *        The evaluation result object you want to check.
+-   * @returns string
+-   *          Constructor name or type: string, number, boolean, regexp, date,
+-   *          function, object, null, undefined...
+-   */
+-  getResultType: function JST_getResultType(aResult)
+-  {
+-    let type = aResult === null ? "null" : typeof aResult;
+-    if (type == "object" && aResult.constructor && aResult.constructor.name) {
+-      type = aResult.constructor.name;
+-    }
+-
+-    return type.toLowerCase();
+-  },
+-
+   clearOutput: function JST_clearOutput()
+   {
+-    let hud = HUDService.getHudReferenceById(this.hudId);
+-    hud.cssNodes = {};
+-
+-    let node = hud.outputNode;
+-    while (node.firstChild) {
+-      if (node.firstChild.classList &&
+-          node.firstChild.classList.contains("webconsole-msg-inspector")) {
+-        hud.pruneConsoleDirNode(node.firstChild);
++    dump("JST_clearOutput\n");
++    this.hud.cssNodes = {};
++
++    let outputNode = this.hud.outputNode;
++    let node;
++    while (node = outputNode.firstChild) {
++      if (node._evalCacheId && !node._panelOpen) {
++        this.clearObjectCache(node._evalCacheId);
++      }
++
++      if (node.classList &&
++          node.classList.contains("webconsole-msg-inspector")) {
++        this.hud.pruneConsoleDirNode(node);
+       }
+       else {
+-        hud.outputNode.removeChild(node.firstChild);
++        outputNode.removeChild(node);
+       }
+     }
+ 
+-    hud.HUDBox.lastTimestamp = 0;
++    this.hud.HUDBox.lastTimestamp = 0;
+   },
+ 
+   /**
+    * Updates the size of the input field (command line) to fit its contents.
+    *
+    * @returns void
+    */
+   resizeInput: function JST_resizeInput()
+@@ -5064,21 +4194,23 @@ JSTerm.prototype = {
+         }
+         if (inputUpdated) {
+           aEvent.preventDefault();
+         }
+         break;
+ 
+       case Ci.nsIDOMKeyEvent.DOM_VK_TAB:
+         // Generate a completion and accept the first proposed value.
+-        if (this.complete(this.COMPLETE_HINT_ONLY) &&
+-            this.lastCompletion &&
+-            this.acceptProposedCompletion()) {
+-          aEvent.preventDefault();
+-        }
++        this.complete(this.COMPLETE_HINT_ONLY);
++        this.acceptProposedCompletion();
++        aEvent.preventDefault();
++        break;
++
++      case Ci.nsIDOMKeyEvent.DOM_VK_F6:
++        this.hud.browser.focus(); // FIXME: how to focus the contentWindow?
+         break;
+ 
+       default:
+         break;
+     }
+   },
+ 
+   /**
+@@ -5173,27 +4305,27 @@ JSTerm.prototype = {
+       return false;
+     }
+ 
+     let multiline = /[\r\n]/.test(node.value);
+     return node.selectionStart == node.value.length ? true :
+            node.selectionStart == 0 && !multiline;
+   },
+ 
+-  history: [],
++  history: null,
+ 
+   // Stores the data for the last completion.
+   lastCompletion: null,
+ 
+   /**
+    * Completes the current typed text in the inputNode. Completion is performed
+    * only if the selection/cursor is at the end of the string. If no completion
+    * is found, the current inputNode value and cursor/selection stay.
+    *
+-   * @param int type possible values are
++   * @param int aType possible values are:
+    *    - this.COMPLETE_FORWARD: If there is more than one possible completion
+    *          and the input value stayed the same compared to the last time this
+    *          function was called, then the next completion of all possible
+    *          completions is used. If the value changed, then the first possible
+    *          completion is used and the selection is set from the current
+    *          cursor position to the end of the completed text.
+    *          If there is only one possible completion, then this completion
+    *          value is used and the cursor is put at the end of the completion.
+@@ -5205,102 +4337,139 @@ JSTerm.prototype = {
+    *          last time this function was called, then the same completion is
+    *          used again. If there is only one possible completion, then
+    *          the inputNode.value is set to this value and the selection is set
+    *          from the current cursor position to the end of the completed text.
+    *
+    * @returns boolean true if there existed a completion for the current input,
+    *          or false otherwise.
+    */
+-  complete: function JSTF_complete(type)
++  complete: function JSTF_complete(aType)
+   {
+     let inputNode = this.inputNode;
+     let inputValue = inputNode.value;
+     // If the inputNode has no value, then don't try to complete on it.
+     if (!inputValue) {
+       this.clearCompletion();
+       return false;
+     }
+ 
+     // Only complete if the selection is empty and at the end of the input.
+     if (inputNode.selectionStart == inputNode.selectionEnd &&
+         inputNode.selectionEnd != inputValue.length) {
+       this.clearCompletion();
+       return false;
+     }
+ 
++    // Update the completion results.
++    if (this.lastCompletion.value != inputValue) {
++      this.updateCompletionResult(aType);
++      return false;
++    }
++
+     let popup = this.autocompletePopup;
+-
+-    if (!this.lastCompletion || this.lastCompletion.value != inputValue) {
+-      let properties = this.propertyProvider(this.sandbox.window, inputValue);
+-      if (!properties || !properties.matches.length) {
+-        this.clearCompletion();
+-        return false;
+-      }
+-
+-      let items = properties.matches.map(function(aMatch) {
+-        return {label: aMatch};
+-      });
+-      popup.setItems(items);
+-      this.lastCompletion = {value: inputValue,
+-                             matchProp: properties.matchProp};
+-
+-      if (items.length > 1 && !popup.isOpen) {
+-        popup.openPopup(this.inputNode);
+-      }
+-      else if (items.length < 2 && popup.isOpen) {
+-        popup.hidePopup();
+-      }
+-
+-      if (items.length > 0) {
+-        popup.selectedIndex = 0;
+-        if (items.length == 1) {
+-          // onSelect is not fired when the popup is not open.
+-          this.onAutocompleteSelect();
+-        }
+-      }
+-    }
+-
+     let accepted = false;
+ 
+-    if (type != this.COMPLETE_HINT_ONLY && popup.itemCount == 1) {
++    if (aType != this.COMPLETE_HINT_ONLY && popup.itemCount == 1) {
+       this.acceptProposedCompletion();
+       accepted = true;
+     }
+-    else if (type == this.COMPLETE_BACKWARD) {
+-      this.autocompletePopup.selectPreviousItem();
+-    }
+-    else if (type == this.COMPLETE_FORWARD) {
+-      this.autocompletePopup.selectNextItem();
++    else if (aType == this.COMPLETE_BACKWARD) {
++      popup.selectPreviousItem();
++    }
++    else if (aType == this.COMPLETE_FORWARD) {
++      popup.selectNextItem();
+     }
+ 
+     return accepted || popup.itemCount > 0;
+   },
+ 
++  updateCompletionResult: function JST_updateCompletionResult(aType)
++  {
++    if (this.lastCompletion.value == this.inputNode.value) {
++      return;
++    }
++
++    let message = {
++      id: HUDService.sequenceId(),
++      input: this.inputNode.value,
++    };
++
++    this.lastCompletion = {requestId: message.id, completionType: aType};
++    this.sendMessageToContent("JSTerm:Autocomplete", message,
++                              this.receiveAutocompleteProperties.bind(this));
++  },
++
++  receiveAutocompleteProperties:
++  function JST_receiveAutocompleteProperties(aMessage)
++  {
++    let inputNode = this.inputNode;
++    let inputValue = inputNode.value;
++    if (aMessage.input != inputValue || this.lastCompletion.value == inputValue ||
++        aMessage.id != this.lastCompletion.requestId) {
++      return;
++    }
++
++    let matches = aMessage.matches;
++    if (!matches.length) {
++      this.clearCompletion();
++      return;
++    }
++
++    let items = matches.map(function(aMatch) {
++      return {label: aMatch};
++    });
++
++    let popup = this.autocompletePopup;
++    popup.setItems(items);
++
++    let completionType = this.lastCompletion.completionType;
++    this.lastCompletion = {value: inputValue, matchProp: aMessage.matchProp};
++
++    if (items.length > 1 && !popup.isOpen) {
++      popup.openPopup(inputNode);
++    }
++    else if (items.length < 2 && popup.isOpen) {
++      popup.hidePopup();
++    }
++
++    if (items.length > 0) {
++      popup.selectedIndex = 0;
++      if (items.length == 1) {
++        // onSelect is not fired when the popup is not open.
++        this.onAutocompleteSelect();
++      }
++    }
++
++    if (completionType != this.COMPLETE_HINT_ONLY && popup.itemCount == 1) {
++      this.acceptProposedCompletion();
++    }
++  },
++
+   onAutocompleteSelect: function JSTF_onAutocompleteSelect()
+   {
+     let currentItem = this.autocompletePopup.selectedItem;
+-    if (currentItem && this.lastCompletion) {
++    if (currentItem && this.lastCompletion.value) {
+       let suffix = currentItem.label.substring(this.lastCompletion.
+                                                matchProp.length);
+       this.updateCompleteNode(suffix);
+     }
+     else {
+       this.updateCompleteNode("");
+     }
+   },
+ 
+   /**
+    * Clear the current completion information and close the autocomplete popup,
+    * if needed.
+    */
+   clearCompletion: function JSTF_clearCompletion()
+   {
+     this.autocompletePopup.clearItems();
+-    this.lastCompletion = null;
++    this.lastCompletion = {};
+     this.updateCompleteNode("");
+     if (this.autocompletePopup.isOpen) {
+       this.autocompletePopup.hidePopup();
+     }
+   },
+ 
+   /**
+    * Accept the proposed input completion.
+@@ -5309,17 +4478,17 @@ JSTerm.prototype = {
+    *         True if there was a selected completion item and the input value
+    *         was updated, false otherwise.
+    */
+   acceptProposedCompletion: function JSTF_acceptProposedCompletion()
+   {
+     let updated = false;
+ 
+     let currentItem = this.autocompletePopup.selectedItem;
+-    if (currentItem && this.lastCompletion) {
++    if (currentItem && this.lastCompletion.value) {
+       let suffix = currentItem.label.substring(this.lastCompletion.
+                                                matchProp.length);
+       this.setInputValue(this.inputNode.value + suffix);
+       updated = true;
+     }
+ 
+     this.clearCompletion();
+ 
+@@ -5339,116 +4508,38 @@ JSTerm.prototype = {
+     this.completeNode.value = prefix + aSuffix;
+   },
+ 
+   /**
+    * Destroy the JSTerm object. Call this method to avoid memory leaks.
+    */
+   destroy: function JST_destroy()
+   {
++    this.clearCompletion();
++    this.clearOutput();
++
++    this.autocompletePopup.destroy();
++
++    this.sendMessageToContent("JSTerm:Destroy", {hudId: this.hudId});
++
++    this.messageManager.removeMessageListener("JSTerm:EvalResult", this);
++    this.messageManager.removeMessageListener("JSTerm:EvalObject", this);
++    this.messageManager.removeMessageListener("JSTerm:AutocompleteProperties", this);
++
+     this.inputNode.removeEventListener("keypress", this._keyPress, false);
+     this.inputNode.removeEventListener("input", this._inputEventHandler, false);
+     this.inputNode.removeEventListener("keyup", this._inputEventHandler, false);
++
++    delete this.asyncRequests;
++    delete this.messageManager;
++    delete this.history;
+   },
+ };
+ 
+ /**
+- * Generates and attaches the JS Terminal part of the Web Console, which
+- * essentially consists of the interactive JavaScript input facility.
+- *
+- * @param nsWeakPtr<nsIDOMWindow> aContext
+- *        A weak pointer to the DOM window that contains the Web Console.
+- * @param nsIDOMNode aParentNode
+- *        The Web Console wrapper node.
+- * @param nsIDOMNode aExistingConsole
+- *        The Web Console output node.
+- * @return void
+- */
+-function
+-JSTermFirefoxMixin(aContext,
+-                   aParentNode,
+-                   aExistingConsole)
+-{
+-  // aExisting Console is the existing outputNode to use in favor of
+-  // creating a new outputNode - this is so we can just attach the inputNode to
+-  // a normal HeadsUpDisplay console output, and re-use code.
+-  this.context = aContext;
+-  this.parentNode = aParentNode;
+-  this.existingConsoleNode = aExistingConsole;
+-  this.setTimeout = aParentNode.ownerDocument.defaultView.setTimeout;
+-
+-  if (aParentNode.ownerDocument) {
+-    this.xulElementFactory =
+-      NodeFactory("xul", "xul", aParentNode.ownerDocument);
+-
+-    this.textFactory = NodeFactory("text", "xul", aParentNode.ownerDocument);
+-    this.generateUI();
+-    this.attachUI();
+-  }
+-  else {
+-    throw new Error("aParentNode should be a DOM node with an ownerDocument property ");
+-  }
+-}
+-
+-JSTermFirefoxMixin.prototype = {
+-  /**
+-   * Generates and attaches the UI for an entire JS Workspace or
+-   * just the input node used under the console output
+-   *
+-   * @returns void
+-   */
+-  generateUI: function JSTF_generateUI()
+-  {
+-    this.completeNode = this.xulElementFactory("textbox");
+-    this.completeNode.setAttribute("class", "jsterm-complete-node");
+-    this.completeNode.setAttribute("multiline", "true");
+-    this.completeNode.setAttribute("rows", "1");
+-
+-    this.inputNode = this.xulElementFactory("textbox");
+-    this.inputNode.setAttribute("class", "jsterm-input-node");
+-    this.inputNode.setAttribute("multiline", "true");
+-    this.inputNode.setAttribute("rows", "1");
+-
+-    let inputStack = this.xulElementFactory("stack");
+-    inputStack.setAttribute("class", "jsterm-stack-node");
+-    inputStack.setAttribute("flex", "1");
+-    inputStack.appendChild(this.completeNode);
+-    inputStack.appendChild(this.inputNode);
+-
+-    if (this.existingConsoleNode == undefined) {
+-      this.outputNode = this.xulElementFactory("vbox");
+-      this.outputNode.setAttribute("class", "jsterm-output-node");
+-
+-      this.term = this.xulElementFactory("vbox");
+-      this.term.setAttribute("class", "jsterm-wrapper-node");
+-      this.term.setAttribute("flex", "1");
+-      this.term.appendChild(this.outputNode);
+-    }
+-    else {
+-      this.outputNode = this.existingConsoleNode;
+-
+-      this.term = this.xulElementFactory("hbox");
+-      this.term.setAttribute("class", "jsterm-input-container");
+-      this.term.setAttribute("style", "direction: ltr;");
+-      this.term.appendChild(inputStack);
+-    }
+-  },
+-
+-  get inputValue()
+-  {
+-    return this.inputNode.value;
+-  },
+-
+-  attachUI: function JSTF_attachUI()
+-  {
+-    this.parentNode.appendChild(this.term);
+-  }
+-};
+-
+-/**
+  * Firefox-specific Application Hooks.
+  * Each Gecko-based application will need an object like this in
+  * order to use the Heads Up Display
+  */
+ function FirefoxApplicationHooks()
+ { }
+ 
+ FirefoxApplicationHooks.prototype = {
+@@ -5731,17 +4822,17 @@ ConsoleUtils = {
+    */
+   createLocationNode:
+   function ConsoleUtils_createLocationNode(aDocument, aSourceURL,
+                                            aSourceLine) {
+     let locationNode = aDocument.createElementNS(XUL_NS, "label");
+ 
+     // Create the text, which consists of an abbreviated version of the URL
+     // plus an optional line number.
+-    let text = ConsoleUtils.abbreviateSourceURL(aSourceURL);
++    let text = WebConsoleUtils.abbreviateSourceURL(aSourceURL);
+     if (aSourceLine) {
+       text += ":" + aSourceLine;
+     }
+     locationNode.setAttribute("value", text);
+ 
+     // Style appropriately.
+     locationNode.setAttribute("crop", "center");
+     locationNode.setAttribute("title", aSourceURL);
+@@ -5951,64 +5042,33 @@ ConsoleUtils = {
+   {
+     let lastNodeHeight = aOutputNode.lastChild ?
+                          aOutputNode.lastChild.clientHeight : 0;
+     let scrollBox = aOutputNode.scrollBoxObject.element;
+ 
+     return scrollBox.scrollTop + scrollBox.clientHeight >=
+            scrollBox.scrollHeight - lastNodeHeight / 2;
+   },
+-
+-  /**
+-   * Abbreviates the given source URL so that it can be displayed flush-right
+-   * without being too distracting.
+-   *
+-   * @param string aSourceURL
+-   *        The source URL to shorten.
+-   * @return string
+-   *         The abbreviated form of the source URL.
+-   */
+-  abbreviateSourceURL: function ConsoleUtils_abbreviateSourceURL(aSourceURL) {
+-    // Remove any query parameters.
+-    let hookIndex = aSourceURL.indexOf("?");
+-    if (hookIndex > -1) {
+-      aSourceURL = aSourceURL.substring(0, hookIndex);
+-    }
+-
+-    // Remove a trailing "/".
+-    if (aSourceURL[aSourceURL.length - 1] == "/") {
+-      aSourceURL = aSourceURL.substring(0, aSourceURL.length - 1);
+-    }
+-
+-    // Remove all but the last path component.
+-    let slashIndex = aSourceURL.lastIndexOf("/");
+-    if (slashIndex > -1) {
+-      aSourceURL = aSourceURL.substring(slashIndex + 1);
+-    }
+-
+-    return aSourceURL;
+-  }
+ };
+ 
+ //////////////////////////////////////////////////////////////////////////
+ // HeadsUpDisplayUICommands
+ //////////////////////////////////////////////////////////////////////////
+ 
+ HeadsUpDisplayUICommands = {
+   toggleHUD: function UIC_toggleHUD() {
++    dump("toggleHUD 1\n");
+     var window = HUDService.currentContext();
+     var gBrowser = window.gBrowser;
+-    var linkedBrowser = gBrowser.selectedTab.linkedBrowser;
+-    var tabId = gBrowser.getNotificationBox(linkedBrowser).getAttribute("id");
+-    var hudId = "hud_" + tabId;
++    var hudId = "hud_" + gBrowser.selectedTab.linkedPanel;
+     var ownerDocument = gBrowser.selectedTab.ownerDocument;
+-    var hud = ownerDocument.getElementById(hudId);
++    var hudBox = ownerDocument.getElementById(hudId);
+     var hudRef = HUDService.hudReferences[hudId];
+ 
+-    if (hudRef && hud) {
++    if (hudRef && hudBox) {
+       if (hudRef.consolePanel) {
+         HUDService.deactivateHUDForContext(gBrowser.selectedTab, false);
+       }
+       else {
+         HUDService.storeHeight(hudId);
+ 
+         HUDService.animate(hudId, ANIMATE_OUT, function() {
+           // If the user closes the console while the console is animating away,
+@@ -6020,16 +5080,17 @@ HeadsUpDisplayUICommands = {
+           }
+         });
+       }
+     }
+     else {
+       HUDService.activateHUDForContext(gBrowser.selectedTab, true);
+       HUDService.animate(hudId, ANIMATE_IN);
+     }
++    dump("toggleHUD end\n");
+   },
+ 
+   /**
+    * Find the hudId for the active chrome window.
+    * @return string|null
+    *         The hudId or null if the active chrome window has no open Web
+    *         Console.
+    */
+@@ -6412,39 +5473,32 @@ ConsoleEntry.prototype = {
+   }
+ };
+ 
+ //////////////////////////////////////////////////////////////////////////
+ // HUDWindowObserver
+ //////////////////////////////////////////////////////////////////////////
+ 
+ HUDWindowObserver = {
+-  QueryInterface: XPCOMUtils.generateQI(
+-    [Ci.nsIObserver,]
+-  ),
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
+ 
+   init: function HWO_init()
+   {
+     Services.obs.addObserver(this, "xpcom-shutdown", false);
+-    Services.obs.addObserver(this, "content-document-global-created", false);
+   },
+ 
+   observe: function HWO_observe(aSubject, aTopic, aData)
+   {
+-    if (aTopic == "content-document-global-created") {
+-      HUDService.windowInitializer(aSubject);
+-    }
+-    else if (aTopic == "xpcom-shutdown") {
++    if (aTopic == "xpcom-shutdown") {
+       this.uninit();
+     }
+   },
+ 
+   uninit: function HWO_uninit()
+   {
+-    Services.obs.removeObserver(this, "content-document-global-created");
+     Services.obs.removeObserver(this, "xpcom-shutdown");
+     this.initialConsoleCreated = false;
+   },
+ 
+ };
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+ // CommandController
+@@ -6709,19 +5763,19 @@ function appName()
+   }
+   throw new Error("appName: UNSUPPORTED APPLICATION UUID");
+ }
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ // HUDService (exported symbol)
+ ///////////////////////////////////////////////////////////////////////////
+ 
+-try {
+-  // start the HUDService
+-  // This is in a try block because we want to kill everything if
+-  // *any* of this fails
+-  var HUDService = new HUD_SERVICE();
+-}
+-catch (ex) {
+-  Cu.reportError("HUDService failed initialization.\n" + ex);
+-  // TODO: kill anything that may have started up
+-  // see bug 568665
+-}
++XPCOMUtils.defineLazyGetter(this, "HUDService", function() {
++  let instance;
++  try {
++    instance = new HUD_SERVICE();
++  }
++  catch (ex) {
++    Cu.reportError(ex);
++  }
++  return instance;
++});
++
+diff --git a/browser/devtools/webconsole/Makefile.in b/browser/devtools/webconsole/Makefile.in
+--- a/browser/devtools/webconsole/Makefile.in
++++ b/browser/devtools/webconsole/Makefile.in
+@@ -44,16 +44,17 @@ VPATH		= @srcdir@
+ 
+ include $(DEPTH)/config/autoconf.mk
+ 
+ EXTRA_JS_MODULES = \
+ 		PropertyPanel.jsm \
+ 		NetworkHelper.jsm \
+ 		AutocompletePopup.jsm \
+ 		gcli.jsm \
++		WebConsoleUtils.jsm \
+ 		$(NULL)
+ 
+ EXTRA_PP_JS_MODULES = \
+ 		HUDService.jsm \
+ 		$(NULL)
+ 
+ ifdef ENABLE_TESTS
+ ifneq (mobile,$(MOZ_BUILD_APP))
+diff --git a/browser/devtools/webconsole/PropertyPanel.jsm b/browser/devtools/webconsole/PropertyPanel.jsm
+--- a/browser/devtools/webconsole/PropertyPanel.jsm
++++ b/browser/devtools/webconsole/PropertyPanel.jsm
+@@ -18,16 +18,17 @@
+  * The Initial Developer of the Original Code is
+  * the Mozilla Foundation.
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Rob Campbell <rcampbell@mozilla.com>
+  *   Julian Viereck <jviereck@mozilla.com>
++ *   Mihai Sucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -40,263 +41,32 @@
+ 
+ const Cc = Components.classes;
+ const Ci = Components.interfaces;
+ const Cu = Components.utils;
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/Services.jsm");
+ 
+-var EXPORTED_SYMBOLS = ["PropertyPanel", "PropertyTreeView",
+-                        "namesAndValuesOf", "isNonNativeGetter"];
+-
+-///////////////////////////////////////////////////////////////////////////
+-//// Helper for PropertyTreeView
+-
+-const TYPE_OBJECT = 0, TYPE_FUNCTION = 1, TYPE_ARRAY = 2, TYPE_OTHER = 3;
+-
+-/**
+- * Figures out the type of aObject and the string to display in the tree.
+- *
+- * @param object aObject
+- *        The object to operate on.
+- * @returns object
+- *          A object with the form:
+- *            {
+- *              type: TYPE_OBJECT || TYPE_FUNCTION || TYPE_ARRAY || TYPE_OTHER,
+- *              display: string for displaying the object in the tree
+- *            }
+- */
+-function presentableValueFor(aObject)
+-{
+-  if (aObject === null || aObject === undefined) {
+-    return {
+-      type: TYPE_OTHER,
+-      display: aObject === undefined ? "undefined" : "null"
+-    };
+-  }
+-
+-  let presentable;
+-  switch (aObject.constructor && aObject.constructor.name) {
+-    case "Array":
+-      return {
+-        type: TYPE_ARRAY,
+-        display: "Array"
+-      };
+-
+-    case "String":
+-      return {
+-        type: TYPE_OTHER,
+-        display: "\"" + aObject + "\""
+-      };
+-
+-    case "Date":
+-    case "RegExp":
+-    case "Number":
+-    case "Boolean":
+-      return {
+-        type: TYPE_OTHER,
+-        display: aObject
+-      };
+-
+-    case "Iterator":
+-      return {
+-        type: TYPE_OTHER,
+-        display: "Iterator"
+-      };
+-
+-    case "Function":
+-      presentable = aObject.toString();
+-      return {
+-        type: TYPE_FUNCTION,
+-        display: presentable.substring(0, presentable.indexOf(')') + 1)
+-      };
+-
+-    default:
+-      presentable = aObject.toString();
+-      let m = /^\[object (\S+)\]/.exec(presentable);
+-
+-      try {
+-        if (typeof aObject == "object" && typeof aObject.next == "function" &&
+-            m && m[1] == "Generator") {
+-          return {
+-            type: TYPE_OTHER,
+-            display: m[1]
+-          };
+-        }
+-      }
+-      catch (ex) {
+-        // window.history.next throws in the typeof check above.
+-        return {
+-          type: TYPE_OBJECT,
+-          display: m ? m[1] : "Object"
+-        };
+-      }
+-
+-      if (typeof aObject == "object" && typeof aObject.__iterator__ == "function") {
+-        return {
+-          type: TYPE_OTHER,
+-          display: "Iterator"
+-        };
+-      }
+-
+-      return {
+-        type: TYPE_OBJECT,
+-        display: m ? m[1] : "Object"
+-      };
+-  }
+-}
+-
+-/**
+- * Tells if the given function is native or not.
+- *
+- * @param function aFunction
+- *        The function you want to check if it is native or not.
+- *
+- * @return boolean
+- *         True if the given function is native, false otherwise.
+- */
+-function isNativeFunction(aFunction)
+-{
+-  return typeof aFunction == "function" && !("prototype" in aFunction);
+-}
+-
+-/**
+- * Tells if the given property of the provided object is a non-native getter or
+- * not.
+- *
+- * @param object aObject
+- *        The object that contains the property.
+- *
+- * @param string aProp
+- *        The property you want to check if it is a getter or not.
+- *
+- * @return boolean
+- *         True if the given property is a getter, false otherwise.
+- */
+-function isNonNativeGetter(aObject, aProp) {
+-  if (typeof aObject != "object") {
+-    return false;
+-  }
+-  let desc;
+-  while (aObject) {
+-    try {
+-      if (desc = Object.getOwnPropertyDescriptor(aObject, aProp)) {
+-        break;
+-      }
+-    }
+-    catch (ex) {
+-      // Native getters throw here. See bug 520882.
+-      if (ex.name == "NS_ERROR_XPC_BAD_CONVERT_JS" ||
+-          ex.name == "NS_ERROR_XPC_BAD_OP_ON_WN_PROTO") {
+-        return false;
+-      }
+-      throw ex;
+-    }
+-    aObject = Object.getPrototypeOf(aObject);
+-  }
+-  if (desc && desc.get && !isNativeFunction(desc.get)) {
+-    return true;
+-  }
+-  return false;
+-}
+-
+-/**
+- * Get an array of property name value pairs for the tree.
+- *
+- * @param object aObject
+- *        The object to get properties for.
+- * @returns array of object
+- *          Objects have the name, value, display, type, children properties.
+- */
+-function namesAndValuesOf(aObject)
+-{
+-  let pairs = [];
+-  let value, presentable;
+-
+-  let isDOMDocument = aObject instanceof Ci.nsIDOMDocument;
+-
+-  for (var propName in aObject) {
+-    // See bug 632275: skip deprecated width and height properties.
+-    if (isDOMDocument && (propName == "width" || propName == "height")) {
+-      continue;
+-    }
+-
+-    // Also skip non-native getters.
+-    if (isNonNativeGetter(aObject, propName)) {
+-      value = ""; // Value is never displayed.
+-      presentable = {type: TYPE_OTHER, display: "Getter"};
+-    }
+-    else {
+-      try {
+-        value = aObject[propName];
+-        presentable = presentableValueFor(value);
+-      }
+-      catch (ex) {
+-        continue;
+-      }
+-    }
+-
+-    let pair = {};
+-    pair.name = propName;
+-    pair.display = propName + ": " + presentable.display;
+-    pair.type = presentable.type;
+-    pair.value = value;
+-
+-    // Convert the pair.name to a number for later sorting.
+-    pair.nameNumber = parseFloat(pair.name)
+-    if (isNaN(pair.nameNumber)) {
+-      pair.nameNumber = false;
+-    }
+-
+-    pairs.push(pair);
+-  }
+-
+-  pairs.sort(function(a, b)
+-  {
+-    // Sort numbers.
+-    if (a.nameNumber !== false && b.nameNumber === false) {
+-      return -1;
+-    }
+-    else if (a.nameNumber === false && b.nameNumber !== false) {
+-      return 1;
+-    }
+-    else if (a.nameNumber !== false && b.nameNumber !== false) {
+-      return a.nameNumber - b.nameNumber;
+-    }
+-    // Sort string.
+-    else if (a.name < b.name) {
+-      return -1;
+-    }
+-    else if (a.name > b.name) {
+-      return 1;
+-    }
+-    else {
+-      return 0;
+-    }
+-  });
+-
+-  return pairs;
+-}
++var EXPORTED_SYMBOLS = ["PropertyPanel", "PropertyTreeView"];
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ //// PropertyTreeView.
+ 
+-
+ /**
+  * This is an implementation of the nsITreeView interface. For comments on the
+  * interface properties, see the documentation:
+  * https://developer.mozilla.org/en/XPCOM_Interface_Reference/nsITreeView
+  */
+-var PropertyTreeView = function() {
++var PropertyTreeView = function(aObjectProvider) {
+   this._rows = [];
++  this.getRemoteObject = aObjectProvider;
+ };
+ 
+ PropertyTreeView.prototype = {
+-
+   /**
+    * Stores the visible rows of the tree.
+    */
+   _rows: null,
+ 
+   /**
+    * Stores the nsITreeBoxObject for this tree.
+    */
+@@ -306,17 +76,33 @@ PropertyTreeView.prototype = {
+    * Use this setter to update the content of the tree.
+    *
+    * @param object aObject
+    *        The new object to be displayed in the tree.
+    * @returns void
+    */
+   set data(aObject) {
+     let oldLen = this._rows.length;
+-    this._rows = this.getChildItems(aObject, true);
++    dump("set data oldLen " + oldLen + "\n");
++
++    // Reset the existing _rows children to the initial state.
++    this.updateChildItems(this._rows, 0);
++
++    if (aObject) {
++      this._rootCacheId = aObject.rootCacheId;
++      this._panelCacheId = aObject.panelCacheId;
++      this.updateChildItems(aObject.object, 0);
++      this._rows = [].concat(aObject.object);
++    }
++    else {
++      this._rows = [];
++    }
++
++    dump("set data newLen " + this._rows.length + "\n");
++
+     if (this._treeBox) {
+       this._treeBox.beginUpdateBatch();
+       if (oldLen) {
+         this._treeBox.rowCountChanged(0, -oldLen);
+       }
+       this._treeBox.rowCountChanged(0, this._rows.length);
+       this._treeBox.endUpdateBatch();
+     }
+@@ -329,64 +115,44 @@ PropertyTreeView.prototype = {
+    * @param object aItem
+    *        An item of the tree's elements to generate the children for.
+    * @param boolean aRootElement
+    *        If set, aItem is handled as an JS object and not as an item
+    *        element of the tree.
+    * @returns array of objects
+    *        Child items of aItem.
+    */
+-  getChildItems: function(aItem, aRootElement)
++  updateChildItems: function(aItem, aLevel)
+   {
+-    // If item.children is an array, then the children has already been
+-    // computed and can get returned directly.
+-    // Skip this checking if aRootElement is true. It could happen, that aItem
+-    // is passed as ({children:[1,2,3]}) which would be true, although these
+-    // "kind" of children has no value/type etc. data as needed to display in
+-    // the tree. As the passed ({children:[1,2,3]}) are instanceof
+-    // itsWindow.Array and not this modules's global Array
+-    // aItem.children instanceof Array can't be true, but for saftey the
+-    // !aRootElement is kept here.
+-    if (!aRootElement && aItem && aItem.children instanceof Array) {
+-      return aItem.children;
++    for each (let pair in aItem) {
++      pair.level = aLevel;
++      pair.isOpened = false;
++      pair.children = null;
+     }
+-
+-    let pairs;
+-    let newPairLevel;
+-
+-    if (!aRootElement) {
+-      newPairLevel = aItem.level + 1;
+-      aItem = aItem.value;
+-    }
+-    else {
+-      newPairLevel = 0;
+-    }
+-
+-    pairs = namesAndValuesOf(aItem);
+-
+-    for each (var pair in pairs) {
+-      pair.level = newPairLevel;
+-      pair.isOpened = false;
+-      pair.children = pair.type == TYPE_OBJECT || pair.type == TYPE_FUNCTION ||
+-                      pair.type == TYPE_ARRAY;
+-    }
+-
+-    return pairs;
+   },
+ 
+   /** nsITreeView interface implementation **/
+ 
+   selection: null,
+ 
+   get rowCount()                     { return this._rows.length; },
+   setTree: function(treeBox)         { this._treeBox = treeBox;  },
+-  getCellText: function(idx, column) { return this._rows[idx].display; },
+-  getLevel: function(idx)            { return this._rows[idx].level; },
+-  isContainer: function(idx)         { return !!this._rows[idx].children; },
+-  isContainerOpen: function(idx)     { return this._rows[idx].isOpened; },
++  getCellText: function(idx, column) {
++    let row = this._rows[idx];
++    return row.name + ": " + row.value;
++  },
++  getLevel: function(idx) {
++    return this._rows[idx].level;
++  },
++  isContainer: function(idx) {
++    return !!this._rows[idx].inspectable;
++  },
++  isContainerOpen: function(idx) {
++    return this._rows[idx].isOpened;
++  },
+   isContainerEmpty: function(idx)    { return false; },
+   isSeparator: function(idx)         { return false; },
+   isSorted: function()               { return false; },
+   isEditable: function(idx, column)  { return false; },
+   isSelectable: function(row, col)   { return true; },
+ 
+   getParentIndex: function(idx)
+   {
+@@ -404,47 +170,70 @@ PropertyTreeView.prototype = {
+   hasNextSibling: function(idx, after)
+   {
+     var thisLevel = this.getLevel(idx);
+     return this._rows.slice(after + 1).some(function (r) r.level == thisLevel);
+   },
+ 
+   toggleOpenState: function(idx)
+   {
+-    var item = this._rows[idx];
+-    if (!item.children) {
++    let item = this._rows[idx];
++    if (!item.inspectable) {
+       return;
+     }
+ 
+-    this._treeBox.beginUpdateBatch();
++    dump("toggleOpenState " + idx + " " + item.name + "\n");
++
+     if (item.isOpened) {
++      this._treeBox.beginUpdateBatch();
+       item.isOpened = false;
+ 
+       var thisLevel = item.level;
+       var t = idx + 1, deleteCount = 0;
+       while (t < this._rows.length && this.getLevel(t++) > thisLevel) {
+         deleteCount++;
+       }
+ 
+       if (deleteCount) {
+         this._rows.splice(idx + 1, deleteCount);
+         this._treeBox.rowCountChanged(idx + 1, -deleteCount);
+       }
++      this._treeBox.invalidateRow(idx);
++      this._treeBox.endUpdateBatch();
+     }
+     else {
+-      item.isOpened = true;
++      let levelUpdate = true;
++      let callback = function onRemoteResponse(aResponse) {
++        dump("getRemoteObject callback " + idx + " " + item.name + "\n");
++        this._treeBox.beginUpdateBatch();
++        item.isOpened = true;
+ 
+-      var toInsert = this.getChildItems(item);
+-      item.children = toInsert;
+-      this._rows.splice.apply(this._rows, [idx + 1, 0].concat(toInsert));
++        if (levelUpdate) {
++          this.updateChildItems(aResponse.object, item.level + 1);
++          item.children = aResponse.object;
++        }
+ 
+-      this._treeBox.rowCountChanged(idx + 1, toInsert.length);
++        this._rows.splice.apply(this._rows, [idx + 1, 0].concat(item.children));
++
++        this._treeBox.rowCountChanged(idx + 1, item.children.length);
++        this._treeBox.invalidateRow(idx);
++        this._treeBox.endUpdateBatch();
++      }.bind(this);
++
++      if (!item.children) {
++        let fromCacheId = item.level > 0 ? this._panelCacheId :
++                                           this._rootCacheId;
++        this.getRemoteObject(fromCacheId, item.objectId, this._panelCacheId,
++                             callback);
++      }
++      else {
++        levelUpdate = false;
++        callback({object: item.children});
++      }
+     }
+-    this._treeBox.invalidateRow(idx);
+-    this._treeBox.endUpdateBatch();
+   },
+ 
+   getImageSrc: function(idx, column) { },
+   getProgressMode : function(idx,column) { },
+   getCellValue: function(idx, column) { },
+   cycleHeader: function(col, elem) { },
+   selectionChanged: function() { },
+   cycleCell: function(idx, column) { },
+@@ -517,18 +306,21 @@ function appendChild(aDocument, aParent,
+  *        Document to create the new nodes on.
+  * @param string aTitle
+  *        Title for the panel.
+  * @param string aObject
+  *        Object to display in the tree.
+  * @param array of objects aButtons
+  *        Array with buttons to display at the bottom of the panel.
+  */
+-function PropertyPanel(aParent, aDocument, aTitle, aObject, aButtons)
++// TODO: update the comment
++function PropertyPanel(aParent, aDocument, aTitle, aButtons, aRootObject, aObjectProvider)
+ {
++  dump("new PropertyPanel\n");
++
+   // Create the underlying panel
+   this.panel = createElement(aDocument, "panel", {
+     label: aTitle,
+     titlebar: "normal",
+     noautofocus: "true",
+     noautohide: "true",
+     close: "true",
+   });
+@@ -569,18 +361,20 @@ function PropertyPanel(aParent, aDocumen
+   }
+ 
+   appendChild(aDocument, footer, "resizer", { dir: "bottomend" });
+   this.panel.appendChild(footer);
+ 
+   aParent.appendChild(this.panel);
+ 
+   // Create the treeView object.
+-  this.treeView = new PropertyTreeView();
+-  this.treeView.data = aObject;
++  this.treeView = new PropertyTreeView(aObjectProvider);
++  this.treeView.data = aRootObject;
++
++  dump("new treeView rows " + this.treeView._rows.length + "\n");
+ 
+   // Set the treeView object on the tree view. This has to be done *after* the
+   // panel is shown. This is because the tree binding must be attached first.
+   this.panel.addEventListener("popupshown", function onPopupShow()
+   {
+     self.panel.removeEventListener("popupshown", onPopupShow, false);
+     self.tree.view = self.treeView;
+   }, false);
+@@ -595,18 +389,23 @@ function PropertyPanel(aParent, aDocumen
+ /**
+  * Destroy the PropertyPanel. This closes the poped up panel and removes
+  * it from the browser DOM.
+  *
+  * @returns void
+  */
+ PropertyPanel.prototype.destroy = function PP_destroy()
+ {
++  dump("PP_destroy()\n");
++  this.treeView.data = null;
+   this.panel.parentNode.removeChild(this.panel);
+   this.treeView = null;
+   this.panel = null;
+   this.tree = null;
+ 
+   if (this.linkNode) {
+     this.linkNode._panelOpen = false;
+     this.linkNode = null;
+   }
++
++  delete this._rootCacheId;
++  delete this._panelCacheId;
+ }
+diff --git a/browser/devtools/webconsole/WebConsoleUtils.jsm b/browser/devtools/webconsole/WebConsoleUtils.jsm
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/webconsole/WebConsoleUtils.jsm
+@@ -0,0 +1,731 @@
++/* -*- Mode: js2; js2-basic-offset: 2; indent-tabs-mode: nil; -*- */
++/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Web Console.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Mihai Sucan <mihai.sucan@gmail.com>
++ *   David Dahl <ddahl@mozilla.com>
++ *   Rob Campbell <rcampbell@mozilla.com>
++ *   Johnathan Nightingale <jnightingale@mozilla.com>
++ *   Patrick Walton <pcwalton@mozilla.com>
++ *   Julian Viereck <jviereck@mozilla.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++let Cc = Components.classes;
++let Ci = Components.interfaces;
++let Cu = Components.utils;
++
++Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++
++var EXPORTED_SYMBOLS = ["WebConsoleUtils", "JSPropertyProvider"];
++
++const TYPES = { OBJECT: 0,
++                FUNCTION: 1,
++                ARRAY: 2,
++                OTHER: 3,
++                ITERATOR: 4,
++                GETTER: 5,
++                GENERATOR: 6,
++                STRING: 7
++              };
++
++var gObjectId = 0;
++
++var WebConsoleUtils = {
++  /**
++   * Convenience function to unwrap a wrapped object.
++   *
++   * @param aObject the object to unwrap
++   */
++  unwrap: function WCU_unwrap(aObject)
++  {
++    try {
++      return XPCNativeWrapper.unwrap(aObject);
++    }
++    catch (ex) {
++      return aObject;
++    }
++  },
++
++  /**
++   * Abbreviates the given source URL so that it can be displayed flush-right
++   * without being too distracting.
++   *
++   * @param string aSourceURL
++   *        The source URL to shorten.
++   * @return string
++   *         The abbreviated form of the source URL.
++   */
++  abbreviateSourceURL: function WCU_abbreviateSourceURL(aSourceURL)
++  {
++    // Remove any query parameters.
++    let hookIndex = aSourceURL.indexOf("?");
++    if (hookIndex > -1) {
++      aSourceURL = aSourceURL.substring(0, hookIndex);
++    }
++
++    // Remove a trailing "/".
++    if (aSourceURL[aSourceURL.length - 1] == "/") {
++      aSourceURL = aSourceURL.substring(0, aSourceURL.length - 1);
++    }
++
++    // Remove all but the last path component.
++    let slashIndex = aSourceURL.lastIndexOf("/");
++    if (slashIndex > -1) {
++      aSourceURL = aSourceURL.substring(slashIndex + 1);
++    }
++
++    return aSourceURL;
++  },
++
++  /**
++   * Format the jsterm execution result based on its type.
++   *
++   * @param mixed aResult
++   *        The evaluation result object you want displayed.
++   * @returns string
++   *          The string that can be displayed.
++   */
++  formatResult: function WCU_formatResult(aResult)
++  {
++    let output = "";
++    let type = this.getResultType(aResult);
++
++    switch (type) {
++      case "string":
++        output = this.formatResultString(aResult);
++        break;
++      case "boolean":
++      case "date":
++      case "error":
++      case "number":
++      case "regexp":
++        output = aResult.toString();
++        break;
++      case "null":
++      case "undefined":
++        output = type;
++        break;
++      default:
++        if (aResult.toSource) {
++          try {
++            output = aResult.toSource();
++          } catch (ex) { }
++        }
++        if (!output || output == "({})") {
++          output = aResult.toString();
++        }
++        break;
++    }
++
++    return output;
++  },
++
++  /**
++   * Format a string for output.
++   *
++   * @param string aString
++   *        The string you want to display.
++   * @returns string
++   *          The string that can be displayed.
++   */
++  formatResultString: function WCU_formatResultString(aString)
++  {
++    function isControlCode(c) {
++      // See http://en.wikipedia.org/wiki/C0_and_C1_control_codes
++      // C0 is 0x00-0x1F, C1 is 0x80-0x9F (inclusive).
++      // We also include DEL (U+007F) and NBSP (U+00A0), which are not strictly
++      // in C1 but border it.
++      return (c <= 0x1F) || (0x7F <= c && c <= 0xA0);
++    }
++
++    function replaceFn(aMatch, aType, aHex) {
++      // Leave control codes escaped, but unescape the rest of the characters.
++      let c = parseInt(aHex, 16);
++      return isControlCode(c) ? aMatch : String.fromCharCode(c);
++    }
++
++    let output = uneval(aString).replace(/\\(x)([0-9a-fA-F]{2})/g, replaceFn)
++                 .replace(/\\(u)([0-9a-fA-F]{4})/g, replaceFn);
++
++    return output;
++  },
++
++  /**
++   * Determine if the jsterm execution result is inspectable or not.
++   *
++   * @param mixed aResult
++   *        The evaluation result object you want to check if it is inspectable.
++   * @returns boolean
++   *          True if the object is inspectable or false otherwise.
++   */
++  isResultInspectable: function WCU_isResultInspectable(aResult)
++  {
++    let isEnumerable = false;
++
++    // Skip Iterators and Generators.
++    if (this.isIteratorOrGenerator(aResult)) {
++      return false;
++    }
++
++    try {
++      for (let p in aResult) {
++        isEnumerable = true;
++        break;
++      }
++    }
++    catch (ex) {
++      // Proxy objects can lack an enumerable method.
++    }
++
++    return isEnumerable && typeof(aResult) != "string";
++  },
++
++  /**
++   * Determine the type of the jsterm execution result.
++   *
++   * @param mixed aResult
++   *        The evaluation result object you want to check.
++   * @returns string
++   *          Constructor name or type: string, number, boolean, regexp, date,
++   *          function, object, null, undefined...
++   */
++  getResultType: function WCU_getResultType(aResult)
++  {
++    let type = aResult === null ? "null" : typeof aResult;
++    if (type == "object" && aResult.constructor && aResult.constructor.name) {
++      type = aResult.constructor.name;
++    }
++
++    return type.toLowerCase();
++  },
++
++  /**
++   * Figures out the type of aObject and the string to display in the tree.
++   *
++   * @param object aObject
++   *        The object to operate on.
++   * @returns object
++   *          A object with the form:
++   *            {
++   *              type: TYPES.OBJECT || TYPES.FUNCTION || ...
++   *              display: string for displaying the object in the tree
++   *            }
++   */
++  presentableValueFor: function WCU_presentableValueFor(aObject)
++  {
++    let type = this.getResultType(aObject);
++    let presentable;
++
++    switch (type) {
++      case "undefined":
++      case "null":
++        return {
++          type: TYPES.OTHER,
++          display: type
++        };
++
++      case "array":
++        return {
++          type: TYPES.ARRAY,
++          display: "Array"
++        };
++
++      case "string":
++        return {
++          type: TYPES.STRING,
++          display: "\"" + aObject + "\""
++        };
++
++      case "date":
++      case "regexp":
++      case "number":
++      case "boolean":
++        return {
++          type: TYPES.OTHER,
++          display: aObject.toString()
++        };
++
++      case "iterator":
++        return {
++          type: TYPES.ITERATOR,
++          display: "Iterator"
++        };
++
++      case "function":
++        presentable = aObject.toString();
++        return {
++          type: TYPES.FUNCTION,
++          display: presentable.substring(0, presentable.indexOf(')') + 1)
++        };
++
++      default:
++        presentable = aObject.toString();
++        let m = /^\[object (\S+)\]/.exec(presentable);
++
++        try {
++          if (type == "object" && typeof aObject.next == "function" &&
++              m && m[1] == "Generator") {
++            return {
++              type: TYPES.GENERATOR,
++              display: m[1]
++            };
++          }
++        }
++        catch (ex) {
++          // window.history.next throws in the typeof check above.
++          return {
++            type: TYPES.OBJECT,
++            display: m ? m[1] : "Object"
++          };
++        }
++
++        if (type == "object" && typeof aObject.__iterator__ == "function") {
++          return {
++            type: TYPES.ITERATOR,
++            display: "Iterator"
++          };
++        }
++
++        return {
++          type: TYPES.OBJECT,
++          display: m ? m[1] : "Object"
++        };
++    }
++  },
++
++  /**
++   * Tells if the given function is native or not.
++   *
++   * @param function aFunction
++   *        The function you want to check if it is native or not.
++   *
++   * @return boolean
++   *         True if the given function is native, false otherwise.
++   */
++  isNativeFunction: function WCU_isNativeFunction(aFunction)
++  {
++    return typeof aFunction == "function" && !("prototype" in aFunction);
++  },
++
++  /**
++   * Tells if the given property of the provided object is a non-native getter or
++   * not.
++   *
++   * @param object aObject
++   *        The object that contains the property.
++   *
++   * @param string aProp
++   *        The property you want to check if it is a getter or not.
++   *
++   * @return boolean
++   *         True if the given property is a getter, false otherwise.
++   */
++  isNonNativeGetter: function WCU_isNonNativeGetter(aObject, aProp)
++  {
++    if (typeof aObject != "object") {
++      return false;
++    }
++    let desc;
++    while (aObject) {
++      try {
++        if (desc = Object.getOwnPropertyDescriptor(aObject, aProp)) {
++          break;
++        }
++      }
++      catch (ex) {
++        // Native getters throw here. See bug 520882.
++        if (ex.name == "NS_ERROR_XPC_BAD_CONVERT_JS" ||
++            ex.name == "NS_ERROR_XPC_BAD_OP_ON_WN_PROTO") {
++          return false;
++        }
++        throw ex;
++      }
++      aObject = Object.getPrototypeOf(aObject);
++    }
++    if (desc && desc.get && !this.isNativeFunction(desc.get)) {
++      return true;
++    }
++    return false;
++  },
++
++  /**
++   * Get an array of property name value pairs for the tree.
++   *
++   * @param object aObject
++   *        The object to get properties for.
++   * @param object aObjectCache
++   *        Optional object cache where to store references to properties of
++   *        aObject that are inspectable.
++   * @returns array of object
++   *          Objects have the name, value, display, type, children properties.
++   */
++  namesAndValuesOf: function WCU_namesAndValuesOf(aObject, aObjectCache)
++  {
++    let pairs = [];
++    let value, presentable;
++
++    let isDOMDocument = aObject instanceof Ci.nsIDOMDocument;
++
++    for (let propName in aObject) {
++      // See bug 632275: skip deprecated width and height properties.
++      if (isDOMDocument && (propName == "width" || propName == "height")) {
++        continue;
++      }
++
++      // Also skip non-native getters.
++      if (this.isNonNativeGetter(aObject, propName)) {
++        value = "";
++        presentable = {type: TYPES.GETTER, display: "Getter"};
++      }
++      else {
++        value = aObject[propName];
++        presentable = this.presentableValueFor(value);
++      }
++
++      let pair = {};
++      pair.name = propName;
++      pair.value = presentable.display;
++      pair.inspectable = false;
++      pair.type = presentable.type;
++
++      switch (presentable.type) {
++        case TYPES.GETTER:
++        case TYPES.ITERATOR:
++        case TYPES.GENERATOR:
++        case TYPES.STRING:
++          break;
++        default:
++          try {
++            for (let p in value) {
++              pair.inspectable = true;
++              break;
++            }
++          }
++          catch (ex) { }
++          break;
++      }
++
++      if (pair.inspectable && aObjectCache) {
++        pair.objectId = ++gObjectId;
++        aObjectCache[pair.objectId] = value;
++      }
++
++      pairs.push(pair);
++    }
++
++    pairs.sort(function(a, b)
++    {
++      // Convert the pair.name to a number for later sorting.
++      let aNumber = parseFloat(a.name);
++      let bNumber = parseFloat(b.name);
++
++      // Sort numbers.
++      if (!isNaN(aNumber) && isNaN(bNumber)) {
++        return -1;
++      }
++      else if (isNaN(aNumber) && !isNaN(bNumber)) {
++        return 1;
++      }
++      else if (!isNaN(aNumber) && !isNaN(bNumber)) {
++        return aNumber - bNumber;
++      }
++      // Sort string.
++      else if (a.name < b.name) {
++        return -1;
++      }
++      else if (a.name > b.name) {
++        return 1;
++      }
++      else {
++        return 0;
++      }
++    });
++
++    return pairs;
++  },
++
++  isIteratorOrGenerator: function WCU_isIteratorOrGenerator(aObject)
++  {
++    if (aObject === null) {
++      return false;
++    }
++
++    if (typeof aObject == "object") {
++      if (typeof aObject.__iterator__ == "function" ||
++          aObject.constructor && aObject.constructor.name == "Iterator") {
++        return true;
++      }
++
++      try {
++        let str = aObject.toString();
++        if (typeof aObject.next == "function" &&
++            str.indexOf("[object Generator") == 0) {
++          return true;
++        }
++      }
++      catch (ex) {
++        // window.history.next throws in the typeof check above.
++        return false;
++      }
++    }
++
++    return false;
++  },
++};
++
++//////////////////////////////////////////////////////////////////////////
++// JS Completer
++//////////////////////////////////////////////////////////////////////////
++
++var JSPropertyProvider = (function(WCU) {
++const STATE_NORMAL = 0;
++const STATE_QUOTE = 2;
++const STATE_DQUOTE = 3;
++
++const OPEN_BODY = "{[(".split("");
++const CLOSE_BODY = "}])".split("");
++const OPEN_CLOSE_BODY = {
++  "{": "}",
++  "[": "]",
++  "(": ")",
++};
++
++/**
++ * Analyses a given string to find the last statement that is interesting for
++ * later completion.
++ *
++ * @param   string aStr
++ *          A string to analyse.
++ *
++ * @returns object
++ *          If there was an error in the string detected, then a object like
++ *
++ *            { err: "ErrorMesssage" }
++ *
++ *          is returned, otherwise a object like
++ *
++ *            {
++ *              state: STATE_NORMAL|STATE_QUOTE|STATE_DQUOTE,
++ *              startPos: index of where the last statement begins
++ *            }
++ */
++function findCompletionBeginning(aStr)
++{
++  let bodyStack = [];
++
++  let state = STATE_NORMAL;
++  let start = 0;
++  let c;
++  for (let i = 0; i < aStr.length; i++) {
++    c = aStr[i];
++
++    switch (state) {
++      // Normal JS state.
++      case STATE_NORMAL:
++        if (c == '"') {
++          state = STATE_DQUOTE;
++        }
++        else if (c == "'") {
++          state = STATE_QUOTE;
++        }
++        else if (c == ";") {
++          start = i + 1;
++        }
++        else if (c == " ") {
++          start = i + 1;
++        }
++        else if (OPEN_BODY.indexOf(c) != -1) {
++          bodyStack.push({
++            token: c,
++            start: start
++          });
++          start = i + 1;
++        }
++        else if (CLOSE_BODY.indexOf(c) != -1) {
++          var last = bodyStack.pop();
++          if (!last || OPEN_CLOSE_BODY[last.token] != c) {
++            return {
++              err: "syntax error"
++            };
++          }
++          if (c == "}") {
++            start = i + 1;
++          }
++          else {
++            start = last.start;
++          }
++        }
++        break;
++
++      // Double quote state > " <
++      case STATE_DQUOTE:
++        if (c == "\\") {
++          i ++;
++        }
++        else if (c == "\n") {
++          return {
++            err: "unterminated string literal"
++          };
++        }
++        else if (c == '"') {
++          state = STATE_NORMAL;
++        }
++        break;
++
++      // Single quoate state > ' <
++      case STATE_QUOTE:
++        if (c == "\\") {
++          i ++;
++        }
++        else if (c == "\n") {
++          return {
++            err: "unterminated string literal"
++          };
++          return;
++        }
++        else if (c == "'") {
++          state = STATE_NORMAL;
++        }
++        break;
++    }
++  }
++
++  return {
++    state: state,
++    startPos: start
++  };
++}
++
++/**
++ * Provides a list of properties, that are possible matches based on the passed
++ * scope and inputValue.
++ *
++ * @param object aScope
++ *        Scope to use for the completion.
++ *
++ * @param string aInputValue
++ *        Value that should be completed.
++ *
++ * @returns null or object
++ *          If no completion valued could be computed, null is returned,
++ *          otherwise a object with the following form is returned:
++ *            {
++ *              matches: [ string, string, string ],
++ *              matchProp: Last part of the inputValue that was used to find
++ *                         the matches-strings.
++ *            }
++ */
++function JSPropertyProvider(aScope, aInputValue)
++{
++  let obj = WCU.unwrap(aScope);
++
++  // Analyse the aInputValue and find the beginning of the last part that
++  // should be completed.
++  let beginning = findCompletionBeginning(aInputValue);
++
++  // There was an error analysing the string.
++  if (beginning.err) {
++    return null;
++  }
++
++  // If the current state is not STATE_NORMAL, then we are inside of an string
++  // which means that no completion is possible.
++  if (beginning.state != STATE_NORMAL) {
++    return null;
++  }
++
++  let completionPart = aInputValue.substring(beginning.startPos);
++
++  // Don't complete on just an empty string.
++  if (completionPart.trim() == "") {
++    return null;
++  }
++
++  let properties = completionPart.split(".");
++  let matchProp;
++  if (properties.length > 1) {
++    matchProp = properties.pop().trimLeft();
++    for (let i = 0; i < properties.length; i++) {
++      let prop = properties[i].trim();
++
++      // If obj is undefined or null, then there is no chance to run completion
++      // on it. Exit here.
++      if (typeof obj === "undefined" || obj === null) {
++        return null;
++      }
++
++      // Check if prop is a getter function on obj. Functions can change other
++      // stuff so we can't execute them to get the next object. Stop here.
++      if (WCU.isNonNativeGetter(obj, prop)) {
++        return null;
++      }
++      try {
++        obj = obj[prop];
++      }
++      catch (ex) {
++        return null;
++      }
++    }
++  }
++  else {
++    matchProp = properties[0].trimLeft();
++  }
++
++  // If obj is undefined or null, then there is no chance to run
++  // completion on it. Exit here.
++  if (typeof obj === "undefined" || obj === null) {
++    return null;
++  }
++
++  // Skip Iterators and Generators.
++  if (WCU.isIteratorOrGenerator(obj)) {
++    return null;
++  }
++
++  let matches = [];
++  for (let prop in obj) {
++    if (prop.indexOf(matchProp) == 0) {
++      matches.push(prop);
++    }
++  }
++
++  return {
++    matchProp: matchProp,
++    matches: matches.sort(),
++  };
++}
++
++return JSPropertyProvider;
++})(WebConsoleUtils);

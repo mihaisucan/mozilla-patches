@@ -1,0 +1,159 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1323452120 -7200
+# Node ID faabc8af800ea6146728c61fb784c6147e0881c7
+# Parent  41356e7714e23df1348ab1b3b30e23bae1891ada
+Bug 695032 - [GTK/X11] selecting text in scratchpad doesn't place it on the X primary selection
+
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -37,16 +37,21 @@
+  * ***** END LICENSE BLOCK *****/
+ 
+ "use strict";
+ 
+ const Cu = Components.utils;
+ const Ci = Components.interfaces;
+ 
+ Cu.import("resource://gre/modules/Services.jsm");
++Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++
++XPCOMUtils.defineLazyServiceGetter(this, "clipboardHelper",
++                                   "@mozilla.org/widget/clipboardhelper;1",
++                                   "nsIClipboardHelper");
+ 
+ const ORION_SCRIPT = "chrome://browser/content/orion.js";
+ const ORION_IFRAME = "data:text/html;charset=utf8,<!DOCTYPE html>" +
+   "<html style='height:100%' dir='ltr'>" +
+   "<body style='height:100%;margin:0;overflow:hidden'>" +
+   "<div id='editor' style='height:100%'></div>" +
+   "</body></html>";
+ 
+@@ -91,16 +96,18 @@ var EXPORTED_SYMBOLS = ["SourceEditor"];
+  */
+ function SourceEditor() {
+   // Update the SourceEditor defaults from user preferences.
+ 
+   SourceEditor.DEFAULTS.TAB_SIZE =
+     Services.prefs.getIntPref(SourceEditor.PREFS.TAB_SIZE);
+   SourceEditor.DEFAULTS.EXPAND_TAB =
+     Services.prefs.getBoolPref(SourceEditor.PREFS.EXPAND_TAB);
++
++  this._onOrionSelection = this._onOrionSelection.bind(this);
+ }
+ 
+ SourceEditor.prototype = {
+   _view: null,
+   _iframe: null,
+   _model: null,
+   _undoStack: null,
+   _linesRuler: null,
+@@ -210,16 +217,19 @@ SourceEditor.prototype = {
+     });
+ 
+     let onOrionLoad = function() {
+       this._view.removeEventListener("Load", onOrionLoad);
+       this._onOrionLoad();
+     }.bind(this);
+ 
+     this._view.addEventListener("Load", onOrionLoad);
++    if (Services.appinfo.OS == "Linux") {
++      this._view.addEventListener("Selection", this._onOrionSelection);
++    }
+ 
+     let KeyBinding = window.require("orion/textview/keyBinding").KeyBinding;
+     let TextDND = window.require("orion/textview/textDND").TextDND;
+     let LineNumberRuler = window.require("orion/textview/rulers").LineNumberRuler;
+     let UndoStack = window.require("orion/textview/undoStack").UndoStack;
+     let AnnotationModel = window.require("orion/textview/annotations").AnnotationModel;
+ 
+     this._annotationModel = new AnnotationModel(this._model);
+@@ -407,16 +417,34 @@ SourceEditor.prototype = {
+     }
+ 
+     this.setText(this.getLineDelimiter() + prefix, selection.start,
+                  selection.end);
+     return true;
+   },
+ 
+   /**
++   *
++   * Orion Selection event handler for Linux users. This allows one to select
++   * text and have it copied into the X11 PRIMARY.
++   *
++   * @private
++   */
++  _onOrionSelection: function SE__onOrionSelection(aEvent)
++  {
++    let text = this.getText(aEvent.newValue.start, aEvent.newValue.end);
++    if (!text) {
++      return;
++    }
++
++    clipboardHelper.copyStringToClipboard(text,
++                                          Ci.nsIClipboard.kSelectionClipboard);
++  },
++
++  /**
+    * Get the editor element.
+    *
+    * @return nsIDOMElement
+    *         In this implementation a xul:iframe holds the editor.
+    */
+   get editorElement() {
+     return this._iframe;
+   },
+@@ -812,16 +840,20 @@ SourceEditor.prototype = {
+     return this._view.getOptions("readonly");
+   },
+ 
+   /**
+    * Destroy/uninitialize the editor.
+    */
+   destroy: function SE_destroy()
+   {
++    if (Services.appinfo.OS == "Linux") {
++      this._view.removeEventListener("Selection", this._onOrionSelection);
++    }
++
+     this._view.destroy();
+     this.parentElement.removeChild(this._iframe);
+     this.parentElement = null;
+     this._iframeWindow = null;
+     this._iframe = null;
+     this._undoStack = null;
+     this._styler = null;
+     this._linesRuler = null;
+diff --git a/browser/devtools/sourceeditor/test/browser_bug695035_middle_click_paste.js b/browser/devtools/sourceeditor/test/browser_bug695035_middle_click_paste.js
+--- a/browser/devtools/sourceeditor/test/browser_bug695035_middle_click_paste.js
++++ b/browser/devtools/sourceeditor/test/browser_bug695035_middle_click_paste.js
+@@ -62,17 +62,27 @@ function editorLoaded()
+     EventUtils.synthesizeMouse(editor.editorElement, 3, 3, {button: 1}, testWin);
+   };
+ 
+   let onPaste = function() {
+     editor.removeEventListener(SourceEditor.EVENTS.TEXT_CHANGED, onPaste);
+ 
+     is(editor.getText(), expectedString + initialText, "middle-click paste works");
+ 
+-    executeSoon(testEnd);
++    executeSoon(doTestBug695032);
++  };
++
++  let doTestBug695032 = function() {
++    info("test for bug 695032 - editor selection should be placed in the X11 primary selection buffer");
++
++    editor.setText("foobarBug695032 test me, test me!");
++
++    waitForSelection("foobarBug695032",  function() {
++      editor.setSelection(0, 15);
++    }, testEnd, testEnd);
+   };
+ 
+   waitForSelection(expectedString, doCopy, onCopy, testEnd);
+ }
+ 
+ function testEnd()
+ {
+   editor.destroy();

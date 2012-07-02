@@ -1,0 +1,151 @@
+# HG changeset patch
+# Parent 7f35366675fcb16dc6d1106258042964ec43dff8
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1310495539 -10800
+
+Bug 670896 - Add inner window ID and timestamp to nsIScriptError2
+
+diff --git a/js/src/xpconnect/idl/nsIScriptError.idl b/js/src/xpconnect/idl/nsIScriptError.idl
+--- a/js/src/xpconnect/idl/nsIScriptError.idl
++++ b/js/src/xpconnect/idl/nsIScriptError.idl
+@@ -91,22 +91,30 @@ interface nsIScriptError : nsIConsoleMes
+ 
+     AUTF8String toString();
+ };
+ 
+ /**
+  * An interface that nsIScriptError objects can implement to allow
+  * them to be initialized with a window id.
+  */
+-[scriptable, uuid(35cd0f6a-f5bb-497a-ba83-9c8d089b52cd)]
++[scriptable, uuid(4472646b-c928-4d76-9e7c-6b91da7f24cc)]
+ interface nsIScriptError2 : nsISupports {
+     /* Get the window id this was initialized with.  Zero will be
+        returned if init() was used instead of initWithWindowId(). */
+     readonly attribute unsigned long long outerWindowID;
+ 
++    /* Elapsed time, in milliseconds, from a platform-specific zero time to the
++       time the message was created. */
++    readonly attribute PRUint64 timeStamp;
++
++    /* Get the inner window id this was initialized with.  Zero will be
++       returned if init() was used instead of initWithWindowId(). */
++    readonly attribute unsigned long long innerWindowID;
++
+     /* This should be called instead of nsIScriptError.init to
+        initialize with a window id.  The window id should be for the
+        outer window associated with this error. */
+     void initWithWindowID(in wstring message,
+                           in wstring sourceName,
+                           in wstring sourceLine,
+                           in PRUint32 lineNumber,
+                           in PRUint32 columnNumber,
+diff --git a/js/src/xpconnect/src/nsScriptError.cpp b/js/src/xpconnect/src/nsScriptError.cpp
+--- a/js/src/xpconnect/src/nsScriptError.cpp
++++ b/js/src/xpconnect/src/nsScriptError.cpp
+@@ -38,29 +38,32 @@
+  * ***** END LICENSE BLOCK ***** */
+ 
+ /*
+  * nsIScriptError implementation.  Defined here, lacking a JS-specific
+  * place to put XPCOM things.
+  */
+ 
+ #include "xpcprivate.h"
++#include "nsGlobalWindow.h"
+ 
+ NS_IMPL_THREADSAFE_ISUPPORTS3(nsScriptError, nsIConsoleMessage, nsIScriptError,
+                               nsIScriptError2)
+ 
+ nsScriptError::nsScriptError()
+     :  mMessage(),
+        mSourceName(),
+        mLineNumber(0),
+        mSourceLine(),
+        mColumnNumber(0),
+        mFlags(0),
+        mCategory(),
+-       mWindowID(0)
++       mWindowID(0),
++       mTimeStamp(0),
++       mInnerWindowID(0)
+ {
+ }
+ 
+ nsScriptError::~nsScriptError() {}
+ 
+ // nsIConsoleMessage methods
+ NS_IMETHODIMP
+ nsScriptError::GetMessageMoz(PRUnichar **result) {
+@@ -147,16 +150,26 @@ nsScriptError::InitWithWindowID(const PR
+     mMessage.Assign(message);
+     mSourceName.Assign(sourceName);
+     mLineNumber = lineNumber;
+     mSourceLine.Assign(sourceLine);
+     mColumnNumber = columnNumber;
+     mFlags = flags;
+     mCategory.Assign(category);
+     mWindowID = aWindowID;
++    mTimeStamp = PR_Now();
++
++    if(aWindowID) {
++        nsGlobalWindow* window = nsGlobalWindow::GetOuterWindowWithId(aWindowID);
++        if(window) {
++            nsGlobalWindow* inner = window->GetCurrentInnerWindowInternal();
++            if(inner)
++                mInnerWindowID = inner->WindowID();
++        }
++    }
+ 
+     return NS_OK;
+ }
+ 
+ NS_IMETHODIMP
+ nsScriptError::ToString(nsACString& /*UTF8*/ aResult)
+ {
+     static const char format0[] =
+@@ -218,8 +231,22 @@ nsScriptError::ToString(nsACString& /*UT
+ }
+ 
+ NS_IMETHODIMP
+ nsScriptError::GetOuterWindowID(PRUint64 *aWindowID)
+ {
+     *aWindowID = mWindowID;
+     return NS_OK;
+ }
++
++NS_IMETHODIMP
++nsScriptError::GetTimeStamp(PRUint64 *aTimeStamp)
++{
++    *aTimeStamp = mTimeStamp;
++    return NS_OK;
++}
++
++NS_IMETHODIMP
++nsScriptError::GetInnerWindowID(PRUint64 *aInnerWindowID)
++{
++    *aInnerWindowID = mInnerWindowID;
++    return NS_OK;
++}
+diff --git a/js/src/xpconnect/src/xpcprivate.h b/js/src/xpconnect/src/xpcprivate.h
+--- a/js/src/xpconnect/src/xpcprivate.h
++++ b/js/src/xpconnect/src/xpcprivate.h
+@@ -3904,16 +3904,18 @@ private:
+     nsString mMessage;
+     nsString mSourceName;
+     PRUint32 mLineNumber;
+     nsString mSourceLine;
+     PRUint32 mColumnNumber;
+     PRUint32 mFlags;
+     nsCString mCategory;
+     PRUint64 mWindowID;
++    PRUint64 mTimeStamp;
++    PRUint64 mInnerWindowID;
+ };
+ 
+ /***************************************************************************/
+ 
+ class NS_STACK_CLASS AutoJSErrorAndExceptionEater
+ {
+ public:
+     AutoJSErrorAndExceptionEater(JSContext* aCX

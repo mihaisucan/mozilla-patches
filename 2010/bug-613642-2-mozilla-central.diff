@@ -1,0 +1,384 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1014,32 +1014,40 @@ function pruneConsoleOutputIfNecessary(a
+   let logLimit;
+   try {
+     let prefBranch = Services.prefs.getBranch("devtools.hud.");
+     logLimit = prefBranch.getIntPref("loglimit");
+   } catch (e) {
+     logLimit = DEFAULT_LOG_LIMIT;
+   }
+ 
+-  let messageNodes = aConsoleNode.querySelectorAll(".hud-msg-node");
++  let oldScrollHeight = aConsoleNode.scrollHeight;
++  let scrolledToBottom = aConsoleNode.lastScrollTop == aConsoleNode.scrollTop;
++
++  let messageNodes = aConsoleNode.querySelectorAll(
++                     ".hud-msg-node, .jsterm-input-line, .jsterm-output-line");
+   for (let i = 0; i < messageNodes.length - logLimit; i++) {
+     let messageNode = messageNodes[i];
+     let groupNode = messageNode.parentNode;
+     if (!groupNode.classList.contains("hud-group")) {
+       throw new Error("pruneConsoleOutputIfNecessary: message node not in a " +
+                       "HUD group");
+     }
+ 
+     groupNode.removeChild(messageNode);
+ 
+     // If there are no more children, then remove the group itself.
+-    if (!groupNode.querySelector(".hud-msg-node")) {
++    if (!groupNode.hasChildNodes()) {
+       groupNode.parentNode.removeChild(groupNode);
+     }
+   }
++
++  if (!scrolledToBottom && oldScrollHeight != aConsoleNode.scrollHeight) {
++    aConsoleNode.scrollTop -= oldScrollHeight - aConsoleNode.scrollHeight;
++  }
+ }
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ //// The HUD service
+ 
+ function HUD_SERVICE()
+ {
+   // TODO: provide mixins for FENNEC: bug 568621
+@@ -1419,25 +1427,24 @@ HUD_SERVICE.prototype =
+    * @param function aCallback
+    *        The callback function you want to execute.
+    * @returns void
+    */
+   maintainScrollPosition:
+   function HS_maintainScrollPosition(aOutputNode, aCallback)
+   {
+     let oldScrollTop = aOutputNode.scrollTop;
+-    let scrolledToBottom = oldScrollTop +
+-      aOutputNode.clientHeight == aOutputNode.scrollHeight;
+ 
+     aCallback.call(this);
+ 
+     // Scroll to the bottom if the scroll was at the bottom.
+-    if (scrolledToBottom) {
++    if (aOutputNode.lastScrollTop == oldScrollTop) {
+       aOutputNode.scrollTop = aOutputNode.scrollHeight -
+         aOutputNode.clientHeight;
++      aOutputNode.lastScrollTop = aOutputNode.scrollTop;
+     }
+     else {
+       // Remember the scroll position.
+       aOutputNode.scrollTop = oldScrollTop;
+     }
+   },
+ 
+   /**
+@@ -1538,17 +1545,17 @@ HUD_SERVICE.prototype =
+       hidden = true;
+     }
+ 
+     // Filter by the message type.
+     let classes = aNewNode.classList;
+     let msgType = null;
+     for (let i = 0; i < classes.length; i++) {
+       let klass = classes.item(i);
+-      if (klass !== "hud-msg-node" && klass.indexOf("hud-") === 0) {
++      if (klass !== "hud-msg-node" && klass !== "hud-clickable" && klass.indexOf("hud-") === 0) {
+         msgType = klass.substring(4);   // Strip off "hud-".
+         break;
+       }
+     }
+     if (msgType !== null && !this.getFilterState(aHUDId, msgType)) {
+       // The node is filtered by type.
+       aNewNode.classList.add("hud-filtered-by-type");
+       hidden = true;
+@@ -3098,29 +3105,44 @@ HeadsUpDisplay.prototype = {
+ 
+     this.outputNode = this.makeXULNode("scrollbox");
+     this.outputNode.setAttribute("class", "hud-output-node");
+     this.outputNode.setAttribute("flex", "1");
+     this.outputNode.setAttribute("orient", "vertical");
+     this.outputNode.setAttribute("context", this.hudId + "-output-contextmenu");
+     this.outputNode.setAttribute("style", "direction: ltr;");
+ 
++    // Last scrollTop that was programmatically updated.
++    this.outputNode.lastScrollTop = 0;
++    this.outputNode.addEventListener("scroll", function() {
++      let scrolledToBottom = self.outputNode.scrollTop +
++                             self.outputNode.clientHeight >=
++                             self.outputNode.scrollHeight;
++      if (scrolledToBottom) {
++        self.outputNode.lastScrollTop = self.outputNode.scrollTop;
++      }
++    }, false);
++
+     this.outputNode.addEventListener("DOMNodeInserted", function(ev) {
+       // DOMNodeInserted is also called when the output node is being *itself*
+       // (re)inserted into the DOM (which happens during a search, for
+       // example). For this reason, we need to ensure that we only check
+       // message nodes.
+       let node = ev.target;
+       if (node.nodeType === node.ELEMENT_NODE &&
+-          node.classList.contains("hud-msg-node")) {
++          (node.classList.contains("hud-msg-node") ||
++           node.classList.contains("jsterm-input-line") ||
++           node.classList.contains("jsterm-output-line"))) {
+         let hidden = HUDService.
+           adjustVisibilityForNewlyInsertedNode(self.hudId, ev.target);
+ 
+-        if (!hidden) {
++        if (!hidden &&
++            self.outputNode.lastScrollTop == self.outputNode.scrollTop) {
+           ConsoleUtils.scrollToVisible(node);
++          self.outputNode.lastScrollTop = self.outputNode.scrollTop;
+         }
+       }
+     }, false);
+ 
+     this.filterSpacer = this.makeXULNode("spacer");
+     this.filterSpacer.setAttribute("flex", "1");
+ 
+     this.filterBox = this.makeXULNode("textbox");
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -104,16 +104,19 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_601909_remember_height.js \
+ 	browser_webconsole_bug_613013_console_api_iframe.js \
+ 	browser_webconsole_bug_597756_reopen_closed_tab.js \
+ 	browser_webconsole_bug_600183_charset.js \
+ 	browser_webconsole_bug_601177_log_levels.js \
+ 	browser_webconsole_bug_587615_lastTimestamp.js \
+ 	browser_webconsole_bug_597460_filter_scroll.js \
++	browser_webconsole_bug_613642_maintain_scroll.js \
++	browser_webconsole_bug_613642_prune_scroll.js \
++	browser_webconsole_bug_614793_jsterm_scroll.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597460_filter_scroll.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597460_filter_scroll.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597460_filter_scroll.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597460_filter_scroll.js
+@@ -41,19 +41,25 @@ function tabReload(aEvent) {
+   ok(msgNode, "found network message");
+   ok(msgNode.classList.contains("hud-filtered-by-type"),
+     "network message is filtered by type");
+   ok(msgNode.classList.contains("hud-filtered-by-string"),
+     "network message is filtered by string");
+ 
+   ok(hud.outputNode.scrollTop > 0, "scroll location is not at the top");
+ 
+-  is(hud.outputNode.scrollTop,
+-    hud.outputNode.scrollHeight - hud.outputNode.clientHeight,
+-    "scroll location is correct");
++  let logNode = hud.outputNode.querySelector(".hud-log");
++  ok(logNode, "found a console.log() message");
++  ok(logNode.clientHeight, "message height is fine");
++
++  // Make sure the Web Console output is scrolled as near as possible to the
++  // bottom.
++  ok(hud.outputNode.scrollTop + hud.outputNode.clientHeight >=
++     hud.outputNode.scrollHeight - logNode.clientHeight*2,
++     "scroll location is correct");
+ 
+   executeSoon(finishTest);
+ }
+ 
+ function test() {
+   addTab(TEST_URI);
+   browser.addEventListener("load", tabLoad, true);
+ }
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613642_maintain_scroll.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613642_maintain_scroll.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613642_maintain_scroll.js
+@@ -0,0 +1,63 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ */
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let hud = HUDService.hudReferences[hudId];
++  let outputNode = hud.outputNode;
++
++  for (let i = 0; i < 150; i++) {
++    hud.console.log("test message " + i);
++  }
++
++  let oldScrollTop = outputNode.scrollTop;
++  ok(oldScrollTop > 0, "scroll location is not at the top");
++
++  // scroll to the first node
++  let firstNode = outputNode.querySelector(".hud-group > label");
++  ok(firstNode, "found the first message");
++  firstNode.focus();
++
++  EventUtils.synthesizeKey("VK_HOME", {});
++
++  is(outputNode.scrollTop, 0, "scroll location updated (moved to top)");
++
++  executeSoon(function() {
++    // add a message and make sure scroll doesn't change
++    hud.console.log("test message 150");
++
++    is(outputNode.scrollTop, 0, "scroll location is still at the top");
++
++    // scroll back to the bottom
++    let lastNode = outputNode.querySelector(".hud-group:last-child > label:last-child");
++    ok(lastNode, "found the last message");
++
++    lastNode.focus();
++    EventUtils.synthesizeKey("VK_END", {});
++
++    executeSoon(function() {
++      oldScrollTop = outputNode.scrollTop;
++
++      hud.console.log("test message 151");
++
++      isnot(outputNode.scrollTop, oldScrollTop, "scroll location updated (moved to bottom)");
++
++      finishTest();
++    });
++  });
++}
++
++function test() {
++  addTab("data:text/html,Web Console test for bug 613642: remember scroll location");
++  browser.addEventListener("load", tabLoad, true);
++}
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613642_prune_scroll.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613642_prune_scroll.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613642_prune_scroll.js
+@@ -0,0 +1,65 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ */
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let hud = HUDService.hudReferences[hudId];
++  let outputNode = hud.outputNode;
++  let oldPref = 200;
++  try {
++    oldPref = Services.prefs.getIntPref("devtools.hud.loglimit");
++  }
++  catch (ex) { }
++
++  Services.prefs.setIntPref("devtools.hud.loglimit", 140);
++  let boxObject = outputNode.boxObject.QueryInterface(Ci.nsIScrollBoxObject);
++
++  for (let i = 0; i < 150; i++) {
++    hud.console.log("test message " + i);
++  }
++
++  let oldScrollTop = outputNode.scrollTop;
++  ok(oldScrollTop > 0, "scroll location is not at the top");
++
++  let firstNode = outputNode.querySelector(".hud-group > label");
++  ok(firstNode, "found the first message");
++
++  let msgNode = outputNode.querySelectorAll(".hud-group > label")[80];
++  ok(msgNode, "found the 80th message");
++
++  // scroll to the middle message node
++  boxObject.ensureElementIsVisible(msgNode);
++
++  isnot(outputNode.scrollTop, oldScrollTop, "scroll location updated (scrolled to message)");
++
++  oldScrollTop = outputNode.scrollTop;
++
++  // add a message
++  hud.console.log("hello world");
++
++  // Scroll location needs to change, because one message is also removed, and
++  // we need to scroll a bit towards the top, to keep the current view in sync.
++  isnot(outputNode.scrollTop, oldScrollTop,
++        "scroll location updated (added a message)");
++
++  isnot(outputNode.querySelector(".hud-group > label"), firstNode,
++     "first message removed");
++
++  Services.prefs.setIntPref("devtools.hud.loglimit", oldPref);
++  finishTest();
++}
++
++function test() {
++  addTab("data:text/html,Web Console test for bug 613642: maintain scroll with pruning of old messages");
++  browser.addEventListener("load", tabLoad, true);
++}
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_614793_jsterm_scroll.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_614793_jsterm_scroll.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_614793_jsterm_scroll.js
+@@ -0,0 +1,46 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ */
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let hud = HUDService.hudReferences[hudId];
++  let outputNode = hud.outputNode;
++  let boxObject = outputNode.boxObject.QueryInterface(Ci.nsIScrollBoxObject);
++
++  for (let i = 0; i < 150; i++) {
++    hud.console.log("test message " + i);
++  }
++
++  let oldScrollTop = outputNode.scrollTop;
++  ok(oldScrollTop > 0, "scroll location is not at the top");
++
++  hud.jsterm.execute("'hello world'");
++
++  isnot(outputNode.scrollTop, oldScrollTop, "scroll location updated");
++
++  let lastNode = outputNode.querySelector(".hud-group:last-child > label:last-child");
++  ok(lastNode, "found the last message");
++
++  oldScrollTop = outputNode.scrollTop;
++  boxObject.ensureElementIsVisible(lastNode);
++
++  is(outputNode.scrollTop, oldScrollTop, "scroll location is the same");
++
++  finishTest();
++}
++
++function test() {
++  addTab("data:text/html,Web Console test for bug 614793: jsterm result scroll");
++  browser.addEventListener("load", tabLoad, true);
++}
++

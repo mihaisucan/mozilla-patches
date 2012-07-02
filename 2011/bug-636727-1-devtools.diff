@@ -1,0 +1,347 @@
+# HG changeset patch
+# Date 1306843222 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Parent 680c5a488f6d0c1e59ed08a8ac248dce22c40c9e
+Bug 636727 - Add a source editor to Scratchpad
+
+diff --git a/browser/base/content/scratchpad.js b/browser/base/content/scratchpad.js
+--- a/browser/base/content/scratchpad.js
++++ b/browser/base/content/scratchpad.js
+@@ -51,16 +51,17 @@
+ const Cc = Components.classes;
+ const Ci = Components.interfaces;
+ const Cu = Components.utils;
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource://gre/modules/NetUtil.jsm");
+ Cu.import("resource:///modules/PropertyPanel.jsm");
++Cu.import("resource:///modules/source-editor.jsm");
+ 
+ const SCRATCHPAD_CONTEXT_CONTENT = 1;
+ const SCRATCHPAD_CONTEXT_BROWSER = 2;
+ const SCRATCHPAD_WINDOW_URL = "chrome://browser/content/scratchpad.xul";
+ const SCRATCHPAD_L10N = "chrome://browser/locale/scratchpad.properties";
+ const SCRATCHPAD_WINDOW_FEATURES = "chrome,titlebar,toolbar,centerscreen,resizable,dialog=no";
+ const DEVTOOLS_CHROME_ENABLED = "devtools.chrome.enabled";
+ 
+@@ -88,22 +89,35 @@ var Scratchpad = {
+ 
+   /**
+    * Retrieve the xul:statusbarpanel DOM element. The status bar tells the
+    * current code execution context.
+    */
+   get statusbarStatus() document.getElementById("scratchpad-status"),
+ 
+   /**
+-   * Get the selected text from the textbox.
++   * Get the selected text from the editor.
++   *
++   * @return string
++   *         The selected text.
+    */
+-  get selectedText()
++  getSelectedText: function SP_getSelectedText()
+   {
+-    return this.textbox.value.substring(this.textbox.selectionStart,
+-                                        this.textbox.selectionEnd);
++    return this.editor.getSelectedText();
++  },
++
++  /**
++   * Get the whole text from the editor.
++   *
++   * @return string
++   *         The text.
++   */
++  getText: function SP_getText()
++  {
++    return this.editor.getText();
+   },
+ 
+   /**
+    * Get the most recent chrome window of type navigator:browser.
+    */
+   get browserWindow() Services.wm.getMostRecentWindow("navigator:browser"),
+ 
+   /**
+@@ -193,31 +207,30 @@ var Scratchpad = {
+     return this._chromeSandbox;
+   },
+ 
+   /**
+    * Drop the textbox selection.
+    */
+   deselect: function SP_deselect()
+   {
+-    this.textbox.selectionEnd = this.textbox.selectionStart;
++    this.editor.dropSelection();
+   },
+ 
+   /**
+    * Select a specific range in the Scratchpad xul:textbox.
+    *
+    * @param number aStart
+    *        Selection range start.
+    * @param number aEnd
+    *        Selection range end.
+    */
+   selectRange: function SP_selectRange(aStart, aEnd)
+   {
+-    this.textbox.selectionStart = aStart;
+-    this.textbox.selectionEnd = aEnd;
++    this.editor.setSelection(aStart, aEnd);
+   },
+ 
+   /**
+    * Evaluate a string in the active tab content window.
+    *
+    * @param string aString
+    *        The script you want evaluated.
+    * @return mixed
+@@ -290,17 +303,17 @@ var Scratchpad = {
+   },
+ 
+   /**
+    * Execute the selected text (if any) or the entire textbox content in the
+    * current context.
+    */
+   run: function SP_run()
+   {
+-    let selection = this.selectedText || this.textbox.value;
++    let selection = this.getSelectedText() || this.getText();
+     let result = this.evalForContext(selection);
+     this.deselect();
+     return [selection, result];
+   },
+ 
+   /**
+    * Execute the selected text (if any) or the entire textbox content in the
+    * current context. The resulting object is opened up in the Property Panel
+@@ -318,34 +331,34 @@ var Scratchpad = {
+   /**
+    * Execute the selected text (if any) or the entire textbox content in the
+    * current context. The evaluation result is inserted into the textbox after
+    * the selected text, or at the end of the textbox value if there is no
+    * selected text.
+    */
+   display: function SP_display()
+   {
+-    let selectionStart = this.textbox.selectionStart;
+-    let selectionEnd = this.textbox.selectionEnd;
+-    if (selectionStart == selectionEnd) {
+-      selectionEnd = this.textbox.value.length;
++    let text = this.getText();
++    let selection = this.editor.getSelection();
++    if (selection.start == selection.end) {
++      selection.end = text.length;
+     }
+ 
+-    let [selection, result] = this.run();
++    let [, result] = this.run();
+     if (!result) {
+       return;
+     }
+ 
+-    let firstPiece = this.textbox.value.slice(0, selectionEnd);
+-    let lastPiece = this.textbox.value.
+-                    slice(selectionEnd, this.textbox.value.length);
++    let firstPiece = text.slice(0, selection.end);
++    let lastPiece = text.slice(selection.end, text.length);
+ 
+     let newComment = "/*\n" + result.toString() + "\n*/";
+ 
+-    this.textbox.value = firstPiece + newComment + lastPiece;
++    // FIXME: We need an API to insertText().
++    this.editor.setText(firstPiece + newComment + lastPiece);
+ 
+     // Select the added comment.
+     this.selectRange(firstPiece.length, firstPiece.length + newComment.length);
+   },
+ 
+   /**
+    * Open the Property Panel to inspect the given object.
+    *
+@@ -439,17 +452,17 @@ var Scratchpad = {
+     let fs = Cc["@mozilla.org/network/file-output-stream;1"].
+              createInstance(Ci.nsIFileOutputStream);
+     let modeFlags = 0x02 | 0x08 | 0x20;
+     fs.init(aFile, modeFlags, 0644, fs.DEFER_OPEN);
+ 
+     let converter = Cc["@mozilla.org/intl/scriptableunicodeconverter"].
+                     createInstance(Ci.nsIScriptableUnicodeConverter);
+     converter.charset = "UTF-8";
+-    let input = converter.convertToInputStream(this.textbox.value);
++    let input = converter.convertToInputStream(this.getText());
+ 
+     let self = this;
+     NetUtil.asyncCopy(input, fs, function(aStatus) {
+       if (!aSilentError && !Components.isSuccessCode(aStatus)) {
+         window.alert(self.strings.GetStringFromName("saveFile.failed"));
+       }
+ 
+       if (aCallback) {
+@@ -480,17 +493,17 @@ var Scratchpad = {
+ 
+     let self = this;
+     NetUtil.asyncFetch(channel, function(aInputStream, aStatus) {
+       let content = null;
+ 
+       if (Components.isSuccessCode(aStatus)) {
+         content = NetUtil.readInputStreamToString(aInputStream,
+                                                   aInputStream.available());
+-        self.textbox.value = content;
++        self.editor.setText(content);
+       }
+       else if (!aSilentError) {
+         window.alert(self.strings.GetStringFromName("openFile.failed"));
+       }
+ 
+       if (aCallback) {
+         aCallback.call(self, aStatus, content);
+       }
+@@ -608,33 +621,84 @@ var Scratchpad = {
+   getWindowId: function SP_getWindowId(aWindow)
+   {
+     return aWindow.QueryInterface(Ci.nsIInterfaceRequestor).
+            getInterface(Ci.nsIDOMWindowUtils).outerWindowID;
+   },
+ 
+   /**
+    * The Scratchpad window DOMContentLoaded event handler.
++   *
++   * @param nsIDOMEvent aEvent
+    */
+-  onLoad: function SP_onLoad()
++  onLoad: function SP_onLoad(aEvent)
+   {
++    removeEventListener(aEvent.type, SP_onLoad, false);
++
+     let chromeContextMenu = document.getElementById("sp-menu-browser");
+     let errorConsoleMenu = document.getElementById("sp-menu-errorConsole");
+     let errorConsoleCommand = document.getElementById("sp-cmd-errorConsole");
+     let chromeContextCommand = document.getElementById("sp-cmd-browserContext");
+ 
+     let chrome = Services.prefs.getBoolPref(DEVTOOLS_CHROME_ENABLED);
+     if (chrome) {
+       chromeContextMenu.removeAttribute("hidden");
+       errorConsoleMenu.removeAttribute("hidden");
+       errorConsoleCommand.removeAttribute("disabled");
+       chromeContextCommand.removeAttribute("disabled");
+     }
+-    this.insertIntro();
++
++    Scratchpad.insertIntro();
++
++    Scratchpad.editor = new SourceEditor();
++
++    let config = {
++      mode: SourceEditor.MODES.JAVASCRIPT,
++      theme: SourceEditor.THEMES.TEXTMATE,
++      showLineNumbers: true,
++      keys: {
++        undo: {code: "Z".charCodeAt(0), accel: true},
++        redo: {code: "Z".charCodeAt(0), accel: true, shift: true},
++        inspect: {code: "I".charCodeAt(0), accel: true,
++                  callback: Scratchpad.inspect.bind(Scratchpad)},
++      },
++    };
++
++    Scratchpad.editor.init(Scratchpad.textbox, config,
++                           Scratchpad.onEditorLoad.bind(Scratchpad));
++  },
++
++  onEditorLoad: function SP_onEditorLoad() {
++    this.editor.addEventListener("ContextMenu", this.onContextMenu, this);
++  },
++
++  onContextMenu: function SP_onContextMenu(aEvent) {
++    let menu = document.getElementById("scratchpad-text-popup");
++    if (menu.state != "closed") {
++      return;
++    }
++
++    menu.openPopupAtScreen(aEvent.screenX, aEvent.screenY, true);
++  },
++
++  onEditPopupShowing: function SP_onEditPopupShowing() {
++    let undo = document.getElementById("sp-cmd-undo");
++    undo.setAttribute("disabled", !this.editor.canUndo());
++
++    let redo = document.getElementById("sp-cmd-redo");
++    redo.setAttribute("disabled", !this.editor.canRedo());
++  },
++
++  undo: function SP_undo() {
++    this.editor.undo();
++  },
++
++  redo: function SP_redo() {
++    this.editor.redo();
+   },
+ };
+ 
+ XPCOMUtils.defineLazyGetter(Scratchpad, "strings", function () {
+   return Services.strings.createBundle(SCRATCHPAD_L10N);
+ });
+ 
+-addEventListener("DOMContentLoaded", Scratchpad.onLoad.bind(Scratchpad), false);
++addEventListener("DOMContentLoaded", Scratchpad.onLoad, false);
+ 
+diff --git a/browser/base/content/scratchpad.xul b/browser/base/content/scratchpad.xul
+--- a/browser/base/content/scratchpad.xul
++++ b/browser/base/content/scratchpad.xul
+@@ -73,16 +73,18 @@
+   <command id="sp-cmd-run" oncommand="Scratchpad.run();"/>
+   <command id="sp-cmd-inspect" oncommand="Scratchpad.inspect();"/>
+   <command id="sp-cmd-display" oncommand="Scratchpad.display();"/>
+   <command id="sp-cmd-contentContext" oncommand="Scratchpad.setContentContext();"/>
+   <command id="sp-cmd-browserContext" oncommand="Scratchpad.setBrowserContext();" disabled="true"/>
+   <command id="sp-cmd-resetContext" oncommand="Scratchpad.resetContext();"/>
+   <command id="sp-cmd-errorConsole" oncommand="Scratchpad.openErrorConsole();" disabled="true"/>
+   <command id="sp-cmd-webConsole" oncommand="Scratchpad.openWebConsole();"/>
++  <command id="sp-cmd-undo" oncommand="Scratchpad.undo();" disabled="true"/>
++  <command id="sp-cmd-redo" oncommand="Scratchpad.redo();" disabled="true"/>
+ </commandset>
+ 
+ <keyset id="sp-keyset">
+   <key id="sp-key-window"
+        key="&newWindowCmd.commandkey;"
+        command="sp-cmd-newWindow"
+        modifiers="accel"/>
+   <key id="sp-key-open"
+@@ -180,29 +182,28 @@
+                 key="sp-key-close"
+                 accesskey="&closeCmd.accesskey;"
+                 command="sp-cmd-close"/>
+     </menupopup>
+   </menu>
+ 
+   <menu id="sp-edit-menu" label="&editMenu.label;"
+         accesskey="&editMenu.accesskey;">
+-    <menupopup id="sp-menu_editpopup">
+-      <menuitem id="sp-menu_undo"
++    <menupopup id="sp-menu_editpopup"
++               onpopupshowing="Scratchpad.onEditPopupShowing()">
++      <menuitem id="sp-menu-undo"
+                 label="&undoCmd.label;"
+                 key="key_undo"
+                 accesskey="&undoCmd.accesskey;"
+-                disabled="true"
+-                oncommand="cmd_undo"/>
++                command="sp-cmd-undo"/>
+       <menuitem id="sp-menu-redo"
+                 label="&redoCmd.label;"
+                 key="key_redo"
+-                disabled="true"
+                 accesskey="&redoCmd.accesskey;"
+-                command="cmd_redo"/>
++                command="sp-cmd-redo"/>
+       <menuseparator/>
+       <menuitem id="sp-menu-cut"
+                 label="&cutCmd.label;"
+                 key="key_cut"
+                 accesskey="&cutCmd.accesskey;"
+                 command="cmd_cut"/>
+       <menuitem id="sp-menu-copy"
+                 label="&copyCmd.label;"

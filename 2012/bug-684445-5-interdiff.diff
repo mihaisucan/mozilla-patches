@@ -1,0 +1,142 @@
+diff --git a/browser/devtools/scratchpad/scratchpad.xul b/browser/devtools/scratchpad/scratchpad.xul
+--- a/browser/devtools/scratchpad/scratchpad.xul
++++ b/browser/devtools/scratchpad/scratchpad.xul
+@@ -79,16 +79,18 @@
+   <command id="sp-cmd-contentContext" oncommand="Scratchpad.setContentContext();"/>
+   <command id="sp-cmd-browserContext" oncommand="Scratchpad.setBrowserContext();" disabled="true"/>
+   <command id="sp-cmd-resetContext" oncommand="Scratchpad.resetContext();"/>
+   <command id="sp-cmd-errorConsole" oncommand="Scratchpad.openErrorConsole();" disabled="true"/>
+   <command id="sp-cmd-webConsole" oncommand="Scratchpad.openWebConsole();"/>
+   <command id="sp-cmd-documentationLink" oncommand="Scratchpad.openDocumentationPage();"/>
+ </commandset>
+ 
++<keyset id="sourceEditorKeys"/>
++
+ <keyset id="sp-keyset">
+   <key id="sp-key-window"
+        key="&newWindowCmd.commandkey;"
+        command="sp-cmd-newWindow"
+        modifiers="accel"/>
+   <key id="sp-key-open"
+        key="&openFileCmd.commandkey;"
+        command="sp-cmd-openFile"
+@@ -161,20 +163,16 @@
+   <key id="key_findAgain"
+        keycode="VK_F3"
+        command="cmd_findAgain"/>
+   <key id="key_findPrevious"
+        keycode="VK_F3"
+        command="cmd_findPrevious"
+        modifiers="shift"/>
+ #endif
+-  <key id="key_gotoLine"
+-       key="&gotoLineCmd.key;"
+-       command="cmd_gotoLine"
+-       modifiers="accel"/>
+   <key id="key_openHelp"
+        keycode="VK_F1"
+        command="sp-cmd-documentationLink"/>
+ </keyset>
+ 
+ 
+ <menubar id="sp-menubar">
+   <menu id="sp-file-menu" label="&fileMenu.label;"
+diff --git a/browser/devtools/sourceeditor/source-editor-overlay.xul b/browser/devtools/sourceeditor/source-editor-overlay.xul
+--- a/browser/devtools/sourceeditor/source-editor-overlay.xul
++++ b/browser/devtools/sourceeditor/source-editor-overlay.xul
+@@ -47,16 +47,23 @@
+     <command id="cmd_find" oncommand="goDoCommand('cmd_find')"/>
+     <command id="cmd_findAgain" oncommand="goDoCommand('cmd_findAgain')" disabled="true"/>
+     <command id="cmd_findPrevious" oncommand="goDoCommand('cmd_findPrevious')" disabled="true"/>
+     <command id="cmd_gotoLine" oncommand="goDoCommand('cmd_gotoLine')"/>
+     <command id="se-cmd-undo" oncommand="goDoCommand('se-cmd-undo')" disabled="true"/>
+     <command id="se-cmd-redo" oncommand="goDoCommand('se-cmd-redo')" disabled="true"/>
+   </commandset>
+ 
++  <keyset id="sourceEditorKeys">
++    <key id="key_gotoLine"
++         key="&gotoLineCmd.key;"
++         command="cmd_gotoLine"
++         modifiers="accel"/>
++  </keyset>
++
+   <menupopup id="sourceEditorContextMenu"
+              onpopupshowing="goUpdateGlobalEditMenuItems()">
+     <menuitem id="se-menu-undo"
+               label="&undoCmd.label;"
+               key="key_undo"
+               accesskey="&undoCmd.accesskey;"
+               command="se-cmd-undo"/>
+     <menuseparator/>
+@@ -81,10 +88,27 @@
+               accesskey="&deleteCmd.accesskey;"
+               command="cmd_delete"/>
+     <menuseparator/>
+     <menuitem id="se-menu-selectAll"
+               label="&selectAllCmd.label;"
+               key="key_selectAll"
+               accesskey="&selectAllCmd.accesskey;"
+               command="cmd_selectAll"/>
++    <menuseparator/>
++    <menuitem id="se-menu-find"
++              label="&findCmd.label;"
++              accesskey="&findCmd.accesskey;"
++              key="key_find"
++              command="cmd_find"/>
++    <menuitem id="se-menu-findAgain"
++              label="&findAgainCmd.label;"
++              accesskey="&findAgainCmd.accesskey;"
++              key="key_findAgain"
++              command="cmd_findAgain"/>
++    <menuseparator/>
++    <menuitem id="se-menu-gotoLine"
++              label="&gotoLineCmd.label;"
++              accesskey="&gotoLineCmd.accesskey;"
++              key="key_gotoLine"
++              command="cmd_gotoLine"/>
+   </menupopup>
+ </overlay>
+diff --git a/browser/devtools/styleeditor/styleeditor.xul b/browser/devtools/styleeditor/styleeditor.xul
+--- a/browser/devtools/styleeditor/styleeditor.xul
++++ b/browser/devtools/styleeditor/styleeditor.xul
+@@ -62,16 +62,17 @@
+ 
+ <xul:commandset id="editMenuCommands"/>
+ <xul:commandset id="sourceEditorCommands"/>
+ <xul:commandset id="style-editor-commandset">
+   <xul:command id="style-editor-cmd-close" oncommand="window.close();"/>
+ </xul:commandset>
+ 
+ <xul:keyset id="editMenuKeys"/>
++<xul:keyset id="sourceEditorKeys"/>
+ <xul:keyset id="style-editor-keyset">
+   <xul:key id="style-editor-key-close"
+            key="&closeCmd.key;"
+            command="style-editor-cmd-close"
+            modifiers="accel"/>
+ </xul:keyset>
+ 
+ <xul:box id="style-editor-chrome" class="splitview-root loading">
+diff --git a/browser/locales/en-US/chrome/browser/devtools/sourceeditor.dtd b/browser/locales/en-US/chrome/browser/devtools/sourceeditor.dtd
+--- a/browser/locales/en-US/chrome/browser/devtools/sourceeditor.dtd
++++ b/browser/locales/en-US/chrome/browser/devtools/sourceeditor.dtd
+@@ -17,8 +17,19 @@
+ <!ENTITY copyCmd.label             "Copy">
+ <!ENTITY copyCmd.accesskey         "C">
+ <!ENTITY pasteCmd.label            "Paste">
+ <!ENTITY pasteCmd.accesskey        "P">
+ <!ENTITY deleteCmd.label           "Delete">
+ <!ENTITY deleteCmd.accesskey       "D">
+ <!ENTITY selectAllCmd.label        "Select All">
+ <!ENTITY selectAllCmd.accesskey    "A">
++
++<!ENTITY findCmd.label                "Find…">
++<!ENTITY findCmd.accesskey            "F">
++
++<!ENTITY findAgainCmd.label           "Find Again…">
++<!ENTITY findAgainCmd.accesskey       "g">
++
++<!ENTITY gotoLineCmd.label            "Jump to line…">
++<!ENTITY gotoLineCmd.key              "J">
++<!ENTITY gotoLineCmd.accesskey        "J">
++

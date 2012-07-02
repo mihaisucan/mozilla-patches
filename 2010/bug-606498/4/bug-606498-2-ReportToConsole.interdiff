@@ -1,0 +1,150 @@
+diff -U8 b/content/base/public/nsContentUtils.h b/content/base/public/nsContentUtils.h
+--- b/content/base/public/nsContentUtils.h
++++ b/content/base/public/nsContentUtils.h
+@@ -810,18 +810,18 @@
+    *   @param aParamsLength Length of aParams.
+    *   @param aURI URI of resource containing error (may be null).
+    *   @param aSourceLine The text of the line that contains the error (may be
+               empty).
+    *   @param aLineNumber Line number within resource containing error.
+    *   @param aColumnNumber Column number within resource containing error.
+    *   @param aErrorFlags See nsIScriptError.
+    *   @param aCategory Name of module reporting error.
+-   *   @param [aWindowId=0] (Optional) Tells the message origin by the ID of the
+-              outer window object.
++   *   @param [aWindowId=0] (Optional) The window ID of the outer window the
++   *          message originates from.
+    */
+   enum PropertiesFile {
+     eCSS_PROPERTIES,
+     eXBL_PROPERTIES,
+     eXUL_PROPERTIES,
+     eLAYOUT_PROPERTIES,
+     eFORMS_PROPERTIES,
+     ePRINTING_PROPERTIES,
+diff -U8 b/content/base/src/nsContentUtils.cpp b/content/base/src/nsContentUtils.cpp
+--- b/content/base/src/nsContentUtils.cpp
++++ b/content/base/src/nsContentUtils.cpp
+@@ -3168,18 +3168,18 @@
+ 
+   rv = errorObject->InitWithWindowID(errorText.get(),
+                                      NS_ConvertUTF8toUTF16(spec).get(), // file name
+                                      aSourceLine.get(),
+                                      aLineNumber, aColumnNumber,
+                                      aErrorFlags, aCategory, aWindowId);
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+-  return sConsoleService->LogMessage(
+-      (nsCOMPtr<nsIScriptError>)(do_QueryInterface(errorObject)));
++  nsCOMPtr<nsIScriptError> logError = do_QueryInterface(errorObject);
++  return sConsoleService->LogMessage(logError);
+ }
+ 
+ /* static */ nsresult
+ nsContentUtils::ReportToConsole(PropertiesFile aFile,
+                                 const char *aMessageName,
+                                 const PRUnichar **aParams,
+                                 PRUint32 aParamsLength,
+                                 nsIURI* aURI,
+@@ -3191,20 +3191,17 @@
+                                 nsIDocument* aDocument)
+ {
+   nsIURI* uri = aURI;
+   PRUint64 windowID = 0;
+   if (aDocument) {
+     if (!uri) {
+       uri = aDocument->GetDocumentURI();
+     }
+-    nsPIDOMWindow* win = aDocument->GetWindow();
+-    if (win) {
+-      windowID = win->WindowID();
+-    }
++    windowID = aDocument->OuterWindowID();
+   }
+ 
+   return ReportToConsole(aFile, aMessageName, aParams, aParamsLength, uri,
+                          aSourceLine, aLineNumber, aColumnNumber, aErrorFlags,
+                          aCategory, windowID);
+ }
+ 
+ PRBool
+diff -U8 b/content/base/src/nsDocument.cpp b/content/base/src/nsDocument.cpp
+--- b/content/base/src/nsDocument.cpp
++++ b/content/base/src/nsDocument.cpp
+@@ -3998,18 +3998,17 @@
+ nsDocument::ReportEmptyGetElementByIdArg()
+ {
+   nsContentUtils::ReportToConsole(nsContentUtils::eDOM_PROPERTIES,
+                                   "EmptyGetElementByIdParam",
+                                   nsnull, 0,
+                                   nsnull,
+                                   EmptyString(), 0, 0,
+                                   nsIScriptError::warningFlag,
+-                                  "DOM",
+-                                  static_cast<nsIDocument*>(this));
++                                  "DOM", this);
+ }
+ 
+ Element*
+ nsDocument::GetElementById(const nsAString& aElementId)
+ {
+   if (!CheckGetElementByIdArg(aElementId)) {
+     return nsnull;
+   }
+@@ -5291,18 +5290,17 @@
+   if (!mHasWarnedAboutBoxObjects && !content->IsXUL()) {
+     mHasWarnedAboutBoxObjects = PR_TRUE;
+     nsContentUtils::ReportToConsole(nsContentUtils::eDOM_PROPERTIES,
+                                     "UseOfGetBoxObjectForWarning",
+                                     nsnull, 0,
+                                     nsnull,
+                                     EmptyString(), 0, 0,
+                                     nsIScriptError::warningFlag,
+-                                    "BoxObjects",
+-                                    static_cast<nsIDocument*>(this));
++                                    "BoxObjects", this);
+   }
+ 
+   *aResult = nsnull;
+ 
+   if (!mBoxObjectTable) {
+     mBoxObjectTable = new nsInterfaceHashtable<nsVoidPtrHashKey, nsPIBoxObject>;
+     if (mBoxObjectTable && !mBoxObjectTable->Init(12)) {
+       mBoxObjectTable = nsnull;
+diff -U8 b/content/canvas/src/nsCanvasRenderingContext2D.cpp b/content/canvas/src/nsCanvasRenderingContext2D.cpp
+--- b/content/canvas/src/nsCanvasRenderingContext2D.cpp
++++ b/content/canvas/src/nsCanvasRenderingContext2D.cpp
+@@ -952,31 +953,24 @@
+         nsCOMPtr<nsCanvasPattern> pattern(do_QueryInterface(aInterface));
+         if (pattern) {
+             CurrentState().SetPatternStyle(aWhichStyle, pattern);
+             mDirtyStyle[aWhichStyle] = PR_TRUE;
+             return NS_OK;
+         }
+     }
+ 
+-    nsCOMPtr<nsIDocument> doc;
+-    if (mCanvasElement) {
+-        nsCOMPtr<nsIContent> content = do_QueryInterface(
+-            static_cast<nsIDOMHTMLCanvasElement*>(mCanvasElement));
+-        doc = content->GetOwnerDoc();
+-    }
+-
+     nsContentUtils::ReportToConsole(
+         nsContentUtils::eDOM_PROPERTIES,
+         "UnexpectedCanvasVariantStyle",
+         nsnull, 0,
+         nsnull,
+         EmptyString(), 0, 0,
+         nsIScriptError::warningFlag,
+-        "Canvas");
++        "Canvas",
++        mCanvasElement ? HTMLCanvasElement()->GetOwnerDoc() : nsnull);
+ 
+     return NS_OK;
+ }
+ 
+ nsresult
+ nsCanvasRenderingContext2D::GetStyleAsStringOrInterface(nsAString& aStr,
+                                                         nsISupports **aInterface,
+                                                         PRInt32 *aType,

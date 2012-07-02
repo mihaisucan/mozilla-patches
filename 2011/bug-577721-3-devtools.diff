@@ -1,0 +1,1082 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1305651116 -10800
+# Parent db503fb7fc640a1ae4663a41498582483505fbfa
+Bug 577721 - allow repositioning of the web console: above, below and out into a panel/window
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -998,16 +998,22 @@ pref("devtools.scratchpad.enabled", true
+ // Enable tools for Chrome development.
+ pref("devtools.chrome.enabled", false);
+ 
+ // The last Web Console height. This is initially 0 which means that the Web
+ // Console will use the default height next time it shows.
+ // Change to -1 if you do not want the Web Console to remember its last height.
+ pref("devtools.hud.height", 0);
+ 
++// Remember the Web Console position. Possible values:
++//   above - above the web page,
++//   below - below the web page,
++//   window - in a separate window/popup panel.
++pref("devtools.hud.position", "above");
++
+ // Whether the character encoding menu is under the main Firefox button. This
+ // preference is a string so that localizers can alter it.
+ pref("browser.menu.showCharacterEncoding", "chrome://browser/locale/browser.properties");
+ 
+ // Allow using tab-modal prompts when possible.
+ pref("prompts.tab_modal.enabled", true);
+ // Whether the Panorama should animate going in/out of tabs
+ pref("browser.panorama.animate_zoom", true);
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1420,36 +1420,39 @@ HUD_SERVICE.prototype =
+     this.wakeup();
+ 
+     let window = aContext.linkedBrowser.contentWindow;
+     let nBox = aContext.ownerDocument.defaultView.
+       getNotificationBox(window);
+     this.registerActiveContext(nBox.id);
+     this.windowInitializer(window);
+ 
+-    if (!aAnimated) {
+-      this.disableAnimation("hud_" + nBox.id);
++    let hudId = "hud_" + nBox.id;
++    let hudRef = this.hudReferences[hudId];
++
++    if (!aAnimated || hudRef.consolePanel) {
++      this.disableAnimation(hudId);
+     }
+   },
+ 
+   /**
+    * Deactivate a HeadsUpDisplay for the given tab context.
+    *
+    * @param nsIDOMWindow aContext
+    * @param aAnimated animate closing the web console?
+    * @returns void
+    */
+   deactivateHUDForContext: function HS_deactivateHUDForContext(aContext, aAnimated)
+   {
+     let browser = aContext.linkedBrowser;
+     let window = browser.contentWindow;
+-    let nBox = aContext.ownerDocument.defaultView.
+-      getNotificationBox(window);
++    let chromeDocument = aContext.ownerDocument;
++    let nBox = chromeDocument.defaultView.getNotificationBox(window);
+     let hudId = "hud_" + nBox.id;
+-    let displayNode = nBox.querySelector("#" + hudId);
++    let displayNode = chromeDocument.getElementById(hudId);
+ 
+     if (hudId in this.hudReferences && displayNode) {
+       if (!aAnimated) {
+         this.storeHeight(hudId);
+       }
+ 
+       let hud = this.hudReferences[hudId];
+       browser.webProgress.removeProgressListener(hud.progressListener);
+@@ -1730,17 +1733,17 @@ HUD_SERVICE.prototype =
+    */
+   unregisterDisplay: function HS_unregisterDisplay(aHUD)
+   {
+     // Remove children from the output. If the output is not cleared, there can
+     // be leaks as some nodes has node.onclick = function; set and GC can't
+     // remove the nodes then.
+     HUDService.clearDisplay(aHUD);
+ 
+-    var id, outputNode;
++    var id, outputNode, ownerDoc;
+     if (typeof(aHUD) === "string") {
+       id = aHUD;
+       outputNode = this.getHeadsUpDisplay(aHUD);
+     }
+     else {
+       id = aHUD.getAttribute("id");
+       outputNode = aHUD;
+     }
+@@ -1751,18 +1754,21 @@ HUD_SERVICE.prototype =
+     var splitters = parent.querySelectorAll("splitter");
+     var len = splitters.length;
+     for (var i = 0; i < len; i++) {
+       if (splitters[i].getAttribute("class") == "hud-splitter") {
+         splitters[i].parentNode.removeChild(splitters[i]);
+         break;
+       }
+     }
+-    // remove the DOM Nodes
+-    parent.removeChild(outputNode);
++
++    ownerDoc = outputNode.ownerDocument;
++    ownerDoc.getElementById(id).parentNode.removeChild(outputNode);
++
++    this.hudReferences[id].consoleWindowUnregisterOnHide = false;
+ 
+     // remove the HeadsUpDisplay object from memory
+     if ("cssNodes" in this.hudReferences[id]) {
+       delete this.hudReferences[id].cssNodes;
+     }
+     delete this.hudReferences[id];
+     // remove the related storage object
+     this.storage.removeDisplay(id);
+@@ -1843,17 +1849,17 @@ HUD_SERVICE.prototype =
+   /**
+    * Shutdown all HeadsUpDisplays on xpcom-shutdown
+    *
+    * @returns void
+    */
+   shutdown: function HS_shutdown()
+   {
+     for (let hudId in this.hudReferences) {
+-      this.unregisterDisplay(hudId);
++      this.deactivateHUDForContext(this.hudReferences[hudId].tab, false);
+     }
+   },
+ 
+   /**
+    * Returns the hudId that is corresponding to the hud activated for the
+    * passed aContentWindow. If there is no matching hudId null is returned.
+    *
+    * @param nsIDOMWindow aContentWindow
+@@ -2784,16 +2790,21 @@ HUD_SERVICE.prototype =
+     let container = gBrowser.tabContainer;
+     container.addEventListener("TabClose", this.onTabClose, false);
+ 
+     let _browser = gBrowser.
+       getBrowserForDocument(aContentWindow.top.document);
+     let nBox = gBrowser.getNotificationBox(_browser);
+     let nBoxId = nBox.getAttribute("id");
+     let hudId = "hud_" + nBoxId;
++    let windowUI = nBox.ownerDocument.getElementById("console_window_" + hudId);
++    if (windowUI) {
++      // The Web Console popup is already open, no need to continue.
++      return;
++    }
+ 
+     if (!this.canActivateContext(hudId)) {
+       return;
+     }
+ 
+     this.registerDisplay(hudId);
+ 
+     let hudNode;
+@@ -2912,25 +2923,28 @@ HUD_SERVICE.prototype =
+   /**
+    * Reset the height of the Web Console.
+    *
+    * @param string aHUDId The ID of the Web Console.
+    */
+   resetHeight: function HS_resetHeight(aHUDId)
+   {
+     let HUD = this.hudReferences[aHUDId];
+-
+     let innerHeight = HUD.contentWindow.innerHeight;
+-    let splitter = HUD.HUDBox.parentNode.querySelector(".hud-splitter");
+-    let chromeWindow = splitter.ownerDocument.defaultView;
+-
+-    let splitterStyle = chromeWindow.getComputedStyle(splitter, null);
+-    innerHeight += parseInt(splitterStyle.height) +
+-                   parseInt(splitterStyle.borderTopWidth) +
+-                   parseInt(splitterStyle.borderBottomWidth);
++    let chromeWindow = HUD.chromeDocument.defaultView;
++    let position = Services.prefs.getCharPref("devtools.hud.position");
++    if (position != "window") {
++      var splitter = HUD.HUDBox.parentNode.querySelector(".hud-splitter");
++      chromeWindow = splitter.ownerDocument.defaultView;
++
++      var splitterStyle = chromeWindow.getComputedStyle(splitter, null);
++      innerHeight += parseInt(splitterStyle.height) +
++                     parseInt(splitterStyle.borderTopWidth) +
++                     parseInt(splitterStyle.borderBottomWidth);
++    }
+ 
+     let boxStyle = chromeWindow.getComputedStyle(HUD.HUDBox, null);
+     innerHeight += parseInt(boxStyle.height) +
+                    parseInt(boxStyle.borderTopWidth) +
+                    parseInt(boxStyle.borderBottomWidth);
+ 
+     let height = this.lastConsoleHeight > 0 ? this.lastConsoleHeight :
+       Math.ceil(innerHeight * DEFAULT_CONSOLE_HEIGHT);
+@@ -3096,48 +3110,328 @@ function HeadsUpDisplay(aConfig)
+       if (parentNode) {
+         break;
+       }
+     }
+     if (!parentNode) {
+       throw new Error(this.ERRORS.PARENTNODE_NOT_FOUND);
+     }
+     this.parentNode = parentNode;
++    this.notificationBox = parentNode;
+   }
+ 
+   // create textNode Factory:
+   this.textFactory = NodeFactory("text", "xul", this.chromeDocument);
+ 
+   this.chromeWindow = HUDService.getChromeWindowFromContentWindow(this.contentWindow);
+ 
+   // create a panel dynamically and attach to the parentNode
+-  let hudBox = this.createHUD();
+-
+-  let splitter = this.chromeDocument.createElement("splitter");
+-  splitter.setAttribute("class", "hud-splitter");
+-
+-  this.notificationBox.insertBefore(splitter,
+-                                    this.notificationBox.childNodes[1]);
++  this.createHUD();
+ 
+   this.HUDBox.lastTimestamp = 0;
+   // create the JSTerm input element
+   try {
+     this.createConsoleInput(this.contentWindow, this.consoleWrap, this.outputNode);
+-    this.HUDBox.querySelectorAll(".jsterm-input-node")[0].focus();
++    this.jsterm.inputNode.focus();
+   }
+   catch (ex) {
+     Cu.reportError(ex);
+   }
+ 
+   // A cache for tracking repeated CSS Nodes.
+   this.cssNodes = {};
+ }
+ 
+ HeadsUpDisplay.prototype = {
+ 
++  consolePanel: null,
++
++  get mainPopupSet()
++  {
++    return this.chromeDocument.getElementById("mainPopupSet");
++  },
++
++  /**
++   * Get the tab associated to the HeadsUpDisplay object.
++   */
++  get tab()
++  {
++    // TODO: we should only keep a reference to the xul:tab object and use
++    // getters to determine the rest of objects we need - the chrome window,
++    // document, etc. We should simplify the entire code to use only a single
++    // tab object ref. See bug 656231.
++    let tab = null;
++    let id = this.notificationBox.id;
++    Array.some(this.chromeDocument.defaultView.gBrowser.tabs, function(aTab) {
++      if (aTab.linkedPanel == id) {
++        tab = aTab;
++        return true;
++      }
++    });
++
++    return tab;
++  },
++
++  /**
++   * Create a panel to open the web console if it should float above
++   * the content in its own window.
++   */
++  createOwnWindowPanel: function HUD_createOwnWindowPanel()
++  {
++    if (this.uiInOwnWindow) {
++      return this.consolePanel;
++    }
++
++    let width = 0;
++    try {
++      width = Services.prefs.getIntPref("devtools.hud.width");
++    }
++    catch (ex) {}
++
++    if (width < 1) {
++      width = this.HUDBox.clientWidth || this.contentWindow.innerWidth;
++    }
++
++    let height = this.HUDBox.clientHeight;
++
++    let top = 0;
++    try {
++      top = Services.prefs.getIntPref("devtools.hud.top");
++    }
++    catch (ex) {}
++
++    let left = 0;
++    try {
++      left = Services.prefs.getIntPref("devtools.hud.left");
++    }
++    catch (ex) {}
++
++    let panel = this.chromeDocument.createElementNS(XUL_NS, "panel");
++
++    let label = this.getStr("webConsoleOwnWindowTitle");
++
++    let config = { id: "console_window_" + this.hudId,
++                   label: label,
++                   titlebar: "normal",
++                   noautohide: "true",
++                   norestorefocus: "true",
++                   close: "true",
++                   flex: "1",
++                   hudId: this.hudId,
++                   width: width,
++                   position: "overlap",
++                   top: top,
++                   left: left,
++                 };
++
++    for (let attr in config) {
++      panel.setAttribute(attr, config[attr]);
++    }
++
++    panel.classList.add("web-console-panel");
++
++    let onPopupShown = (function HUD_onPopupShown() {
++      panel.removeEventListener("popupshown", onPopupShown, false);
++
++      // Make sure that the HUDBox size updates when the panel is resized.
++
++      let height = panel.clientHeight;
++
++      this.HUDBox.style.height = "auto";
++      this.HUDBox.setAttribute("flex", "1");
++
++      panel.setAttribute("height", height);
++
++      // Scroll the outputNode back to the last location.
++      if (lastIndex > -1 && lastIndex < this.outputNode.getRowCount()) {
++        this.outputNode.ensureIndexIsVisible(lastIndex);
++      }
++
++      if (this.jsterm) {
++        this.jsterm.inputNode.focus();
++      }
++    }).bind(this);
++
++    panel.addEventListener("popupshown", onPopupShown,false);
++
++    let onPopupHiding = (function HUD_onPopupHiding(aEvent) {
++      if (aEvent.target != panel) {
++        return;
++      }
++
++      panel.removeEventListener("popuphiding", onPopupHiding, false);
++
++      let width = 0;
++      try {
++        width = Services.prefs.getIntPref("devtools.hud.width");
++      }
++      catch (ex) { }
++
++      if (width > -1) {
++        Services.prefs.setIntPref("devtools.hud.width", panel.clientWidth);
++      }
++
++      Services.prefs.setIntPref("devtools.hud.top", panel.popupBoxObject.y);
++      Services.prefs.setIntPref("devtools.hud.left", panel.popupBoxObject.x);
++
++      // Make sure we are not going to close again, drop the hudId reference of
++      // the panel.
++      panel.removeAttribute("hudId");
++
++      if (this.consoleWindowUnregisterOnHide) {
++        HUDService.deactivateHUDForContext(this.tab, false);
++      }
++      else {
++        this.consoleWindowUnregisterOnHide = true;
++      }
++
++      this.consolePanel = null;
++    }).bind(this);
++
++    panel.addEventListener("popuphiding", onPopupHiding, false);
++
++    let onPopupHidden = (function HUD_onPopupHidden(aEvent) {
++      if (aEvent.target != panel) {
++        return;
++      }
++
++      panel.removeEventListener("popuphidden", onPopupHidden, false);
++      this.mainPopupSet.removeChild(panel);
++    }).bind(this);
++
++    panel.addEventListener("popuphidden", onPopupHidden, false);
++
++    let lastIndex = -1;
++
++    if (this.outputNode.getIndexOfFirstVisibleRow) {
++      lastIndex = this.outputNode.getIndexOfFirstVisibleRow() +
++                  this.outputNode.getNumberOfVisibleRows() - 1;
++    }
++
++    if (this.HUDBox.parentNode) {
++      this.splitter.parentNode.removeChild(this.splitter);
++    }
++    panel.appendChild(this.HUDBox);
++
++    let space = this.chromeDocument.createElement("spacer");
++    space.setAttribute("flex", "1");
++
++    let bottomBox = this.chromeDocument.createElement("hbox");
++    space.setAttribute("flex", "1");
++
++    let resizer = this.chromeDocument.createElement("resizer");
++    resizer.setAttribute("dir", "bottomend");
++    resizer.setAttribute("element", config.id);
++
++    bottomBox.appendChild(space);
++    bottomBox.appendChild(resizer);
++
++    panel.appendChild(bottomBox);
++
++    this.mainPopupSet.appendChild(panel);
++
++    Services.prefs.setCharPref("devtools.hud.position", "window");
++
++    panel.openPopup(null, "overlay", left, top, false, false);
++
++    this.consolePanel = panel;
++    this.consoleWindowUnregisterOnHide = true;
++
++    return panel;
++  },
++
++  positions: {
++    above: 0, // the childNode index
++    below: 2,
++    window: null
++  },
++
++  consoleWindowUnregisterOnHide: true,
++
++  /**
++   * Re-position the console
++   */
++  positionConsole: function HUD_positionConsole(aPosition)
++  {
++    if (!(aPosition in this.positions)) {
++      throw new Error("Incorrect argument: " + aPosition  + ". Cannot position Web Console");
++    }
++
++    if (aPosition == "window") {
++      this.createOwnWindowPanel();
++      this.positionMenuitems.window.setAttribute("checked", true);
++      if (this.positionMenuitems.last) {
++        this.positionMenuitems.last.setAttribute("checked", false);
++      }
++      this.positionMenuitems.last = this.positionMenuitems[aPosition];
++      this.uiInOwnWindow = true;
++      return;
++    }
++
++    let height = this.HUDBox.clientHeight;
++
++    // get the node position index
++    let nodeIdx = this.positions[aPosition];
++    let nBox = this.notificationBox;
++    let node = nBox.childNodes[nodeIdx];
++
++    // check to see if console is already positioned in aPosition
++    if (node == this.HUDBox) {
++      return;
++    }
++
++    let lastIndex = -1;
++
++    if (this.outputNode.getIndexOfFirstVisibleRow) {
++      lastIndex = this.outputNode.getIndexOfFirstVisibleRow() +
++                  this.outputNode.getNumberOfVisibleRows() - 1;
++    }
++
++    // remove the console and splitter and reposition
++    if (this.splitter.parentNode) {
++      this.splitter.parentNode.removeChild(this.splitter);
++    }
++
++    if (aPosition == "below") {
++      nBox.appendChild(this.splitter);
++      nBox.appendChild(this.HUDBox);
++    }
++    else {
++      nBox.insertBefore(this.splitter, node);
++      nBox.insertBefore(this.HUDBox, this.splitter);
++    }
++
++    this.positionMenuitems[aPosition].setAttribute("checked", true);
++    if (this.positionMenuitems.last) {
++      this.positionMenuitems.last.setAttribute("checked", false);
++    }
++    this.positionMenuitems.last = this.positionMenuitems[aPosition];
++
++    Services.prefs.setCharPref("devtools.hud.position", aPosition);
++
++    if (lastIndex > -1 && lastIndex < this.outputNode.getRowCount()) {
++      this.outputNode.ensureIndexIsVisible(lastIndex);
++    }
++
++    this.uiInOwnWindow = false;
++    if (this.consolePanel) {
++      this.HUDBox.removeAttribute("flex");
++      this.HUDBox.removeAttribute("height");
++      this.HUDBox.style.height = height + "px";
++
++      // must destroy the consolePanel
++      this.consoleWindowUnregisterOnHide = false;
++      this.consolePanel.hidePopup();
++    }
++
++    if (this.jsterm) {
++      this.jsterm.inputNode.focus();
++    }
++  },
++
+   /**
+    * L10N shortcut function
+    *
+    * @param string aName
+    * @returns string
+    */
+   getStr: function HUD_getStr(aName)
+   {
+@@ -3220,16 +3514,20 @@ HeadsUpDisplay.prototype = {
+   /**
+    * Build the UI of each HeadsUpDisplay
+    *
+    * @returns nsIDOMNode
+    */
+   makeHUDNodes: function HUD_makeHUDNodes()
+   {
+     let self = this;
++
++    this.splitter = this.makeXULNode("splitter");
++    this.splitter.setAttribute("class", "hud-splitter");
++
+     this.HUDBox = this.makeXULNode("vbox");
+     this.HUDBox.setAttribute("id", this.hudId);
+     this.HUDBox.setAttribute("class", "hud-box animated");
+     this.HUDBox.style.height = 0;
+ 
+     let outerWrap = this.makeXULNode("vbox");
+     outerWrap.setAttribute("class", "hud-outer-wrapper");
+     outerWrap.setAttribute("flex", "1");
+@@ -3366,23 +3664,83 @@ HeadsUpDisplay.prototype = {
+ 
+     this.makeCloseButton(toolbar);
+ 
+     for (let i = 0; i < BUTTONS.length; i++) {
+       this.makeFilterButton(toolbar, BUTTONS[i]);
+     }
+ 
+     toolbar.appendChild(this.filterSpacer);
++
++    let positionUI = this.createPositionUI();
++    toolbar.appendChild(positionUI);
++
+     toolbar.appendChild(this.filterBox);
+     this.makeClearConsoleButton(toolbar);
+ 
+     return toolbar;
+   },
+ 
+   /**
++   * Creates the UI for re-positioning the console
++   *
++   * @return nsIDOMNode
++   *         The xul:toolbarbutton which holds the menu that allows the user to
++   *         change the console position.
++   */
++  createPositionUI: function HUD_createPositionUI()
++  {
++    let self = this;
++
++    let button = this.makeXULNode("toolbarbutton");
++    button.setAttribute("type", "menu");
++    button.setAttribute("label", this.getStr("webConsolePosition"));
++    button.setAttribute("tooltip", this.getStr("webConsolePositionTooltip"));
++
++    let menuPopup = this.makeXULNode("menupopup");
++    button.appendChild(menuPopup);
++
++    let itemAbove = this.makeXULNode("menuitem");
++    itemAbove.setAttribute("label", this.getStr("webConsolePositionAbove"));
++    itemAbove.setAttribute("type", "checkbox");
++    itemAbove.setAttribute("autocheck", "false");
++    itemAbove.addEventListener("command", function() {
++      self.positionConsole("above");
++    }, false);
++    menuPopup.appendChild(itemAbove);
++
++    let itemBelow = this.makeXULNode("menuitem");
++    itemBelow.setAttribute("label", this.getStr("webConsolePositionBelow"));
++    itemBelow.setAttribute("type", "checkbox");
++    itemBelow.setAttribute("autocheck", "false");
++    itemBelow.addEventListener("command", function() {
++      self.positionConsole("below");
++    }, false);
++    menuPopup.appendChild(itemBelow);
++
++    let itemWindow = this.makeXULNode("menuitem");
++    itemWindow.setAttribute("label", this.getStr("webConsolePositionWindow"));
++    itemWindow.setAttribute("type", "checkbox");
++    itemWindow.setAttribute("autocheck", "false");
++    itemWindow.addEventListener("command", function() {
++      self.positionConsole("window");
++    }, false);
++    menuPopup.appendChild(itemWindow);
++
++    this.positionMenuitems = {
++      last: null,
++      above: itemAbove,
++      below: itemBelow,
++      window: itemWindow,
++    };
++
++    return button;
++  },
++
++  /**
+    * Creates the context menu on the console.
+    *
+    * @param nsIDOMNode aOutputNode
+    *        The console output DOM node.
+    * @returns void
+    */
+   createConsoleMenu: function HUD_createConsoleMenu(aConsoleWrapper) {
+     let menuPopup = this.makeXULNode("menupopup");
+@@ -3485,32 +3843,25 @@ HeadsUpDisplay.prototype = {
+    * Creates the close button on the toolbar.
+    *
+    * @param nsIDOMNode aParent
+    *        The toolbar to attach the close button to.
+    * @return void
+    */
+   makeCloseButton: function HUD_makeCloseButton(aToolbar)
+   {
+-    let hudId = this.hudId;
+-
+-    function HUD_closeButton_onCommand() {
+-      let ownerDocument = this.ownerDocument;
+-      let tab = ownerDocument.defaultView.gBrowser.selectedTab;
+-      HUDService.animate(hudId, ANIMATE_OUT, function() {
+-        if (ownerDocument.getElementById(hudId)) {
+-          HUDService.deactivateHUDForContext(tab, true);
+-        }
+-      });
+-    }
++    let onCommand = (function HUD_closeButton_onCommand() {
++      HUDService.animate(this.hudId, ANIMATE_OUT, (function() {
++        HUDService.deactivateHUDForContext(this.tab, true);
++      }).bind(this));
++    }).bind(this);
+ 
+     let closeButton = this.makeXULNode("toolbarbutton");
+     closeButton.classList.add("webconsole-close-button");
+-    closeButton.addEventListener("command", HUD_closeButton_onCommand, false);
+-
++    closeButton.addEventListener("command", onCommand, false);
+     aToolbar.appendChild(closeButton);
+   },
+ 
+   /**
+    * Creates the "Clear Console" button.
+    *
+    * @param nsIDOMNode aParent
+    *        The toolbar to attach the "Clear Console" button to.
+@@ -3528,31 +3879,33 @@ HeadsUpDisplay.prototype = {
+     let clearButton = this.makeXULNode("toolbarbutton");
+     clearButton.setAttribute("label", this.getStr("btnClear"));
+     clearButton.classList.add("webconsole-clear-console-button");
+     clearButton.addEventListener("command", HUD_clearButton_onCommand, false);
+ 
+     aToolbar.appendChild(clearButton);
+   },
+ 
++  /**
++   * Create the Web Console UI.
++   *
++   * @return nsIDOMNode
++   *         The Web Console container element (HUDBox).
++   */
+   createHUD: function HUD_createHUD()
+   {
+-    let self = this;
+-    if (this.HUDBox) {
+-      return this.HUDBox;
+-    }
+-    else  {
++    if (!this.HUDBox) {
+       this.makeHUDNodes();
+-
+-      let nodes = this.notificationBox.insertBefore(this.HUDBox,
+-        this.notificationBox.childNodes[0]);
+-
+-      return this.HUDBox;
+-    }
+-  },
++      let positionPref = Services.prefs.getCharPref("devtools.hud.position");
++      this.positionConsole(positionPref);
++    }
++    return this.HUDBox;
++  },
++
++  uiInOwnWindow: false,
+ 
+   get console() { return this.contentWindow.wrappedJSObject.console; },
+ 
+   getLogCount: function HUD_getLogCount()
+   {
+     return this.outputNode.childNodes.length;
+   },
+ 
+@@ -5497,28 +5850,35 @@ HeadsUpDisplayUICommands = {
+   toggleHUD: function UIC_toggleHUD() {
+     var window = HUDService.currentContext();
+     var gBrowser = window.gBrowser;
+     var linkedBrowser = gBrowser.selectedTab.linkedBrowser;
+     var tabId = gBrowser.getNotificationBox(linkedBrowser).getAttribute("id");
+     var hudId = "hud_" + tabId;
+     var ownerDocument = gBrowser.selectedTab.ownerDocument;
+     var hud = ownerDocument.getElementById(hudId);
+-    if (hud) {
+-      HUDService.storeHeight(hudId);
+-
+-      HUDService.animate(hudId, ANIMATE_OUT, function() {
+-        // If the user closes the console while the console is animating away,
+-        // then these callbacks will queue up, but all the callbacks after the
+-        // first will have no console to operate on. This test handles this
+-        // case gracefully.
+-        if (ownerDocument.getElementById(hudId)) {
+-          HUDService.deactivateHUDForContext(gBrowser.selectedTab, true);
+-        }
+-      });
++    var hudRef = HUDService.hudReferences[hudId];
++
++    if (hudRef && hud) {
++      if (hudRef.consolePanel) {
++        HUDService.deactivateHUDForContext(gBrowser.selectedTab, false);
++      }
++      else {
++        HUDService.storeHeight(hudId);
++
++        HUDService.animate(hudId, ANIMATE_OUT, function() {
++          // If the user closes the console while the console is animating away,
++          // then these callbacks will queue up, but all the callbacks after the
++          // first will have no console to operate on. This test handles this
++          // case gracefully.
++          if (ownerDocument.getElementById(hudId)) {
++            HUDService.deactivateHUDForContext(gBrowser.selectedTab, true);
++          }
++        });
++      }
+     }
+     else {
+       HUDService.activateHUDForContext(gBrowser.selectedTab, true);
+       HUDService.animate(hudId, ANIMATE_IN);
+     }
+   },
+ 
+   /**
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -131,16 +131,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_626484_output_copy_order.js \
+ 	browser_webconsole_bug_632347_iterators_generators.js \
+ 	browser_webconsole_bug_642108_refForOutputNode.js \
+ 	browser_webconsole_bug_642108_pruneTest.js \
+ 	browser_webconsole_bug_585956_console_trace.js \
+ 	browser_webconsole_bug_595223_file_uri.js \
+ 	browser_webconsole_bug_632275_getters_document_width.js \
+ 	browser_webconsole_bug_646025_console_file_location.js \
++	browser_webconsole_position_ui.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_position_ui.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_position_ui.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_position_ui.js
+@@ -0,0 +1,170 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++const TEST_URI = "data:text/html,<p>test for bug 577721";
++
++const POSITION_PREF = "devtools.hud.position";
++const TOP_PREF = "devtools.hud.top";
++const LEFT_PREF = "devtools.hud.left";
++const WIDTH_PREF = "devtools.hud.width";
++const HEIGHT_PREF = "devtools.hud.height";
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("DOMContentLoaded", onLoad, false);
++  registerCleanupFunction(testEnd);
++}
++
++function testEnd() {
++  Services.prefs.clearUserPref(POSITION_PREF);
++  Services.prefs.clearUserPref(WIDTH_PREF);
++  Services.prefs.clearUserPref(HEIGHT_PREF);
++  Services.prefs.clearUserPref(TOP_PREF);
++  Services.prefs.clearUserPref(LEFT_PREF);
++}
++
++function onLoad() {
++  browser.removeEventListener("DOMContentLoaded", onLoad, false);
++
++  openConsole();
++
++  testMenuitems();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let hudRef = HUDService.hudReferences[hudId];
++  let hudBox = hudRef.HUDBox;
++
++  is(hudBox.parentNode.childNodes[0].getAttribute("id"), hudId,
++     "initial console position is correct");
++
++  is(hudRef.positionMenuitems.above.getAttribute("checked"), "true",
++     "position menu checkbox is above");
++  is(Services.prefs.getCharPref(POSITION_PREF), "above", "pref is above");
++
++  hudRef.positionConsole("below");
++  let id = hudBox.parentNode.childNodes[2].getAttribute("id");
++  is(id, hudId, "below position is correct");
++
++  is(hudRef.positionMenuitems.below.getAttribute("checked"), "true",
++     "position menu checkbox is below");
++  is(Services.prefs.getCharPref(POSITION_PREF), "below", "pref is below");
++
++  // listen for the panel popupshown event.
++  document.addEventListener("popupshown", function() {
++    document.removeEventListener("popupshown", arguments.callee, false);
++
++    document.addEventListener("popuphidden", function() {
++      document.removeEventListener("popuphidden", arguments.callee, false);
++
++      id = hudBox.parentNode.childNodes[2].getAttribute("id");
++      is(id, hudId, "below position is correct after reopen");
++
++      diffHeight = Math.abs(hudBox.clientHeight - boxHeight);
++      ok(diffHeight < 3, "hudBox height is still correct");
++
++      is(Services.prefs.getCharPref(POSITION_PREF), "below", "pref is below");
++      is(Services.prefs.getIntPref(WIDTH_PREF), panelWidth, "width pref updated");
++      isnot(Services.prefs.getIntPref(TOP_PREF), 50, "top location pref updated");
++      isnot(Services.prefs.getIntPref(LEFT_PREF), 51, "left location pref updated");
++
++      // Close the window console via the toolbar button
++      let btn = hudBox.querySelector(".webconsole-close-button");
++      EventUtils.sendMouseEvent({ type: "click" }, btn);
++
++      openConsole();
++
++      hudId = HUDService.getHudIdByWindow(content);
++      hudRef = HUDService.hudReferences[hudId];
++      hudBox = hudRef.HUDBox;
++
++      id = hudBox.parentNode.childNodes[2].getAttribute("id");
++      is(id, hudId, "below position is correct after another reopen");
++
++      is(hudRef.positionMenuitems.below.getAttribute("checked"), "true",
++         "position menu checkbox is below");
++
++      finishTest();
++    }, false);
++
++    let diffHeight = Math.abs(hudBox.clientHeight - boxHeight);
++    ok(diffHeight < 8, "hudBox height is correct");
++
++    let consolePanel = hudRef.consolePanel;
++
++    is(consolePanel.getAttribute("width"), panelWidth, "panel width is correct");
++    is(consolePanel.getAttribute("top"), 50, "panel top position is correct");
++    is(consolePanel.getAttribute("left"), 51, "panel left position is correct");
++
++    let panelHeight = parseInt(consolePanel.getAttribute("height"));
++    let boxWidth = hudBox.clientWidth;
++    boxHeight = hudBox.clientHeight;
++
++    hudRef.consolePanel.sizeTo(panelWidth - 15, panelHeight - 13);
++
++    let popupBoxObject = consolePanel.popupBoxObject;
++    let screenX = popupBoxObject.screenX;
++    let screenY = popupBoxObject.screenY;
++    consolePanel.moveTo(screenX - 11, screenY - 13);
++
++    isnot(hudBox.clientWidth, boxWidth, "hudBox width was updated");
++    isnot(hudBox.clientHeight, boxHeight, "hudBox height was updated");
++
++    isnot(popupBoxObject.screenX, screenX, "panel screenX was updated");
++    isnot(popupBoxObject.screenY, screenY, "panel screenY was updated");
++
++    panelWidth = consolePanel.clientWidth;
++    boxHeight = hudBox.clientHeight;
++
++    executeSoon(function() {
++      hudRef.positionConsole("below");
++    });
++  }, false);
++
++  let boxHeight = content.innerHeight * 0.5;
++  let panelWidth = content.innerWidth * 0.5;
++
++  hudBox.style.height = boxHeight + "px";
++
++  boxHeight = hudBox.clientHeight;
++
++  Services.prefs.setIntPref(WIDTH_PREF, panelWidth);
++  Services.prefs.setIntPref(TOP_PREF, 50);
++  Services.prefs.setIntPref(LEFT_PREF, 51);
++
++  hudRef.positionConsole("window");
++  id = hudBox.parentNode.getAttribute("id");
++  is(id, "console_window_" + hudId, "window position is correct");
++  is(Services.prefs.getCharPref(POSITION_PREF), "window", "pref is window");
++}
++
++function testMenuitems() {
++  let hudId = HUDService.getHudIdByWindow(content);
++  let hudRef = HUDService.hudReferences[hudId];
++  let hudBox = hudRef.HUDBox;
++
++  let positionConsole = hudRef.positionConsole;
++  is(typeof positionConsole, "function", "positionConsole() is available");
++
++  let param = null;
++  hudRef.positionConsole = function(aPosition) {
++    param = aPosition;
++  };
++
++  // Make sure the menuitems call the correct method.
++
++  hudRef.positionMenuitems.above.doCommand();
++
++  is(param, "above", "menuitem for above positioning calls positionConsole() correctly");
++
++  hudRef.positionMenuitems.below.doCommand();
++
++  is(param, "below", "menuitem for below positioning calls positionConsole() correctly");
++
++  hudRef.positionMenuitems.window.doCommand();
++
++  is(param, "window", "menuitem for window positioning calls positionConsole() correctly");
++
++  hudRef.positionConsole = positionConsole;
++}
++
+diff --git a/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties b/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties
+--- a/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties
++++ b/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties
+@@ -110,16 +110,40 @@ NetworkPanel.imageSizeDeltaDurationMS=%S
+ # flash data received from the server can't be displayed.
+ #
+ # The %S is replaced by the content type, that can't be displayed, examples are
+ #  o application/x-shockwave-flash
+ #  o music/crescendo
+ NetworkPanel.responseBodyUnableToDisplay.content=Unable to display responses of type "%S"
+ ConsoleAPIDisabled=The Web Console logging API (console.log, console.info, console.warn, console.error) has been disabled by a script on this page.
+ 
++# LOCALIZATION NOTE (webConsolePosition): The label shown for the menu which
++# allows the user to toggle between the Web Console positioning types.
++webConsolePosition=Position
++
++# LOCALIZATION NOTE (webConsolePositionTooltip): The tooltip shown when the user
++# hovers the Position button in the Web Console toolbar.
++webConsolePositionTooltip=Position the Web Console above or below the document
++
++# LOCALIZATION NOTE (webConsolePositionAbove): When this option is selected the
++# Web Console interface is displayed above the web page.
++webConsolePositionAbove=Above
++
++# LOCALIZATION NOTE (webConsolePositionBelow): When this option is selected the
++# Web Console interface is displayed below the web page.
++webConsolePositionBelow=Below
++
++# LOCALIZATION NOTE (webConsolePositionWindow): When this option is selected the
++# Web Console interface is displayed in a floating panel.
++webConsolePositionWindow=Window
++
++# LOCALIZATION NOTE (webConsoleOwnWindowTitle): The Web Console floating panel
++# title.
++webConsoleOwnWindowTitle=Web Console
++
+ # LOCALIZATION NOTE (stacktrace.anonymousFunction):
+ # This string is used to display JavaScript functions that have no given name -
+ # they are said to be anonymous. See stacktrace.outputMessage.
+ stacktrace.anonymousFunction=<anonymous>
+ 
+ # LOCALIZATION NOTE (stacktrace.outputMessage):
+ # This string is used in the Web Console output to identify a web developer call
+ # to console.trace(). The stack trace of JavaScript function calls is displayed.
+diff --git a/toolkit/themes/gnomestripe/global/webConsole.css b/toolkit/themes/gnomestripe/global/webConsole.css
+--- a/toolkit/themes/gnomestripe/global/webConsole.css
++++ b/toolkit/themes/gnomestripe/global/webConsole.css
+@@ -296,8 +296,18 @@
+ .jsterm-complete-node > .textbox-input-box > .textbox-textarea {
+   color: GrayText;
+ }
+ 
+ .jsterm-output-line {
+   font-size: 1em;
+ }
+ 
++.web-console-panel {
++  -moz-appearance: none;
++  background-color: white;
++}
++
++.web-console-panel > .hud-box {
++  height: 100%;
++  width: 100%;
++  background-color: white;
++}
+diff --git a/toolkit/themes/pinstripe/global/webConsole.css b/toolkit/themes/pinstripe/global/webConsole.css
+--- a/toolkit/themes/pinstripe/global/webConsole.css
++++ b/toolkit/themes/pinstripe/global/webConsole.css
+@@ -380,8 +380,18 @@
+   -moz-appearance: none;
+   -moz-box-align: center;
+ }
+ 
+ .hud-console-filter-toolbar:-moz-lwtheme {
+   border-top: @scopeBarSeparatorBorder@;
+ }
+ 
++.web-console-panel {
++  -moz-appearance: none;
++  background-color: white;
++}
++
++.web-console-panel > .hud-box {
++  height: 100%;
++  width: 100%;
++  background-color: white;
++}
+diff --git a/toolkit/themes/winstripe/global/webConsole.css b/toolkit/themes/winstripe/global/webConsole.css
+--- a/toolkit/themes/winstripe/global/webConsole.css
++++ b/toolkit/themes/winstripe/global/webConsole.css
+@@ -313,8 +313,18 @@
+ .hud-console-filter-toolbar {
+   padding: 1px 0px;
+   -moz-box-align: center;
+   -moz-appearance: none;
+   background-color: -moz-dialog;
+   border-top: none;
+ }
+ 
++.web-console-panel {
++  -moz-appearance: none;
++  background-color: white;
++}
++
++.web-console-panel > .hud-box {
++  height: 100%;
++  width: 100%;
++  background-color: white;
++}

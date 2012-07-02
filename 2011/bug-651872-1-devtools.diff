@@ -1,0 +1,48 @@
+# HG changeset patch
+# Date 1303400766 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Parent 97229834ccbbf88182281609029c69317291dfe9
+Bug 651872 - Create access key for Workspace menu item
+
+diff --git a/browser/base/content/browser-menubar.inc b/browser/base/content/browser-menubar.inc
+--- a/browser/base/content/browser-menubar.inc
++++ b/browser/base/content/browser-menubar.inc
+@@ -548,16 +548,17 @@
+               <menuitem id="webConsole"
+                         label="&webConsoleCmd.label;"
+                         accesskey="&webConsoleCmd.accesskey;"
+                         key="key_webConsole"
+                         oncommand="HUDConsoleUI.toggleHUD();"/>
+               <menuitem id="menu_workspace"
+                         hidden="true"
+                         label="&workspace.label;"
++                        accesskey="&workspace.accesskey;"
+                         key="key_workspace"
+                         command="Tools:Workspace"/>
+               <menuitem id="menu_pageInfo"
+                         accesskey="&pageInfoCmd.accesskey;"
+                         label="&pageInfoCmd.label;"
+ #ifndef XP_WIN
+                         key="key_viewInfo"
+ #endif
+diff --git a/browser/locales/en-US/chrome/browser/browser.dtd b/browser/locales/en-US/chrome/browser/browser.dtd
+--- a/browser/locales/en-US/chrome/browser/browser.dtd
++++ b/browser/locales/en-US/chrome/browser/browser.dtd
+@@ -187,16 +187,17 @@ can reach it easily. -->
+ <!ENTITY webConsoleCmd.accesskey      "W">
+ <!ENTITY webConsoleCmd.commandkey     "k">
+ 
+ <!ENTITY inspectMenu.label            "Inspect">
+ <!ENTITY inspectMenu.accesskey        "T">
+ <!ENTITY inspectMenu.commandkey       "I">
+ 
+ <!ENTITY workspace.label               "Workspace">
++<!ENTITY workspace.accesskey           "O">
+ <!ENTITY workspace.keycode             "VK_F4">
+ <!ENTITY workspace.keytext             "F4">
+ 
+ <!ENTITY inspectPanelTitle.label      "HTML">
+ <!ENTITY inspectButton.label          "Inspect">
+ <!ENTITY inspectButton.accesskey      "I">
+ <!ENTITY inspectNextButton.label      "Next">
+ <!ENTITY inspectNextButton.accesskey  "N">

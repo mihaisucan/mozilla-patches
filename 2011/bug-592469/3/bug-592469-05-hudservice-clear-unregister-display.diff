@@ -1,0 +1,236 @@
+# HG changeset patch
+# Date 1310038288 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Parent 1c54f91af2bebf0ca4219960ae90c76a08536dd9
+Bug 592469 - Web Console cleanup: part 5 - HUDService - clear/unregisterDisplay()
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1470,52 +1470,23 @@ HUD_SERVICE.prototype =
+       if (!aAnimated) {
+         this.storeHeight(hudId);
+       }
+ 
+       let hud = this.hudReferences[hudId];
+       browser.webProgress.removeProgressListener(hud.progressListener);
+       delete hud.progressListener;
+ 
+-      this.unregisterDisplay(displayNode);
++      this.unregisterDisplay(hudId);
+ 
+       window.focus();
+     }
+   },
+ 
+   /**
+-   * Clear the specified HeadsUpDisplay
+-   *
+-   * @param string|nsIDOMNode aHUD
+-   *        Either the ID of a HUD or the DOM node corresponding to an outer
+-   *        HUD box.
+-   * @returns void
+-   */
+-  clearDisplay: function HS_clearDisplay(aHUD)
+-  {
+-    if (typeof(aHUD) === "string") {
+-      aHUD = this.getHudReferenceById(aHUD).HUDBox;
+-    }
+-
+-    let hudRef = HUDService.getHudReferenceForOutputNode(aHUD);
+-
+-    if (hudRef) {
+-      hudRef.cssNodes = {};
+-    }
+-
+-    var outputNode = aHUD.querySelector(".hud-output-node");
+-
+-    while (outputNode.firstChild) {
+-      outputNode.removeChild(outputNode.firstChild);
+-    }
+-
+-    aHUD.lastTimestamp = 0;
+-  },
+-
+-  /**
+    * get a unique ID from the sequence generator
+    *
+    * @returns integer
+    */
+   sequenceId: function HS_sequencerId()
+   {
+     if (!this.sequencer) {
+       this.sequencer = this.createSequencer(-1);
+@@ -1735,84 +1706,68 @@ HUD_SERVICE.prototype =
+     this.filterPrefs[aHUDId] = this.defaultFilterPrefs;
+     // init storage objects:
+     this.storage.createDisplay(aHUDId);
+   },
+ 
+   /**
+    * When a display is being destroyed, unregister it first
+    *
+-   * @param string|nsIDOMNode aHUD
+-   *        Either the ID of a HUD or the DOM node corresponding to an outer
+-   *        HUD box.
++   * @param string aHUD
++   *        The ID of a HUD.
+    * @returns void
+    */
+   unregisterDisplay: function HS_unregisterDisplay(aHUD)
+   {
++    let hud = this.getHudReferenceById(aHUD);
++
+     // Remove children from the output. If the output is not cleared, there can
+     // be leaks as some nodes has node.onclick = function; set and GC can't
+     // remove the nodes then.
+-    HUDService.clearDisplay(aHUD);
+-
+-    var id, outputNode, ownerDoc;
+-    if (typeof(aHUD) === "string") {
+-      id = aHUD;
+-      outputNode = this.getHudReferenceById(aHUD).HUDBox;
+-    }
+-    else {
+-      id = aHUD.getAttribute("id");
+-      outputNode = aHUD;
+-    }
++    hud.jsterm.clearOutput();
+ 
+     // remove HUD DOM node and
+     // remove display references from local registries get the outputNode
+-    var parent = outputNode.parentNode;
+-    var splitters = parent.querySelectorAll("splitter");
+-    var len = splitters.length;
+-    for (var i = 0; i < len; i++) {
+-      if (splitters[i].getAttribute("class") == "hud-splitter") {
+-        splitters[i].parentNode.removeChild(splitters[i]);
+-        break;
+-      }
+-    }
+-
+-    ownerDoc = outputNode.ownerDocument;
+-    ownerDoc.getElementById(id).parentNode.removeChild(outputNode);
+-
+-    this.hudReferences[id].jsterm.autocompletePopup.destroy();
+-
+-    this.hudReferences[id].consoleWindowUnregisterOnHide = false;
+-
+-    // remove the HeadsUpDisplay object from memory
+-    if ("cssNodes" in this.hudReferences[id]) {
+-      delete this.hudReferences[id].cssNodes;
+-    }
+-    delete this.hudReferences[id];
++    hud.HUDBox.parentNode.removeChild(hud.HUDBox);
++    if (hud.consolePanel) {
++      hud.consolePanel.parentNode.removeChild(hud.consolePanel);
++    }
++
++    if (hud.splitter.parentNode) {
++      hud.splitter.parentNode.removeChild(hud.splitter);
++    }
++
++    hud.jsterm.autocompletePopup.destroy();
++
++    hud.consoleWindowUnregisterOnHide = false;
++
++    delete this.hudReferences[aHUD];
++
+     // remove the related storage object
+-    this.storage.removeDisplay(id);
++    this.storage.removeDisplay(aHUD);
+ 
+     for (let windowID in this.windowIds) {
+-      if (this.windowIds[windowID] == id) {
++      if (this.windowIds[windowID] == aHUD) {
+         delete this.windowIds[windowID];
+       }
+     }
+ 
+-    this.unregisterActiveContext(id);
+-
+-    let popupset = outputNode.ownerDocument.getElementById("mainPopupSet");
+-    let panels = popupset.querySelectorAll("panel[hudId=" + id + "]");
++    this.unregisterActiveContext(aHUD);
++
++    let popupset = hud.chromeDocument.getElementById("mainPopupSet");
++    let panels = popupset.querySelectorAll("panel[hudId=" + aHUD + "]");
+     for (let i = 0; i < panels.length; i++) {
+       panels[i].hidePopup();
+     }
+ 
+-    let id = ConsoleUtils.supString(id);
++    let id = ConsoleUtils.supString(aHUD);
+     Services.obs.notifyObservers(id, "web-console-destroyed", null);
+ 
+     if (Object.keys(this.hudReferences).length == 0) {
+-      let autocompletePopup = outputNode.ownerDocument.
++      let autocompletePopup = hud.chromeDocument.
+                               getElementById("webConsole_autocompletePopup");
+       if (autocompletePopup) {
+         autocompletePopup.parentNode.removeChild(autocompletePopup);
+       }
+ 
+       this.suspend();
+     }
+   },
+@@ -3850,17 +3805,17 @@ HeadsUpDisplay.prototype = {
+    * @param string aHUDId
+    *        The ID of the console.
+    * @return void
+    */
+   makeClearConsoleButton: function HUD_makeClearConsoleButton(aToolbar)
+   {
+     let hudId = this.hudId;
+     function HUD_clearButton_onCommand() {
+-      HUDService.clearDisplay(hudId);
++      HUDService.getHudReferenceById(hudId).jsterm.clearOutput();
+     }
+ 
+     let clearButton = this.makeXULNode("toolbarbutton");
+     clearButton.setAttribute("label", this.getStr("btnClear"));
+     clearButton.classList.add("webconsole-clear-console-button");
+     clearButton.addEventListener("command", HUD_clearButton_onCommand, false);
+ 
+     aToolbar.appendChild(clearButton);
+@@ -4849,32 +4804,24 @@ JSTerm.prototype = {
+       type = aResult.constructor.name;
+     }
+ 
+     return type.toLowerCase();
+   },
+ 
+   clearOutput: function JST_clearOutput()
+   {
+-    let outputNode = this.outputNode;
+-    let hudRef = HUDService.getHudReferenceForOutputNode(outputNode);
+-
+-    if (hudRef) {
+-      hudRef.cssNodes = {};
+-    }
+-
+-    while (outputNode.firstChild) {
+-      outputNode.removeChild(outputNode.firstChild);
+-    }
+-
+-    let hudBox = outputNode;
+-    while (!hudBox.classList.contains("hud-box")) {
+-      hudBox = hudBox.parentNode;
+-    }
+-    hudBox.lastTimestamp = 0;
++    let hud = HUDService.getHudReferenceById(this.hudId);
++    hud.cssNodes = {};
++
++    while (hud.outputNode.firstChild) {
++      hud.outputNode.removeChild(hud.outputNode.firstChild);
++    }
++
++    hud.HUDBox.lastTimestamp = 0;
+   },
+ 
+   /**
+    * Updates the size of the input field (command line) to fit its contents.
+    *
+    * @returns void
+    */
+   resizeInput: function JST_resizeInput()

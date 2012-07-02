@@ -1,0 +1,265 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -200,16 +200,23 @@ const ANIMATE_IN = 1;
+ 
+ // Constants used for defining the direction of JSTerm input history navigation.
+ const HISTORY_BACK = -1;
+ const HISTORY_FORWARD = 1;
+ 
+ // The maximum number of bytes a Network ResponseListener can hold.
+ const RESPONSE_BODY_LIMIT = 1048576; // 1 MB
+ 
++// Network response bodies are piped through a buffer of the given size (in
++// bytes).
++const RESPONSE_PIPE_SEGMENT_SIZE = 131072; // 128 KB
++
++// Specifies the maximum number of segments the buffer can have.
++const RESPONSE_PIPE_SEGMENT_COUNT = 100;
++
+ // Minimum console height, in pixels.
+ const MINIMUM_CONSOLE_HEIGHT = 150;
+ 
+ // Minimum page height, in pixels. This prevents the Web Console from
+ // remembering a height that covers the whole page.
+ const MINIMUM_PAGE_HEIGHT = 50;
+ 
+ // The default console height, as a ratio from the content window inner height.
+@@ -291,36 +298,28 @@ ResponseListener.prototype =
+         catch (ex) {
+           delete httpActivity.response.header;
+         }
+       }
+     }
+   },
+ 
+   /**
+-   * Set the async listener for the given nsIAsyncInputStream.
++   * Set the async listener for the given nsIAsyncInputStream. This allows us to
++   * wait asynchronously for any data coming from the stream.
+    *
+    * @param nsIAsyncInputStream aStream
+    * @param nsIInputStreamCallback aListener
+    * @returns void
+    */
+   setAsyncListener: function RL_setAsyncListener(aStream, aListener)
+   {
+     try {
+-      // Throws NS_BASE_STREAM_CLOSED if the stream is closed normally or at
+-      // end-of-file.
+-      aStream.available();
+-    }
+-    catch (ex) {
+-      return;
+-    }
+-
+-    try {
+       // Asynchronously wait for the stream to be readable or closed.
+-      aStream.asyncWait(aListener, 0, 0, null);
++      aStream.asyncWait(aListener, 0, 0, Services.tm.mainThread);
+     }
+     catch (ex) { }
+   },
+ 
+   /**
+    * See documention at
+    * https://developer.mozilla.org/en/XPCOM_Interface_Reference/nsIStreamListener
+    *
+@@ -332,21 +331,17 @@ ResponseListener.prototype =
+    * @param unsigned long aOffset
+    * @param unsigned long aCount
+    */
+   onDataAvailable: function RL_onDataAvailable(aRequest, aContext, aInputStream,
+                                                 aOffset, aCount)
+   {
+     this.setResponseHeader(aRequest);
+ 
+-    let bis = Cc["@mozilla.org/binaryinputstream;1"].
+-              createInstance(Ci.nsIBinaryInputStream);
+-    bis.setInputStream(aInputStream);
+-
+-    let data = bis.readBytes(aCount);
++    let data = NetUtil.readInputStreamToString(aInputStream, aCount);
+ 
+     if (HUDService.saveRequestAndResponseBodies &&
+         this.receivedData.length < RESPONSE_BODY_LIMIT) {
+       this.receivedData += NetworkHelper.
+                            convertToUnicode(data, aRequest.contentCharset);
+     }
+   },
+ 
+@@ -355,16 +350,17 @@ ResponseListener.prototype =
+    * https://developer.mozilla.org/En/NsIRequestObserver
+    *
+    * @param nsIRequest aRequest
+    * @param nsISupports aContext
+    */
+   onStartRequest: function RL_onStartRequest(aRequest, aContext)
+   {
+     this.request = aRequest;
++    // Asynchronously wait for the data coming from the request.
+     this.setAsyncListener(this.sink.inputStream, this);
+   },
+ 
+   /**
+    * See documentation at
+    * https://developer.mozilla.org/En/NsIRequestObserver
+    *
+    * If aRequest is an nsIHttpChannel then the response header is stored on the
+@@ -373,20 +369,37 @@ ResponseListener.prototype =
+    * HUDService.lastFinishedRequestCallback is called if there is one.
+    *
+    * @param nsIRequest aRequest
+    * @param nsISupports aContext
+    * @param nsresult aStatusCode
+    */
+   onStopRequest: function RL_onStopRequest(aRequest, aContext, aStatusCode)
+   {
++    this.setResponseHeader(aRequest);
++    this.onInputStreamReady(this.sink.inputStream);
++    this.onStreamClose();
++  },
++
++  /**
++   * Clean up the response listener once the response input stream is closed.  
++   * This is called from onStopRequest() or from onInputStreamReady() when the
++   * stream is closed.
++   *
++   * @returns void
++   */
++  onStreamClose: function RL_onStreamClose()
++  {
++    if (!this.httpActivity) {
++      return;
++    }
++
++    // Remove our listener from the request input stream.
+     this.setAsyncListener(this.sink.inputStream, null);
+ 
+-    this.setResponseHeader(aRequest);
+-
+     if (HUDService.saveRequestAndResponseBodies) {
+       this.httpActivity.response.body = this.receivedData;
+     }
+     else {
+       this.httpActivity.response.bodyDiscarded = true;
+     }
+ 
+     if (HUDService.lastFinishedRequestCallback) {
+@@ -400,42 +413,59 @@ ResponseListener.prototype =
+         panel.update();
+       }
+     });
+     this.httpActivity.response.isDone = true;
+     this.httpActivity.response.listener = null;
+     this.httpActivity = null;
+     this.receivedData = "";
+     this.request = null;
++    this.sink = null;
++    this.inputStream = null;
+   },
+ 
+   /**
+-   * The nsIInputStreamCallback.
++   * The nsIInputStreamCallback for when the request input stream is ready -
++   * either it has more data or it is closed.
+    *
+    * @param nsIAsyncInputStream aStream
+    * @returns void
+    */
+   onInputStreamReady: function RL_onInputStreamReady(aStream)
+   {
+-    if (!(aStream instanceof Ci.nsIAsyncInputStream)) {
++    if (!(aStream instanceof Ci.nsIAsyncInputStream) || !this.httpActivity) {
+       return;
+     }
+ 
++    let available = -1;
+     try {
+-      let available = aStream.available();
+-      this.onDataAvailable(this.request, null, aStream, 0, available);
++      available = aStream.available();
+     }
+     catch (ex) { }
+ 
+-    this.setAsyncListener(aStream, this);
++    if (available != -1) {
++      try {
++        if (available != 0) {
++          this.onDataAvailable(this.request, null, aStream, 0, available);
++        }
++      }
++      catch (ex) { }
++
++      this.setAsyncListener(aStream, this);
++    }
++    else {
++      this.onStreamClose();
++    }
+   },
+ 
+   QueryInterface: XPCOMUtils.generateQI([
+-    Ci.nsIStreamListener, Ci.nsIInputStreamCallback,
+-    Ci.nsIRequestObserver, Ci.nsISupports
++    Ci.nsIStreamListener,
++    Ci.nsIInputStreamCallback,
++    Ci.nsIRequestObserver,
++    Ci.nsISupports
+   ])
+ }
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ //// Helper for creating the network panel.
+ 
+ /**
+  * Creates a DOMNode and sets all the attributes of aAttributes on the created
+@@ -2077,22 +2107,24 @@ HUD_SERVICE.prototype =
+             // Add listener for the response body.
+             let newListener = new ResponseListener(httpActivity);
+             aChannel.QueryInterface(Ci.nsITraceableChannel);
+ 
+             httpActivity.response.listener = newListener;
+ 
+             let tee = Cc["@mozilla.org/network/stream-listener-tee;1"].
+                       createInstance(Ci.nsIStreamListenerTee);
+-            tee = tee.QueryInterface(Ci.nsIStreamListenerTee);
+ 
+             // The response will be written into the outputStream of this pipe.
++            // This allows us to buffer the data we are receiving and read it
++            // asynchronously.
+             // Both ends of the pipe must be blocking.
+             let sink = Cc["@mozilla.org/pipe;1"].createInstance(Ci.nsIPipe);
+-            sink.init(false, false, 0x20000, 0x4000, null);
++            sink.init(false, false, RESPONSE_PIPE_SEGMENT_SIZE,
++                      RESPONSE_PIPE_SEGMENT_COUNT, null);
+ 
+             // Remember the input stream, so it isn't released by GC.
+             newListener.inputStream = sink.inputStream;
+ 
+             let originalListener = aChannel.setNewListener(tee);
+             newListener.sink = sink;
+ 
+             tee.init(originalListener, sink.outputStream, newListener);
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_618078_network_exceptions.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_618078_network_exceptions.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_618078_network_exceptions.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_618078_network_exceptions.js
+@@ -1,17 +1,16 @@
+ /* vim:set ts=2 sw=2 sts=2 et: */
+-/* ***** BEGIN LICENSE BLOCK *****
++/*
+  * Any copyright is dedicated to the Public Domain.
+  * http://creativecommons.org/publicdomain/zero/1.0/
+  *
+  * Contributor(s):
+  *  Mihai Șucan <mihai.sucan@gmail.com>
+- *
+- * ***** END LICENSE BLOCK ***** */
++ */
+ 
+ // Tests that network log messages bring up the network panel.
+ 
+ const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-618078-network-exceptions.html";
+ 
+ let testEnded = false;
+ 
+ let TestObserver = {

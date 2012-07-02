@@ -1,0 +1,188 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1843,17 +1843,17 @@ HUD_SERVICE.prototype =
+     if (!aHUDId || !aContentWindow){
+       throw new Error(ERRORS.MISSING_ARGS);
+     }
+     var URISpec = aContentWindow.document.location.href;
+     this.filterPrefs[aHUDId] = this.defaultFilterPrefs;
+     this.displayRegistry[aHUDId] = URISpec;
+ 
+     // get the window Id
+-    var windowId = this.getWindowId(aContentWindow);
++    var windowId = this.getWindowId(aContentWindow.top);
+     this._headsUpDisplays[aHUDId] = { id: aHUDId, windowId: windowId };
+ 
+     this.registerActiveContext(aHUDId);
+     // init storage objects:
+     this.storage.createDisplay(aHUDId);
+ 
+     var huds = this.uriRegistry[URISpec];
+     var foundHUDId = false;
+@@ -3507,35 +3507,34 @@ let ConsoleAPIObserver = {
+     Services.obs.addObserver(this, "console-api-log-event", false);
+   },
+ 
+   observe: function CAO_observe(aMessage, aTopic, aData)
+   {
+     if (aTopic == "console-api-log-event") {
+       aMessage = aMessage.wrappedJSObject;
+       let windowId = parseInt(aData);
++      let win = null;
+       try {
+-        let win = HUDService.getWindowByWindowId(windowId).top;
++        win = HUDService.getWindowByWindowId(windowId);
+       }
+-      catch (ex) {
+-        // noop
++      catch (ex) { }
++
++      if (!win) {
+         return;
+       }
+ 
+-      let hudId;
+-      let displays = HUDService._headsUpDisplays;
+-      let foundConsoleId = false;
+-      for (let idx in displays) {
+-        if (parseInt(displays[idx].windowId) == parseInt(windowId)) {
+-          hudId = displays[idx].id;
+-          foundConsoleId = true;
+-          let webConsole = HUDService.hudReferences[hudId];
+-
+-          this.sendToWebConsole(webConsole, aMessage.level, aMessage.arguments);
+-        }
++      let hudId = HUDService.getHudIdByWindow(win);
++      if (!hudId) {
++        return;
++      }
++
++      let webConsole = HUDService.hudReferences[hudId];
++      if (webConsole) {
++        this.sendToWebConsole(webConsole, aMessage.level, aMessage.arguments);
+       }
+     }
+     else if (aTopic == "quit-application-granted") {
+       this.shutdown();
+     }
+   },
+ 
+   shutdown: function CAO_shutdown()
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -96,16 +96,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js \
+ 	browser_webconsole_bug_595350_multiple_windows_and_tabs.js \
+ 	browser_webconsole_bug_594497_history_arrow_keys.js \
+ 	browser_webconsole_bug_588342_document_focus.js \
+ 	browser_webconsole_bug_595934_message_categories.js \
+ 	browser_webconsole_bug_601352_scroll.js \
+ 	browser_webconsole_bug_592442_closing_brackets.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
++	browser_webconsole_bug_613013_console_api_iframe.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+@@ -128,15 +129,16 @@ _BROWSER_TEST_PAGES = \
+ 	test-bug-595934-css-loader.css^headers^ \
+ 	test-bug-595934-dom-html.html \
+ 	test-bug-595934-imagemap.html \
+ 	test-bug-595934-html.html \
+ 	test-bug-595934-malformedxml.xhtml \
+ 	test-bug-595934-svg.xhtml \
+ 	test-bug-597136-external-script-errors.html \
+ 	test-bug-597136-external-script-errors.js \
++	test-bug-613013-console-api-iframe.html \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613013_console_api_iframe.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613013_console_api_iframe.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613013_console_api_iframe.js
+@@ -0,0 +1,49 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-613013-console-api-iframe.html";
++
++let TestObserver = {
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
++
++  observe: function test_observe(aMessage, aTopic, aData)
++  {
++    if (aTopic == "console-api-log-event") {
++      executeSoon(performTest);
++    }
++  }
++};
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  hud = HUDService.hudReferences[hudId];
++
++  Services.obs.addObserver(TestObserver, "console-api-log-event", false);
++  content.location.reload();
++}
++
++function performTest() {
++  isnot(hud.outputNode.textContent.indexOf("foobarBug613013"), -1,
++        "console.log() message found");
++
++  Services.obs.removeObserver(TestObserver, "console-api-log-event");
++  TestObserver = null;
++  finishTest();
++}
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoad, true);
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-613013-console-api-iframe.html b/toolkit/components/console/hudservice/tests/browser/test-bug-613013-console-api-iframe.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-613013-console-api-iframe.html
+@@ -0,0 +1,20 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>test for bug 613013</title>
++    <!-- Any copyright is dedicated to the Public Domain.
++         http://creativecommons.org/publicdomain/zero/1.0/ -->
++  </head>
++  <body>
++    <p>test for bug 613013</p>
++    <script type="text/javascript"><!--
++      (function () {
++        var iframe = document.createElement('iframe');
++        iframe.src = 'data:text/html,little iframe';
++        document.body.appendChild(iframe);
++
++        console.log("foobarBug613013");
++      })();
++    // --></script>
++  </body>
++</html>

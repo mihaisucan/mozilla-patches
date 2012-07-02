@@ -1,0 +1,21 @@
+diff --git a/browser/base/content/browser.xul b/browser/base/content/browser.xul
+--- a/browser/base/content/browser.xul
++++ b/browser/base/content/browser.xul
+@@ -549,17 +549,16 @@
+             </menu>
+           </hbox>
+           <menuseparator class="appmenu-menuseparator"/>
+           <menu id="appmenu_webDeveloper"
+                 label="&appMenuWebDeveloper.label;">
+             <menupopup id="appmenu_webDeveloper_popup">
+               <menuitem id="appmenu_webConsole"
+                         label="&webConsoleCmd.label;"
+-                        type="checkbox"
+                         oncommand="HUDConsoleUI.toggleHUD();"
+                         key="key_webConsole"/>
+               <menuitem id="appmenu_pageInspect"
+                         hidden="true"
+                         label="&inspectMenu.label;"
+                         type="checkbox"
+                         command="Tools:Inspect"
+                         key="key_inspect"/>

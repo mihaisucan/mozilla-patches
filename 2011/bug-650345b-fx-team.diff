@@ -1,0 +1,644 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1324143099 -7200
+# Node ID 443714e1855b330b4ad98d8a67868e7e1b98e1b0
+# Parent  eaaf1463b7d9a97bf14be30c442d1b6ba738dd9c
+Bug 650345 - Part 2 - Implement minimal UI for Find and Jump to line in the Source Editor
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -1068,17 +1068,17 @@ pref("devtools.editor.expandtab", true);
+ //
+ // Available components:
+ //   "textarea" - this is a basic text editor, like an HTML <textarea>.
+ //
+ //   "orion" - this is the Orion source code editor from the Eclipse project. It
+ //   provides programmer-specific editor features such as syntax highlighting,
+ //   indenting and bracket recognition. It may not be appropriate for all
+ //   locales (esp. RTL) or a11y situations.
+-pref("devtools.editor.component", "textarea");
++pref("devtools.editor.component", "orion");
+ 
+ // Whether the character encoding menu is under the main Firefox button. This
+ // preference is a string so that localizers can alter it.
+ pref("browser.menu.showCharacterEncoding", "chrome://browser/locale/browser.properties");
+ 
+ // Allow using tab-modal prompts when possible.
+ pref("prompts.tab_modal.enabled", true);
+ // Whether the Panorama should animate going in/out of tabs
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -106,28 +106,26 @@ const DEFAULT_KEYBINDINGS = [
+   },
+   {
+     action: "Find...",
+     code: Ci.nsIDOMKeyEvent.DOM_VK_F,
+     accel: true,
+   },
+   {
+     action: "Find Next Occurrence",
+-    code: Ci.nsIDOMKeyEvent.DOM_VK_K,
+-    accel: true,
++    code: Ci.nsIDOMKeyEvent.DOM_VK_F3,
+   },
+   {
+     action: "Find Previous Occurrence",
+-    code: Ci.nsIDOMKeyEvent.DOM_VK_K,
+-    accel: true,
++    code: Ci.nsIDOMKeyEvent.DOM_VK_F3,
+     shift: true,
+   },
+   {
+     action: "Goto Line...",
+-    code: Ci.nsIDOMKeyEvent.DOM_VK_L,
++    code: Ci.nsIDOMKeyEvent.DOM_VK_G,
+     accel: true,
+   },
+ ];
+ 
+ var EXPORTED_SYMBOLS = ["SourceEditor"];
+ 
+ /**
+  * The SourceEditor object constructor. The SourceEditor component allows you to
+@@ -303,16 +301,17 @@ SourceEditor.prototype = {
+ 
+     this._dragAndDrop = new TextDND(this._view, this._undoStack);
+ 
+     let actions = {
+       "undo": [this.undo, this],
+       "redo": [this.redo, this],
+       "tab": [this._doTab, this],
+       "Unindent Lines": [this._doUnindentLines, this],
++      "enter": [this._doEnter, this],
+       "Find...": [this.ui.find, this.ui],
+       "Find Next Occurrence": [this.ui.findNext, this.ui],
+       "Find Previous Occurrence": [this.ui.findPrevious, this.ui],
+       "Goto Line...": [this.ui.gotoLine, this.ui],
+     };
+ 
+     for (let name in actions) {
+       let action = actions[name];
+diff --git a/browser/devtools/sourceeditor/source-editor-textarea.jsm b/browser/devtools/sourceeditor/source-editor-textarea.jsm
+--- a/browser/devtools/sourceeditor/source-editor-textarea.jsm
++++ b/browser/devtools/sourceeditor/source-editor-textarea.jsm
+@@ -62,35 +62,51 @@ const DEFAULT_KEYBINDINGS = [
+     _action: "find",
+     _context: "ui",
+     charCode: "f".charCodeAt(0),
+     shiftKey: false,
+     accelKey: true,
+     altKey: false,
+   },
+   {
+-    _action: "findNext",
++    _action: "find",
+     _context: "ui",
+-    charCode: "k".charCodeAt(0),
++    keyCode: Ci.nsIDOMKeyEvent.DOM_VK_F,
+     shiftKey: false,
+     accelKey: true,
+     altKey: false,
+   },
+   {
++    _action: "findNext",
++    _context: "ui",
++    keyCode: Ci.nsIDOMKeyEvent.DOM_VK_F3,
++    shiftKey: false,
++    accelKey: false,
++    altKey: false,
++  },
++  {
+     _action: "findPrevious",
+     _context: "ui",
+-    charCode: "K".charCodeAt(0),
++    keyCode: Ci.nsIDOMKeyEvent.DOM_VK_F3,
+     shiftKey: true,
++    accelKey: false,
++    altKey: false,
++  },
++  {
++    _action: "gotoLine",
++    _context: "ui",
++    charCode: "g".charCodeAt(0),
++    shiftKey: false,
+     accelKey: true,
+     altKey: false,
+   },
+   {
+     _action: "gotoLine",
+     _context: "ui",
+-    charCode: "l".charCodeAt(0),
++    keyCode: Ci.nsIDOMKeyEvent.DOM_VK_G,
+     shiftKey: false,
+     accelKey: true,
+     altKey: false,
+   },
+ ];
+ 
+ var EXPORTED_SYMBOLS = ["SourceEditor"];
+ 
+@@ -263,17 +279,18 @@ SourceEditor.prototype = {
+   },
+ 
+   /**
+    * The Tab keypress event handler. This allows the user to indent the code
+    * with spaces, when expandTab is true.
+    */
+   _doTab: function SE__doTab()
+   {
+-    let caret = this.getCaretOffset();
++    let selection = this.getSelection();
++    let caret = selection.start;
+     let indent = "\t";
+ 
+     if (this._expandTab) {
+       let text = this._textbox.value;
+       let lineStart = caret;
+       while (lineStart > 0) {
+         let c = text.charAt(lineStart - 1);
+         if (c == "\r" || c == "\n") {
+@@ -281,18 +298,18 @@ SourceEditor.prototype = {
+         }
+         lineStart--;
+       }
+       let offset = caret - lineStart;
+       let spaces = this._tabSize - (offset % this._tabSize);
+       indent = (new Array(spaces + 1)).join(" ");
+     }
+ 
+-    this.setText(indent, caret, caret);
+-    this.setCaretOffset(caret + indent.length);
++    this.setText(indent, selection.start, selection.end);
++    this.setCaretOffset(selection.start + indent.length);
+   },
+ 
+   /**
+    * The textbox keyup, click and select event handler tracks selection
+    * changes. This method invokes the SourceEditor Selection event handlers.
+    *
+    * @see SourceEditor.EVENTS.SELECTION
+    * @private
+diff --git a/browser/devtools/sourceeditor/source-editor-ui.jsm b/browser/devtools/sourceeditor/source-editor-ui.jsm
+--- a/browser/devtools/sourceeditor/source-editor-ui.jsm
++++ b/browser/devtools/sourceeditor/source-editor-ui.jsm
+@@ -106,19 +106,20 @@ SourceEditorUI.prototype = {
+     }
+ 
+     let result = Services.prompt.prompt(this._ownerWindow,
+       Strings.GetStringFromName("findCmd.promptTitle"),
+       Strings.GetStringFromName("findCmd.promptMessage"),
+       str, null, {});
+ 
+     if (result && str.value) {
+-      let pos = this.editor.find(str.value, {ignoreCase: true});
++      let start = this.editor.getSelection().end;
++      let pos = this.editor.find(str.value, {ignoreCase: true, start: start});
+       if (pos == -1) {
+-        pos = this.editor.find(str.value, {start: 0, ignoreCase: true});
++        pos = this.editor.find(str.value, {ignoreCase: true});
+       }
+       if (pos > -1) {
+         this.editor.setSelection(pos, pos + str.value.length);
+       }
+     }
+ 
+     return true;
+   },
+diff --git a/browser/devtools/sourceeditor/source-editor.jsm b/browser/devtools/sourceeditor/source-editor.jsm
+--- a/browser/devtools/sourceeditor/source-editor.jsm
++++ b/browser/devtools/sourceeditor/source-editor.jsm
+@@ -164,81 +164,83 @@ function extend(aDestination, aSource)
+  * Add methods common to all components.
+  */
+ extend(SourceEditor.prototype, {
+   _lastFind: null,
+ 
+   /**
+    * Find a string in the editor.
+    *
+-   * @param string [aString]
+-   *        Optional. The string you want to search for. If |aString| is not
+-   *        given the currently selected text is used.
++   * @param string aString
++   *        The string you want to search for. If |aString| is not given the
++   *        currently selected text is used.
+    * @param object [aOptions]
+    *        Optional find options:
+-   *        - start: (integer) offset to start searching from. Default:
+-   *        getSelection().end.
++   *        - start: (integer) offset to start searching from. Default: 0 if
++   *        backwards is false. If backwards is true then start = text.length.
+    *        - ignoreCase: (boolean) tells if you want the search to be case
+    *        insensitive or not. Default: false.
+    *        - backwards: (boolean) tells if you want the search to go backwards
+    *        from the given |start| offset. Default: false.
+    * @return integer
+    *        The offset where the string was found.
+    */
+   find: function SE_find(aString, aOptions)
+   {
+-    if (!aString) {
+-      aString = this.getSelectedText();
+-    }
+-    if (!aString) {
++    if (typeof(aString) != "string") {
+       return -1;
+     }
+ 
+     aOptions = aOptions || {};
+-    if (!("start" in aOptions)) {
+-      aOptions.start = this.getSelection().end;
+-    }
+ 
+     let str = aOptions.ignoreCase ? aString.toLowerCase() : aString;
+ 
+     let text = this.getText();
+     if (aOptions.ignoreCase) {
+       text = text.toLowerCase();
+     }
+ 
+     let index = aOptions.backwards ?
+                 text.lastIndexOf(str, aOptions.start) :
+                 text.indexOf(str, aOptions.start);
+ 
++    let lastFoundIndex = index;
++    if (index == -1 && this.lastFind && this.lastFind.index > -1 &&
++        this.lastFind.str === aString &&
++        this.lastFind.ignoreCase === !!aOptions.ignoreCase) {
++      lastFoundIndex = this.lastFind.index;
++    }
++
+     this._lastFind = {
+       str: aString,
+       index: index,
+-      ignoreCase: aOptions.ignoreCase,
++      lastFound: lastFoundIndex,
++      ignoreCase: !!aOptions.ignoreCase,
+     };
+ 
+     return index;
+   },
+ 
+   /**
+    * Find the next occurrence of the last search operation.
+    *
+    * @param boolean aWrap
+    *        Tells if you want to restart the search from the beginning of the
+    *        document if the string is not found.
+    * @return integer
+    *        The offset where the string was found.
+    */
+   findNext: function SE_findNext(aWrap)
+   {
+-    if (!this.lastFind) {
++    if (!this.lastFind && this.lastFind.lastFound == -1) {
+       return -1;
+     }
+ 
+     let options = {
+-      start: this.lastFind.index + 1,
++      start: this.lastFind.lastFound + this.lastFind.str.length,
+       ignoreCase: this.lastFind.ignoreCase,
+     };
+ 
+     let index = this.find(this.lastFind.str, options);
+     if (index == -1 && aWrap) {
+       options.start = 0;
+       index = this.find(this.lastFind.str, options);
+     }
+@@ -252,41 +254,51 @@ extend(SourceEditor.prototype, {
+    * @param boolean aWrap
+    *        Tells if you want to restart the search from the end of the
+    *        document if the string is not found.
+    * @return integer
+    *        The offset where the string was found.
+    */
+   findPrevious: function SE_findPrevious(aWrap)
+   {
+-    if (!this.lastFind) {
++    if (!this.lastFind && this.lastFind.lastFound == -1) {
+       return -1;
+     }
+ 
+     let options = {
+-      start: this.lastFind.index - 1,
++      start: this.lastFind.lastFound - this.lastFind.str.length,
+       ignoreCase: this.lastFind.ignoreCase,
+       backwards: true,
+     };
+ 
+-    let index = this.find(this.lastFind.str, options);
++    let index;
++    if (options.start > 0) {
++      index = this.find(this.lastFind.str, options);
++    } else {
++      index = this._lastFind.index = -1;
++    }
++
+     if (index == -1 && aWrap) {
+       options.start = this.getCharCount() - 1;
+       index = this.find(this.lastFind.str, options);
+     }
+ 
+     return index;
+   },
+ });
+ 
+ /**
+  * Retrieve the last find operation result. This object holds the following
+  * properties:
+  *   - str: the last search string.
+- *   - index: the index in the text where |str| was found.
++ *   - index: stores the result of the most recent find operation. This is the
++ *   index in the text where |str| was found or -1 otherwise.
++ *   - lastFound: tracks the index where |str| was last found, throughout
++ *   multiple find operations. This can be -1 if |str| was never found in the
++ *   document.
+  *   - ignoreCase: tells if the search was case insensitive or not.
+  * @type object
+  */
+ Object.defineProperty(SourceEditor.prototype, "lastFind", {
+   get: function() { return this._lastFind; },
+   enumerable: true,
+   configurable: true,
+ });
+diff --git a/browser/devtools/sourceeditor/test/Makefile.in b/browser/devtools/sourceeditor/test/Makefile.in
+--- a/browser/devtools/sourceeditor/test/Makefile.in
++++ b/browser/devtools/sourceeditor/test/Makefile.in
+@@ -47,12 +47,13 @@ include $(topsrcdir)/config/rules.mk
+ _BROWSER_TEST_FILES = \
+ 		browser_sourceeditor_initialization.js \
+ 		browser_bug684862_paste_html.js \
+ 		browser_bug687573_vscroll.js \
+ 		browser_bug687568_pagescroll.js \
+ 		browser_bug687580_drag_and_drop.js \
+ 		browser_bug695035_middle_click_paste.js \
+ 		browser_bug687160_line_api.js \
++		browser_bug650345_find.js \
+ 		head.js \
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/browser/devtools/sourceeditor/test/browser_bug650345_find.js b/browser/devtools/sourceeditor/test/browser_bug650345_find.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/sourceeditor/test/browser_bug650345_find.js
+@@ -0,0 +1,256 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++"use strict";
++
++Cu.import("resource:///modules/source-editor.jsm");
++
++let testWin;
++let editor;
++let component = Services.prefs.getCharPref(SourceEditor.PREFS.COMPONENT);
++
++function test()
++{
++  waitForExplicitFinish();
++
++  const windowUrl = "data:text/xml,<?xml version='1.0'?>" +
++    "<window xmlns='http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul'" +
++    " title='test for bug 650345' width='600' height='500'><hbox flex='1'/></window>";
++  const windowFeatures = "chrome,titlebar,toolbar,centerscreen,resizable,dialog=no";
++
++  testWin = Services.ww.openWindow(null, windowUrl, "_blank", windowFeatures, null);
++  testWin.addEventListener("load", function onWindowLoad() {
++    testWin.removeEventListener("load", onWindowLoad, false);
++    waitForFocus(initEditor, testWin);
++  }, false);
++}
++
++function initEditor()
++{
++  let hbox = testWin.document.querySelector("hbox");
++  editor = new SourceEditor();
++  editor.init(hbox, {}, editorLoaded);
++}
++
++function editorLoaded()
++{
++
++  editor.focus();
++
++  testFindAPI();
++  testFindUI();
++  testGotoLine();
++
++  editor.destroy();
++
++  testWin.close();
++  testWin = editor = null;
++
++  waitForFocus(finish, window);
++}
++
++function testFindAPI()
++{
++  let text = "foobar bug650345\nBug650345 bazbaz\nfoobar omg\ntest";
++  editor.setText(text);
++
++  let needle = "foobar";
++  is(editor.find(), -1, "find() works");
++  ok(!editor.lastFind, "no editor.lastFind yet");
++
++  is(editor.find(needle), 0, "find('" + needle + "') works");
++  is(editor.lastFind.str, needle, "lastFind.str is correct");
++  is(editor.lastFind.index, 0, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, 0, "lastFind.lastFound is correct");
++  is(editor.lastFind.ignoreCase, false, "lastFind.ignoreCase is correct");
++
++  let newIndex = text.indexOf(needle, needle.length);
++  is(editor.findNext(), newIndex, "findNext() works");
++  is(editor.lastFind.str, needle, "lastFind.str is correct");
++  is(editor.lastFind.index, newIndex, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, newIndex, "lastFind.lastFound is correct");
++  is(editor.lastFind.ignoreCase, false, "lastFind.ignoreCase is correct");
++
++  is(editor.findNext(), -1, "findNext() works again");
++  is(editor.lastFind.index, -1, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, newIndex, "lastFind.lastFound is correct");
++
++  is(editor.findPrevious(), 0, "findPrevious() works");
++  is(editor.lastFind.index, 0, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, 0, "lastFind.lastFound is correct");
++
++  is(editor.findPrevious(), -1, "findPrevious() works again");
++  is(editor.lastFind.index, -1, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, 0, "lastFind.lastFound is correct");
++
++  is(editor.findNext(), newIndex, "findNext() works");
++  is(editor.lastFind.index, newIndex, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, newIndex, "lastFind.lastFound is correct");
++
++  is(editor.findNext(true), 0, "findNext(true) works");
++  is(editor.lastFind.index, 0, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, 0, "lastFind.lastFound is correct");
++
++  is(editor.findNext(true), newIndex, "findNext(true) works again");
++  is(editor.lastFind.index, newIndex, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, newIndex, "lastFind.lastFound is correct");
++
++  is(editor.findPrevious(true), 0, "findPrevious(true) works");
++  is(editor.lastFind.index, 0, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, 0, "lastFind.lastFound is correct");
++
++  is(editor.findPrevious(true), newIndex, "findPrevious(true) works again");
++  is(editor.lastFind.index, newIndex, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, newIndex, "lastFind.lastFound is correct");
++
++  needle = "error";
++  is(editor.find(needle), -1, "find('" + needle + "') works");
++  is(editor.lastFind.str, needle, "lastFind.str is correct");
++  is(editor.lastFind.index, -1, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, -1, "lastFind.lastFound is correct");
++  is(editor.lastFind.ignoreCase, false, "lastFind.ignoreCase is correct");
++
++  is(editor.findNext(), -1, "findNext() works");
++  is(editor.lastFind.str, needle, "lastFind.str is correct");
++  is(editor.lastFind.index, -1, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, -1, "lastFind.lastFound is correct");
++  is(editor.findNext(true), -1, "findNext(true) works");
++
++  is(editor.findPrevious(), -1, "findPrevious() works");
++  is(editor.findPrevious(true), -1, "findPrevious(true) works");
++
++  needle = "bug650345";
++  newIndex = text.indexOf(needle);
++
++  is(editor.find(needle), newIndex, "find('" + needle + "') works");
++  is(editor.findNext(), -1, "findNext() works");
++  is(editor.findNext(true), newIndex, "findNext(true) works");
++  is(editor.findPrevious(), -1, "findPrevious() works");
++  is(editor.findPrevious(true), newIndex, "findPrevious(true) works");
++  is(editor.lastFind.index, newIndex, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, newIndex, "lastFind.lastFound is correct");
++
++  is(editor.find(needle, {ignoreCase: 1}), newIndex,
++     "find('" + needle + "', {ignoreCase: 1}) works");
++  is(editor.lastFind.ignoreCase, true, "lastFind.ignoreCase is correct");
++
++  let newIndex2 = text.toLowerCase().indexOf(needle, newIndex + needle.length);
++  is(editor.findNext(), newIndex2, "findNext() works");
++  is(editor.findNext(), -1, "findNext() works");
++  is(editor.lastFind.index, -1, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, newIndex2, "lastFind.lastFound is correct");
++
++  is(editor.findNext(true), newIndex, "findNext(true) works");
++
++  is(editor.findPrevious(), -1, "findPrevious() works");
++  is(editor.findPrevious(true), newIndex2, "findPrevious(true) works");
++  is(editor.findPrevious(), newIndex, "findPrevious() works again");
++
++  needle = "foobar";
++  newIndex = text.indexOf(needle, 2);
++  is(editor.find(needle, {start: 2}), newIndex,
++     "find('" + needle + "', {start:2}) works");
++  is(editor.findNext(), -1, "findNext() works");
++  is(editor.findNext(true), 0, "findNext(true) works");
++}
++
++function testFindUI()
++{
++  let text = "foobar bug650345\nBug650345 bazbaz\nfoobar omg\ntest";
++  editor.setText(text);
++
++  let needle = "foobar";
++  editor.setSelection(0, needle.length);
++
++  let oldPrompt = Services.prompt;
++  Services.prompt = {
++    prompt: function() { return true; },
++  };
++
++  info("test Ctrl-F (find)");
++  EventUtils.synthesizeKey("VK_F", {accelKey: true}, testWin);
++
++  let selection = editor.getSelection();
++  let newIndex = text.indexOf(needle, needle.length);
++  is(selection.start, newIndex, "selection.start is correct");
++  is(selection.end, newIndex + needle.length, "selection.end is correct");
++
++  info("test Ctrl-F (find) again");
++  EventUtils.synthesizeKey("VK_F", {accelKey: true}, testWin);
++  selection = editor.getSelection();
++  is(selection.start, 0, "selection.start is correct");
++  is(selection.end, needle.length, "selection.end is correct");
++
++  info("test Ctrl-K (findNext)");
++  EventUtils.synthesizeKey("VK_F3", {}, testWin);
++  selection = editor.getSelection();
++  is(selection.start, newIndex, "selection.start is correct");
++  is(selection.end, newIndex + needle.length, "selection.end is correct");
++
++  info("test Ctrl-K (findNext) again");
++  EventUtils.synthesizeKey("VK_F3", {}, testWin);
++  selection = editor.getSelection();
++  is(selection.start, 0, "selection.start is correct");
++  is(selection.end, needle.length, "selection.end is correct");
++
++  info("test Ctrl-Shift-K (findPrevious)");
++  EventUtils.synthesizeKey("VK_F3", {shiftKey: true}, testWin);
++  selection = editor.getSelection();
++  is(selection.start, newIndex, "selection.start is correct");
++  is(selection.end, newIndex + needle.length, "selection.end is correct");
++
++  info("test Ctrl-Shift-K (findPrevious) again");
++  EventUtils.synthesizeKey("VK_F3", {shiftKey: true}, testWin);
++  selection = editor.getSelection();
++  is(selection.start, 0, "selection.start is correct");
++  is(selection.end, needle.length, "selection.end is correct");
++
++  needle = "BAZbaz";
++  newIndex = text.toLowerCase().indexOf(needle.toLowerCase());
++
++  Services.prompt = {
++    prompt: function(aWindow, aTitle, aMessage, aValue) {
++      aValue.value = needle;
++      return true;
++    },
++  };
++
++  info("test Ctrl-F (find) with a custom value");
++  EventUtils.synthesizeKey("VK_F", {accelKey: true}, testWin);
++
++  selection = editor.getSelection();
++  is(selection.start, newIndex, "selection.start is correct");
++  is(selection.end, newIndex + needle.length, "selection.end is correct");
++
++  Services.prompt = oldPrompt;
++}
++
++function testGotoLine()
++{
++  info("testGotoLine");
++
++  let text = "foobar bug650345\nBug650345 bazbaz\nfoobar omg\ntest";
++  editor.setText(text);
++
++  editor.setCaretOffset(0);
++
++  let oldPrompt = Services.prompt;
++  let desiredValue = null;
++  Services.prompt = {
++    prompt: function(aWindow, aTitle, aMessage, aValue) {
++      aValue.value = desiredValue;
++      return true;
++    },
++  };
++
++  desiredValue = 3;
++  EventUtils.synthesizeKey("VK_G", {accelKey: true}, testWin);
++  is(editor.getCaretOffset(), 34, "caret offset is correct");
++
++  desiredValue = 2;
++  EventUtils.synthesizeKey("VK_G", {accelKey: true}, testWin);
++  is(editor.getCaretOffset(), 17, "caret offset is correct (again)");
++
++  Services.prompt = oldPrompt;
++}

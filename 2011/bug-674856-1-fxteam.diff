@@ -1,0 +1,1205 @@
+# HG changeset patch
+# User Michael Ratcliffe <mratcliffe@mozilla.com>
+# Date 1316082600 -10800
+# Node ID b0ac8ee9274ac0b1d11b5dc0866aea1393d7e1ae
+# Parent  f483978fe878d5e061b777b59e22a9b48baafa65
+Bug 674856 - The style inspector should not redraw the whole UI every time it is used
+
+diff --git a/browser/devtools/styleinspector/CssHtmlTree.jsm b/browser/devtools/styleinspector/CssHtmlTree.jsm
+--- a/browser/devtools/styleinspector/CssHtmlTree.jsm
++++ b/browser/devtools/styleinspector/CssHtmlTree.jsm
+@@ -60,31 +60,30 @@ var EXPORTED_SYMBOLS = ["CssHtmlTree", "
+  */
+ function CssHtmlTree(aStyleWin, aCssLogic, aPanel)
+ {
+   this.styleWin = aStyleWin;
+   this.cssLogic = aCssLogic;
+   this.doc = aPanel.ownerDocument;
+   this.win = this.doc.defaultView;
+   this.getRTLAttr = CssHtmlTree.getRTLAttr;
++  this.propertyViews = {};
+ 
+   // The document in which we display the results (csshtmltree.xhtml).
+   this.styleDocument = this.styleWin.contentWindow.document;
+ 
+   // Nodes used in templating
+   this.root = this.styleDocument.getElementById("root");
+   this.templateRoot = this.styleDocument.getElementById("templateRoot");
+   this.propertyContainer = this.styleDocument.getElementById("propertyContainer");
+   this.templateProperty = this.styleDocument.getElementById("templateProperty");
+   this.panel = aPanel;
+ 
+   // The element that we're inspecting, and the document that it comes from.
+   this.viewedElement = null;
+-  this.viewedDocument = null;
+-
+   this.createStyleViews();
+ }
+ 
+ /**
+  * Memonized lookup of a l10n string from a string bundle.
+  * @param {string} aName The key to lookup.
+  * @returns A localized version of the given key.
+  */
+@@ -143,73 +142,86 @@ XPCOMUtils.defineLazyGetter(CssHtmlTree,
+   let mainWindow = Services.wm.getMostRecentWindow("navigator:browser");
+   return mainWindow.getComputedStyle(mainWindow.gBrowser).direction;
+ });
+ 
+ XPCOMUtils.defineLazyGetter(CssHtmlTree, "_strings", function() Services.strings
+     .createBundle("chrome://browser/locale/styleinspector.properties"));
+ 
+ CssHtmlTree.prototype = {
++  htmlComplete: false,
++
+   /**
+-   * Focus the output display on a specific element.
++   * Update the highlighted element. The CssHtmlTree panel will show the style
++   * information for the given element.
+    * @param {nsIDOMElement} aElement The highlighted node to get styles for.
+    */
+   highlight: function CssHtmlTree_highlight(aElement)
+   {
+     if (this.viewedElement == aElement) {
+       return;
+     }
+ 
+     this.viewedElement = aElement;
+ 
+-    if (this.viewedElement) {
+-      this.viewedDocument = this.viewedElement.ownerDocument;
+-      CssHtmlTree.processTemplate(this.templateRoot, this.root, this);
++    CssHtmlTree.processTemplate(this.templateRoot, this.root, this);
++
++    if (this.htmlComplete) {
++      this.refreshPanel();
+     } else {
+-      this.viewedDocument = null;
+-      this.root.innerHTML = "";
+-    }
+-
+-    this.propertyContainer.innerHTML = "";
+-
+-    // We use a setTimeout loop to display the properties in batches of 25 at a
+-    // time. This gives a perceptibly more responsive UI and allows us to cancel
+-    // the displaying of properties in the case that a new element is selected.
+-    let i = 0;
+-    let batchSize = 25;
+-    let max = CssHtmlTree.propertyNames.length - 1;
+-    function displayProperties() {
+-      if (this.viewedElement == aElement && this.panel.isOpen()) {
+-        // Display the next 25 properties
+-        for (let step = i + batchSize; i < step && i <= max; i++) {
+-          let propView = new PropertyView(this, CssHtmlTree.propertyNames[i]);
+-          CssHtmlTree.processTemplate(
+-              this.templateProperty, this.propertyContainer, propView, true);
+-        }
+-        if (i < max) {
+-          // There are still some properties to display. We loop here to display
+-          // the next batch of 25.
+-          this.win.setTimeout(displayProperties.bind(this), 0);
++      // We use a setTimeout loop to display the properties in batches of 15 at a
++      // time. This results in a perceptibly more responsive UI.
++      let i = 0;
++      let batchSize = 15;
++      let max = CssHtmlTree.propertyNames.length - 1;
++      function displayProperties() {
++        if (this.viewedElement == aElement && this.panel.isOpen()) {
++          // Display the next 15 properties
++          for (let step = i + batchSize; i < step && i <= max; i++) {
++            let name = CssHtmlTree.propertyNames[i];
++            let propView = new PropertyView(this, name);
++            CssHtmlTree.processTemplate(this.templateProperty,
++              this.propertyContainer, propView, true);
++            propView.refreshMatchedSelectors();
++            propView.refreshUnmatchedSelectors();
++            this.propertyViews[name] = propView;
++          }
++          if (i < max) {
++            // There are still some properties to display. We loop here to display
++            // the next batch of 15.
++            this.win.setTimeout(displayProperties.bind(this), 50);
++          } else {
++            this.htmlComplete = true;
++          }
+         }
+       }
++      this.win.setTimeout(displayProperties.bind(this), 50);
+     }
+-    this.win.setTimeout(displayProperties.bind(this), 0);
++  },
++
++  /**
++   * Refresh the panel content.
++   */
++  refreshPanel: function CssHtmlTree_refreshPanel()
++  {
++    for each(let propView in this.propertyViews) {
++      propView.refresh();
++    }
+   },
+ 
+   /**
+    * Called when the user clicks on a parent element in the "current element"
+    * path.
+    *
+    * @param {Event} aEvent the DOM Event object.
+    */
+   pathClick: function CssHtmlTree_pathClick(aEvent)
+   {
+     aEvent.preventDefault();
+     if (aEvent.target && this.viewedElement != aEvent.target.pathElement) {
+-      this.propertyContainer.innerHTML = "";
+       if (this.win.InspectorUI.selection) {
+         if (aEvent.target.pathElement != this.win.InspectorUI.selection) {
+           let elt = aEvent.target.pathElement;
+           this.win.InspectorUI.inspectNode(elt);
+           this.panel.selectNode(elt);
+         }
+       } else {
+         this.panel.selectNode(aEvent.target.pathElement);
+@@ -268,184 +280,253 @@ CssHtmlTree.prototype = {
+  * instance will render the rules.
+  */
+ function PropertyView(aTree, aName)
+ {
+   this.tree = aTree;
+   this.name = aName;
+   this.getRTLAttr = CssHtmlTree.getRTLAttr;
+ 
+-  this.populated = false;
+-  this.showUnmatched = false;
+-
+   this.link = "https://developer.mozilla.org/en/CSS/" + aName;
+ 
+-  this.templateRules = aTree.styleDocument.getElementById("templateRules");
+-
+-  // The parent element which contains the open attribute
+-  this.element = null;
+-  // Destination for templateRules.
+-  this.rules = null;
+-
+-  this.str = {};
++  this.templateMatchedSelectors = aTree.styleDocument.getElementById("templateMatchedSelectors");
++  this.templateUnmatchedSelectors = aTree.styleDocument.getElementById("templateUnmatchedSelectors");
+ }
+ 
+ PropertyView.prototype = {
+-  /**
+-   * The click event handler for the property name of the property view. If
+-   * there are >0 rules then the rules are expanded. If there are 0 rules and
+-   * >0 unmatched rules then the unmatched rules are expanded instead.
+-   *
+-   * @param {Event} aEvent the DOM event
+-   */
+-  click: function PropertyView_click(aEvent)
+-  {
+-    // Clicking on the property link itself is already handled
+-    if (aEvent.target.tagName.toLowerCase() == "a") {
+-      return;
+-    }
++  // The parent element which contains the open attribute
++  element: null,
+ 
+-    if (this.element.hasAttribute("open")) {
+-      this.element.removeAttribute("open");
+-      return;
+-    }
++  // Destination for property values
++  valueNode: null,
+ 
+-    if (!this.populated) {
+-      let matchedRuleCount = this.propertyInfo.matchedRuleCount;
++  // Are matched rules expanded?
++  matchedExpanded: false,
+ 
+-      if (matchedRuleCount == 0 && this.showUnmatchedLink) {
+-        this.showUnmatchedLinkClick(aEvent);
+-      } else {
+-        CssHtmlTree.processTemplate(this.templateRules, this.rules, this);
+-      }
+-      this.populated = true;
+-    }
+-    this.element.setAttribute("open", "");
+-  },
++  // Are unmatched rules expanded?
++  unmatchedExpanded: false,
++
++  // Matched selector container
++  matchedSelectorsContainer: null,
++
++  // Unmatched selector container
++  unmatchedSelectorsContainer: null,
++
++  // Matched selector expando
++  matchedExpander: null,
++
++  // Unmatched selector expando
++  unmatchedExpander: null,
++
++  // Container for X matched selectors
++  matchedSelectorsTitleNode: null,
++
++  // Container for X unmatched selectors
++  unmatchedSelectorsTitleNode: null,
++
++  // Matched selectors table
++  matchedSelectorTable: null,
++
++  // Unmatched selectors table
++  unmatchedSelectorTable: null,
++
++  // Cache for matched selector views
++  _matchedSelectorViews: null,
++
++  // Cache for unmatched selector views
++  _unmatchedSelectorViews: null,
++
++  // The previously selected element used for the selector view caches
++  prevViewedElement: null,
+ 
+   /**
+    * Get the computed style for the current property.
+    *
+    * @return {string} the computed style for the current property of the
+    * currently highlighted element.
+    */
+   get value()
+   {
+     return this.propertyInfo.value;
+   },
+ 
+   /**
+-   * An easy way to access the CssPropertyInfo behind this PropertyView
++   * An easy way to access the CssPropertyInfo behind this PropertyView.
+    */
+   get propertyInfo()
+   {
+     return this.tree.cssLogic.getPropertyInfo(this.name);
+   },
+ 
+   /**
+-   * Compute the title of the property view. The title includes the number of
+-   * selectors that match the currently selected element.
++   * The number of matched selectors.
++   */
++  get matchedSelectorCount()
++  {
++    return this.propertyInfo.matchedSelectors.length;
++  },
++
++  /**
++   * The number of unmatched selectors.
++   */
++  get unmatchedSelectorCount()
++  {
++    return this.propertyInfo.unmatchedSelectors.length;
++  },
++
++  /**
++   * Refresh the panel's CSS property value.
++   */
++  refresh: function PropertyView_refresh()
++  {
++    if (!this.tree.viewedElement) {
++      this.valueNode.innerHTML = "";
++      this.matchedSelectorsContainer.hidden = true;
++      this.unmatchedSelectorsContainer.hidden = true;
++      this.matchedSelectorTable.innerHTML = "";
++      this.unmatchedSelectorTable.innerHTML = "";
++      this.matchedExpander.removeAttribute("open");
++      this.unmatchedExpander.removeAttribute("open");
++      return;
++    }
++
++    this.valueNode.innerHTML = this.propertyInfo.value;
++
++    if (this.prevViewedElement != this.tree.viewedElement) {
++      this._matchedSelectorViews = null;
++      this._unmatchedSelectorViews = null;
++      this.prevViewedElement = this.tree.viewedElement;
++    }
++
++    this.refreshMatchedSelectors();
++    this.refreshUnmatchedSelectors();
++  },
++
++  /**
++   * Refresh the panel matched rules.
++   */
++  refreshMatchedSelectors: function PropertyView_refreshMatchedSelectors()
++  {
++    this.matchedSelectorsTitleNode.innerHTML = this.matchedSelectorTitle();
++    this.matchedSelectorsContainer.hidden = this.matchedSelectorCount == 0;
++
++    if (this.matchedExpanded && this.matchedSelectorCount > 0) {
++      CssHtmlTree.processTemplate(this.templateMatchedSelectors,
++        this.matchedSelectorTable, this);
++      this.matchedExpander.setAttribute("open", "");
++    } else {
++      this.matchedSelectorTable.innerHTML = "";
++      this.matchedExpander.removeAttribute("open");
++    }
++  },
++
++  /**
++   * Refresh the panel unmatched rules.
++   */
++  refreshUnmatchedSelectors: function PropertyView_refreshUnmatchedSelectors() {
++    this.unmatchedSelectorsTitleNode.innerHTML = this.unmatchedSelectorTitle();
++    this.unmatchedSelectorsContainer.hidden = this.unmatchedSelectorCount == 0;
++
++    if (this.unmatchedExpanded && this.unmatchedSelectorCount > 0) {
++      CssHtmlTree.processTemplate(this.templateUnmatchedSelectors,
++          this.unmatchedSelectorTable, this);
++      this.unmatchedExpander.setAttribute("open", "");
++    } else {
++      this.unmatchedSelectorTable.innerHTML = "";
++      this.unmatchedExpander.removeAttribute("open");
++    }
++  },
++
++  /**
++   * Compute the title of the matched selector expander. The title includes the
++   * number of selectors that match the currently selected element.
+    *
+-   * @param {nsIDOMElement} aElement reference to the DOM element where the rule
+-   * title needs to be displayed.
+    * @return {string} The rule title.
+    */
+-  ruleTitle: function PropertyView_ruleTitle(aElement)
++  matchedSelectorTitle: function PropertyView_matchedSelectorTitle()
+   {
+     let result = "";
+-    let matchedSelectorCount = this.propertyInfo.matchedSelectors.length;
+ 
+-    if (matchedSelectorCount > 0) {
+-      aElement.classList.add("rule-count");
+-      aElement.firstElementChild.className = "expander";
+-
+-      let str = CssHtmlTree.l10n("property.numberOfSelectors");
+-      result = PluralForm.get(matchedSelectorCount, str)
+-          .replace("#1", matchedSelectorCount);
+-    } else if (this.showUnmatchedLink) {
+-      aElement.classList.add("rule-unmatched");
+-      aElement.firstElementChild.className = "expander";
+-
+-      let unmatchedSelectorCount = this.propertyInfo.unmatchedSelectors.length;
+-      let str = CssHtmlTree.l10n("property.numberOfUnmatchedSelectors");
+-      result = PluralForm.get(unmatchedSelectorCount, str)
+-          .replace("#1", unmatchedSelectorCount);
++    if (this.matchedSelectorCount > 0) {
++      let str = CssHtmlTree.l10n("property.numberOfMatchedSelectors");
++      result = PluralForm.get(this.matchedSelectorCount, str)
++                         .replace("#1", this.matchedSelectorCount);
+     }
+     return result;
+   },
+ 
+   /**
+-   * Close the property view.
++   * Compute the title of the unmatched selector expander. The title includes
++   * the number of selectors that match the currently selected element.
++   *
++   * @return {string} The rule title.
+    */
+-  close: function PropertyView_close()
++  unmatchedSelectorTitle: function PropertyView_unmatchedSelectorTitle()
+   {
+-    if (this.rules && this.element) {
+-      this.element.removeAttribute("open");
++    let result = "";
++
++    if (this.unmatchedSelectorCount > 0) {
++      let str = CssHtmlTree.l10n("property.numberOfUnmatchedSelectors");
++      result = PluralForm.get(this.unmatchedSelectorCount, str)
++                         .replace("#1", this.unmatchedSelectorCount);
+     }
++    return result;
+   },
+ 
+   /**
+-   * Reset the property view.
++   * Provide access to the matched SelectorViews that we are currently
++   * displaying.
+    */
+-  reset: function PropertyView_reset()
++  get matchedSelectorViews()
+   {
+-    this.close();
+-    this.populated = false;
+-    this.showUnmatched = false;
+-    this.element = false;
++    if (!this._matchedSelectorViews) {
++      this._matchedSelectorViews = [];
++      this.propertyInfo.matchedSelectors.forEach(
++        function matchedSelectorViews_convert(aSelectorInfo) {
++          this._matchedSelectorViews.push(new SelectorView(aSelectorInfo));
++        }, this);
++    }
++
++    return this._matchedSelectorViews;
++  },
++
++    /**
++   * Provide access to the unmatched SelectorViews that we are currently
++   * displaying.
++   */
++  get unmatchedSelectorViews()
++  {
++    if (!this._unmatchedSelectorViews) {
++      this._unmatchedSelectorViews = [];
++      this.propertyInfo.unmatchedSelectors.forEach(
++        function unmatchedSelectorViews_convert(aSelectorInfo) {
++          this._unmatchedSelectorViews.push(new SelectorView(aSelectorInfo));
++        }, this);
++    }
++
++    return this._unmatchedSelectorViews;
+   },
+ 
+   /**
+-   * Provide access to the SelectorViews that we are currently displaying
++   * The action when a user expands matched selectors.
+    */
+-  get selectorViews()
++  matchedSelectorsClick: function PropertyView_matchedSelectorsClick(aEvent)
+   {
+-    var all = [];
+-
+-    function convert(aSelectorInfo) {
+-      all.push(new SelectorView(aSelectorInfo));
+-    }
+-
+-    this.propertyInfo.matchedSelectors.forEach(convert);
+-    if (this.showUnmatched) {
+-      this.propertyInfo.unmatchedSelectors.forEach(convert);
+-    }
+-
+-    return all;
++    this.matchedExpanded = !this.matchedExpanded;
++    this.refreshMatchedSelectors();
++    aEvent.preventDefault();
+   },
+ 
+   /**
+-   * Should we display a 'X unmatched rules' link?
+-   * @return {boolean} false if we are already showing the unmatched links or
+-   * if there are none to display, true otherwise.
++   * The action when a user expands unmatched selectors.
+    */
+-  get showUnmatchedLink()
++  unmatchedSelectorsClick: function PropertyView_unmatchedSelectorsClick(aEvent)
+   {
+-    return !this.showUnmatched && this.propertyInfo.unmatchedRuleCount > 0;
+-  },
+-
+-  /**
+-   * The UI has a link to allow the user to display unmatched selectors.
+-   * This provides localized link text.
+-   */
+-  get showUnmatchedLinkText()
+-  {
+-    let smur = CssHtmlTree.l10n("rule.showUnmatchedLink");
+-    let unmatchedSelectorCount = this.propertyInfo.unmatchedSelectors.length;
+-    let plural = PluralForm.get(unmatchedSelectorCount, smur);
+-    return plural.replace("#1", unmatchedSelectorCount);
+-  },
+-
+-  /**
+-   * The action when a user clicks the 'show unmatched' link.
+-   */
+-  showUnmatchedLinkClick: function PropertyView_showUnmatchedLinkClick(aEvent)
+-  {
+-    this.showUnmatched = true;
+-    CssHtmlTree.processTemplate(this.templateRules, this.rules, this);
++    this.unmatchedExpanded = !this.unmatchedExpanded;
++    this.refreshUnmatchedSelectors();
+     aEvent.preventDefault();
+   },
+ };
+ 
+ /**
+  * A container to view us easy access to display data from a CssRule
+  */
+ function SelectorView(aSelectorInfo)
+diff --git a/browser/devtools/styleinspector/csshtmltree.xhtml b/browser/devtools/styleinspector/csshtmltree.xhtml
+--- a/browser/devtools/styleinspector/csshtmltree.xhtml
++++ b/browser/devtools/styleinspector/csshtmltree.xhtml
+@@ -94,60 +94,91 @@ To visually debug the templates without 
+   <!--
+   TemplateProperty lists the properties themselves. Each needs data like this:
+   {
+     property: ... // PropertyView from CssHtmlTree.jsm
+   }
+   -->
+   <div id="templateProperty">
+     <div class="property-view" save="${element}" dir="${getRTLAttr}">
+-      <div class="property-header" onclick="${click}">
++      <div class="property-header">
+         <div class="property-name" dir="${getRTLAttr}">
+           <a class="link" target="_blank" title="&helpLinkTitle;"
+               href="${link}">${name}</a>
+         </div>
+-        <div class="property-value" dir="ltr">${value}</div>
+-        <div class="link" dir="${getRTLAttr}">
+-          <div></div>${ruleTitle(__element)}
++        <div save="${valueNode}" class="property-value" dir="ltr">${value}</div>
++      </div>
++
++      <div save="${matchedSelectorsContainer}" class="rulelink" dir="${getRTLAttr}">
++        <div onclick="${matchedSelectorsClick}" class="rule-matched">
++          <div save="${matchedExpander}" class="expander"></div>
++          <div save="${matchedSelectorsTitleNode}">
++            ${matchedSelectorTitle(__element)}
++          </div>
+         </div>
++        <table save="${matchedSelectorTable}" dir="${getRTLAttr}"></table>
+       </div>
+-      <table class="rules" save="${rules}" dir="${getRTLAttr}"></table>
++
++      <div save="${unmatchedSelectorsContainer}" class="rulelink" dir="${getRTLAttr}">
++        <div onclick="${unmatchedSelectorsClick}" class="rule-unmatched">
++          <div save="${unmatchedExpander}" class="expander"></div>
++          <div save="${unmatchedSelectorsTitleNode}">
++            ${unmatchedSelectorTitle(__element)}
++          </div>
++        </div>
++        <table save="${unmatchedSelectorTable}" dir="${getRTLAttr}"></table>
++      </div>
+     </div>
+   </div>
+ 
+   <!--
+-  A templateRules sits inside each templateProperties showing the list of rules
+-  that affect that property. Each needs data like this:
++  A templateMatchedSelectors sits inside each templateProperties showing the
++  list of selectors that affect that property. Each needs data like this:
+   {
+-    selectors: ..., // from cssLogic.getPropertyInfo(x).[un]matchedSelectors
+-    statusText: function(status) {}, // convert rule.status to readable text
+-    showUnmatchedRules: true / false, // show a "more unmatched rules" link
+-    showUnmatchedRulesClick: function() {}, // click event handler for the
+-        "show more unmatched rules"
++    matchedSelectorViews: ..., // from cssHtmlTree.propertyViews[name].matchedSelectorViews
+   }
+   This is a template so the parent does not need to be a table, except that
+   using a div as the parent causes the DOM to muck with the tr elements
+   -->
+-  <table id="templateRules">
+-    <loop foreach="selector in ${selectorViews}" if="${selector.selectorInfo.sheetAllowed}">
+-      <tr>
+-        <td dir="ltr" class="rule-text ${selector.statusClass}">
+-          ${selector.humanReadableText(__element)}
+-        </td>
+-        <td class="rule-link">
+-          <a target="_blank" href="view-source:${selector.selectorInfo.href}" class="link"
+-              title="${selector.selectorInfo.href}">${selector.selectorInfo.source}</a>
+-        </td>
+-      </tr>
+-    </loop>
+-    <tr if="${showUnmatchedLink}">
+-      <td colspan="4">
+-        <div class="expander unmatched-rule"></div>
+-        <div class="unmatched">
+-          <a href="#" onclick="${showUnmatchedLinkClick}" class="unmatchedlink">${showUnmatchedLinkText}</a>
+-        </div>
+-      </td>
+-    </tr>
+-  </table>
++  <div id="templateMatchedSelectors">
++    <table>
++      <loop foreach="selector in ${matchedSelectorViews}">
++        <tr>
++          <td dir="ltr" class="rule-text ${selector.statusClass}">
++            ${selector.humanReadableText(__element)}
++          </td>
++          <td class="rule-link">
++            <a target="_blank" href="view-source:${selector.selectorInfo.href}" class="link"
++                title="${selector.selectorInfo.href}">${selector.selectorInfo.source}</a>
++          </td>
++        </tr>
++      </loop>
++    </table>
++  </div>
++
++  <!--
++  A templateUnmatchedSelectors sits inside each templateProperties showing the
++  list of selectors that fail to affect that property. Each needs data like this:
++  {
++    unmatchedSelectorViews: ..., // from cssHtmlTree.propertyViews[name].unmatchedSelectorViews
++  }
++  This is a template so the parent does not need to be a table, except that
++  using a div as the parent causes the DOM to muck with the tr elements
++  -->
++  <div id="templateUnmatchedSelectors">
++    <table>
++      <loop foreach="selector in ${unmatchedSelectorViews}">
++        <tr>
++          <td dir="ltr" class="rule-text unmatched">
++            ${selector.humanReadableText(__element)}
++          </td>
++          <td class="rule-link">
++            <a target="_blank" href="view-source:${selector.selectorInfo.href}" class="link"
++                title="${selector.selectorInfo.href}">${selector.selectorInfo.source}</a>
++          </td>
++        </tr>
++      </loop>
++    </table>
++  </div>
+ </div>
+ 
+ </body>
+ </html>
+diff --git a/browser/devtools/styleinspector/test/browser/browser_bug683672.js b/browser/devtools/styleinspector/test/browser/browser_bug683672.js
+--- a/browser/devtools/styleinspector/test/browser/browser_bug683672.js
++++ b/browser/devtools/styleinspector/test/browser/browser_bug683672.js
+@@ -56,26 +56,25 @@ function testMatchedSelectors()
+       "style inspector node matches the selected node");
+ 
+   let propertyView = new PropertyView(htmlTree, "color");
+   let numMatchedSelectors = propertyView.propertyInfo.matchedSelectors.length;
+ 
+   is(numMatchedSelectors, 6,
+       "CssLogic returns the correct number of matched selectors for div");
+ 
+-  let dummy = content.document.getElementById("dummy");
+-  let returnedRuleTitle = propertyView.ruleTitle(dummy);
+-  let str = CssHtmlTree.l10n("property.numberOfSelectors");
+-  let calculatedRuleTitle = PluralForm.get(numMatchedSelectors, str)
++  let returnedSelectorTitle = propertyView.matchedSelectorTitle();
++  let str = CssHtmlTree.l10n("property.numberOfMatchedSelectors");
++  let calculatedSelectorTitle = PluralForm.get(numMatchedSelectors, str)
+                                       .replace("#1", numMatchedSelectors);
+ 
+-  info("returnedRuleTitle: '" + returnedRuleTitle + "'");
++  info("returnedSelectorTitle: '" + returnedSelectorTitle + "'");
+ 
+-  is(returnedRuleTitle, calculatedRuleTitle,
+-      "returned title for matched rules is correct");
++  is(returnedSelectorTitle, calculatedSelectorTitle,
++      "returned title for matched selectors is correct");
+ }
+ 
+ function testUnmatchedSelectors()
+ {
+   info("checking selector counts, unmatched rules and titles");
+   let body = content.document.body;
+   ok(body, "captain, we have a body");
+ 
+@@ -88,26 +87,25 @@ function testUnmatchedSelectors()
+       "style inspector node matches the selected node");
+ 
+   let propertyView = new PropertyView(htmlTree, "color");
+   let numUnmatchedSelectors = propertyView.propertyInfo.unmatchedSelectors.length;
+ 
+   is(numUnmatchedSelectors, 13,
+       "CssLogic returns the correct number of unmatched selectors for body");
+ 
+-  let dummy = content.document.getElementById("dummy");
+-  let returnedRuleTitle = propertyView.ruleTitle(dummy);
++  let returnedSelectorTitle = propertyView.unmatchedSelectorTitle();
+   let str = CssHtmlTree.l10n("property.numberOfUnmatchedSelectors");
+-  let calculatedRuleTitle = PluralForm.get(numUnmatchedSelectors, str)
++  let calculatedSelectorTitle = PluralForm.get(numUnmatchedSelectors, str)
+                                       .replace("#1", numUnmatchedSelectors);
+ 
+-  info("returnedRuleTitle: '" + returnedRuleTitle + "'");
++  info("returnedSelectorTitle: '" + returnedSelectorTitle + "'");
+ 
+-  is(returnedRuleTitle, calculatedRuleTitle,
+-      "returned title for unmatched rules is correct");
++  is(returnedSelectorTitle, calculatedSelectorTitle,
++      "returned title for unmatched selectors is correct");
+ }
+ 
+ function finishUp()
+ {
+   Services.obs.removeObserver(finishUp, "StyleInspector-closed", false);
+   ok(!stylePanel.isOpen(), "style inspector is closed");
+   doc = stylePanel = null;
+   gBrowser.removeCurrentTab();
+diff --git a/browser/devtools/webconsole/HUDService.jsm b/browser/devtools/webconsole/HUDService.jsm
+--- a/browser/devtools/webconsole/HUDService.jsm
++++ b/browser/devtools/webconsole/HUDService.jsm
+@@ -4433,17 +4433,17 @@ function JSTermHelper(aJSTerm)
+       errstr = HUDService.getStr("inspectStyle.mustBeDomNode");
+     } else if (!(aNode.style instanceof Ci.nsIDOMCSSStyleDeclaration)) {
+       errstr = HUDService.getStr("inspectStyle.nodeHasNoStyleProps");
+     }
+ 
+     if (!errstr) {
+       let stylePanel = StyleInspector.createPanel();
+       stylePanel.setAttribute("hudToolId", aJSTerm.hudId);
+-      stylePanel.selectNode(aNode, true);
++      stylePanel.selectNode(aNode);
+     } else {
+       aJSTerm.writeOutput(errstr + "\n", CATEGORY_OUTPUT, SEVERITY_ERROR);
+     }
+   };
+ 
+   /**
+    * Prints aObject to the output.
+    *
+diff --git a/browser/locales/en-US/chrome/browser/styleinspector.properties b/browser/locales/en-US/chrome/browser/styleinspector.properties
+--- a/browser/locales/en-US/chrome/browser/styleinspector.properties
++++ b/browser/locales/en-US/chrome/browser/styleinspector.properties
+@@ -1,18 +1,18 @@
+ # LOCALIZATION NOTE These strings are used inside the Style Inspector.
+ 
+ # LOCALIZATION NOTE (panelTitle): This is the panel title
+ panelTitle=Style Inspector
+ 
+-# LOCALIZATION NOTE (property.numberOfSelectors): For each style property the
++# LOCALIZATION NOTE (property.numberOfMatchedSelectors): For each style property the
+ # panel shows the number of selectors which match the currently selected
+ # element, counted from all stylesheets in the web page inspected.
+ # See: http://developer.mozilla.org/en/docs/Localization_and_Plurals
+-property.numberOfSelectors=1 selector;#1 selectors
++property.numberOfMatchedSelectors=1 matched selector;#1 matched selectors
+ 
+ # LOCALIZATION NOTE (property.numberOfUnmatchedSelectors): For each style
+ # property the panel shows the number of selectors which do not match the
+ # currently selected element, counted from all stylesheets in the web page
+ # inspected.
+ # See: http://developer.mozilla.org/en/docs/Localization_and_Plurals
+ property.numberOfUnmatchedSelectors=1 unmatched selector;#1 unmatched selectors
+ 
+@@ -27,23 +27,16 @@ rule.status.UNMATCHED=Unmatched
+ 
+ # LOCALIZATION NOTE (rule.sourceElement, rule.sourceInline): For each
+ # style property the panel shows the rules which hold that specific property.
+ # For every rule, the rule source is also displayed: a rule can come from a
+ # file, from the same page (inline), or from the element itself (element).
+ rule.sourceInline=inline
+ rule.sourceElement=element
+ 
+-# LOCALIZATION NOTE (rule.showUnmatchedLink): For each style
+-# property the panel shows the number of selectors which do not match the
+-# currently selected element, counted from all stylesheets in the web page
+-# inspected.
+-# See: http://developer.mozilla.org/en/docs/Localization_and_Plurals
+-rule.showUnmatchedLink=1 unmatched selector…;#1 unmatched selectors…
+-
+ # LOCALIZATION NOTE (group): Style properties are displayed in categories and
+ # these are the category names.
+ group.Text_Fonts_and_Color=Text, Fonts & Color
+ group.Background=Background
+ group.Dimensions=Dimensions
+ group.Positioning_and_Page_Flow=Positioning and Page Flow
+ group.Borders=Borders
+ group.Lists=Lists
+diff --git a/browser/themes/gnomestripe/browser/devtools/csshtmltree.css b/browser/themes/gnomestripe/browser/devtools/csshtmltree.css
+--- a/browser/themes/gnomestripe/browser/devtools/csshtmltree.css
++++ b/browser/themes/gnomestripe/browser/devtools/csshtmltree.css
+@@ -66,117 +66,83 @@ body {
+ .path li:last-child {
+   background: -moz-linear-gradient(top, #FFC, #DD8);
+ }
+ .path li:last-child:after {
+   color: red;
+   content: "";
+ }
+ 
+-#header,
+-#footer {
+-  padding: 5px;
+-}
+-
+-#header label {
+-  font-weight: bold;
+-}
+-
+ .property-header {
+   padding: 2px 5px;
+   background: -moz-linear-gradient(top, #F8F8F8, #E8E8E8);
+   color: #666;
+ }
+ 
+ .property-name,
+-.property-value,
+-.rule-count,
++.rule-matched,
+ .rule-unmatched {
+   cursor: pointer;
+ }
+ 
+ /* Take away these two :visited rules to get a core dumper     */
+ /* See https://bugzilla.mozilla.org/show_bug.cgi?id=575675#c30 */
+-.link,
+-.unmatchedlink {
++.link {
+   color: #55A;
+ }
+-.link:visited,
+-.unmatchedlink:visited {
++.link:visited {
+   color: #55A;
+ }
+-a.link,
+-a.unmatchedlink {
++a.link {
+   text-decoration: none;
+   cursor: pointer;
+ }
+-a.link:visited,
+-a.unmatchedlink:visited {
++a.link:visited {
+   text-decoration: none;
+ }
+ 
+-.rule-count,
++.rule-matched,
+ .rule-unmatched {
+-  padding: 5px 0 0 15px;
++  padding: 2px 0;
++  white-space: nowrap;
+ }
+-.unmatched {
+-  display: inline-block;
++
++.rulelink {
++  color: #55A;
+ }
++
+ .expander {
+   width: 8px;
+   height: 8px;
+-  display: inline-block;
++  float: left;
++  -moz-margin-start: 15px;
+   -moz-margin-end: 5px;
+-  margin-bottom: 1px;
++  margin-top: 3px;
+   background: url("chrome://browser/skin/devtools/arrows.png");
+-}
+-
+-.unmatched-rule {
+-  -moz-margin-start: 25px;
+   background-position: 24px 0;
+ }
+ 
+-.property-view .rule-count .expander,
+-.property-view .rule-unmatched .expander {
+-  background-position: 24px 0;
+-}
+-.property-view[dir="rtl"] .rule-count .expander,
+-.property-view[dir="rtl"] .rule-unmatched .expander {
++.expander[dir="rtl"] {
+   background-position: 16px 0;
+ }
+-.property-view[open] .rule-count .expander,
+-.property-view[open] .rule-unmatched .expander {
++.expander[open] {
+   background-position: 8px 0;
+ }
+ 
+ .property-name {
+   display: inline-block;
+   font-size: 12px;
+   font-weight: bold;
+   color: #000;
+ }
+ .property-value {
+   display: inline-block;
+   font-size: 10px;
+ }
+ 
+-.property-view > .rules {
+-  display: none;
+-}
+-.property-view[open] > .rules {
+-  display: table;
+-}
+-.rules {
+-  -moz-margin-start: 32px;
+-  max-height: 350px;
+-  overflow-y: auto;
+-}
+-.rule-status {
+-  white-space: nowrap;
+-}
+ .rule-link {
+   text-align: end;
+   -moz-padding-start: 10px;
+ }
+ 
+ /* This rule is necessary because Templater.jsm breaks LTR TDs in RTL docs */
+ .rule-text {
+   direction: ltr;
+diff --git a/browser/themes/pinstripe/browser/devtools/csshtmltree.css b/browser/themes/pinstripe/browser/devtools/csshtmltree.css
+--- a/browser/themes/pinstripe/browser/devtools/csshtmltree.css
++++ b/browser/themes/pinstripe/browser/devtools/csshtmltree.css
+@@ -66,117 +66,83 @@ body {
+ .path li:last-child {
+   background: -moz-linear-gradient(top, #FFC, #DD8);
+ }
+ .path li:last-child:after {
+   color: red;
+   content: "";
+ }
+ 
+-#header,
+-#footer {
+-  padding: 5px;
+-}
+-
+-#header label {
+-  font-weight: bold;
+-}
+-
+ .property-header {
+   padding: 2px 5px;
+   background: -moz-linear-gradient(top, #F8F8F8, #E8E8E8);
+   color: #666;
+ }
+ 
+ .property-name,
+-.property-value,
+-.rule-count,
++.rule-matched,
+ .rule-unmatched {
+   cursor: pointer;
+ }
+ 
+ /* Take away these two :visited rules to get a core dumper     */
+ /* See https://bugzilla.mozilla.org/show_bug.cgi?id=575675#c30 */
+-.link,
+-.unmatchedlink {
++.link {
+   color: #55A;
+ }
+-.link:visited,
+-.unmatchedlink:visited {
++.link:visited {
+   color: #55A;
+ }
+-a.link,
+-a.unmatchedlink {
++a.link {
+   text-decoration: none;
+   cursor: pointer;
+ }
+-a.link:visited,
+-a.unmatchedlink:visited {
++a.link:visited {
+   text-decoration: none;
+ }
+ 
+-.rule-count,
++.rule-matched,
+ .rule-unmatched {
+-  padding: 5px 0 0 15px;
++  padding: 2px 0;
++  white-space: nowrap;
+ }
+-.unmatched {
+-  display: inline-block;
++
++.rulelink {
++  color: #55A;
+ }
++
+ .expander {
+   width: 8px;
+   height: 8px;
+-  display: inline-block;
++  float: left;
++  -moz-margin-start: 15px;
+   -moz-margin-end: 5px;
+-  margin-bottom: 1px;
++  margin-top: 3px;
+   background: url("chrome://browser/skin/devtools/arrows.png");
+-}
+-
+-.unmatched-rule {
+-  -moz-margin-start: 25px;
+   background-position: 24px 0;
+ }
+ 
+-.property-view .rule-count .expander,
+-.property-view .rule-unmatched .expander {
+-  background-position: 24px 0;
+-}
+-.property-view[dir="rtl"] .rule-count .expander,
+-.property-view[dir="rtl"] .rule-unmatched .expander {
++.expander[dir="rtl"] {
+   background-position: 16px 0;
+ }
+-.property-view[open] .rule-count .expander,
+-.property-view[open] .rule-unmatched .expander {
++.expander[open] {
+   background-position: 8px 0;
+ }
+ 
+ .property-name {
+   display: inline-block;
+   font-size: 12px;
+   font-weight: bold;
+   color: #000;
+ }
+ .property-value {
+   display: inline-block;
+   font-size: 10px;
+ }
+ 
+-.property-view > .rules {
+-  display: none;
+-}
+-.property-view[open] > .rules {
+-  display: table;
+-}
+-.rules {
+-  -moz-margin-start: 32px;
+-  max-height: 350px;
+-  overflow-y: auto;
+-}
+-.rule-status {
+-  white-space: nowrap;
+-}
+ .rule-link {
+   text-align: end;
+   -moz-padding-start: 10px;
+ }
+ 
+ /* This rule is necessary because Templater.jsm breaks LTR TDs in RTL docs */
+ .rule-text {
+   direction: ltr;
+diff --git a/browser/themes/winstripe/browser/devtools/csshtmltree.css b/browser/themes/winstripe/browser/devtools/csshtmltree.css
+--- a/browser/themes/winstripe/browser/devtools/csshtmltree.css
++++ b/browser/themes/winstripe/browser/devtools/csshtmltree.css
+@@ -66,117 +66,83 @@ body {
+ .path li:last-child {
+   background: -moz-linear-gradient(top, #FFC, #DD8);
+ }
+ .path li:last-child:after {
+   color: red;
+   content: "";
+ }
+ 
+-#header,
+-#footer {
+-  padding: 5px;
+-}
+-
+-#header label {
+-  font-weight: bold;
+-}
+-
+ .property-header {
+   padding: 2px 5px;
+   background: -moz-linear-gradient(top, #F8F8F8, #E8E8E8);
+   color: #666;
+ }
+ 
+ .property-name,
+-.property-value,
+-.rule-count,
++.rule-matched,
+ .rule-unmatched {
+   cursor: pointer;
+ }
+ 
+ /* Take away these two :visited rules to get a core dumper     */
+ /* See https://bugzilla.mozilla.org/show_bug.cgi?id=575675#c30 */
+-.link,
+-.unmatchedlink {
++.link {
+   color: #55A;
+ }
+-.link:visited,
+-.unmatchedlink:visited {
++.link:visited {
+   color: #55A;
+ }
+-a.link,
+-a.unmatchedlink {
++a.link {
+   text-decoration: none;
+   cursor: pointer;
+ }
+-a.link:visited,
+-a.unmatchedlink:visited {
++a.link:visited {
+   text-decoration: none;
+ }
+ 
+-.rule-count,
++.rule-matched,
+ .rule-unmatched {
+-  padding: 5px 0 0 15px;
++  padding: 2px 0;
++  white-space: nowrap;
+ }
+-.unmatched {
+-  display: inline-block;
++
++.rulelink {
++  color: #55A;
+ }
++
+ .expander {
+   width: 8px;
+   height: 8px;
+-  display: inline-block;
++  float: left;
++  -moz-margin-start: 15px;
+   -moz-margin-end: 5px;
+-  margin-bottom: 1px;
++  margin-top: 3px;
+   background: url("chrome://browser/skin/devtools/arrows.png");
+-}
+-
+-.unmatched-rule {
+-  -moz-margin-start: 25px;
+   background-position: 24px 0;
+ }
+ 
+-.property-view .rule-count .expander,
+-.property-view .rule-unmatched .expander {
+-  background-position: 24px 0;
+-}
+-.property-view[dir="rtl"] .rule-count .expander,
+-.property-view[dir="rtl"] .rule-unmatched .expander {
++.expander[dir="rtl"] {
+   background-position: 16px 0;
+ }
+-.property-view[open] .rule-count .expander,
+-.property-view[open] .rule-unmatched .expander {
++.expander[open] {
+   background-position: 8px 0;
+ }
+ 
+ .property-name {
+   display: inline-block;
+   font-size: 12px;
+   font-weight: bold;
+   color: #000;
+ }
+ .property-value {
+   display: inline-block;
+   font-size: 10px;
+ }
+ 
+-.property-view > .rules {
+-  display: none;
+-}
+-.property-view[open] > .rules {
+-  display: table;
+-}
+-.rules {
+-  -moz-margin-start: 32px;
+-  max-height: 350px;
+-  overflow-y: auto;
+-}
+-.rule-status {
+-  white-space: nowrap;
+-}
+ .rule-link {
+   text-align: end;
+   -moz-padding-start: 10px;
+ }
+ 
+ /* This rule is necessary because Templater.jsm breaks LTR TDs in RTL docs */
+ .rule-text {
+   direction: ltr;

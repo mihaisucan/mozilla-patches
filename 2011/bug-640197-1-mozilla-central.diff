@@ -1,0 +1,141 @@
+diff --git a/browser/base/content/browser-appmenu.inc b/browser/base/content/browser-appmenu.inc
+--- a/browser/base/content/browser-appmenu.inc
++++ b/browser/base/content/browser-appmenu.inc
+@@ -201,16 +201,22 @@
+ #define OMIT_ACCESSKEYS
+ #include browser-charsetmenu.inc
+ #undef ID_PREFIX
+ #undef OMIT_ACCESSKEYS
+           <menuitem label="&goOfflineCmd.label;"
+                     type="checkbox"
+                     observes="workOfflineMenuitemState"
+                     oncommand="BrowserOffline.toggleOfflineStatus();"/>
++          <menuseparator/>
++          <menuitem id="appmenu_installDevTools"
++                    label="&installDevTools.label;"
++                    labelToBeta="&switchDevToolsToBeta.label;"
++                    labelToStable="&switchDevToolsToStable.label;"
++                    command="Tools:InstallDevTools"/>
+         </menupopup>
+       </menu>
+       <menuseparator class="appmenu-menuseparator"/>
+ #define ID_PREFIX appmenu_
+ #define OMIT_ACCESSKEYS
+ #include browser-charsetmenu.inc
+ #undef ID_PREFIX
+ #undef OMIT_ACCESSKEYS
+diff --git a/browser/base/content/browser-menubar.inc b/browser/base/content/browser-menubar.inc
+--- a/browser/base/content/browser-menubar.inc
++++ b/browser/base/content/browser-menubar.inc
+@@ -552,16 +552,21 @@
+                         oncommand="HUDConsoleUI.toggleHUD();"/>
+               <menuitem id="menu_pageInfo"
+                         accesskey="&pageInfoCmd.accesskey;"
+                         label="&pageInfoCmd.label;"
+ #ifndef XP_WIN
+                         key="key_viewInfo"
+ #endif
+                         command="View:PageInfo"/>
++              <menuitem id="menu_installDevTools"
++                        label="&installDevTools.label;"
++                        labelToBeta="&switchDevToolsToBeta.label;"
++                        labelToStable="&switchDevToolsToStable.label;"
++                        command="Tools:InstallDevTools"/>
+               <menuseparator id="sanitizeSeparator"/>
+               <menuitem id="privateBrowsingItem"
+                         label="&privateBrowsingCmd.start.label;"
+                         accesskey="&privateBrowsingCmd.start.accesskey;"
+                         startlabel="&privateBrowsingCmd.start.label;"
+                         startaccesskey="&privateBrowsingCmd.start.accesskey;"
+                         stoplabel="&privateBrowsingCmd.stop.label;"
+                         stopaccesskey="&privateBrowsingCmd.stop.accesskey;"
+diff --git a/browser/base/content/browser-sets.inc b/browser/base/content/browser-sets.inc
+--- a/browser/base/content/browser-sets.inc
++++ b/browser/base/content/browser-sets.inc
+@@ -120,16 +120,17 @@
+     <command id="cmd_fullZoomEnlarge" oncommand="FullZoom.enlarge()"/>
+     <command id="cmd_fullZoomReset"   oncommand="FullZoom.reset()"/>
+     <command id="cmd_fullZoomToggle"  oncommand="ZoomManager.toggleZoom();"/>
+     <command id="Browser:OpenLocation" oncommand="openLocation();"/>
+ 
+     <command id="Tools:Search" oncommand="BrowserSearch.webSearch();"/>
+     <command id="Tools:Downloads" oncommand="BrowserDownloadsUI();"/>
+     <command id="Tools:Inspect" oncommand="InspectorUI.toggleInspectorUI();" disabled="true"/>
++    <command id="Tools:InstallDevTools" oncommand="BrowserInstallDevTools();" />
+     <command id="Tools:Addons" oncommand="BrowserOpenAddonsMgr();"/>
+     <command id="Tools:Sanitize"
+      oncommand="Cc['@mozilla.org/browser/browserglue;1'].getService(Ci.nsIBrowserGlue).sanitize(window);"/>
+     <command id="Tools:PrivateBrowsing" oncommand="gPrivateBrowsingUI.toggleMode();"/>
+     <command id="History:UndoCloseTab" oncommand="undoCloseTab();"/>
+     <command id="History:UndoCloseWindow" oncommand="undoCloseWindow();"/>
+     <command id="Browser:ToggleAddonBar" oncommand="toggleAddonBar();"/>
+   </commandset>
+diff --git a/browser/base/content/browser.js b/browser/base/content/browser.js
+--- a/browser/base/content/browser.js
++++ b/browser/base/content/browser.js
+@@ -70,16 +70,18 @@
+ # ***** END LICENSE BLOCK *****
+ 
+ let Ci = Components.interfaces;
+ let Cu = Components.utils;
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ 
+ const nsIWebNavigation = Ci.nsIWebNavigation;
++const DEVTOOLS_INSTALLER = "https://addons.mozilla.org/firefox/downloads/latest/60/addon-60-latest.xpi?src=addondetail";
++const MIME_XPI = "application/x-xpinstall";
+ 
+ var gCharsetMenu = null;
+ var gLastBrowserCharset = null;
+ var gPrevCharset = null;
+ var gProxyFavIcon = null;
+ var gLastValidURLStr = "";
+ var gInPrintPreviewMode = false;
+ var gDownloadMgr = null;
+@@ -8603,16 +8605,22 @@ let AddonsMgrListener = {
+   onDisabled: function(aAddon) this.onUninstalled(),
+ };
+ 
+ function toggleAddonBar() {
+   let addonBar = document.getElementById("addon-bar");
+   setToolbarVisibility(addonBar, addonBar.collapsed);
+ }
+ 
++function BrowserInstallDevTools() {
++  AddonManager.getInstallForURL(DEVTOOLS_INSTALLER, function(aInstall) {
++    aInstall.install();
++  }, MIME_XPI);
++}
++
+ XPCOMUtils.defineLazyGetter(window, "gShowPageResizers", function () {
+ #ifdef XP_WIN
+   // Only show resizers on Windows 2000 and XP
+   let sysInfo = Components.classes["@mozilla.org/system-info;1"]
+                           .getService(Components.interfaces.nsIPropertyBag2);
+   return parseFloat(sysInfo.getProperty("version")) < 6;
+ #else
+   return false;
+diff --git a/browser/locales/en-US/chrome/browser/browser.dtd b/browser/locales/en-US/chrome/browser/browser.dtd
+--- a/browser/locales/en-US/chrome/browser/browser.dtd
++++ b/browser/locales/en-US/chrome/browser/browser.dtd
+@@ -178,16 +178,20 @@ can reach it easily. -->
+ <!ENTITY addons.label                 "Add-ons">
+ <!ENTITY addons.accesskey             "A">
+ <!ENTITY addons.commandkey            "A">
+ 
+ <!ENTITY errorConsoleCmd.label        "Error Console">
+ <!ENTITY errorConsoleCmd.accesskey    "C">
+ <!ENTITY errorConsoleCmd.commandkey   "j">
+ 
++<!ENTITY installDevTools.label        "Install Developer Tools…">
++<!ENTITY switchDevToolsToBeta.label   "Switch to Beta Tools…">
++<!ENTITY switchDevToolsToStable.label "Switch to stable Tools…">
++
+ <!ENTITY webConsoleCmd.label          "Web Console">
+ <!ENTITY webConsoleCmd.accesskey      "W">
+ <!ENTITY webConsoleCmd.commandkey     "k">
+ 
+ <!ENTITY inspectMenu.label            "Inspect">
+ <!ENTITY inspectMenu.accesskey        "T">
+ <!ENTITY inspectMenu.commandkey       "I">
+ 

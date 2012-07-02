@@ -1,0 +1,969 @@
+diff -r 9d2e478fd35b toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm	Tue Jul 13 23:15:43 2010 +0300
++++ b/toolkit/components/console/hudservice/HUDService.jsm	Wed Jul 14 00:10:18 2010 +0300
+@@ -236,17 +236,17 @@ HUD_SERVICE.prototype =
+   },
+ 
+   /**
+    * Tell the HUDService that a HeadsUpDisplay should be deactivated
+    *
+    * @param string aContextDOMId
+    * @return void
+    */
+-  unregisterActiveContext: function HS_deregisterActiveContext(aContextDOMId)
++  unregisterActiveContext: function HS_unregisterActiveContext(aContextDOMId)
+   {
+     var domId = aContextDOMId.split("_")[1];
+     var idx = this.activatedContexts.indexOf(domId);
+     if (idx > -1) {
+       this.activatedContexts.splice(idx, 1);
+     }
+   },
+ 
+@@ -305,30 +305,30 @@ HUD_SERVICE.prototype =
+   /**
+    * Clear the specified HeadsUpDisplay
+    *
+    * @param string aId
+    * @returns void
+    */
+   clearDisplay: function HS_clearDisplay(aId)
+   {
+-    var displayNode = this.getOutputNodeById(aId);
++    var displayNode = this.getHeadsUpDisplay(aId);
+     var outputNode = displayNode.querySelectorAll(".hud-output-node")[0];
+ 
+     while (outputNode.firstChild) {
+       outputNode.removeChild(outputNode.firstChild);
+     }
+   },
+ 
+   /**
+    * get a unique ID from the sequence generator
+    *
+    * @returns integer
+    */
+-  sequenceId: function HS_sequencerId()
++  sequenceId: function HS_sequenceId()
+   {
+     if (!this.sequencer) {
+       this.sequencer = this.createSequencer(-1);
+     }
+     return this.sequencer.next();
+   },
+ 
+   /**
+@@ -355,25 +355,21 @@ HUD_SERVICE.prototype =
+    * get the filter state for a specific toggle button on a heads up display
+    *
+    * @param string aHUDId
+    * @param string aToggleType
+    * @returns boolean
+    */
+   getFilterState: function HS_getFilterState(aHUDId, aToggleType)
+   {
+-    if (!aHUDId) {
++    if (!aHUDId || !(aHUDId in this.filterPrefs)) {
+       return false;
+     }
+-    try {
+-      var bool = this.filterPrefs[aHUDId][aToggleType];
+-      return bool;
+-    }
+-    catch (ex) {
+-      return false;
++    else {
++      return this.filterPrefs[aHUDId][aToggleType];
+     }
+   },
+ 
+   /**
+    * set the filter state for a specific toggle button on a heads up display
+    *
+    * @param string aHUDId
+    * @param string aToggleType
+@@ -479,17 +475,17 @@ HUD_SERVICE.prototype =
+    *
+    * @param string aId
+    * @returns void
+    */
+   unregisterDisplay: function HS_unregisterDisplay(aId)
+   {
+     // remove HUD DOM node and
+     // remove display references from local registries get the outputNode
+-    var outputNode = this.mixins.getOutputNodeById(aId);
++    var outputNode = this.getHeadsUpDisplay(aId);
+     var parent = outputNode.parentNode;
+     var splitters = parent.querySelectorAll("splitter");
+     var len = splitters.length;
+     for (var i = 0; i < len; i++) {
+       if (splitters[i].getAttribute("class") == "hud-splitter") {
+         splitters[i].parentNode.removeChild(splitters[i]);
+         break;
+       }
+@@ -497,27 +493,25 @@ HUD_SERVICE.prototype =
+     // remove the DOM Nodes
+     parent.removeChild(outputNode);
+     // remove our record of the DOM Nodes from the registry
+     delete this._headsUpDisplays[aId];
+     // remove the HeadsUpDisplay object from memory
+     this.deleteHeadsUpDisplay(aId);
+     // remove the related storage object
+     this.storage.removeDisplay(aId);
+-    let displays = this.displays();
+ 
+     var uri  = this.displayRegistry[aId];
+     var specHudArr = this.uriRegistry[uri];
+ 
+     for (var i = 0; i < specHudArr.length; i++) {
+       if (specHudArr[i] == aId) {
+         specHudArr.splice(i, 1);
+       }
+     }
+-    delete displays[aId];
+     delete this.displayRegistry[aId];
+   },
+ 
+   /**
+    * Shutdown all HeadsUpDisplays on xpcom-shutdown
+    *
+    * @returns void
+    */
+@@ -569,27 +563,16 @@ HUD_SERVICE.prototype =
+    * @returns nsIDOMNode
+    */
+   getHeadsUpDisplay: function HS_getHeadsUpDisplay(aId)
+   {
+     return this.mixins.getOutputNodeById(aId);
+   },
+ 
+   /**
+-   * gets the nsIDOMNode outputNode by ID via the gecko app mixins
+-   *
+-   * @param string aId
+-   * @returns nsIDOMNode
+-   */
+-  getOutputNodeById: function HS_getOutputNodeById(aId)
+-  {
+-    return this.mixins.getOutputNodeById(aId);
+-  },
+-
+-  /**
+    * Gets an object that contains active DOM Node Ids for all Heads Up Displays
+    *
+    * @returns object
+    */
+   displays: function HS_displays() {
+     return this._headsUpDisplays;
+   },
+ 
+@@ -622,19 +605,23 @@ HUD_SERVICE.prototype =
+ 
+   /**
+    * get the current filter string for the HeadsUpDisplay
+    *
+    * @param string aHUDId
+    * @returns string
+    */
+   getFilterStringByHUDId: function HS_getFilterStringbyHUDId(aHUDId) {
+-    var hud = this.getHeadsUpDisplay(aHUDId);
+-    var filterStr = hud.querySelectorAll(".hud-filter-box")[0].value;
+-    return filterStr || null;
++    var filterBox = this.getFilterTextBox(aHUDId);
++    if (filterBox && filterBox.value) {
++      return filterBox.value;
++    }
++    else {
++      return null;
++    }
+   },
+ 
+   /**
+    * The filter strings per HeadsUpDisplay
+    *
+    */
+   hudFilterStrings: {},
+ 
+@@ -642,17 +629,17 @@ HUD_SERVICE.prototype =
+    * Update the filter text in the internal tracking object for all
+    * filter strings
+    *
+    * @param nsIDOMNode aTextBoxNode
+    * @returns void
+    */
+   updateFilterText: function HS_updateFiltertext(aTextBoxNode)
+   {
+-    var hudId = aTextBoxNode.getAttribute(hudId);
++    var hudId = aTextBoxNode.getAttribute("hudId");
+     this.hudFilterStrings[hudId] = aTextBoxNode.value || null;
+   },
+ 
+   /**
+    * Filter each message being logged into the console
+    *
+    * @param string aFilterString
+    * @param nsIDOMNode aMessageNode
+@@ -729,86 +716,56 @@ HUD_SERVICE.prototype =
+       aConsoleNode.appendChild(aMessageNode);
+       aMessageNode.scrollIntoView(false);
+     }
+     // store this message in the storage module:
+     this.storage.recordEntry(aMessage.hudId, aMessage);
+   },
+ 
+   /**
+-   * logs a message to the Heads Up Display that originates
+-   * in the nsIConsoleService
+-   *
+-   * @param nsIConsoleMessage aMessage
+-   * @param nsIDOMNode aConsoleNode
+-   * @param nsIDOMNode aMessageNode
+-   * @returns void
+-   */
+-  logConsoleMessage: function HS_logConsoleMessage(aMessage,
+-                                                   aConsoleNode,
+-                                                   aMessageNode,
+-                                                   aFilterState,
+-                                                   aFilterString)
+-  {
+-    if (aFilterState){
+-      aConsoleNode.appendChild(aMessageNode);
+-      aMessageNode.scrollIntoView(false);
+-    }
+-    // store this message in the storage module:
+-    this.storage.recordEntry(aMessage.hudId, aMessage);
+-  },
+-
+-  /**
+    * Logs a Message.
+    * @param aMessage
+    *        The message to log, which is a JS object, this is the
+    *        "raw" log message
+    * @param aConsoleNode
+    *        The output DOM node to log the messageNode to
+    * @param The message DOM Node that will be appended to aConsoleNode
+    * @returns void
+    */
+   logMessage: function HS_logMessage(aMessage, aConsoleNode, aMessageNode)
+   {
+     if (!aMessage) {
+       throw new Error(ERRORS.MISSING_ARGS);
+     }
+ 
+-    var hud = this.getHeadsUpDisplay(aMessage.hudId);
+     // check filter before logging to the outputNode
+     var filterState = this.getFilterState(aMessage.hudId, aMessage.logLevel);
+     var filterString = this.getFilterStringByHUDId(aMessage.hudId);
+ 
+     switch (aMessage.origin) {
+       case "network":
+       case "HUDConsole":
+-        this.logHUDMessage(aMessage, aConsoleNode, aMessageNode, filterState, filterString);
+-        break;
+       case "console-listener":
+         this.logHUDMessage(aMessage, aConsoleNode, aMessageNode, filterState, filterString);
+-        break;
+-      default:
+-        // noop
+-        break;
+     }
+   },
+ 
+   /**
+-   * report consoleMessages recieved via the HUDConsoleObserver service
++   * report consoleMessages received via the HUDConsoleObserver service
+    * @param nsIConsoleMessage aConsoleMessage
+    * @returns void
+    */
+   reportConsoleServiceMessage:
+   function HS_reportConsoleServiceMessage(aConsoleMessage)
+   {
+     this.logActivity("console-listener", null, aConsoleMessage);
+   },
+ 
+   /**
+-   * report scriptErrors recieved via the HUDConsoleObserver service
++   * report scriptErrors received via the HUDConsoleObserver service
+    * @param nsIScriptError aScriptError
+    * @returns void
+    */
+   reportConsoleServiceContentScriptError:
+   function HS_reportConsoleServiceContentScriptError(aScriptError)
+   {
+     try {
+       var uri = Services.io.newURI(aScriptError.sourceName, null, null);
+@@ -836,24 +793,23 @@ HUD_SERVICE.prototype =
+   },
+ 
+   /**
+    * Register a Gecko app's specialized ApplicationHooks object
+    *
+    * @returns void or throws "UNSUPPORTED APPLICATION" error
+    */
+   registerApplicationHooks:
+-  function HS_registerApplications(aAppName, aHooksObject)
++  function HS_registerApplicationHooks(aAppName, aHooksObject)
+   {
+-    switch(aAppName) {
+-      case "FIREFOX":
+-        this.applicationHooks = aHooksObject;
+-        return;
+-      default:
+-        throw new Error("MOZ APPLICATION UNSUPPORTED");
++    if (aAppName == "FIREFOX") {
++      this.applicationHooks = aHooksObject;
++    }
++    else {
++      throw new Error("MOZ APPLICATION UNSUPPORTED");
+     }
+   },
+ 
+   /**
+    * Registry of ApplicationHooks used by specified Gecko Apps
+    *
+    * @returns Specific Gecko 'ApplicationHooks' Object/Mixin
+    */
+@@ -978,17 +934,17 @@ HUD_SERVICE.prototype =
+     }
+   },
+ 
+   /**
+    * Begin observing HTTP traffic that we care about,
+    * namely traffic that originates inside any context that a Heads Up Display
+    * is active for.
+    */
+-  startHTTPObservation: function HS_httpObserverFactory()
++  startHTTPObservation: function HS_startHTTPObservation()
+   {
+     // creates an observer for http traffic
+     var self = this;
+     var httpObserver = {
+       observeActivity :
+       function (aChannel, aActivityType, aActivitySubtype,
+                 aTimestamp, aExtraSizeData, aExtraStringData)
+       {
+@@ -1035,18 +991,17 @@ HUD_SERVICE.prototype =
+             extraStringData: aExtraStringData,
+             stage: transCodes[aActivitySubtype],
+           };
+           if (aActivitySubtype ==
+               activityDistributor.ACTIVITY_SUBTYPE_REQUEST_HEADER ) {
+                 // create a unique ID to track this transaction and be able to
+                 // update the logged node with subsequent http transactions
+                 httpActivity.httpId = self.sequenceId();
+-                let loggedNode =
+-                  self.logActivity("network", aChannel.URI, httpActivity);
++                self.logActivity("network", aChannel.URI, httpActivity);
+                 self.httpTransactions[aChannel] =
+                   new Number(httpActivity.httpId);
+           }
+         }
+       },
+ 
+       httpTransactionCodes: {
+         0x5001: "REQUEST_HEADER",
+@@ -1056,17 +1011,17 @@ HUD_SERVICE.prototype =
+         0x5005: "RESPONSE_COMPLETE",
+         0x5006: "TRANSACTION_CLOSE",
+       }
+     };
+ 
+     activityDistributor.addObserver(httpObserver);
+   },
+ 
+-  // keep tracked of trasactions where the request header was logged
++  // keep tracked of transactions where the request header was logged
+   // update logged transactions thereafter.
+   httpTransactions: {},
+ 
+   /**
+    * Logs network activity
+    *
+    * @param nsIURI aURI
+    * @param object aActivityObject
+@@ -1126,54 +1081,52 @@ HUD_SERVICE.prototype =
+    *
+    * @param nsIURI aURI
+    * @param object aActivityObject
+    * @returns void
+    */
+   logConsoleActivity: function HS_logConsoleActivity(aURI, aActivityObject)
+   {
+     var displayNode, outputNode, hudId;
+-    try {
+-        var hudIds = this.uriRegistry[aURI.spec];
+-        hudId = hudIds[0];
++    if (aURI.spec in this.uriRegistry) {
++      hudId = this.uriRegistry[aURI.spec];
+     }
+-    catch (ex) {
+-      // TODO: uri spec is not tracked becasue the net request is
++
++    if (!hudId) {
++      // TODO: uri spec is not tracked because the net request is
+       // using a different loadGroup
+       // see bug 568034
+-      if (!displayNode) {
+-        return;
+-      }
++      return;
+     }
+ 
+     var _msgLogLevel = this.scriptMsgLogLevel[aActivityObject.flags];
+     var msgLogLevel = this.getStr(_msgLogLevel);
+ 
++    var logLevel = "warn";
++
++    if (aActivityObject.flags in this.scriptErrorFlags) {
++      logLevel = this.scriptErrorFlags[aActivityObject.flags];
++    }
++
+     // check if we should be logging this message:
+-    var filterState = this.getFilterState(hudId, msgLogLevel);
++    var filterState = this.getFilterState(hudId, logLevel);
+ 
+     if (!filterState) {
+       // Ignore log message
+       return;
+     }
+ 
+     // in this case, the "activity object" is the
+     // nsIScriptError or nsIConsoleMessage
+     var message = {
+       activity: aActivityObject,
+       origin: "console-listener",
+       hudId: hudId,
+     };
+ 
+-    try {
+-      var logLevel = this.scriptErrorFlags[aActivityObject.flags];
+-    }
+-    catch (ex) {
+-      var logLevel = "warn";
+-    }
+     var lineColSubs = [aActivityObject.columnNumber,
+                        aActivityObject.lineNumber];
+     var lineCol = this.getFormatStr("errLineCol", lineColSubs);
+ 
+     var errFileSubs = [aActivityObject.sourceName];
+     var errFile = this.getFormatStr("errFile", errFileSubs);
+ 
+     var msgCategory = this.getStr("msgCategory");
+@@ -1204,20 +1157,19 @@ HUD_SERVICE.prototype =
+    *
+    * @param string aType
+    * @param nsIURI aURI
+    * @param object (or nsIScriptError) aActivityObj
+    * @returns void
+    */
+   logActivity: function HS_logActivity(aType, aURI, aActivityObject)
+   {
+-    var displayNode, outputNode, hudId;
+ 
+     if (aType == "network") {
+-      var result = this.logNetActivity(aType, aURI, aActivityObject);
++      this.logNetActivity(aType, aURI, aActivityObject);
+     }
+     else if (aType == "console-listener") {
+       this.logConsoleActivity(aURI, aActivityObject);
+     }
+   },
+ 
+   /**
+    * update loadgroup when the window object is re-created
+@@ -1267,24 +1219,24 @@ HUD_SERVICE.prototype =
+     }
+     var trackedLoadGroups = this.getAllLoadGroups();
+     var len = trackedLoadGroups.length;
+     for (var i = 0; i < len; i++) {
+       try {
+         var unwrappedLoadGroup =
+         XPCNativeWrapper.unwrap(trackedLoadGroups[i].loadGroup);
+         if (aLoadGroup == unwrappedLoadGroup) {
+-          return this.getOutputNodeById(trackedLoadGroups[i].hudId);
++          return this.getHeadsUpDisplay(trackedLoadGroups[i].hudId);
+         }
+       }
+       catch (ex) {
+         // noop
+       }
+     }
+-    // TODO: also need to check parent loadGroup(s) incase of iframe activity?;
++    // TODO: also need to check parent loadGroup(s) in case of iframe activity?;
+     // see bug 568643
+     return null;
+   },
+ 
+   /**
+    * gets all nsILoadGroups that are being tracked by this service
+    * the loadgroups are matched to HUDIds in an object and an array is returned
+    * @returns array
+@@ -1308,17 +1260,17 @@ HUD_SERVICE.prototype =
+    * @param nsIURI aURI
+    * @returns nsIDOMNode
+    */
+   getActivityOutputNode: function HS_getActivityOutputNode(aURI)
+   {
+     // determine which outputNode activity tied to aURI should be logged to.
+     var display = this.getDisplayByURISpec(aURI.spec);
+     if (display) {
+-      return this.getOutputNodeById(display);
++      return this.getHeadsUpDisplay(display);
+     }
+     else {
+       throw new Error("Cannot get outputNode by hudId");
+     }
+   },
+ 
+   /**
+    * Wrapper method that generates a LogMessage object
+@@ -1485,17 +1437,17 @@ HUD_SERVICE.prototype =
+   },
+ 
+   /**
+    * windowInitializer - checks what Gecko app is running and inits the HUD
+    *
+    * @param nsIDOMWindow aContentWindow
+    * @returns void
+    */
+-  windowInitializer: function HS_WindowInitalizer(aContentWindow)
++  windowInitializer: function HS_windowInitializer(aContentWindow)
+   {
+     var xulWindow = aContentWindow.QueryInterface(Ci.nsIInterfaceRequestor)
+       .getInterface(Ci.nsIWebNavigation)
+       .QueryInterface(Ci.nsIDocShellTreeItem)
+       .rootTreeItem
+       .QueryInterface(Ci.nsIInterfaceRequestor)
+       .getInterface(Ci.nsIDOMWindow);
+ 
+@@ -1690,21 +1642,21 @@ function HeadsUpDisplay(aConfig)
+   // create XUL, HTML and textNode Factories:
+   try  {
+     this.HTMLFactory = NodeFactory("html", "html", this.chromeDocument);
+   }
+   catch(ex) {
+     Cu.reportError(ex);
+   }
+ 
+-  this.XULFactory = NodeFactory("xul", "xul", this.chromeDocument);
++  this.makeXULNode = NodeFactory("xul", "xul", this.chromeDocument);
+   this.textFactory = NodeFactory("text", "xul", this.chromeDocument);
+ 
+   // create a panel dynamically and attach to the parentNode
+-  let hudBox = this.createHUD();
++  this.createHUD();
+ 
+   let splitter = this.chromeDocument.createElement("splitter");
+   splitter.setAttribute("collapse", "before");
+   splitter.setAttribute("resizeafter", "flex");
+   splitter.setAttribute("class", "hud-splitter");
+ 
+   let grippy = this.chromeDocument.createElement("grippy");
+   this.notificationBox.insertBefore(splitter,
+@@ -1832,28 +1784,16 @@ HeadsUpDisplay.prototype = {
+       var ns = ELEMENT_NS;
+       var nsUri = ELEMENT_NS_URI;
+       var tag = ns + aTag;
+       return this.chromeDocument.createElementNS(nsUri, tag);
+     }
+   },
+ 
+   /**
+-   * Shortcut to make XUL nodes
+-   *
+-   * @param string aTag
+-   * @returns nsIDOMNode
+-   */
+-  makeXULNode:
+-  function HUD_makeXULNode(aTag)
+-  {
+-    return this.XULFactory(aTag);
+-  },
+-
+-  /**
+    * Clears the HeadsUpDisplay output node of any log messages
+    *
+    * @returns void
+    */
+   clearConsoleOutput: function HUD_clearConsoleOutput()
+   {
+     for each (var node in this.outputNode.childNodes) {
+       this.outputNode.removeChild(node);
+@@ -1903,31 +1843,30 @@ HeadsUpDisplay.prototype = {
+ 
+     this.setFilterTextBoxEvents();
+ 
+     this.consoleClearButton = this.makeXULNode("button");
+     this.consoleClearButton.setAttribute("class", "hud-console-clear");
+     this.consoleClearButton.setAttribute("label", this.getStr("btnClear"));
+     this.consoleClearButton.setAttribute("buttonType", "clear");
+     this.consoleClearButton.setAttribute("hudId", this.hudId);
+-    var command = "HUDConsoleUI.command(this)";
+-    this.consoleClearButton.setAttribute("oncommand", command);
++    this.consoleClearButton.setAttribute("oncommand",
++      "HUDConsoleUI.command(this)");
+ 
+     this.filterPrefs = HUDService.getDefaultFilterPrefs(this.hudId);
+ 
+     let consoleFilterToolbar = this.makeFilterToolbar();
+     consoleFilterToolbar.setAttribute("mode", "text");
+     consoleFilterToolbar.setAttribute("id", "viewGroup");
+     this.consoleFilterToolbar = consoleFilterToolbar;
+     consoleWrap.appendChild(consoleFilterToolbar);
+ 
+     consoleWrap.appendChild(this.outputNode);
+     outerWrap.appendChild(consoleWrap);
+ 
+-    this.jsTermParentNode = outerWrap;
+     this.HUDBox.appendChild(outerWrap);
+     return this.HUDBox;
+   },
+ 
+ 
+   /**
+    * sets the click events for all binary toggle filter buttons
+    *
+@@ -1999,18 +1938,17 @@ HeadsUpDisplay.prototype = {
+       btn.setAttribute("checked", this.filterPrefs[prefKey]);
+       function toggle(btn) {
+         self.consoleFilterCommands.toggle(btn);
+       };
+ 
+       btn.setAttribute("oncommand", "HUDConsoleUI.toggleFilter(this);");
+     }
+     else {
+-      var command = "HUDConsoleUI.command(this)";
+-      btn.setAttribute("oncommand", command);
++      btn.setAttribute("oncommand", "HUDConsoleUI.command(this)");
+     }
+     return btn;
+   },
+ 
+   createHUD: function HUD_createHUD()
+   {
+     let self = this;
+     if (this.HUDBox) {
+@@ -2061,17 +1999,16 @@ HeadsUpDisplay.prototype = {
+ //////////////////////////////////////////////////////////////////////////////
+ // HUDConsole factory function
+ //////////////////////////////////////////////////////////////////////////////
+ 
+ /**
+  * The console object that is attached to each contentWindow
+  *
+  * @param object aHeadsUpDisplay
+- * @returns object
+  */
+ function HUDConsole(aHeadsUpDisplay)
+ {
+   this.hud = aHeadsUpDisplay;
+   this.hudId = this.hud.hudId;
+   this.outputNode = this.hud.outputNode;
+   this.chromeDocument = this.hud.chromeDocument;
+   this.makeHTMLNode = this.hud.makeHTMLNode;
+@@ -2138,65 +2075,28 @@ HUDConsole.prototype = {
+ 
+     let timestampedMessage =
+       this.chromeDocument.createTextNode(ts + ": " + this.message);
+ 
+     messageNode.appendChild(timestampedMessage);
+     // need a constructor here to properly set all attrs
+     let messageObject = {
+       logLevel: aLevel,
+-      hudId: this.hud.hudId,
+-      message: this.hud.message,
++      hudId: this.hudId,
++      message: this.message,
+       timeStamp: ts,
+       origin: "HUDConsole",
+     };
+ 
+     HUDService.logMessage(messageObject, this.hud.outputNode, messageNode);
+   }
+ };
+ 
+ 
+ 
+-/**
+- * Creates a DOM Node factory for either XUL nodes or HTML nodes - as
+- * well as textNodes
+- * @param   aFactoryType
+- *          "xul" or "html"
+- * @returns DOM Node Factory function
+- */
+-function NodeFactory(aFactoryType, aNameSpace, aDocument)
+-{
+-  // aDocument is presumed to be a XULDocument
+-  const ELEMENT_NS_URI = "http://www.w3.org/1999/xhtml";
+-
+-  if (aFactoryType == "text") {
+-    function factory(aText) {
+-      return aDocument.createTextNode(aText);
+-    }
+-    return factory;
+-  }
+-  else {
+-    if (aNameSpace == "xul") {
+-      function factory(aTag)
+-      {
+-        return aDocument.createElement(aTag);
+-      }
+-      return factory;
+-    }
+-    else {
+-      function factory(aTag)
+-      {
+-        var tag = "html:" + aTag;
+-        return aDocument.createElementNS(ELEMENT_NS_URI, tag);
+-      }
+-      return factory;
+-    }
+-  }
+-}
+-
+ //////////////////////////////////////////////////////////////////////////
+ // JS Completer
+ //////////////////////////////////////////////////////////////////////////
+ 
+ /**
+  * Provides a list of properties, that are possible matches based on the passed
+  * scope and inputValue.
+  * TODO: This function is really simple. The provider algo could do more:
+@@ -2266,17 +2166,16 @@ function JSPropertyProvider(aScope, aInp
+  *
+  *
+  *
+  * @param object aContext
+  *        Usually nsIDOMWindow, but doesn't have to be
+  * @param nsIDOMNode aParentNode
+  * @param object aMixin
+  *        Gecko-app (or Jetpack) specific utility object
+- * @returns void
+  */
+ function JSTerm(aContext, aParentNode, aMixin)
+ {
+   // set the context, attach the UI by appending to aParentNode
+ 
+   this.application = appName();
+   this.context = aContext;
+   this.parentNode = aParentNode;
+@@ -2316,32 +2215,32 @@ JSTerm.prototype = {
+     this.outputNode = this.mixins.outputNode;
+     if (this.mixins.cssClassOverride) {
+       this.cssClassOverride = this.mixins.cssClassOverride;
+     }
+   },
+ 
+   get codeInputString()
+   {
+-    // TODO: filter the input for windows line breaks, conver to unix
++    // TODO: filter the input for windows line breaks, convert to unix
+     // see bug 572812
+     return this.inputNode.value;
+   },
+ 
+   generateUI: function JST_generateUI()
+   {
+     this.mixins.generateUI();
+   },
+ 
+   attachUI: function JST_attachUI()
+   {
+     this.mixins.attachUI();
+   },
+ 
+-  createSandbox: function JST_setupSandbox()
++  createSandbox: function JST_createSandbox()
+   {
+     // create a JS Sandbox out of this.context
+     this._window.wrappedJSObject.jsterm = {};
+     this.console = this._window.wrappedJSObject.console;
+     this.sandbox = new Cu.Sandbox(this._window);
+     this.sandbox.window = this._window;
+     this.sandbox.console = this.console;
+     this.sandbox.__proto__ = this._window.wrappedJSObject;
+@@ -2478,20 +2377,20 @@ JSTerm.prototype = {
+     if (!this.PropertyTreeView) {
+       Cu.import("chrome://global/content/PropertyPanel.jsm", this);
+     }
+ 
+     let propPanel;
+     // The property panel has two buttons:
+     // 1. `Update`: reexecutes the string executed on the command line. The
+     //    result will be inspected by this panel.
+-    // 2. `Close`: destroyes the panel.
++    // 2. `Close`: destroys the panel.
+     let buttons = [];
+ 
+-    // If there is a evalString passed to this function, then add a `Update`
++    // If there is a evalString passed to this function, then add an `Update`
+     // button to the panel so that the evalString can be reexecuted to update
+     // the content of the panel.
+     if (aEvalString !== null) {
+       buttons.push({
+         label: "Update",
+         onclick: function () {
+           try {
+             var result =
+@@ -2608,19 +2507,16 @@ JSTerm.prototype = {
+           case 101:
+             // control-e
+             tmp = self.codeInputString;
+             self.inputNode.value = "";
+             setTimeout(function(){
+               var endPos = tmp.length + 1;
+               self.inputNode.value = tmp;
+             },0);
+-            break;
+-          default:
+-            return;
+         }
+         return;
+       }
+       else if (aEvent.shiftKey && aEvent.keyCode == 13) {
+         // shift return
+         // TODO: expand the inputNode height by one line
+         return;
+       }
+@@ -2675,18 +2571,16 @@ JSTerm.prototype = {
+             // moved the cursor. If the value changed, then call the complete
+             // function to show completion on new value.
+             var value = self.inputNode.value;
+             setTimeout(function() {
+               if (self.inputNode.value !== value) {
+                 self.complete(self.COMPLETE_HINT_ONLY);
+               }
+             }, 0);
+-
+-            break;
+         }
+         return;
+       }
+     }
+ 
+     return handleKeyDown;
+   },
+ 
+@@ -3094,17 +2988,16 @@ FirefoxApplicationHooks.prototype = {
+ };
+ 
+ /**
+  * ConsoleDOMListeners
+  *   Attach DOM Mutation listeners to a document
+  * @param nsIDOMWindow aWindow
+  * @param string aHUDId
+  * @param boolean aRemoveBool
+- * @returns void
+  */
+ function ConsoleDOMListeners(aWindow, aHUDId, aRemoveBool)
+ {
+   this.hudId = aHUDId;
+   this.window = XPCNativeWrapper.unwrap(aWindow);
+   this.console = this.window.console;
+   this.document = this.window.document;
+   this.trackedEvents = ['DOMSubtreeModified',
+@@ -3277,17 +3170,16 @@ ConsoleUtils = {
+  * well as textNodes
+  * @param   aFactoryType
+  *          "xul", "html" or "text"
+  * @returns DOM Node Factory function
+  */
+ function NodeFactory(aFactoryType, aNameSpace, aDocument)
+ {
+   // aDocument is presumed to be a XULDocument
+-  const ELEMENT_NS_URI = "http://www.w3.org/1999/xhtml";
+ 
+   if (aFactoryType == "text") {
+     function factory(aText) {
+       return aDocument.createTextNode(aText);
+     }
+     return factory;
+   }
+   else {
+@@ -3459,17 +3351,17 @@ ConsoleStorage.prototype = {
+     prefs.setBoolPref(PREFS.exception, (aPrefsObject.exception ? true : false));
+     prefs.setBoolPref(PREFS.error, (aPrefsObject.error ? true : false));
+     prefs.setBoolPref(PREFS.info, (aPrefsObject.info ? true : false));
+     prefs.setBoolPref(PREFS.warn, (aPrefsObject.warn ? true : false));
+     prefs.setBoolPref(PREFS.log, (aPrefsObject.log ? true : false));
+     prefs.setBoolPref(PREFS.global, (aPrefsObject.global ? true : false));
+   },
+ 
+-  sequenceId: function CS_sequencerId()
++  sequenceId: function CS_sequenceId()
+   {
+     if (!this.sequencer) {
+       this.sequencer = this.createSequencer();
+     }
+     return this.sequencer.next();
+   },
+ 
+   createSequencer: function CS_createSequencer()
+@@ -3560,17 +3452,17 @@ ConsoleStorage.prototype = {
+   },
+ 
+   updateEntry: function CS_updateEntry(aUUID)
+   {
+     // update an individual entry
+     // TODO: see bug 568634
+   },
+ 
+-  createDisplay: function CS_createdisplay(aId)
++  createDisplay: function CS_createDisplay(aId)
+   {
+     if (!this.consoleDisplays[aId]) {
+       this.consoleDisplays[aId] = {};
+       this.displayIndexes[aId] = [];
+     }
+   },
+ 
+   removeDisplay: function CS_removeDisplay(aId)
+@@ -3583,19 +3475,18 @@ ConsoleStorage.prototype = {
+       Cu.reportError("Could not remove console display for id " + aId);
+     }
+   }
+ };
+ 
+ /**
+  * A Console log entry
+  *
+- * @param JSObject aConfig, object literal with ConsolEntry properties
++ * @param JSObject aConfig, object literal with ConsoleEntry properties
+  * @param integer aId
+- * @returns void
+  */
+ 
+ function ConsoleEntry(aConfig, id)
+ {
+   if (!aConfig.logLevel && aConfig.message) {
+     throw new Error("Missing Arguments when creating a console entry");
+   }
+ 
+@@ -3691,25 +3582,24 @@ HUDConsoleObserver = {
+     if (aSubject instanceof Ci.nsIConsoleMessage) {
+       var err = aSubject.QueryInterface(Ci.nsIScriptError);
+       switch (err.category) {
+         case "XPConnect JavaScript":
+         case "component javascript":
+         case "chrome javascript":
+           // we ignore these CHROME-originating errors as we only
+           // care about content
+-          return;
++          break;
+         case "HUDConsole":
+         case "CSS Parser":
+         case "content javascript":
+           HUDService.reportConsoleServiceContentScriptError(err);
+-          return;
++          break;
+         default:
+           HUDService.reportConsoleServiceMessage(aSubject);
+-          return;
+       }
+     }
+   }
+ };
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ // appName
+ ///////////////////////////////////////////////////////////////////////////

@@ -1,0 +1,70 @@
+diff -r f73e5032cfad toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm	Sat Jul 31 16:02:52 2010 +0900
++++ b/toolkit/components/console/hudservice/HUDService.jsm	Sat Jul 31 18:34:33 2010 +0300
+@@ -1765,18 +1765,18 @@ HeadsUpDisplay.prototype = {
+ 
+   /**
+    * Clears the HeadsUpDisplay output node of any log messages
+    *
+    * @returns void
+    */
+   clearConsoleOutput: function HUD_clearConsoleOutput()
+   {
+-    for each (var node in this.outputNode.childNodes) {
+-      this.outputNode.removeChild(node);
++    while (this.outputNode.firstChild) {
++      this.outputNode.removeChild(this.outputNode.firstChild);
+     }
+   },
+ 
+   /**
+    * Build the UI of each HeadsUpDisplay
+    *
+    * @returns nsIDOMNode
+    */
+diff -r f73e5032cfad toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Sat Jul 31 16:02:52 2010 +0900
++++ b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Sat Jul 31 18:34:33 2010 +0300
+@@ -648,25 +648,41 @@ function testErrorOnPageReload() {
+     var outputNode = display.querySelectorAll(".hud-output-node")[0];
+ 
+     button.addEventListener("click", function onClickHandler() {
+       button.removeEventListener("click", onClickHandler, false);
+ 
+       testLogEntry(outputNode, "fooBazBaz",
+         { success: successMsg, err: errMsg });
+ 
+-      testEnd();
++      testConsoleClear();
+     }, false);
+ 
+     button.dispatchEvent(clickEvent);
+   }, false);
+ 
+   content.location.href = TEST_ERROR_URI;
+ }
+ 
++function testConsoleClear()
++{
++  // see bug 583464 - HeadsUpDisplay.clearConsoleOutput() fails.
++  // https://bugzilla.mozilla.org/show_bug.cgi?id=583464
++
++  var HUD = HUDService.hudWeakReferences[hudId].get();
++  HUD.console.log("hello world!");
++  ok(HUD.outputNode.childNodes.length > 0,
++    "we have at least one message in outputNode");
++
++  HUD.clearConsoleOutput();
++  is(HUD.outputNode.childNodes.length, 0, "outputNode is empty");
++
++  testEnd();
++}
++
+ function testEnd() {
+   // testUnregister();
+   executeSoon(function () {
+     HUDService.deactivateHUDForContext(tab);
+     HUDService.shutdown();
+   });
+   finish();
+ }

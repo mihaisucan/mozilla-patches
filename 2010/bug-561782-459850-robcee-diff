@@ -1,0 +1,496 @@
+diff --git a/browser/base/content/browser-sets.inc b/browser/base/content/browser-sets.inc
+--- a/browser/base/content/browser-sets.inc
++++ b/browser/base/content/browser-sets.inc
+@@ -152,6 +152,8 @@
+              disabled="true"/>
+     <command id="Inspector:Style"
+              oncommand="InspectorUI.toggleStylePanel();"/>
++    <command id="Inspector:Dom"
++             oncommand="InspectorUI.toggleDOMPanel();"/>
+   </commandset>
+ 
+   <broadcasterset id="mainBroadcasterSet">
+diff --git a/browser/base/content/browser.xul b/browser/base/content/browser.xul
+--- a/browser/base/content/browser.xul
++++ b/browser/base/content/browser.xul
+@@ -252,6 +252,11 @@
+                        accesskey="&inspectStyleButton.accesskey;"
+                        class="toolbarbutton-text"
+                        command="Inspector:Style"/>
++        <toolbarbutton id="inspector-dom-toolbutton"
++                       label="DOM"
++                       accesskey="D"
++                       class="toolbarbutton-text"
++                       command="Inspector:Dom"/>
+       </toolbar>
+       <tree id="inspector-tree" class="plain"
+             seltype="single"
+@@ -287,7 +292,7 @@
+         <listbox id="inspector-style-listbox" flex="1"/>
+         <hbox align="end">
+           <spacer flex="1" />
+-          <resizer dir="bottomend" />
++          <resizer dir="bottomend"/>
+         </hbox>
+     </panel>
+ 
+diff --git a/browser/base/content/inspector.js b/browser/base/content/inspector.js
+--- a/browser/base/content/inspector.js
++++ b/browser/base/content/inspector.js
+@@ -493,10 +493,7 @@
+   browser: null,
+   _showTreePanel: true,
+   _showStylePanel: true,
+-  _showDOMPanel: false,
+-  highlightColor: "#EEEE66",
+-  highlightThickness: 4,
+-  highlightOpacity: 0.4,
++  _showDOMPanel: true,
+   selectEventsSuppressed: false,
+   inspecting: false,
+ 
+@@ -545,6 +542,22 @@
+   },
+ 
+   /**
++   * Toggle the DOM panel. Invoked from the toolbar's DOM button.
++   */
++  toggleDOMPanel: function IUI_toggleDOMPanel()
++  {
++    if (this._showDOMPanel) {
++      this.domPanel.hidePopup();
++    } else {
++      this.openDOMPanel();
++      if (this.treeView.selectedNode) {
++        this.updateDOMPanel(this.treeView.selectedNode);
++      }
++    }
++    this._showDOMPanel = !this._showDOMPanel;
++  },
++
++  /**
+    * Is the tree panel open?
+    *
+    * @returns boolean
+@@ -565,6 +578,16 @@
+   },
+ 
+   /**
++   * Is the DOM panel open?
++   *
++   * @returns boolean
++   */
++  get isDOMPanelOpen()
++  {
++    return this.domPanel && this.domPanel.state == "open";
++  },
++
++  /**
+    * Open the inspector's tree panel and initialize it.
+    */
+   openTreePanel: function IUI_openTreePanel()
+@@ -577,7 +600,8 @@
+       const panelWidthRatio = 7 / 8;
+       const panelHeightRatio = 1 / 5;
+       let bar = document.getElementById("status-bar");
+-      this.treePanel.openPopup(bar, "overlap", 120, -120, false, false);
++      this.treePanel.openPopupAtScreen(this.win.screenX + 80,
++        this.win.outerHeight + this.win.screenY);
+       this.treePanel.sizeTo(this.win.outerWidth * panelWidthRatio, 
+         this.win.outerHeight * panelHeightRatio);
+       this.tree = document.getElementById("inspector-tree");
+@@ -603,6 +627,20 @@
+   },
+ 
+   /**
++   * Open the DOM panel if not already onscreen.
++   */
++  openDOMPanel: function IUI_openDOMPanel()
++  {
++    if (!this.isDOMPanelOpen) {
++      // open at middle right of browser panel, offset by 20px from middle.
++      this.domPanel.openPopup(this.browser, "end_before", 0,
++        this.win.outerHeight / 2 - 20, false, false);
++      // size panel to 200px wide by half browser height - 60.
++      this.domPanel.sizeTo(200, this.win.outerHeight / 2 - 60);
++    }
++  },
++
++  /**
+    * Toggle the dimmed (semi-transparent) state for a panel by setting or
+    * removing a dimmed attribute.
+    *
+@@ -618,11 +656,6 @@
+     }
+   },
+ 
+-  openDOMPanel: function IUI_openDOMPanel()
+-  {
+-    // # todo bug 561782
+-  },
+-
+   /**
+    * Open inspector UI. tree, style and DOM panels if enabled. Add listeners for
+    * document scrolling, resize and tabContainer.TabSelect.
+@@ -647,8 +680,23 @@
+       this.openStylePanel();
+     }
+     if (this._showDOMPanel) {
++      if (!this.PropertyTreeView) {
++        Cu.import("chrome://global/content/PropertyPanel.jsm", this);
++      }
++
++      // If there is no domPanel yet, then create a new one.
++      if (!this.domPanel) {
++        let parent = document.getElementById("inspector-style-panel").parentNode;
++        let propPanel = new (this.PropertyPanel)(parent, document, "DOM", {});
++
++        this.domPanel = propPanel.panel;
++        this.domBox = propPanel.tree;
++        this.domTreeView = propPanel.treeView;
++      }
++      this.clearDOMPanel();
+       this.openDOMPanel();
+     }
++
+     this.inspectorBundle = Services.strings.createBundle("chrome://browser/locale/inspector.properties");
+     this.initializeHighlighter();
+     this.startInspecting();
+@@ -688,6 +736,12 @@
+     if (this.isStylePanelOpen) {
+       this.stylePanel.hidePopup();
+     }
++    if (this.isStylePanelOpen) {
++      this.stylePanel.hidePopup();
++    }
++    if (this.isDOMPanelOpen) {
++      this.domPanel.hidePopup();
++    }
+     this.inspectCmd.setAttribute("checked", false);
+     this.browser = this.win = null; // null out references to browser and window
+   },
+@@ -701,6 +755,7 @@
+     this.attachPageListeners();
+     this.inspecting = true;
+     this.toggleDimForPanel(this.stylePanel);
++    this.toggleDimForPanel(this.domPanel);
+   },
+ 
+   /**
+@@ -714,8 +769,10 @@
+     this.detachPageListeners();
+     this.inspecting = false;
+     this.toggleDimForPanel(this.stylePanel);
++    this.toggleDimForPanel(this.domPanel);
+     if (this.treeView.selection) {
+       this.updateStylePanel(this.treeView.selectedNode);
++      this.updateDOMPanel(this.treeView.selectedNode);
+     }
+   },
+ 
+@@ -731,7 +788,7 @@
+   },
+ 
+   /**
+-   * add a new item to the listbox
++   * Add a new item to the style panel listbox.
+    *
+    * @param aLabel
+    *        A bit of text to put in the listitem's label attribute.
+@@ -758,6 +815,19 @@
+   },
+ 
+   /**
++   * Add a new item to the DOM panel listbox
++   *
++   * @param aPair
++   *        an object with name and value properties.
++   */
++  addDOMItem: function IUI_addDOMItem(aPair)
++  {
++    let item = document.createElement("listitem");
++    item.setAttribute("label", aPair.name + ": " + aPair.value);
++    this.domBox.appendChild(item);
++  },
++
++  /**
+    * Create items for each rule included in the given array.
+    *
+    * @param aRules
+@@ -816,6 +886,14 @@
+   },
+ 
+   /**
++   * Remove all items from the DOM Panel's listbox.
++   */
++  clearDOMPanel: function IUI_clearStylePanel()
++  {
++    this.domTreeView.data = {};
++  },
++
++  /**
+    * Update the contents of the style panel with styles for the currently
+    * inspected node.
+    *
+@@ -824,8 +902,10 @@
+    */
+   updateStylePanel: function IUI_updateStylePanel(aNode)
+   {
+-    if (this.inspecting || !this.isStylePanelOpen)
++    if (this.inspecting || !this.isStylePanelOpen) {
+       return;
++    }
++
+     let rules = [], styleSections = [], usedProperties = {};
+     this.style.getInheritedRules(aNode, styleSections, usedProperties);
+     this.style.getElementRules(aNode, rules, usedProperties);
+@@ -833,6 +913,19 @@
+     this.createStyleItems(rules, styleSections);
+   },
+ 
++  /**
++   * Update the contents of hte DOM panel with name/value pairs for the
++   * currently-inspected node.
++   */
++  updateDOMPanel: function IUI_updateDOMPanel(aNode)
++  {
++    if (this.inspecting || !this.isDOMPanelOpen) {
++      return;
++    }
++
++    this.domTreeView.data = aNode;
++  },
++
+   /////////////////////////////////////////////////////////////////////////
+   //// Event Handling
+ 
+@@ -882,11 +975,11 @@
+       return false;
+     }
+ 
+-    let treeView = this.treeView;
+-    let node = treeView.selectedNode;
++    let node = this.treeView.selectedNode;
+     this.highlighter.highlightNode(node);
+     this.stopInspecting();
+     this.updateStylePanel(node);
++    this.updateDOMPanel(node);
+     return true;
+   },
+ 
+diff --git a/browser/base/content/test/Makefile.in b/browser/base/content/test/Makefile.in
+--- a/browser/base/content/test/Makefile.in
++++ b/browser/base/content/test/Makefile.in
+@@ -147,6 +147,7 @@
+                  browser_inspector_treeSelection.js \
+                  browser_inspector_highlighter.js \
+                  browser_inspector_stylePanel.js \
++                 browser_inspector_domPanel.js
+                  browser_pageInfo.js \
+                  browser_page_style_menu.js \
+                  browser_pinnedTabs.js \
+diff --git a/browser/base/content/test/browser_inspector_domPanel.js b/browser/base/content/test/browser_inspector_domPanel.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_inspector_domPanel.js
+@@ -0,0 +1,134 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Inspector DOM Panel Tests.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Rob Campbell <rcampbell@mozilla.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++let doc;
++let testGen;
++
++function createDocument()
++{
++  doc.body.innerHTML = '<div id="first" style="{ margin: 10em; ' +
++    'font-size: 14pt; font-family: helvetica, sans-serif; color: #AAA}">\n' +
++    '<h1>Some header text</h1>\n' +
++    '<p id="salutation" style="{font-size: 12pt}">hi.</p>\n' +
++    '<p id="body" style="{font-size: 12pt}">I am a test-case. This text exists ' +
++    'solely to provide some things to <span style="{color: yellow}">' +
++    'highlight</span> and <span style="{font-weight: bold}">count</span> ' +
++    'DOM list-items in the box at right. If you are reading this, ' +
++    'you should go do something else instead. Maybe read a book. Or better ' +
++    'yet, write some test-cases for another bit of code. ' +
++    '<span style="{font-style: italic}">Maybe more inspector test-cases!</span></p>\n' +
++    '<p id="closing">end transmission</p>\n' +
++    '</div>';
++  doc.title = "Inspector DOM Test";
++  setTimeout(setupDOMTests, 0);
++}
++
++function setupDOMTests()
++{
++  document.addEventListener("popupshown", runDOMTests, false);
++  InspectorUI.openInspectorUI();
++}
++
++function nodeGenerator()
++{
++  let body = doc.body;
++  InspectorUI.inspectNode(body);
++  yield;
++  let h1 = doc.querySelector("h1");
++  InspectorUI.inspectNode(h1);
++  yield;
++  let first = doc.getElementById("first");
++  InspectorUI.inspectNode(first);
++  yield;
++  let closing = doc.getElementById("#closing");
++  InspectorUI.inspectNode(closing);
++  yield;
++}
++
++function runDOMTests(evt)
++{
++  if (evt.target.id != "inspector-dom-panel")
++    return true;
++  InspectorUI._log("runDOMtests");
++  document.removeEventListener("popupshown", runDOMTests, false);
++  document.addEventListener("popupshown", performTestComparisons, false);
++  InspectorUI.stopInspecting();
++  testGen = nodeGenerator();
++  testGen.next();
++}
++
++function performTestComparisons(evt)
++{
++  InspectorUI._log("performTestComparisons");
++  if (evt.target.id != "highlighter-panel")
++    return true;
++
++  ok(InspectorUI.treeView.selectedNode, "selection");
++  ok(InspectorUI._showDOMPanel, "_showDOMPanel");
++  is(InspectorUI.isDOMPanelOpen, InspectorUI._showDOMPanel, "DOM panel matches _showDOMPanel?");
++  ok(InspectorUI.highlighter.isHighlighting, "panel is highlighting");
++  ok(InspectorUI.domTreeView.rowCount > 0, "domBox has items");
++
++  try {
++    testGen.next();
++  } catch(StopIteration) {
++    document.removeEventListener("popupshown", performTestComparisons, false);
++    finishUp();
++  }
++}
++
++function finishUp() {
++  InspectorUI.closeInspectorUI();
++  gBrowser.removeCurrentTab();
++  finish();
++}
++
++function test()
++{
++  waitForExplicitFinish();
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++    doc = content.document;
++    waitForFocus(createDocument, content);
++  }, true);
++  
++  content.location = "data:text/html,basic tests for inspector";
++}
++
+diff --git a/browser/base/content/test/browser_inspector_initialization.js b/browser/base/content/test/browser_inspector_initialization.js
+--- a/browser/base/content/test/browser_inspector_initialization.js
++++ b/browser/base/content/test/browser_inspector_initialization.js
+@@ -48,20 +48,20 @@
+ 
+ function runInspectorTests(evt)
+ {
+-  if (evt.target.id != "inspector-panel")
++  if (evt.target.id != "inspector-dom-panel")
+     return true;
+   document.removeEventListener("popupshown", runInspectorTests, false);
+   document.addEventListener("popuphidden", finishInspectorTests, false);
+   ok(InspectorUI.inspecting, "Inspector is highlighting");
+   ok(InspectorUI.isPanelOpen, "Inspector Tree Panel is open");
+   ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
+-  todo(InspectorUI.isDOMPanelOpen, "Inspector DOM Panel is open");
++  ok(InspectorUI.isDOMPanelOpen, "Inspector DOM Panel is open");
+   InspectorUI.toggleInspectorUI();
+ }
+ 
+ function finishInspectorTests(evt)
+ {
+-  if (evt.target.id != "inspector-style-panel")
++  if (evt.target.id != "inspector-dom-panel")
+     return true;
+   document.removeEventListener("popuphidden", finishInspectorTests, false);
+   ok(!InspectorUI.isDOMPanelOpen, "Inspector DOM Panel is closed");
+diff --git a/browser/themes/gnomestripe/browser/browser.css b/browser/themes/gnomestripe/browser/browser.css
+--- a/browser/themes/gnomestripe/browser/browser.css
++++ b/browser/themes/gnomestripe/browser/browser.css
+@@ -1502,6 +1502,9 @@
+ #highlighter-panel {
+   -moz-appearance: none;
+   -moz-window-shadow: none;
++  background: -moz-linear-gradient(top -1deg, #ffdd88, #ffeeaa);
++  border: none;
++  opacity: 0.35;
+ }
+ 
+ listitem.style-selector {
+diff --git a/browser/themes/pinstripe/browser/browser.css b/browser/themes/pinstripe/browser/browser.css
+--- a/browser/themes/pinstripe/browser/browser.css
++++ b/browser/themes/pinstripe/browser/browser.css
+@@ -2071,6 +2071,9 @@
+ #highlighter-panel {
+   -moz-appearance: none;
+   -moz-window-shadow: none;
++  background: -moz-linear-gradient(top -1deg, #ffdd88, #ffeeaa);
++  border: none;
++  opacity: 0.35;
+ }
+ 
+ listitem.style-selector {
+diff --git a/browser/themes/winstripe/browser/browser.css b/browser/themes/winstripe/browser/browser.css
+--- a/browser/themes/winstripe/browser/browser.css
++++ b/browser/themes/winstripe/browser/browser.css
+@@ -1785,6 +1785,9 @@
+ #highlighter-panel {
+   -moz-appearance: none;
+   -moz-window-shadow: none;
++  background: -moz-linear-gradient(top -1deg, #ffdd88, #ffeeaa);
++  border: none;
++  opacity: 0.35;
+ }
+ 
+ listitem.style-selector {

@@ -1,0 +1,83 @@
+diff --git a/browser/base/content/csslogic.js b/browser/base/content/csslogic.js
+--- a/browser/base/content/csslogic.js
++++ b/browser/base/content/csslogic.js
+@@ -515,45 +515,71 @@ CssInfo.prototype = {
+   },
+ 
+   /**
+    * Go through the <tt>rules</tt> member of <tt>cssInfo</tt> and work out
+    * if each rule applies to <tt>viewedElement</tt>.
+    */
+   _markMatches: function CssInfo_markMatches()
+   {
+-    for (let r = 0; r < this._rules.length; r++) {
+-      let rule = this._rules[r];
++    let parents = [];
++    let element = this._cssLogic.viewedElement;
++    let parentObject = null;
++
++    while ((element = element.parentNode) &&
++      element != this._cssLogic.viewedDocument) {
++      parentObject = {
++        element: element,
++        rule: null
++      };
++
++      if (element.style && element.style.getPropertyValue(this.property) != "") {
++        parentObject.rule = new CssRule(this._cssLogic, {style: element.style},
++          this.property, null, "@element.style");
++      }
++
++      parents.push(parentObject);
++    }
++
++    for (let rule, r = 0, n = this._rules.length; r < n; r++) {
++      rule = this._rules[r];
+ 
+       // Do we have a selector match?
+       if (rule.selector == "@element.style" ||
+         this._cssLogic.viewedElement.mozMatchesSelector(rule.selector)) {
+         rule.status = CssLogic.STATUS.MATCHED;
+       } else {
+-        rule.status = CssLogic.STATUS.UNMATCHED;
++        // Do we have a parent match?
++        for (let p = 0, pn = parents.length; p < pn; p++) {
++          if (parents[p].element.mozMatchesSelector(rule.selector)) {
++            rule.status = CssLogic.STATUS.PARENT_MATCH;
++            break;
++          }
++        }
++
++        if (rule.status == CssLogic.STATUS.UNKNOWN) {
++          rule.status = CssLogic.STATUS.UNMATCHED;
++        }
+       }
+     }
+ 
+-    // TODO: Loop through UNMATCHED rules looking for an inherited match. See
+-    // bug 585577.
+-
+     // Sort the arrays by how well they match the given element.
+     this._rules.sort(function(aRule1, aRule2) {
+       if (aRule1.status > aRule2.status) {
+         return -1;
+       } else if (aRule2.status > aRule1.status) {
+         return 1;
+       } else {
+         return aRule1.specificity.compareTo(aRule2.specificity);
+       }
+     });
+ 
+-    // Now we know which of the matches is best we can mark it BEST_MATCH.
++    // Now we know which of the matches is best and we can mark it BEST_MATCH.
+     if (this._rules.length > 0) {
+-      if (this._rules[0].status == CssLogic.STATUS.MATCHED) {
++      if (this._rules[0].status > CssLogic.STATUS.UNMATCHED) {
+         this._rules[0].status = CssLogic.STATUS.BEST;
+       }
+     }
+ 
+     this._matched = true;
+   },
+ 
+   /**

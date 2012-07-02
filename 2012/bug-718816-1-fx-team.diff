@@ -1,0 +1,2374 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1327579362 -7200
+# Node ID 2926d777c08f4aefcabfdb63f1078b4594ca6842
+# Parent  e3e1d313f956ff1e82f736e182bae414471afee9
+Bug 718816 - Orion upstream update (with debugger ruler support code)
+
+diff --git a/browser/devtools/sourceeditor/orion/Makefile.dryice.js b/browser/devtools/sourceeditor/orion/Makefile.dryice.js
+--- a/browser/devtools/sourceeditor/orion/Makefile.dryice.js
++++ b/browser/devtools/sourceeditor/orion/Makefile.dryice.js
+@@ -44,20 +44,20 @@ const ORION_EDITOR = "org.eclipse.orion.
+ var js_src = copy.createDataObject();
+ 
+ copy({
+   source: [
+     ORION_EDITOR + "/orion/textview/global.js",
+     ORION_EDITOR + "/orion/textview/eventTarget.js",
+     ORION_EDITOR + "/orion/editor/regex.js",
+     ORION_EDITOR + "/orion/textview/keyBinding.js",
++    ORION_EDITOR + "/orion/textview/annotations.js",
+     ORION_EDITOR + "/orion/textview/rulers.js",
+     ORION_EDITOR + "/orion/textview/undoStack.js",
+     ORION_EDITOR + "/orion/textview/textModel.js",
+-    ORION_EDITOR + "/orion/textview/annotations.js",
+     ORION_EDITOR + "/orion/textview/tooltip.js",
+     ORION_EDITOR + "/orion/textview/textView.js",
+     ORION_EDITOR + "/orion/textview/textDND.js",
+     ORION_EDITOR + "/orion/editor/htmlGrammar.js",
+     ORION_EDITOR + "/orion/editor/textMateStyler.js",
+     ORION_EDITOR + "/examples/textview/textStyler.js",
+   ],
+   dest: js_src,
+diff --git a/browser/devtools/sourceeditor/orion/README b/browser/devtools/sourceeditor/orion/README
+--- a/browser/devtools/sourceeditor/orion/README
++++ b/browser/devtools/sourceeditor/orion/README
+@@ -3,23 +3,18 @@
+ This is the Orion editor packaged for Mozilla.
+ 
+ The Orion editor web site: http://www.eclipse.org/orion
+ 
+ # Upgrade
+ 
+ To upgrade Orion to a newer version see the UPGRADE file.
+ 
+-Orion version: git clone from 2011-12-09
+-               commit hash d8a6dc01d9c561d6eb99f03b64c8c78ce785c59d
+-  + patch for Eclipse Bug 366312 - right-clicking outside of the selection causes the caret to move
+-    https://github.com/mihaisucan/orion.client/tree/bug-366312
+-      see https://bugs.eclipse.org/bugs/show_bug.cgi?id=366312
+-  + patch for Mozilla Bug 711737 - Orion should support all the CSS properties from CSS1, CSS2, CSS2.1 and CSS3
+-    https://bugzilla.mozilla.org/show_bug.cgi?id=711737
++Orion version: git clone from 2012-01-17
++               commit hash b318c3a8d5abde2d1c9d2dd2bb0dd16c76a6240d
+   + patch for Mozilla Bug 719028 - Style Editor does not highlight a few CSS2.0 and CSS3 properties
+     https://bugzilla.mozilla.org/show_bug.cgi?id=719028
+ 
+ # License
+ 
+ The following files are licensed according to the contents in the LICENSE
+ file:
+   orion.js
+diff --git a/browser/devtools/sourceeditor/orion/orion.js b/browser/devtools/sourceeditor/orion/orion.js
+--- a/browser/devtools/sourceeditor/orion/orion.js
++++ b/browser/devtools/sourceeditor/orion/orion.js
+@@ -17,25 +17,25 @@
+ 
+ /**
+  * Evaluates the definition function and mixes in the returned module with
+  * the module specified by <code>moduleName</code>.
+  * <p>
+  * This function is intented to by used when RequireJS is not available.
+  * </p>
+  *
++ * @param {String} name The mixin module name.
+  * @param {String[]} deps The array of dependency names.
+  * @param {Function} callback The definition function.
+- * @param {String} moduleName The mixin module name.
+  */
+ if (!window.define) {
+-	window.define = function(deps, callback, moduleName) {
++	window.define = function(name, deps, callback) {
+ 		var module = this;
+-		var split = (moduleName || "").split("/"), i, j;
+-		for (i = 0; i < split.length; i++) {
++		var split = (name || "").split("/"), i, j;
++		for (i = 0; i < split.length - 1; i++) {
+ 			module = module[split[i]] = (module[split[i]] || {});
+ 		}
+ 		var depModules = [], depModule;
+ 		for (j = 0; j < deps.length; j++) {
+ 			depModule = this;
+ 			split = deps[j].split("/");
+ 			for (i = 0; i < split.length - 1; i++) {
+ 				depModule = depModule[split[i]] = (depModule[split[i]] || {});
+@@ -91,17 +91,17 @@ if (!window.require) {
+  * License v1.0 (http://www.eclipse.org/org/documents/edl-v10.html). 
+  * 
+  * Contributors: 
+  *		Felipe Heidrich (IBM Corporation) - initial API and implementation
+  *		Silenio Quarti (IBM Corporation) - initial API and implementation
+  ******************************************************************************/
+  
+ /*global define */
+-define([], function() {
++define("orion/textview/eventTarget", [], function() {
+ 	/** 
+ 	 * Constructs a new EventTarget object.
+ 	 * 
+ 	 * @class 
+ 	 * @name orion.textview.EventTarget
+ 	 */
+ 	function EventTarget() {
+ 	}
+@@ -220,17 +220,17 @@ define([], function() {
+ 				}
+ 				if (listeners.length === 0) {
+ 					delete this._eventTypes[type];
+ 				}
+ 			}
+ 		}
+ 	};
+ 	return {EventTarget: EventTarget};
+-}, "orion/textview");
++});
+ /*******************************************************************************
+  * @license
+  * Copyright (c) 2011 IBM Corporation and others.
+  * All rights reserved. This program and the accompanying materials are made 
+  * available under the terms of the Eclipse Public License v1.0 
+  * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution 
+  * License v1.0 (http://www.eclipse.org/org/documents/edl-v10.html). 
+  *
+@@ -239,17 +239,17 @@ define([], function() {
+  *******************************************************************************/
+ /*global define */
+ /*jslint browser:true regexp:false*/
+ /**
+  * @name orion.editor.regex
+  * @class Utilities for dealing with regular expressions.
+  * @description Utilities for dealing with regular expressions.
+  */
+-define([], function() {
++define("orion/editor/regex", [], function() {
+ 	/**
+ 	 * @methodOf orion.editor.regex
+ 	 * @static
+ 	 * @description Escapes regex special characters in the input string.
+ 	 * @param {String} str The string to escape.
+ 	 * @returns {String} A copy of <code>str</code> with regex special characters escaped.
+ 	 */
+ 	function escape(str) {
+@@ -277,33 +277,33 @@ define([], function() {
+ 		}
+ 		return null;
+ 	}
+ 
+ 	return {
+ 		escape: escape,
+ 		parse: parse
+ 	};
+-}, "orion/editor");
++});
+ /*******************************************************************************
+  * @license
+  * Copyright (c) 2010, 2011 IBM Corporation and others.
+  * All rights reserved. This program and the accompanying materials are made 
+  * available under the terms of the Eclipse Public License v1.0 
+  * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution 
+  * License v1.0 (http://www.eclipse.org/org/documents/edl-v10.html). 
+  * 
+  * Contributors: 
+  *		Felipe Heidrich (IBM Corporation) - initial API and implementation
+  *		Silenio Quarti (IBM Corporation) - initial API and implementation
+  ******************************************************************************/
+ 
+ /*global window define */
+ 
+-define([], function() {
++define("orion/textview/keyBinding", [], function() {
+ 	var isMac = window.navigator.platform.indexOf("Mac") !== -1;
+ 
+ 	/**
+ 	 * Constructs a new key binding with the given key code and modifiers.
+ 	 * 
+ 	 * @param {String|Number} keyCode the key code.
+ 	 * @param {Boolean} mod1 the primary modifier (usually Command on Mac and Control on other platforms).
+ 	 * @param {Boolean} mod2 the secondary modifier (usually Shift).
+@@ -362,31 +362,725 @@ define([], function() {
+ 			if (this.mod1 !== kb.mod1) { return false; }
+ 			if (this.mod2 !== kb.mod2) { return false; }
+ 			if (this.mod3 !== kb.mod3) { return false; }
+ 			if (this.mod4 !== kb.mod4) { return false; }
+ 			return true;
+ 		} 
+ 	};
+ 	return {KeyBinding: KeyBinding};
+-}, "orion/textview");
++});
++/*******************************************************************************
++ * @license
++ * Copyright (c) 2010, 2011 IBM Corporation and others.
++ * All rights reserved. This program and the accompanying materials are made 
++ * available under the terms of the Eclipse Public License v1.0 
++ * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution 
++ * License v1.0 (http://www.eclipse.org/org/documents/edl-v10.html). 
++ * 
++ * Contributors: 
++ *		Felipe Heidrich (IBM Corporation) - initial API and implementation
++ *		Silenio Quarti (IBM Corporation) - initial API and implementation
++ ******************************************************************************/
++
++/*global define */
++
++define("orion/textview/annotations", ['orion/textview/eventTarget'], function(mEventTarget) {
++	/**
++	 * @class This object represents a decoration attached to a range of text. Annotations are added to a
++	 * <code>AnnotationModel</code> which is attached to a <code>TextModel</code>.
++	 * <p>
++	 * <b>See:</b><br/>
++	 * {@link orion.textview.AnnotationModel}<br/>
++	 * {@link orion.textview.Ruler}<br/>
++	 * </p>		 
++	 * @name orion.textview.Annotation
++	 * 
++	 * @property {String} type The annotation type (for example, orion.annotation.error).
++	 * @property {Number} start The start offset of the annotation in the text model.
++	 * @property {Number} end The end offset of the annotation in the text model.
++	 * @property {String} html The HTML displayed for the annotation.
++	 * @property {String} title The text description for the annotation.
++	 * @property {orion.textview.Style} style The style information for the annotation used in the annotations ruler and tooltips.
++	 * @property {orion.textview.Style} overviewStyle The style information for the annotation used in the overview ruler.
++	 * @property {orion.textview.Style} rangeStyle The style information for the annotation used in the text view to decorate a range of text.
++	 * @property {orion.textview.Style} lineStyle The style information for the annotation used in the text view to decorate a line of text.
++	 */
++	/**
++	 * Constructs a new folding annotation.
++	 * 
++	 * @param {orion.textview.ProjectionTextModel} projectionModel The projection text model.
++	 * @param {String} type The annotation type.
++	 * @param {Number} start The start offset of the annotation in the text model.
++	 * @param {Number} end The end offset of the annotation in the text model.
++	 * @param {String} expandedHTML The HTML displayed for this annotation when it is expanded.
++	 * @param {orion.textview.Style} expandedStyle The style information for the annotation when it is expanded.
++	 * @param {String} collapsedHTML The HTML displayed for this annotation when it is collapsed.
++	 * @param {orion.textview.Style} collapsedStyle The style information for the annotation when it is collapsed.
++	 * 
++	 * @class This object represents a folding annotation.
++	 * @name orion.textview.FoldingAnnotation
++	 */
++	function FoldingAnnotation (projectionModel, type, start, end, expandedHTML, expandedStyle, collapsedHTML, collapsedStyle) {
++		this.type = type;
++		this.start = start;
++		this.end = end;
++		this._projectionModel = projectionModel;
++		this._expandedHTML = this.html = expandedHTML;
++		this._expandedStyle = this.style = expandedStyle;
++		this._collapsedHTML = collapsedHTML;
++		this._collapsedStyle = collapsedStyle;
++		this.expanded = true;
++	}
++	
++	FoldingAnnotation.prototype = /** @lends orion.textview.FoldingAnnotation.prototype */ {
++		/**
++		 * Collapses the annotation.
++		 */
++		collapse: function () {
++			if (!this.expanded) { return; }
++			this.expanded = false;
++			this.html = this._collapsedHTML;
++			this.style = this._collapsedStyle;
++			var projectionModel = this._projectionModel;
++			var baseModel = projectionModel.getBaseModel();
++			this._projection = {
++				start: baseModel.getLineStart(baseModel.getLineAtOffset(this.start) + 1),
++				end: baseModel.getLineEnd(baseModel.getLineAtOffset(this.end), true)
++			};
++			projectionModel.addProjection(this._projection);
++		},
++		/**
++		 * Expands the annotation.
++		 */
++		expand: function () {
++			if (this.expanded) { return; }
++			this.expanded = true;
++			this.html = this._expandedHTML;
++			this.style = this._expandedStyle;
++			this._projectionModel.removeProjection(this._projection);
++		}
++	};
++	
++	/** 
++	 * Constructs a new AnnotationTypeList object.
++	 * 
++	 * @class 
++	 * @name orion.textview.AnnotationTypeList
++	 */
++	function AnnotationTypeList () {
++	}
++	/**
++	 * Adds in the annotation type interface into the specified object.
++	 *
++	 * @param {Object} object The object to add in the annotation type interface.
++	 */
++	AnnotationTypeList.addMixin = function(object) {
++		var proto = AnnotationTypeList.prototype;
++		for (var p in proto) {
++			if (proto.hasOwnProperty(p)) {
++				object[p] = proto[p];
++			}
++		}
++	};	
++	AnnotationTypeList.prototype = /** @lends orion.textview.AnnotationTypeList.prototype */ {
++		/**
++		 * Adds an annotation type to the receiver.
++		 * <p>
++		 * Only annotations of the specified types will be shown by
++		 * the receiver.
++		 * </p>
++		 *
++		 * @param {Object} type the annotation type to be shown
++		 * 
++		 * @see #removeAnnotationType
++		 * @see #isAnnotationTypeVisible
++		 */
++		addAnnotationType: function(type) {
++			if (!this._annotationTypes) { this._annotationTypes = []; }
++			this._annotationTypes.push(type);
++		},
++		/**
++		 * Gets the annotation type priority.  The priority is determined by the
++		 * order the annotation type is added to the receiver.  Annotation types
++		 * added first have higher priority.
++		 * <p>
++		 * Returns <code>0</code> if the annotation type is not added.
++		 * </p>
++		 *
++		 * @param {Object} type the annotation type
++		 * 
++		 * @see #addAnnotationType
++		 * @see #removeAnnotationType
++		 * @see #isAnnotationTypeVisible
++		 */
++		getAnnotationTypePriority: function(type) {
++			if (this._annotationTypes) { 
++				for (var i = 0; i < this._annotationTypes.length; i++) {
++					if (this._annotationTypes[i] === type) {
++						return i + 1;
++					}
++				}
++			}
++			return 0;
++		},
++		/**
++		 * Returns an array of annotations in the specified annotation model for the given range of text sorted by type.
++		 *
++		 * @param {orion.textview.AnnotationModel} annotationModel the annotation model.
++		 * @param {Number} start the start offset of the range.
++		 * @param {Number} end the end offset of the range.
++		 * @return {orion.textview.Annotation[]} an annotation array.
++		 */
++		getAnnotationsByType: function(annotationModel, start, end) {
++			var iter = annotationModel.getAnnotations(start, end);
++			var annotation, annotations = [];
++			while (iter.hasNext()) {
++				annotation = iter.next();
++				var priority = this.getAnnotationTypePriority(annotation.type);
++				if (priority === 0) { continue; }
++				annotations.push(annotation);
++			}
++			var self = this;
++			annotations.sort(function(a, b) {
++				return self.getAnnotationTypePriority(a.type) - self.getAnnotationTypePriority(b.type);
++			});
++			return annotations;
++		},
++		/**
++		 * Returns whether the receiver shows annotations of the specified type.
++		 *
++		 * @param {Object} type the annotation type 
++		 * @returns {Boolean} whether the specified annotation type is shown
++		 * 
++		 * @see #addAnnotationType
++		 * @see #removeAnnotationType
++		 */
++		isAnnotationTypeVisible: function(type) {
++			return this.getAnnotationTypePriority(type) !== 0;
++		},
++		/**
++		 * Removes an annotation type from the receiver.
++		 *
++		 * @param {Object} type the annotation type to be removed
++		 * 
++		 * @see #addAnnotationType
++		 * @see #isAnnotationTypeVisible
++		 */
++		removeAnnotationType: function(type) {
++			if (!this._annotationTypes) { return; }
++			for (var i = 0; i < this._annotationTypes.length; i++) {
++				if (this._annotationTypes[i] === type) {
++					this._annotationTypes.splice(i, 1);
++					break;
++				}
++			}
++		}
++	};
++	
++	/**
++	 * Constructs an annotation model.
++	 * 
++	 * @param {textModel} textModel The text model.
++	 * 
++	 * @class This object manages annotations for a <code>TextModel</code>.
++	 * <p>
++	 * <b>See:</b><br/>
++	 * {@link orion.textview.Annotation}<br/>
++	 * {@link orion.textview.TextModel}<br/> 
++	 * </p>	
++	 * @name orion.textview.AnnotationModel
++	 * @borrows orion.textview.EventTarget#addEventListener as #addEventListener
++	 * @borrows orion.textview.EventTarget#removeEventListener as #removeEventListener
++	 * @borrows orion.textview.EventTarget#dispatchEvent as #dispatchEvent
++	 */
++	function AnnotationModel(textModel) {
++		this._annotations = [];
++		var self = this;
++		this._listener = {
++			onChanged: function(modelChangedEvent) {
++				self._onChanged(modelChangedEvent);
++			}
++		};
++		this.setTextModel(textModel);
++	}
++
++	AnnotationModel.prototype = /** @lends orion.textview.AnnotationModel.prototype */ {
++		/**
++		 * Adds an annotation to the annotation model. 
++		 * <p>The annotation model listeners are notified of this change.</p>
++		 * 
++		 * @param {orion.textview.Annotation} annotation the annotation to be added.
++		 * 
++		 * @see #removeAnnotation
++		 */
++		addAnnotation: function(annotation) {
++			if (!annotation) { return; }
++			var annotations = this._annotations;
++			var index = this._binarySearch(annotations, annotation.start);
++			annotations.splice(index, 0, annotation);
++			var e = {
++				type: "Changed",
++				added: [annotation],
++				removed: [],
++				changed: []
++			};
++			this.onChanged(e);
++		},
++		/**
++		 * Returns the text model. 
++		 * 
++		 * @return {orion.textview.TextModel} The text model.
++		 * 
++		 * @see #setTextModel
++		 */
++		getTextModel: function() {
++			return this._model;
++		},
++		/**
++		 * @class This object represents an annotation iterator.
++		 * <p>
++		 * <b>See:</b><br/>
++		 * {@link orion.textview.AnnotationModel#getAnnotations}<br/>
++		 * </p>		 
++		 * @name orion.textview.AnnotationIterator
++		 * 
++		 * @property {Function} hasNext Determines whether there are more annotations in the iterator.
++		 * @property {Function} next Returns the next annotation in the iterator.
++		 */		
++		/**
++		 * Returns an iterator of annotations for the given range of text.
++		 *
++		 * @param {Number} start the start offset of the range.
++		 * @param {Number} end the end offset of the range.
++		 * @return {orion.textview.AnnotationIterator} an annotation iterartor.
++		 */
++		getAnnotations: function(start, end) {
++			var annotations = this._annotations, current;
++			//TODO binary search does not work for range intersection when there are overlaping ranges, need interval search tree for this
++			var i = 0;
++			var skip = function() {
++				while (i < annotations.length) {
++					var a =  annotations[i++];
++					if ((start === a.start) || (start > a.start ? start < a.end : a.start < end)) {
++						return a;
++					}
++					if (a.start >= end) {
++						break;
++					}
++				}
++				return null;
++			};
++			current = skip();
++			return {
++				next: function() {
++					var result = current;
++					if (result) { current = skip(); }
++					return result;					
++				},
++				hasNext: function() {
++					return current !== null;
++				}
++			};
++		},
++		/**
++		 * Notifies the annotation model that the given annotation has been modified.
++		 * <p>The annotation model listeners are notified of this change.</p>
++		 * 
++		 * @param {orion.textview.Annotation} annotation the modified annotation.
++		 * 
++		 * @see #addAnnotation
++		 */
++		modifyAnnotation: function(annotation) {
++			if (!annotation) { return; }
++			var index = this._getAnnotationIndex(annotation);
++			if (index < 0) { return; }
++			var e = {
++				type: "Changed",
++				added: [],
++				removed: [],
++				changed: [annotation]
++			};
++			this.onChanged(e);
++		},
++		/**
++		 * Notifies all listeners that the annotation model has changed.
++		 *
++		 * @param {orion.textview.Annotation[]} added The list of annotation being added to the model.
++		 * @param {orion.textview.Annotation[]} changed The list of annotation modified in the model.
++		 * @param {orion.textview.Annotation[]} removed The list of annotation being removed from the model.
++		 * @param {ModelChangedEvent} textModelChangedEvent the text model changed event that trigger this change, can be null if the change was trigger by a method call (for example, {@link #addAnnotation}).
++		 */
++		onChanged: function(e) {
++			return this.dispatchEvent(e);
++		},
++		/**
++		 * Removes all annotations of the given <code>type</code>. All annotations
++		 * are removed if the type is not specified. 
++		 * <p>The annotation model listeners are notified of this change.  Only one changed event is generated.</p>
++		 * 
++		 * @param {Object} type the type of annotations to be removed.
++		 * 
++		 * @see #removeAnnotation
++		 */
++		removeAnnotations: function(type) {
++			var annotations = this._annotations;
++			var removed, i; 
++			if (type) {
++				removed = [];
++				for (i = annotations.length - 1; i >= 0; i--) {
++					var annotation = annotations[i];
++					if (annotation.type === type) {
++						annotations.splice(i, 1);
++					}
++					removed.splice(0, 0, annotation);
++				}
++			} else {
++				removed = annotations;
++				annotations = [];
++			}
++			var e = {
++				type: "Changed",
++				removed: removed,
++				added: [],
++				changed: []
++			};
++			this.onChanged(e);
++		},
++		/**
++		 * Removes an annotation from the annotation model. 
++		 * <p>The annotation model listeners are notified of this change.</p>
++		 * 
++		 * @param {orion.textview.Annotation} annotation the annotation to be removed.
++		 * 
++		 * @see #addAnnotation
++		 */
++		removeAnnotation: function(annotation) {
++			if (!annotation) { return; }
++			var index = this._getAnnotationIndex(annotation);
++			if (index < 0) { return; }
++			var e = {
++				type: "Changed",
++				removed: this._annotations.splice(index, 1),
++				added: [],
++				changed: []
++			};
++			this.onChanged(e);
++		},
++		/**
++		 * Removes and adds the specifed annotations to the annotation model. 
++		 * <p>The annotation model listeners are notified of this change.  Only one changed event is generated.</p>
++		 * 
++		 * @param {orion.textview.Annotation} remove the annotations to be removed.
++		 * @param {orion.textview.Annotation} add the annotations to be added.
++		 * 
++		 * @see #addAnnotation
++		 * @see #removeAnnotation
++		 */
++		replaceAnnotations: function(remove, add) {
++			var annotations = this._annotations, i, index, annotation, removed = [];
++			if (remove) {
++				for (i = remove.length - 1; i >= 0; i--) {
++					annotation = remove[i];
++					index = this._getAnnotationIndex(annotation);
++					if (index < 0) { continue; }
++					annotations.splice(index, 1);
++					removed.splice(0, 0, annotation);
++				}
++			}
++			if (!add) { add = []; }
++			for (i = 0; i < add.length; i++) {
++				annotation = add[i];
++				index = this._binarySearch(annotations, annotation.start);
++				annotations.splice(index, 0, annotation);
++			}
++			var e = {
++				type: "Changed",
++				removed: removed,
++				added: add,
++				changed: []
++			};
++			this.onChanged(e);
++		},
++		/**
++		 * Sets the text model of the annotation model.  The annotation
++		 * model listens for changes in the text model to update and remove
++		 * annotations that are affected by the change.
++		 * 
++		 * @param {orion.textview.TextModel} textModel the text model.
++		 * 
++		 * @see #getTextModel
++		 */
++		setTextModel: function(textModel) {
++			if (this._model) {
++				this._model.removeEventListener("Changed", this._listener.onChanged);
++			}
++			this._model = textModel;
++			if (this._model) {
++				this._model.addEventListener("Changed", this._listener.onChanged);
++			}
++		},
++		/** @ignore */
++		_binarySearch: function (array, offset) {
++			var high = array.length, low = -1, index;
++			while (high - low > 1) {
++				index = Math.floor((high + low) / 2);
++				if (offset <= array[index].start) {
++					high = index;
++				} else {
++					low = index;
++				}
++			}
++			return high;
++		},
++		/** @ignore */
++		_getAnnotationIndex: function(annotation) {
++			var annotations = this._annotations;
++			var index = this._binarySearch(annotations, annotation.start);
++			while (index < annotations.length && annotations[index].start === annotation.start) {
++				if (annotations[index] === annotation) {
++					return index;
++				}
++				index++;
++			}
++			return -1;
++		},
++		/** @ignore */
++		_onChanged: function(modelChangedEvent) {
++			var start = modelChangedEvent.start;
++			var addedCharCount = modelChangedEvent.addedCharCount;
++			var removedCharCount = modelChangedEvent.removedCharCount;
++			var annotations = this._annotations, end = start + removedCharCount;
++			//TODO binary search does not work for range intersection when there are overlaping ranges, need interval search tree for this
++			var startIndex = 0;
++			if (!(0 <= startIndex && startIndex < annotations.length)) { return; }
++			var e = {
++				type: "Changed",
++				added: [],
++				removed: [],
++				changed: [],
++				textModelChangedEvent: modelChangedEvent
++			};
++			var changeCount = addedCharCount - removedCharCount, i;
++			for (i = startIndex; i < annotations.length; i++) {
++				var annotation = annotations[i];
++				if (annotation.start >= end) {
++					annotation.start += changeCount;
++					annotation.end += changeCount;
++					e.changed.push(annotation);
++				} else if (annotation.end <= start) {
++					//nothing
++				} else if (annotation.start < start && end < annotation.end) {
++					annotation.end += changeCount;
++					e.changed.push(annotation);
++				} else {
++					annotations.splice(i, 1);
++					e.removed.push(annotation);
++					i--;
++				}
++			}
++			if (e.added.length > 0 || e.removed.length > 0 || e.changed.length > 0) {
++				this.onChanged(e);
++			}
++		}
++	};
++	mEventTarget.EventTarget.addMixin(AnnotationModel.prototype);
++
++	/**
++	 * Constructs a new styler for annotations.
++	 * 
++	 * @param {orion.textview.TextView} view The styler view.
++	 * @param {orion.textview.AnnotationModel} view The styler annotation model.
++	 * 
++	 * @class This object represents a styler for annotation attached to a text view.
++	 * @name orion.textview.AnnotationStyler
++	 * @borrows orion.textview.AnnotationTypeList#addAnnotationType as #addAnnotationType
++	 * @borrows orion.textview.AnnotationTypeList#getAnnotationTypePriority as #getAnnotationTypePriority
++	 * @borrows orion.textview.AnnotationTypeList#getAnnotationsByType as #getAnnotationsByType
++	 * @borrows orion.textview.AnnotationTypeList#isAnnotationTypeVisible as #isAnnotationTypeVisible
++	 * @borrows orion.textview.AnnotationTypeList#removeAnnotationType as #removeAnnotationType
++	 */
++	function AnnotationStyler (view, annotationModel) {
++		this._view = view;
++		this._annotationModel = annotationModel;
++		var self = this;
++		this._listener = {
++			onDestroy: function(e) {
++				self._onDestroy(e);
++			},
++			onLineStyle: function(e) {
++				self._onLineStyle(e);
++			},
++			onChanged: function(e) {
++				self._onAnnotationModelChanged(e);
++			}
++		};
++		view.addEventListener("Destroy", this._listener.onDestroy);
++		view.addEventListener("LineStyle", this._listener.onLineStyle);
++		annotationModel.addEventListener("Changed", this._listener.onChanged);
++	}
++	AnnotationStyler.prototype = /** @lends orion.textview.AnnotationStyler.prototype */ {
++		/**
++		 * Destroys the styler. 
++		 * <p>
++		 * Removes all listeners added by this styler.
++		 * </p>
++		 */
++		destroy: function() {
++			var view = this._view;
++			if (view) {
++				view.removeEventListener("Destroy", this._listener.onDestroy);
++				view.removeEventListener("LineStyle", this._listener.onLineStyle);
++				this.view = null;
++			}
++			var annotationModel = this._annotationModel;
++			if (annotationModel) {
++				annotationModel.removeEventListener("Changed", this._listener.onChanged);
++				annotationModel = null;
++			}
++		},
++		_mergeStyle: function(result, style) {
++			if (style) {
++				if (!result) { result = {}; }
++				if (result.styleClass && style.styleClass && result.styleClass !== style.styleClass) {
++					result.styleClass += " " + style.styleClass;
++				} else {
++					result.styleClass = style.styleClass;
++				}
++				var prop;
++				if (style.style) {
++					if (!result.style) { result.style  = {}; }
++					for (prop in style.style) {
++						if (!result.style[prop]) {
++							result.style[prop] = style.style[prop];
++						}
++					}
++				}
++				if (style.attributes) {
++					if (!result.attributes) { result.attributes  = {}; }
++					for (prop in style.attributes) {
++						if (!result.attributes[prop]) {
++							result.attributes[prop] = style.attributes[prop];
++						}
++					}
++				}
++			}
++			return result;
++		},
++		_mergeStyleRanges: function(ranges, styleRange) {
++			if (!ranges) { return; }
++			for (var i=0; i<ranges.length; i++) {
++				var range = ranges[i];
++				if (styleRange.end <= range.start) { break; }
++				if (styleRange.start >= range.end) { continue; }
++				var mergedStyle = this._mergeStyle({}, range.style);
++				mergedStyle = this._mergeStyle(mergedStyle, styleRange.style);
++				if (styleRange.start <= range.start && styleRange.end >= range.end) {
++					ranges[i] = {start: range.start, end: range.end, style: mergedStyle};
++				} else if (styleRange.start > range.start && styleRange.end < range.end) {
++					ranges.splice(i, 1,
++						{start: range.start, end: styleRange.start, style: range.style},
++						{start: styleRange.start, end: styleRange.end, style: mergedStyle},
++						{start: styleRange.end, end: range.end, style: range.style});
++					i += 2;
++				} else if (styleRange.start > range.start) {
++					ranges.splice(i, 1,
++						{start: range.start, end: styleRange.start, style: range.style},
++						{start: styleRange.start, end: range.end, style: mergedStyle});
++					i += 1;
++				} else if (styleRange.end < range.end) {
++					ranges.splice(i, 1,
++						{start: range.start, end: styleRange.end, style: mergedStyle},
++						{start: styleRange.end, end: range.end, style: range.style});
++					i += 1;
++				}
++			}
++		},
++		_onAnnotationModelChanged: function(e) {
++			if (e.textModelChangedEvent) {
++				return;
++			}
++			var view = this._view;
++			if (!view) { return; }
++			var self = this;
++			var model = view.getModel();
++			function redraw(changes) {
++				for (var i = 0; i < changes.length; i++) {
++					if (!self.isAnnotationTypeVisible(changes[i].type)) { continue; }
++					var start = changes[i].start;
++					var end = changes[i].end;
++					if (model.getBaseModel) {
++						start = model.mapOffset(start, true);
++						end = model.mapOffset(end, true);
++					}
++					if (start !== -1 && end !== -1) {
++						view.redrawRange(start, end);
++					}
++				}
++			}
++			redraw(e.added);
++			redraw(e.removed);
++			redraw(e.changed);
++		},
++		_onDestroy: function(e) {
++			this.destroy();
++		},
++		_onLineStyle: function (e) {
++			var annotationModel = this._annotationModel;
++			var viewModel = this._view.getModel();
++			var baseModel = annotationModel.getTextModel();
++			var start = e.lineStart;
++			var end = e.lineStart + e.lineText.length;
++			if (baseModel !== viewModel) {
++				start = viewModel.mapOffset(start);
++				end = viewModel.mapOffset(end);
++			}
++			var annotations = annotationModel.getAnnotations(start, end);
++			while (annotations.hasNext()) {
++				var annotation = annotations.next();
++				if (!this.isAnnotationTypeVisible(annotation.type)) { continue; }
++				if (annotation.rangeStyle) {
++					var annotationStart = annotation.start;
++					var annotationEnd = annotation.end;
++					if (baseModel !== viewModel) {
++						annotationStart = viewModel.mapOffset(annotationStart, true);
++						annotationEnd = viewModel.mapOffset(annotationEnd, true);
++					}
++					this._mergeStyleRanges(e.ranges, {start: annotationStart, end: annotationEnd, style: annotation.rangeStyle});
++				}
++				if (annotation.lineStyle) {
++					e.style = this._mergeStyle({}, e.style);
++					e.style = this._mergeStyle(e.style, annotation.lineStyle);
++				}
++			}
++		}
++	};
++	AnnotationTypeList.addMixin(AnnotationStyler.prototype);
++	
++	return {
++		FoldingAnnotation: FoldingAnnotation,
++		AnnotationTypeList: AnnotationTypeList,
++		AnnotationModel: AnnotationModel,
++		AnnotationStyler: AnnotationStyler
++	};
++});
+ /*******************************************************************************
+  * @license
+  * Copyright (c) 2010, 2011 IBM Corporation and others.
+  * All rights reserved. This program and the accompanying materials are made 
+  * available under the terms of the Eclipse Public License v1.0 
+  * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution 
+  * License v1.0 (http://www.eclipse.org/org/documents/edl-v10.html). 
+  * 
+  * Contributors: IBM Corporation - initial API and implementation
+  ******************************************************************************/
+ 
+ /*global define setTimeout clearTimeout setInterval clearInterval Node */
+ 
+-define(['orion/textview/tooltip'], function(mTooltip) {
++define("orion/textview/rulers", ['orion/textview/annotations', 'orion/textview/tooltip'], function(mAnnotations, mTooltip) {
+ 
+ 	/**
+ 	 * Constructs a new ruler. 
+ 	 * <p>
+ 	 * The default implementation does not implement all the methods in the interface
+ 	 * and is useful only for objects implementing rulers.
+ 	 * <p/>
+ 	 * 
+@@ -407,51 +1101,40 @@ define(['orion/textview/tooltip'], funct
+ 	 * <b>See:</b><br/>
+ 	 * {@link orion.textview.LineNumberRuler}<br/>
+ 	 * {@link orion.textview.AnnotationRuler}<br/>
+ 	 * {@link orion.textview.OverviewRuler}<br/> 
+ 	 * {@link orion.textview.TextView}<br/>
+ 	 * {@link orion.textview.TextView#addRuler}
+ 	 * </p>		 
+ 	 * @name orion.textview.Ruler
++	 * @borrows orion.textview.AnnotationTypeList#addAnnotationType as #addAnnotationType
++	 * @borrows orion.textview.AnnotationTypeList#getAnnotationTypePriority as #getAnnotationTypePriority
++	 * @borrows orion.textview.AnnotationTypeList#getAnnotationsByType as #getAnnotationsByType
++	 * @borrows orion.textview.AnnotationTypeList#isAnnotationTypeVisible as #isAnnotationTypeVisible
++	 * @borrows orion.textview.AnnotationTypeList#removeAnnotationType as #removeAnnotationType
+ 	 */
+ 	function Ruler (annotationModel, rulerLocation, rulerOverview, rulerStyle) {
+ 		this._location = rulerLocation || "left";
+ 		this._overview = rulerOverview || "page";
+ 		this._rulerStyle = rulerStyle;
+-		this._types = [];
+ 		this._view = null;
+ 		var self = this;
+ 		this._listener = {
+ 			onTextModelChanged: function(e) {
+ 				self._onTextModelChanged(e);
+ 			},
+ 			onAnnotationModelChanged: function(e) {
+ 				self._onAnnotationModelChanged(e);
+ 			}
+ 		};
+ 		this.setAnnotationModel(annotationModel);
+ 	}
+ 	Ruler.prototype = /** @lends orion.textview.Ruler.prototype */ {
+ 		/**
+-		 * Adds an annotation type to the ruler.
+-		 * <p>
+-		 * Only annotations of the specified types will be shown by
+-		 * this ruler.
+-		 * </p>
+-		 *
+-		 * @param type {Object} the annotation type to be shown
+-		 * 
+-		 * @see #removeAnnotationType
+-		 * @see #isAnnotationTypeVisible
+-		 */
+-		addAnnotationType: function(type) {
+-			this._types.push(type);
+-		},
+-		/**
+ 		 * Returns the annotations for a given line range merging multiple
+ 		 * annotations when necessary.
+ 		 * <p>
+ 		 * This method is called by the text view when the ruler is redrawn.
+ 		 * </p>
+ 		 *
+ 		 * @param {Number} startLine the start line index
+ 		 * @param {Number} endLine the end line index
+@@ -464,21 +1147,20 @@ define(['orion/textview/tooltip'], funct
+ 			var start = model.getLineStart(startLine);
+ 			var end = model.getLineEnd(endLine - 1);
+ 			var baseModel = model;
+ 			if (model.getBaseModel) {
+ 				baseModel = model.getBaseModel();
+ 				start = model.mapOffset(start);
+ 				end = model.mapOffset(end);
+ 			}
+-			var annotations = annotationModel.getAnnotations(start, end);
+ 			var result = [];
+-			while (annotations.hasNext()) {
+-				var annotation = annotations.next();
+-				if (!this.isAnnotationTypeVisible(annotation.type)) { continue; }
++			var annotations = this.getAnnotationsByType(annotationModel, start, end);
++			for (var i = 0; i < annotations.length; i++) {
++				var annotation = annotations[i];
+ 				var annotationLineStart = baseModel.getLineAtOffset(annotation.start);
+ 				var annotationLineEnd = baseModel.getLineAtOffset(Math.max(annotation.start, annotation.end - 1));
+ 				for (var lineIndex = annotationLineStart; lineIndex<=annotationLineEnd; lineIndex++) {
+ 					var visualLineIndex = lineIndex;
+ 					if (model !== baseModel) {
+ 						var ls = baseModel.getLineStart(lineIndex);
+ 						ls = model.mapOffset(ls, true);
+ 						if (ls === -1) { continue; }
+@@ -551,49 +1233,16 @@ define(['orion/textview/tooltip'], funct
+ 		 * @returns {orion.textview.Annotation} the widest annotation.
+ 		 *
+ 		 * @see #getAnnotations
+ 		 */
+ 		getWidestAnnotation: function() {
+ 			return null;
+ 		},
+ 		/**
+-		 * Returns whether the ruler shows annotations of the specified type.
+-		 *
+-		 * @param {Object} type the annotation type 
+-		 * @returns {Boolean} whether the specified annotation type is shown
+-		 * 
+-		 * @see #addAnnotationType
+-		 * @see #removeAnnotationType
+-		 */
+-		isAnnotationTypeVisible: function(type) {
+-			for (var i = 0; i < this._types.length; i++) {
+-				if (this._types[i] === type) {
+-					return true;
+-				}
+-			}
+-			return false;
+-		},
+-		/**
+-		 * Removes an annotation type from the ruler.
+-		 *
+-		 * @param {Object} type the annotation type to be removed
+-		 * 
+-		 * @see #addAnnotationType
+-		 * @see #isAnnotationTypeVisible
+-		 */
+-		removeAnnotationType: function(type) {
+-			for (var i = 0; i < this._types.length; i++) {
+-				if (this._types[i] === type) {
+-					this._types.splice(i, 1);
+-					break;
+-				}
+-			}
+-		},
+-		/**
+ 		 * Sets the annotation model for the ruler.
+ 		 *
+ 		 * @param {orion.textview.AnnotationModel} annotationModel the annotation model.
+ 		 *
+ 		 * @see #getAnnotationModel
+ 		 */
+ 		setAnnotationModel: function (annotationModel) {
+ 			if (this._annotationModel) {
+@@ -715,23 +1364,17 @@ define(['orion/textview/tooltip'], funct
+ 			var annotations = [];
+ 			if (annotationModel) {
+ 				var start = model.getLineStart(lineIndex);
+ 				var end = model.getLineEnd(lineIndex);
+ 				if (model.getBaseModel) {
+ 					start = model.mapOffset(start);
+ 					end = model.mapOffset(end);
+ 				}
+-				var iter = annotationModel.getAnnotations(start, end);
+-				var annotation;
+-				while (iter.hasNext()) {
+-					annotation = iter.next();
+-					if (!this.isAnnotationTypeVisible(annotation.type)) { continue; }
+-					annotations.push(annotation);
+-				}
++				annotations = this.getAnnotationsByType(annotationModel, start, end);
+ 			}
+ 			var contents = this._getTooltipContents(lineIndex, annotations);
+ 			if (!contents) { return null; }
+ 			var info = {
+ 				contents: contents,
+ 				anchor: this.getLocation()
+ 			};
+ 			var rect = view.getClientArea();
+@@ -828,16 +1471,17 @@ define(['orion/textview/tooltip'], funct
+ 							result.attributes[prop] = style.attributes[prop];
+ 						}
+ 					}
+ 				}
+ 			}
+ 			return result;
+ 		}
+ 	};
++	mAnnotations.AnnotationTypeList.addMixin(Ruler.prototype);
+ 
+ 	/**
+ 	 * Constructs a new line numbering ruler. 
+ 	 *
+ 	 * @param {orion.textview.AnnotationModel} annotationModel the annotation model for the ruler.
+ 	 * @param {String} [rulerLocation="left"] the location for the ruler.
+ 	 * @param {orion.textview.Style} [rulerStyle=undefined] the style for the ruler.
+ 	 * @param {orion.textview.Style} [oddStyle={style: {backgroundColor: "white"}] the style for lines with odd line index.
+@@ -1086,31 +1730,31 @@ define(['orion/textview/tooltip'], funct
+ 	
+ 	return {
+ 		Ruler: Ruler,
+ 		AnnotationRuler: AnnotationRuler,
+ 		LineNumberRuler: LineNumberRuler,
+ 		OverviewRuler: OverviewRuler,
+ 		FoldingRuler: FoldingRuler
+ 	};
+-}, "orion/textview");
++});
+ /*******************************************************************************
+  * @license
+  * Copyright (c) 2010, 2011 IBM Corporation and others.
+  * All rights reserved. This program and the accompanying materials are made 
+  * available under the terms of the Eclipse Public License v1.0 
+  * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution 
+  * License v1.0 (http://www.eclipse.org/org/documents/edl-v10.html). 
+  * 
+  * Contributors: IBM Corporation - initial API and implementation
+  ******************************************************************************/
+ 
+ /*global define */
+ 
+-define([], function() {
++define("orion/textview/undoStack", [], function() {
+ 
+ 	/** 
+ 	 * Constructs a new Change object.
+ 	 * 
+ 	 * @class 
+ 	 * @name orion.textview.Change
+ 	 * @private
+ 	 */
+@@ -1466,33 +2110,33 @@ define([], function() {
+ 			}
+ 			this.add(new Change(start, newText, this.model.getText(start, start + removedCharCount)));
+ 		}
+ 	};
+ 	
+ 	return {
+ 		UndoStack: UndoStack
+ 	};
+-}, "orion/textview");
++});
+ /*******************************************************************************
+  * @license
+  * Copyright (c) 2010, 2011 IBM Corporation and others.
+  * All rights reserved. This program and the accompanying materials are made 
+  * available under the terms of the Eclipse Public License v1.0 
+  * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution 
+  * License v1.0 (http://www.eclipse.org/org/documents/edl-v10.html). 
+  * 
+  * Contributors: 
+  *		Felipe Heidrich (IBM Corporation) - initial API and implementation
+  *		Silenio Quarti (IBM Corporation) - initial API and implementation
+  ******************************************************************************/
+  
+ /*global define window*/
+ 
+-define(['orion/textview/eventTarget'], function(mEventTarget) {
++define("orion/textview/textModel", ['orion/textview/eventTarget'], function(mEventTarget) {
+ 	var isWindows = window.navigator.platform.indexOf("Win") !== -1;
+ 
+ 	/**
+ 	 * Constructs a new TextModel with the given text and default line delimiter.
+ 	 *
+ 	 * @param {String} [text=""] the text that the model will store
+ 	 * @param {String} [lineDelimiter=platform delimiter] the line delimiter used when inserting new lines to the model.
+ 	 *
+@@ -1909,650 +2553,30 @@ define(['orion/textview/eventTarget'], f
+ 				addedLineCount: addedLineCount
+ 			};
+ 			this.onChanged(modelChangedEvent);
+ 		}
+ 	};
+ 	mEventTarget.EventTarget.addMixin(TextModel.prototype);
+ 	
+ 	return {TextModel: TextModel};
+-}, "orion/textview");/*******************************************************************************
+- * @license
+- * Copyright (c) 2010, 2011 IBM Corporation and others.
+- * All rights reserved. This program and the accompanying materials are made 
+- * available under the terms of the Eclipse Public License v1.0 
+- * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution 
+- * License v1.0 (http://www.eclipse.org/org/documents/edl-v10.html). 
+- * 
+- * Contributors: 
+- *		Felipe Heidrich (IBM Corporation) - initial API and implementation
+- *		Silenio Quarti (IBM Corporation) - initial API and implementation
+- ******************************************************************************/
+-
+-/*global define */
+-
+-define(['orion/textview/eventTarget'], function(mEventTarget) {
+-	/**
+-	 * @class This object represents a decoration attached to a range of text. Annotations are added to a
+-	 * <code>AnnotationModel</code> which is attached to a <code>TextModel</code>.
+-	 * <p>
+-	 * <b>See:</b><br/>
+-	 * {@link orion.textview.AnnotationModel}<br/>
+-	 * {@link orion.textview.Ruler}<br/>
+-	 * </p>		 
+-	 * @name orion.textview.Annotation
+-	 * 
+-	 * @property {String} type The annotation type (for example, orion.annotation.error).
+-	 * @property {Number} start The start offset of the annotation in the text model.
+-	 * @property {Number} end The end offset of the annotation in the text model.
+-	 * @property {String} html The HTML displayed for the annotation.
+-	 * @property {String} title The text description for the annotation.
+-	 * @property {orion.textview.Style} style The style information for the annotation used in the annotations ruler and tooltips.
+-	 * @property {orion.textview.Style} overviewStyle The style information for the annotation used in the overview ruler.
+-	 * @property {orion.textview.Style} rangeStyle The style information for the annotation used in the text view to decorate a range of text.
+-	 * @property {orion.textview.Style} lineStyle The style information for the annotation used in the text view to decorate a line of text.
+-	 */
+-	/**
+-	 * Constructs a new folding annotation.
+-	 * 
+-	 * @param {orion.textview.ProjectionTextModel} projectionModel The projection text model.
+-	 * @param {String} type The annotation type.
+-	 * @param {Number} start The start offset of the annotation in the text model.
+-	 * @param {Number} end The end offset of the annotation in the text model.
+-	 * @param {String} expandedHTML The HTML displayed for this annotation when it is expanded.
+-	 * @param {orion.textview.Style} expandedStyle The style information for the annotation when it is expanded.
+-	 * @param {String} collapsedHTML The HTML displayed for this annotation when it is collapsed.
+-	 * @param {orion.textview.Style} collapsedStyle The style information for the annotation when it is collapsed.
+-	 * 
+-	 * @class This object represents a folding annotation.
+-	 * @name orion.textview.FoldingAnnotation
+-	 */
+-	function FoldingAnnotation (projectionModel, type, start, end, expandedHTML, expandedStyle, collapsedHTML, collapsedStyle) {
+-		this.type = type;
+-		this.start = start;
+-		this.end = end;
+-		this._projectionModel = projectionModel;
+-		this._expandedHTML = this.html = expandedHTML;
+-		this._expandedStyle = this.style = expandedStyle;
+-		this._collapsedHTML = collapsedHTML;
+-		this._collapsedStyle = collapsedStyle;
+-		this.expanded = true;
+-	}
+-	
+-	FoldingAnnotation.prototype = /** @lends orion.textview.FoldingAnnotation.prototype */ {
+-		/**
+-		 * Collapses the annotation.
+-		 */
+-		collapse: function () {
+-			if (!this.expanded) { return; }
+-			this.expanded = false;
+-			this.html = this._collapsedHTML;
+-			this.style = this._collapsedStyle;
+-			var projectionModel = this._projectionModel;
+-			var baseModel = projectionModel.getBaseModel();
+-			this._projection = {
+-				start: baseModel.getLineStart(baseModel.getLineAtOffset(this.start) + 1),
+-				end: baseModel.getLineEnd(baseModel.getLineAtOffset(this.end), true)
+-			};
+-			projectionModel.addProjection(this._projection);
+-		},
+-		/**
+-		 * Expands the annotation.
+-		 */
+-		expand: function () {
+-			if (this.expanded) { return; }
+-			this.expanded = true;
+-			this.html = this._expandedHTML;
+-			this.style = this._expandedStyle;
+-			this._projectionModel.removeProjection(this._projection);
+-		}
+-	};
+-	
+-	/**
+-	 * Constructs an annotation model.
+-	 * 
+-	 * @param {textModel} textModel The text model.
+-	 * 
+-	 * @class This object manages annotations for a <code>TextModel</code>.
+-	 * <p>
+-	 * <b>See:</b><br/>
+-	 * {@link orion.textview.Annotation}<br/>
+-	 * {@link orion.textview.TextModel}<br/> 
+-	 * </p>	
+-	 * @name orion.textview.AnnotationModel
+-	 * @borrows orion.textview.EventTarget#addEventListener as #addEventListener
+-	 * @borrows orion.textview.EventTarget#removeEventListener as #removeEventListener
+-	 * @borrows orion.textview.EventTarget#dispatchEvent as #dispatchEvent
+-	 */
+-	function AnnotationModel(textModel) {
+-		this._annotations = [];
+-		var self = this;
+-		this._listener = {
+-			onChanged: function(modelChangedEvent) {
+-				self._onChanged(modelChangedEvent);
+-			}
+-		};
+-		this.setTextModel(textModel);
+-	}
+-
+-	AnnotationModel.prototype = /** @lends orion.textview.AnnotationModel.prototype */ {
+-		/**
+-		 * Adds an annotation to the annotation model. 
+-		 * <p>The annotation model listeners are notified of this change.</p>
+-		 * 
+-		 * @param {orion.textview.Annotation} annotation the annotation to be added.
+-		 * 
+-		 * @see #removeAnnotation
+-		 */
+-		addAnnotation: function(annotation) {
+-			if (!annotation) { return; }
+-			var annotations = this._annotations;
+-			var index = this._binarySearch(annotations, annotation.start);
+-			annotations.splice(index, 0, annotation);
+-			var e = {
+-				type: "Changed",
+-				added: [annotation],
+-				removed: [],
+-				changed: []
+-			};
+-			this.onChanged(e);
+-		},
+-		/**
+-		 * Returns the text model. 
+-		 * 
+-		 * @return {orion.textview.TextModel} The text model.
+-		 * 
+-		 * @see #setTextModel
+-		 */
+-		getTextModel: function() {
+-			return this._model;
+-		},
+-		/**
+-		 * @class This object represents an annotation iterator.
+-		 * <p>
+-		 * <b>See:</b><br/>
+-		 * {@link orion.textview.AnnotationModel#getAnnotations}<br/>
+-		 * </p>		 
+-		 * @name orion.textview.AnnotationIterator
+-		 * 
+-		 * @property {Function} hasNext Determines whether there are more annotations in the iterator.
+-		 * @property {Function} next Returns the next annotation in the iterator.
+-		 */		
+-		/**
+-		 * Returns an iterator of annotations for the given range of text.
+-		 *
+-		 * @param {Number} start the start offset of the range.
+-		 * @param {Number} end the end offset of the range.
+-		 * @return {orion.textview.AnnotationIterator} an annotation iterartor.
+-		 */
+-		getAnnotations: function(start, end) {
+-			var annotations = this._annotations, current;
+-			//TODO binary search does not work for range intersection when there are overlaping ranges, need interval search tree for this
+-			var i = 0;
+-			var skip = function() {
+-				while (i < annotations.length) {
+-					var a =  annotations[i++];
+-					if ((start === a.start) || (start > a.start ? start < a.end : a.start < end)) {
+-						return a;
+-					}
+-					if (a.start >= end) {
+-						break;
+-					}
+-				}
+-				return null;
+-			};
+-			current = skip();
+-			return {
+-				next: function() {
+-					var result = current;
+-					if (result) { current = skip(); }
+-					return result;					
+-				},
+-				hasNext: function() {
+-					return current !== null;
+-				}
+-			};
+-		},
+-		/**
+-		 * Notifies the annotation model that the given annotation has been modified.
+-		 * <p>The annotation model listeners are notified of this change.</p>
+-		 * 
+-		 * @param {orion.textview.Annotation} annotation the modified annotation.
+-		 * 
+-		 * @see #addAnnotation
+-		 */
+-		modifyAnnotation: function(annotation) {
+-			if (!annotation) { return; }
+-			var index = this._getAnnotationIndex(annotation);
+-			if (index < 0) { return; }
+-			var e = {
+-				type: "Changed",
+-				added: [],
+-				removed: [],
+-				changed: [annotation]
+-			};
+-			this.onChanged(e);
+-		},
+-		/**
+-		 * Notifies all listeners that the annotation model has changed.
+-		 *
+-		 * @param {orion.textview.Annotation[]} added The list of annotation being added to the model.
+-		 * @param {orion.textview.Annotation[]} changed The list of annotation modified in the model.
+-		 * @param {orion.textview.Annotation[]} removed The list of annotation being removed from the model.
+-		 * @param {ModelChangedEvent} textModelChangedEvent the text model changed event that trigger this change, can be null if the change was trigger by a method call (for example, {@link #addAnnotation}).
+-		 */
+-		onChanged: function(e) {
+-			return this.dispatchEvent(e);
+-		},
+-		/**
+-		 * Removes all annotations of the given <code>type</code>. All annotations
+-		 * are removed if the type is not specified. 
+-		 * <p>The annotation model listeners are notified of this change.  Only one changed event is generated.</p>
+-		 * 
+-		 * @param {Object} type the type of annotations to be removed.
+-		 * 
+-		 * @see #removeAnnotation
+-		 */
+-		removeAnnotations: function(type) {
+-			var annotations = this._annotations;
+-			var removed, i; 
+-			if (type) {
+-				removed = [];
+-				for (i = annotations.length - 1; i >= 0; i--) {
+-					var annotation = annotations[i];
+-					if (annotation.type === type) {
+-						annotations.splice(i, 1);
+-					}
+-					removed.splice(0, 0, annotation);
+-				}
+-			} else {
+-				removed = annotations;
+-				annotations = [];
+-			}
+-			var e = {
+-				type: "Changed",
+-				removed: removed,
+-				added: [],
+-				changed: []
+-			};
+-			this.onChanged(e);
+-		},
+-		/**
+-		 * Removes an annotation from the annotation model. 
+-		 * <p>The annotation model listeners are notified of this change.</p>
+-		 * 
+-		 * @param {orion.textview.Annotation} annotation the annotation to be removed.
+-		 * 
+-		 * @see #addAnnotation
+-		 */
+-		removeAnnotation: function(annotation) {
+-			if (!annotation) { return; }
+-			var index = this._getAnnotationIndex(annotation);
+-			if (index < 0) { return; }
+-			var e = {
+-				type: "Changed",
+-				removed: this._annotations.splice(index, 1),
+-				added: [],
+-				changed: []
+-			};
+-			this.onChanged(e);
+-		},
+-		/**
+-		 * Removes and adds the specifed annotations to the annotation model. 
+-		 * <p>The annotation model listeners are notified of this change.  Only one changed event is generated.</p>
+-		 * 
+-		 * @param {orion.textview.Annotation} remove the annotations to be removed.
+-		 * @param {orion.textview.Annotation} add the annotations to be added.
+-		 * 
+-		 * @see #addAnnotation
+-		 * @see #removeAnnotation
+-		 */
+-		replaceAnnotations: function(remove, add) {
+-			var annotations = this._annotations, i, index, annotation, removed = [];
+-			if (remove) {
+-				for (i = remove.length - 1; i >= 0; i--) {
+-					annotation = remove[i];
+-					index = this._getAnnotationIndex(annotation);
+-					if (index < 0) { continue; }
+-					annotations.splice(index, 1);
+-					removed.splice(0, 0, annotation);
+-				}
+-			}
+-			if (!add) { add = []; }
+-			for (i = 0; i < add.length; i++) {
+-				annotation = add[i];
+-				index = this._binarySearch(annotations, annotation.start);
+-				annotations.splice(index, 0, annotation);
+-			}
+-			var e = {
+-				type: "Changed",
+-				removed: removed,
+-				added: add,
+-				changed: []
+-			};
+-			this.onChanged(e);
+-		},
+-		/**
+-		 * Sets the text model of the annotation model.  The annotation
+-		 * model listens for changes in the text model to update and remove
+-		 * annotations that are affected by the change.
+-		 * 
+-		 * @param {orion.textview.TextModel} textModel the text model.
+-		 * 
+-		 * @see #getTextModel
+-		 */
+-		setTextModel: function(textModel) {
+-			if (this._model) {
+-				this._model.removeEventListener("Changed", this._listener.onChanged);
+-			}
+-			this._model = textModel;
+-			if (this._model) {
+-				this._model.addEventListener("Changed", this._listener.onChanged);
+-			}
+-		},
+-		/** @ignore */
+-		_binarySearch: function (array, offset) {
+-			var high = array.length, low = -1, index;
+-			while (high - low > 1) {
+-				index = Math.floor((high + low) / 2);
+-				if (offset <= array[index].start) {
+-					high = index;
+-				} else {
+-					low = index;
+-				}
+-			}
+-			return high;
+-		},
+-		/** @ignore */
+-		_getAnnotationIndex: function(annotation) {
+-			var annotations = this._annotations;
+-			var index = this._binarySearch(annotations, annotation.start);
+-			while (index < annotations.length && annotations[index].start === annotation.start) {
+-				if (annotations[index] === annotation) {
+-					return index;
+-				}
+-				index++;
+-			}
+-			return -1;
+-		},
+-		/** @ignore */
+-		_onChanged: function(modelChangedEvent) {
+-			var start = modelChangedEvent.start;
+-			var addedCharCount = modelChangedEvent.addedCharCount;
+-			var removedCharCount = modelChangedEvent.removedCharCount;
+-			var annotations = this._annotations, end = start + removedCharCount;
+-			//TODO binary search does not work for range intersection when there are overlaping ranges, need interval search tree for this
+-			var startIndex = 0;
+-			if (!(0 <= startIndex && startIndex < annotations.length)) { return; }
+-			var e = {
+-				type: "Changed",
+-				added: [],
+-				removed: [],
+-				changed: [],
+-				textModelChangedEvent: modelChangedEvent
+-			};
+-			var changeCount = addedCharCount - removedCharCount, i;
+-			for (i = startIndex; i < annotations.length; i++) {
+-				var annotation = annotations[i];
+-				if (annotation.start >= end) {
+-					annotation.start += changeCount;
+-					annotation.end += changeCount;
+-					e.changed.push(annotation);
+-				} else if (annotation.end <= start) {
+-					//nothing
+-				} else if (annotation.start < start && end < annotation.end) {
+-					annotation.end += changeCount;
+-					e.changed.push(annotation);
+-				} else {
+-					annotations.splice(i, 1);
+-					e.removed.push(annotation);
+-					i--;
+-				}
+-			}
+-			if (e.added.length > 0 || e.removed.length > 0 || e.changed.length > 0) {
+-				this.onChanged(e);
+-			}
+-		}
+-	};
+-	mEventTarget.EventTarget.addMixin(AnnotationModel.prototype);
+-
+-	/**
+-	 * Constructs a new styler for annotations.
+-	 * 
+-	 * @param {orion.textview.TextView} view The styler view.
+-	 * @param {orion.textview.AnnotationModel} view The styler annotation model.
+-	 * 
+-	 * @class This object represents a styler for annotation attached to a text view.
+-	 * @name orion.textview.AnnotationStyler
+-	 */
+-	function AnnotationStyler (view, annotationModel) {
+-		this._view = view;
+-		this._annotationModel = annotationModel;
+-		this._types = [];
+-		var self = this;
+-		this._listener = {
+-			onDestroy: function(e) {
+-				self._onDestroy(e);
+-			},
+-			onLineStyle: function(e) {
+-				self._onLineStyle(e);
+-			},
+-			onChanged: function(e) {
+-				self._onAnnotationModelChanged(e);
+-			}
+-		};
+-		view.addEventListener("Destroy", this._listener.onDestroy);
+-		view.addEventListener("LineStyle", this._listener.onLineStyle);
+-		annotationModel.addEventListener("Changed", this._listener.onChanged);
+-	}
+-	AnnotationStyler.prototype = /** @lends orion.textview.AnnotationStyler.prototype */ {
+-		/**
+-		 * Adds an annotation type to the receiver.
+-		 * <p>
+-		 * Only annotations of the specified types will be shown by
+-		 * this receiver.
+-		 * </p>
+-		 *
+-		 * @param type {Object} the annotation type to be shown
+-		 * 
+-		 * @see #removeAnnotationType
+-		 * @see #isAnnotationTypeVisible
+-		 */
+-		addAnnotationType: function(type) {
+-			this._types.push(type);
+-		},
+-		/**
+-		 * Destroys the styler. 
+-		 * <p>
+-		 * Removes all listeners added by this styler.
+-		 * </p>
+-		 */
+-		destroy: function() {
+-			var view = this._view;
+-			if (view) {
+-				view.removeEventListener("Destroy", this._listener.onDestroy);
+-				view.removeEventListener("LineStyle", this._listener.onLineStyle);
+-				this.view = null;
+-			}
+-			var annotationModel = this._annotationModel;
+-			if (annotationModel) {
+-				annotationModel.removeEventListener("Changed", this._listener.onChanged);
+-				annotationModel = null;
+-			}
+-		},
+-		/**
+-		 * Returns whether the receiver shows annotations of the specified type.
+-		 *
+-		 * @param {Object} type the annotation type 
+-		 * @returns {Boolean} whether the specified annotation type is shown
+-		 * 
+-		 * @see #addAnnotationType
+-		 * @see #removeAnnotationType
+-		 */
+-		isAnnotationTypeVisible: function(type) {
+-			for (var i = 0; i < this._types.length; i++) {
+-				if (this._types[i] === type) {
+-					return true;
+-				}
+-			}
+-			return false;
+-		},
+-		/**
+-		 * Removes an annotation type from the receiver.
+-		 *
+-		 * @param {Object} type the annotation type to be removed
+-		 * 
+-		 * @see #addAnnotationType
+-		 * @see #isAnnotationTypeVisible
+-		 */
+-		removeAnnotationType: function(type) {
+-			for (var i = 0; i < this._types.length; i++) {
+-				if (this._types[i] === type) {
+-					this._types.splice(i, 1);
+-					break;
+-				}
+-			}
+-		},
+-		_mergeStyle: function(result, style) {
+-			if (style) {
+-				if (!result) { result = {}; }
+-				if (result.styleClass && style.styleClass && result.styleClass !== style.styleClass) {
+-					result.styleClass += " " + style.styleClass;
+-				} else {
+-					result.styleClass = style.styleClass;
+-				}
+-				var prop;
+-				if (style.style) {
+-					if (!result.style) { result.style  = {}; }
+-					for (prop in style.style) {
+-						if (!result.style[prop]) {
+-							result.style[prop] = style.style[prop];
+-						}
+-					}
+-				}
+-				if (style.attributes) {
+-					if (!result.attributes) { result.attributes  = {}; }
+-					for (prop in style.attributes) {
+-						if (!result.attributes[prop]) {
+-							result.attributes[prop] = style.attributes[prop];
+-						}
+-					}
+-				}
+-			}
+-			return result;
+-		},
+-		_mergeStyleRanges: function(ranges, styleRange) {
+-			if (!ranges) { return; }
+-			for (var i=0; i<ranges.length; i++) {
+-				var range = ranges[i];
+-				if (styleRange.end <= range.start) { break; }
+-				if (styleRange.start >= range.end) { continue; }
+-				var mergedStyle = this._mergeStyle({}, range.style);
+-				mergedStyle = this._mergeStyle(mergedStyle, styleRange.style);
+-				if (styleRange.start <= range.start && styleRange.end >= range.end) {
+-					ranges[i] = {start: range.start, end: range.end, style: mergedStyle};
+-				} else if (styleRange.start > range.start && styleRange.end < range.end) {
+-					ranges.splice(i, 1,
+-						{start: range.start, end: styleRange.start, style: range.style},
+-						{start: styleRange.start, end: styleRange.end, style: mergedStyle},
+-						{start: styleRange.end, end: range.end, style: range.style});
+-					i += 2;
+-				} else if (styleRange.start > range.start) {
+-					ranges.splice(i, 1,
+-						{start: range.start, end: styleRange.start, style: range.style},
+-						{start: styleRange.start, end: range.end, style: mergedStyle});
+-					i += 1;
+-				} else if (styleRange.end < range.end) {
+-					ranges.splice(i, 1,
+-						{start: range.start, end: styleRange.end, style: mergedStyle},
+-						{start: styleRange.end, end: range.end, style: range.style});
+-					i += 1;
+-				}
+-			}
+-		},
+-		_onAnnotationModelChanged: function(e) {
+-			if (e.textModelChangedEvent) {
+-				return;
+-			}
+-			var view = this._view;
+-			if (!view) { return; }
+-			var self = this;
+-			var model = view.getModel();
+-			function redraw(changes) {
+-				for (var i = 0; i < changes.length; i++) {
+-					if (!self.isAnnotationTypeVisible(changes[i].type)) { continue; }
+-					var start = changes[i].start;
+-					var end = changes[i].end;
+-					if (model.getBaseModel) {
+-						start = model.mapOffset(start, true);
+-						end = model.mapOffset(end, true);
+-					}
+-					if (start !== -1 && end !== -1) {
+-						view.redrawRange(start, end);
+-					}
+-				}
+-			}
+-			redraw(e.added);
+-			redraw(e.removed);
+-			redraw(e.changed);
+-		},
+-		_onDestroy: function(e) {
+-			this.destroy();
+-		},
+-		_onLineStyle: function (e) {
+-			var annotationModel = this._annotationModel;
+-			var viewModel = this._view.getModel();
+-			var baseModel = annotationModel.getTextModel();
+-			var start = e.lineStart;
+-			var end = e.lineStart + e.lineText.length;
+-			if (baseModel !== viewModel) {
+-				start = viewModel.mapOffset(start);
+-				end = viewModel.mapOffset(end);
+-			}
+-			var annotations = annotationModel.getAnnotations(start, end);
+-			while (annotations.hasNext()) {
+-				var annotation = annotations.next();
+-				if (!this.isAnnotationTypeVisible(annotation.type)) { continue; }
+-				if (annotation.rangeStyle) {
+-					var annotationStart = annotation.start;
+-					var annotationEnd = annotation.end;
+-					if (baseModel !== viewModel) {
+-						annotationStart = viewModel.mapOffset(annotationStart, true);
+-						annotationEnd = viewModel.mapOffset(annotationEnd, true);
+-					}
+-					this._mergeStyleRanges(e.ranges, {start: annotationStart, end: annotationEnd, style: annotation.rangeStyle});
+-				}
+-				if (annotation.lineStyle) {
+-					e.style = this._mergeStyle({}, e.style);
+-					e.style = this._mergeStyle(e.style, annotation.lineStyle);
+-				}
+-			}
+-		}
+-	};
+-	
+-	return {
+-		FoldingAnnotation: FoldingAnnotation,
+-		AnnotationModel: AnnotationModel,
+-		AnnotationStyler: AnnotationStyler
+-	};
+-}, "orion/textview");
+-/*******************************************************************************
++});/*******************************************************************************
+  * @license
+  * Copyright (c) 2010, 2011 IBM Corporation and others.
+  * All rights reserved. This program and the accompanying materials are made 
+  * available under the terms of the Eclipse Public License v1.0 
+  * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution 
+  * License v1.0 (http://www.eclipse.org/org/documents/edl-v10.html). 
+  * 
+  * Contributors: IBM Corporation - initial API and implementation
+  ******************************************************************************/
+ 
+ /*global define setTimeout clearTimeout setInterval clearInterval Node */
+ 
+-define(['orion/textview/textView', 'orion/textview/textModel', 'orion/textview/projectionTextModel'], function(mTextView, mTextModel, mProjectionTextModel) {
++define("orion/textview/tooltip", ['orion/textview/textView', 'orion/textview/textModel', 'orion/textview/projectionTextModel'], function(mTextView, mTextModel, mProjectionTextModel) {
+ 
+ 	/** @private */
+ 	function Tooltip (view) {
+ 		this._view = view;
+ 		//TODO add API to get the parent of the view
+ 		this._create(view._parent.ownerDocument);
+ 		view.addEventListener("Destroy", this, this.destroy);
+ 	}
+@@ -2766,34 +2790,34 @@ define(['orion/textview/textView', 'orio
+ 						value = css ? css.getPropertyValue(prop) : null;
+ 					}
+ 				}
+ 			}
+ 			return value || defaultValue;
+ 		}
+ 	};
+ 	return {Tooltip: Tooltip};
+-}, "orion/textview");
++});
+ /*******************************************************************************
+  * @license
+  * Copyright (c) 2010, 2011 IBM Corporation and others.
+  * All rights reserved. This program and the accompanying materials are made 
+  * available under the terms of the Eclipse Public License v1.0 
+  * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution 
+  * License v1.0 (http://www.eclipse.org/org/documents/edl-v10.html). 
+  * 
+  * Contributors: 
+  *		Felipe Heidrich (IBM Corporation) - initial API and implementation
+  *		Silenio Quarti (IBM Corporation) - initial API and implementation
+  *		Mihai Sucan (Mozilla Foundation) - fix for Bug#334583 Bug#348471 Bug#349485 Bug#350595 Bug#360726 Bug#361180 Bug#362835 Bug#362428 Bug#362286 Bug#354270 Bug#361474 Bug#363945 Bug#366312
+  ******************************************************************************/
+ 
+-/*global window document navigator setTimeout clearTimeout XMLHttpRequest define */
+-
+-define(['orion/textview/textModel', 'orion/textview/keyBinding', 'orion/textview/eventTarget'], function(mTextModel, mKeyBinding, mEventTarget) {
++/*global window document navigator setTimeout clearTimeout XMLHttpRequest define DOMException */
++
++define("orion/textview/textView", ['orion/textview/textModel', 'orion/textview/keyBinding', 'orion/textview/eventTarget'], function(mTextModel, mKeyBinding, mEventTarget) {
+ 
+ 	/** @private */
+ 	function addHandler(node, type, handler, capture) {
+ 		if (typeof node.addEventListener === "function") {
+ 			node.addEventListener(type, handler, capture === true);
+ 		} else {
+ 			node.attachEvent("on" + type, handler);
+ 		}
+@@ -4262,17 +4286,17 @@ define(['orion/textview/textModel', 'ori
+ 			this._modifyContent({text: text, start: start, end: end, _code: true}, !reset);
+ 			if (reset) {
+ 				this._columnX = -1;
+ 				this._setSelection(new Selection (0, 0, false), true);
+ 				
+ 				/*
+ 				* Bug in Firefox.  For some reason, the caret does not show after the
+ 				* view is refreshed.  The fix is to toggle the contentEditable state and
+-				* force the clientDiv to loose and receive focus if the it is focused.
++				* force the clientDiv to loose and receive focus if it is focused.
+ 				*/
+ 				if (isFirefox) {
+ 					this._fixCaret();
+ 				}
+ 			}
+ 		},
+ 		/**
+ 		 * Sets the top index.
+@@ -4379,17 +4403,17 @@ define(['orion/textview/textModel', 'ori
+ 				this._clientDiv.contentEditable = true;
+ 				(this._overlayDiv || this._clientDiv).draggable = false;
+ 				
+ 				/*
+ 				* Bug in Firefox.  For some reason, Firefox stops showing the caret
+ 				* in some cases. For example when the user cancels a drag operation 
+ 				* by pressing ESC.  The fix is to detect that the drag operation was
+ 				* cancelled,  toggle the contentEditable state and force the clientDiv
+-				* to loose and receive focus if the it is focused.
++				* to loose and receive focus if it is focused.
+ 				*/
+ 				this._fixCaret();
+ 				this._ignoreBlur = false;
+ 			}
+ 		},
+ 		_handleBlur: function (e) {
+ 			if (!e) { e = window.event; }
+ 			if (this._ignoreBlur) { return; }
+@@ -4515,16 +4539,24 @@ define(['orion/textview/textModel', 'ori
+ 			if (!e) { e = window.event; }
+ 			this._dropTarget = false;
+ 			this._dragOffset = -1;
+ 			if (this.isListening("DragEnd")) {
+ 				this.onDragEnd(this._createMouseEvent("DragEnd", e));
+ 			}
+ 			if (isFirefox) {
+ 				this._fixCaret();
++				/*
++				* Bug in Firefox.  For some reason, Firefox stops showing the caret when the 
++				* selection is dropped onto itself. The fix is to detected the case and 
++				* call fixCaret() a second time.
++				*/
++				if (e.dataTransfer.dropEffect === "none" && !e.dataTransfer.mozUserCancelled) {
++					this._fixCaret();
++				}
+ 			}
+ 		},
+ 		_handleDragEnter: function (e) {
+ 			if (!e) { e = window.event; }
+ 			var prevent = true;
+ 			this._dropTarget = true;
+ 			if (this.isListening("DragEnter")) {
+ 				prevent = false;
+@@ -4627,17 +4659,32 @@ define(['orion/textview/textModel', 'ori
+ 				default:
+ 					this._setLinksVisible(false);
+ 			}
+ 			if (e.keyCode === 229) {
+ 				if (this._readonly) {
+ 					if (e.preventDefault) { e.preventDefault(); }
+ 					return false;
+ 				}
+-				this._startIME();
++				var startIME = true;
++				
++				/*
++				* Bug in Safari. Some Control+key combinations send key events
++				* with keyCode equals to 229. This is unexpected and causes the
++				* view to start an IME composition. The fix is to ignore these
++				* events.
++				*/
++				if (isSafari && isMac) {
++					if (e.ctrlKey) {
++						startIME = false;
++					}
++				}
++				if (startIME) {
++					this._startIME();
++				}
+ 			} else {
+ 				this._commitIME();
+ 			}
+ 			/*
+ 			* Feature in Firefox. When a key is held down the browser sends 
+ 			* right number of keypress events but only one keydown. This is
+ 			* unexpected and causes the view to only execute an action
+ 			* just one time. The fix is to ignore the keydown event and 
+@@ -6423,56 +6470,95 @@ define(['orion/textview/textModel', 'ori
+ 			html.push("<body spellcheck='false'></body>");
+ 			html.push("</html>");
+ 			return html.join("");
+ 		},
+ 		_createView: function() {
+ 			if (this._frameDocument) { return; }
+ 			var frameWindow = this._frameWindow = this._frame.contentWindow;
+ 			var frameDocument = this._frameDocument = frameWindow.document;
+-			var self = this;
+-			function write() {
+-				frameDocument.open();
+-				frameDocument.write(self._getFrameHTML());
+-				frameDocument.close();
+-				self._windowLoadHandler = function(e) {
+-					self._createContent();
+-				};
+-				addHandler(frameWindow, "load", self._windowLoadHandler);
+-			}
+-			/*
+-			* Bug in Firefox.  Firefox does not send window load event if document.write
+-			* is done inside of the frame load event handler.
+-			*/
+-			if (isFirefox && !this._sync) {
+-				setTimeout(write, 0);
+-			} else {
+-				write();
+-			}
++			frameDocument.open();
++			frameDocument.write(this._getFrameHTML());
++			frameDocument.close();
+ 			if (this._sync) {
+ 				this._createContent();
++			} else {
++				var self = this;
++				this._windowLoadHandler = function(e) {
++					/*
++					* Bug in Safari.  Safari sends the window load event before the
++					* style sheets are loaded. The fix is to defer creation of the
++					* contents until the document readyState changes to complete.
++					*/
++					if (frameDocument.readyState === "complete") {
++						self._createContent();
++					}
++				};
++				/*
++				* Bug in Firefox. Firefox does not send any load events for the elements inside the iframe
++				* when document.write() is called during the load event for the iframe.
++				* Bug in Webkit. Webkit does not send the load event for the iframe window when the main page
++				* loads as a result of backward or forward navigation.
++				* The fix, for both cases, is to use a timer to create the content only when the document is ready.
++				*/
++				addHandler(frameWindow, "load", this._windowLoadHandler);
++				this._createViewTimer = function() {
++					if (self._clientDiv) { return; }
++					var loaded = false;
++					if (frameDocument.readyState === "complete") {
++						loaded = true;
++					} else if (frameDocument.readyState === "interactive" && isFirefox) {
++						/*
++						* Bug in Firefox. Firefox does not change the document ready state to complete 
++						* when document.write() is called during of the load event for the iframe.
++						* The fix is to wait for the ready state to be "interactive" and check that 
++						* all css rules are initialized.
++						*/
++						var styleSheets = frameDocument.styleSheets;
++						var styleSheetCount = 1;
++						if (self._stylesheet) {
++							styleSheetCount += typeof(self._stylesheet) === "string" ? 1 : self._stylesheet.length;
++						}
++						if (styleSheetCount === styleSheets.length) {
++							var index = 0;
++							while (index < styleSheets.length) {
++								var count = 0;
++								try {
++									count = styleSheets.item(index).cssRules.length;
++								} catch (ex) {
++									/*
++									* Feature in Firefox. To determine if a stylesheet is loaded the number of css rules is used, if the 
++									* stylesheet is not loaded this operation will throw an invalid access error. When a stylesheet from
++									* a different domain is loaded, accessing the css rules will result in a security exception. In this
++									* case count is set to 1 to indicate the stylesheet is loaded.
++									*/
++									if (ex.code !== DOMException.INVALID_ACCESS_ERR) {
++										count = 1;
++									}
++								}
++								if (count === 0) { break; }
++								index++;
++							}
++							loaded = index === styleSheets.length;
++						}	
++					}
++					if (loaded) {
++						self._createContent();
++					} else {
++						setTimeout(self._createViewTimer, 20);
++					}
++				};
++				setTimeout(this._createViewTimer, 5);
+ 			}
+ 		},
+ 		_createContent: function() {
+ 			if (this._clientDiv) { return; }
+ 			var parent = this._parent;
+ 			var parentDocument = this._parentDocument;
+ 			var frameDocument = this._frameDocument;
+-			/*
+-			* Bug in Safari.  Safari sends the window load event before the
+-			* style sheets are loaded. The fix is to defer creation of the
+-			* contents until the document readyState changes to complete.
+-			*/
+-			var self = this;
+-			if (!this._sync && frameDocument.readyState !== "complete") {
+-				setTimeout(function() {
+-					self._createContent();
+-				}, 10);
+-				return;
+-			}
+ 			var body = frameDocument.body;
+ 			this._setThemeClass(this._themeClass, true);
+ 			body.style.margin = "0px";
+ 			body.style.borderWidth = "0px";
+ 			body.style.padding = "0px";
+ 			
+ 			var textArea;
+ 			if (isPad) {
+@@ -7670,17 +7756,17 @@ define(['orion/textview/textModel', 'ori
+ 				var child = clientDiv.firstChild;
+ 				while (child) {
+ 					child.lineRemoved = true;
+ 					child = child.nextSibling;
+ 				}
+ 				/*
+ 				* Bug in Firefox.  For some reason, the caret does not show after the
+ 				* view is refreshed.  The fix is to toggle the contentEditable state and
+-				* force the clientDiv to loose and receive focus if the it is focused.
++				* force the clientDiv to loose and receive focus if it is focused.
+ 				*/
+ 				if (isFirefox) {
+ 					this._ignoreFocus = false;
+ 					var hasFocus = this._hasFocus;
+ 					if (hasFocus) { clientDiv.blur(); }
+ 					clientDiv.contentEditable = false;
+ 					clientDiv.contentEditable = true;
+ 					if (hasFocus) { clientDiv.focus(); }
+@@ -8817,34 +8903,34 @@ define(['orion/textview/textModel', 'ori
+ 				div.rulerChanged = false;
+ 				div = div.nextSibling;
+ 			}
+ 		}
+ 	};//end prototype
+ 	mEventTarget.EventTarget.addMixin(TextView.prototype);
+ 	
+ 	return {TextView: TextView};
+-}, "orion/textview");
++});
+ 
+ /*******************************************************************************
+  * @license
+  * Copyright (c) 2010, 2011 IBM Corporation and others.
+  * All rights reserved. This program and the accompanying materials are made 
+  * available under the terms of the Eclipse Public License v1.0 
+  * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution 
+  * License v1.0 (http://www.eclipse.org/org/documents/edl-v10.html). 
+  * 
+  * Contributors: 
+  *		Felipe Heidrich (IBM Corporation) - initial API and implementation
+  *		Silenio Quarti (IBM Corporation) - initial API and implementation
+  ******************************************************************************/
+  
+ /*global define */
+ 
+-define([], function() {
++define("orion/textview/textDND", [], function() {
+ 
+ 	function TextDND(view, undoStack) {
+ 		this._view = view;
+ 		this._undoStack = undoStack;
+ 		this._dragSelection = null;
+ 		this._dropOffset = -1;
+ 		this._dropText = null;
+ 		var self = this;
+@@ -8957,135 +9043,119 @@ define([], function() {
+ 					view.setText(text, offset, offset);
+ 					view.setSelection(offset, offset + text.length);
+ 				}
+ 			}
+ 		}
+ 	};
+ 
+ 	return {TextDND: TextDND};
+-}, "orion/textview");/******************************************************************************* 
++});/******************************************************************************* 
+  * @license
+  * Copyright (c) 2011 IBM Corporation and others.
+  * All rights reserved. This program and the accompanying materials are made 
+  * available under the terms of the Eclipse Public License v1.0 
+  * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution 
+  * License v1.0 (http://www.eclipse.org/org/documents/edl-v10.html). 
+  * 
+  * Contributors: IBM Corporation - initial API and implementation 
+  ******************************************************************************/
+ 
+ /*jslint */
+ /*global define */
+ 
+-define([], function() {
++define("orion/editor/htmlGrammar", [], function() {
+ 
+ 	/**
+ 	 * Provides a grammar that can do some very rough syntax highlighting for HTML.
+ 	 * @class orion.syntax.HtmlGrammar
+ 	 */
+ 	function HtmlGrammar() {
++		/**
++		 * Object containing the grammar rules.
++		 * @public
++		 * @type Object
++		 */
+ 		return {
+-			/**
+-			 * What kind of highlight provider we are.
+-			 * @public
+-			 * @type String
+-			 */
+-			type: "grammar",
+-			
+-			/**
+-			 * The file extensions that we provide rules for.
+-			 * @public
+-			 * @type String[]
+-			 */
+-			fileTypes: [ "html", "htm" ],
+-			
+-			/**
+-			 * Object containing the grammar rules.
+-			 * @public
+-			 * @type Object
+-			 */
+-			grammar: {
+-				"name": "HTML",
+-				"scopeName": "source.html",
+-				"uuid": "3B5C76FB-EBB5-D930-F40C-047D082CE99B",
+-				"patterns": [
+-					// TODO unicode?
+-					{
+-						"match": "<!(doctype|DOCTYPE)[^>]+>",
+-						"name": "entity.name.tag.doctype.html"
++			"name": "HTML",
++			"scopeName": "source.html",
++			"uuid": "3B5C76FB-EBB5-D930-F40C-047D082CE99B",
++			"patterns": [
++				// TODO unicode?
++				{
++					"match": "<!(doctype|DOCTYPE)[^>]+>",
++					"name": "entity.name.tag.doctype.html"
++				},
++				{
++					"begin": "<!--",
++					"end": "-->",
++					"beginCaptures": {
++						"0": { "name": "punctuation.definition.comment.html" }
+ 					},
+-					{
+-						"begin": "<!--",
+-						"end": "-->",
+-						"beginCaptures": {
+-							"0": { "name": "punctuation.definition.comment.html" }
+-						},
+-						"endCaptures": {
+-							"0": { "name": "punctuation.definition.comment.html" }
+-						},
+-						"patterns": [
+-							{
+-								"match": "--",
+-								"name": "invalid.illegal.badcomment.html"
+-							}
+-						],
+-						"contentName": "comment.block.html"
++					"endCaptures": {
++						"0": { "name": "punctuation.definition.comment.html" }
+ 					},
+-					{ // startDelimiter + tagName
+-						"match": "<[A-Za-z0-9_\\-:]+(?= ?)",
+-						"name": "entity.name.tag.html"
+-					},
+-					{ "include": "#attrName" },
+-					{ "include": "#qString" },
+-					{ "include": "#qqString" },
+-					// TODO attrName, qString, qqString should be applied first while inside a tag
+-					{ // startDelimiter + slash + tagName + endDelimiter
+-						"match": "</[A-Za-z0-9_\\-:]+>",
+-						"name": "entity.name.tag.html"
+-					},
+-					{ // end delimiter of open tag
+-						"match": ">", 
+-						"name": "entity.name.tag.html"
+-					} ],
+-				"repository": {
+-					"attrName": { // attribute name
+-						"match": "[A-Za-z\\-:]+(?=\\s*=\\s*['\"])",
+-						"name": "entity.other.attribute.name.html"
+-					},
+-					"qqString": { // double quoted string
+-						"match": "(\")[^\"]+(\")",
+-						"name": "string.quoted.double.html"
+-					},
+-					"qString": { // single quoted string
+-						"match": "(')[^']+(\')",
+-						"name": "string.quoted.single.html"
+-					}
++					"patterns": [
++						{
++							"match": "--",
++							"name": "invalid.illegal.badcomment.html"
++						}
++					],
++					"contentName": "comment.block.html"
++				},
++				{ // startDelimiter + tagName
++					"match": "<[A-Za-z0-9_\\-:]+(?= ?)",
++					"name": "entity.name.tag.html"
++				},
++				{ "include": "#attrName" },
++				{ "include": "#qString" },
++				{ "include": "#qqString" },
++				// TODO attrName, qString, qqString should be applied first while inside a tag
++				{ // startDelimiter + slash + tagName + endDelimiter
++					"match": "</[A-Za-z0-9_\\-:]+>",
++					"name": "entity.name.tag.html"
++				},
++				{ // end delimiter of open tag
++					"match": ">", 
++					"name": "entity.name.tag.html"
++				} ],
++			"repository": {
++				"attrName": { // attribute name
++					"match": "[A-Za-z\\-:]+(?=\\s*=\\s*['\"])",
++					"name": "entity.other.attribute.name.html"
++				},
++				"qqString": { // double quoted string
++					"match": "(\")[^\"]+(\")",
++					"name": "string.quoted.double.html"
++				},
++				"qString": { // single quoted string
++					"match": "(')[^']+(\')",
++					"name": "string.quoted.single.html"
+ 				}
+ 			}
+ 		};
+ 	}
+ 
+ 	return {HtmlGrammar: HtmlGrammar};
+-}, "orion/editor");
++});
+ /******************************************************************************* 
+  * @license
+  * Copyright (c) 2011 IBM Corporation and others.
+  * All rights reserved. This program and the accompanying materials are made 
+  * available under the terms of the Eclipse Public License v1.0 
+  * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution 
+  * License v1.0 (http://www.eclipse.org/org/documents/edl-v10.html). 
+  * 
+  * Contributors: IBM Corporation - initial API and implementation 
+  ******************************************************************************/
+ 
+ /*jslint regexp:false laxbreak:true*/
+ /*global define */
+ 
+-define(['orion/editor/regex'], function(mRegex) {
++define("orion/editor/textMateStyler", ['orion/editor/regex'], function(mRegex) {
+ 
+ var RegexUtil = {
+ 	// Rules to detect some unsupported Oniguruma features
+ 	unsupported: [
+ 		{regex: /\(\?[ims\-]:/, func: function(match) { return "option on/off for subexp"; }},
+ 		{regex: /\(\?<([=!])/, func: function(match) { return (match[1] === "=") ? "lookbehind" : "negative lookbehind"; }},
+ 		{regex: /\(\?>/, func: function(match) { return "atomic group"; }}
+ 	],
+@@ -10416,31 +10486,31 @@ var RegexUtil = {
+ 			return styleRanges;
+ 		}
+ 	};
+ 	
+ 	return {
+ 		RegexUtil: RegexUtil,
+ 		TextMateStyler: TextMateStyler
+ 	};
+-}, "orion/editor");
++});
+ /*******************************************************************************
+  * @license
+  * Copyright (c) 2010, 2011 IBM Corporation and others.
+  * All rights reserved. This program and the accompanying materials are made 
+  * available under the terms of the Eclipse Public License v1.0 
+  * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution 
+  * License v1.0 (http://www.eclipse.org/org/documents/edl-v10.html). 
+  * 
+  * Contributors: IBM Corporation - initial API and implementation
+  ******************************************************************************/
+ 
+ /*global document window navigator define */
+ 
+-define(['orion/textview/annotations'], function(mAnnotations) {
++define("examples/textview/textStyler", ['orion/textview/annotations'], function(mAnnotations) {
+ 
+ 	var JS_KEYWORDS =
+ 		["break",
+ 		 "case", "class", "catch", "continue", "const", 
+ 		 "debugger", "default", "delete", "do",
+ 		 "else", "enum", "export", "extends",  
+ 		 "false", "finally", "for", "function",
+ 		 "if", "implements", "import", "in", "instanceof", "interface", 
+@@ -11511,9 +11581,9 @@ define(['orion/textview/annotations'], f
+ 					}
+ 				}
+ 				annotationModel.replaceAnnotations(remove, add);
+ 			}
+ 		}
+ 	};
+ 	
+ 	return {TextStyler: TextStyler};
+-}, "examples/textview");
++});

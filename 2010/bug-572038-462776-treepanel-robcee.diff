@@ -1,0 +1,3509 @@
+diff --git a/browser/base/content/browser.xul b/browser/base/content/browser.xul
+--- a/browser/base/content/browser.xul
++++ b/browser/base/content/browser.xul
+@@ -66,6 +66,7 @@
+         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:svg="http://www.w3.org/2000/svg"
+         xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
++        xmlns:html="http://www.w3.org/1999/xhtml"
+         onload="BrowserStartup()" onunload="BrowserShutdown()" onclose="return WindowIsClosing();"
+         title="&mainWindow.title;@PRE_RELEASE_SUFFIX@"
+         title_normal="&mainWindow.title;@PRE_RELEASE_SUFFIX@"
+@@ -224,9 +225,8 @@
+            onclick="InspectorUI.stopInspecting();"
+            onmousemove="InspectorUI.highlighter.handleMouseMove(event);"/>
+ 
+-    <panel id="inspector-panel"
++    <panel id="inspector-tree-panel"
+            orient="vertical"
+-           hidden="true"
+            ignorekeys="true"
+            noautofocus="true"
+            noautohide="true"
+@@ -261,20 +261,11 @@
+                        class="toolbarbutton-text"
+                        command="Inspector:Dom"/>
+       </toolbar>
+-      <tree id="inspector-tree" class="plain"
+-            seltype="single"
+-            treelines="true"
+-            onselect="InspectorUI.onTreeSelected()"
+-            flex="1">
+-        <treecols>
+-          <treecol id="colNodeName" label="nodeName" primary="true"
+-                   persist="width,hidden,ordinal" flex="1"/>
+-          <splitter class="tree-splitter"/>
+-          <treecol id="colNodeValue" label="nodeValue"
+-                   persist="width,hidden,ordinal" flex="1"/>
+-        </treecols>
+-        <treechildren id="inspector-tree-body"/>
+-      </tree>
++      <browser id="inspector-tree-browser"
++               flex="1"
++               src="chrome://browser/content/inspector.html"
++               onclick="InspectorUI.onTreeClick(event);"
++               disablehistory="true" />
+       <hbox align="end">
+         <spacer flex="1" />
+         <resizer dir="bottomend" />
+diff --git a/browser/base/content/inspector.html b/browser/base/content/inspector.html
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/inspector.html
+@@ -0,0 +1,13 @@
++<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
++  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
++
++<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
++<head>
++  <title>Inspector</title>
++  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
++  <link rel="stylesheet" href="chrome://browser/skin/inspector.css" type="text/css"/>
++</head>
++<body role="application">
++<div class="panelNode" role="progressbar">  ....loading....</div>
++</body>
++</html>
+diff --git a/browser/base/content/inspector.js b/browser/base/content/inspector.js
+--- a/browser/base/content/inspector.js
++++ b/browser/base/content/inspector.js
+@@ -52,6 +52,22 @@
+   "title": true,
+ };
+ 
++const SELF_CLOSING_TAGS = {
++  "meta": 1,
++  "link": 1,
++  "area": 1,
++  "base": 1,
++  "col": 1,
++  "input": 1,
++  "img": 1,
++  "br": 1,
++  "hr": 1,
++  "param": 1,
++  "embed": 1
++};
++
++const RE_NOT_WHITESPACE = /[^\s]/;
++
+ ///////////////////////////////////////////////////////////////////////////
+ //// PanelHighlighter
+ 
+@@ -323,169 +339,596 @@
+ };
+ 
+ ///////////////////////////////////////////////////////////////////////////
+-//// InspectorTreeView
++//// InsideOutBox
+ 
+ /**
+- * TreeView object to manage the view of the DOM tree. Wraps and provides an
+- * interface to an inIDOMView object
++ * InsideOutBoxView is a simple interface definition for views implementing
++ * InsideOutBox controls. All implementors must define these methods.
++ */
++
++InsideOutBoxView = {
++    /**
++     * Retrieves the parent object for a given child object.
++     */
++    getParentObject: function(child) {},
++
++    /**
++     * Retrieves a given child node.
++     *
++     * If both index and previousSibling are passed, the implementation
++     * may assume that previousSibling will be the return for getChildObject
++     * with index-1.
++     */
++    getChildObject: function(parent, index, previousSibling) {},
++
++    /**
++     * Renders the HTML representation of the object. Should return an HTML
++     * object which will be displayed to the user.
++     */
++    createObjectBox: function(object, isRoot) {}
++};
++
++/**
++ * Creates a tree based on objects provided by a separate "view" object.
+  *
+- * @param aWindow
+- *        a top-level window object
++ * Construction uses an "inside-out" algorithm, meaning that the view's job is
++ * first to tell us the ancestry of each object, and secondarily its
++ * descendants.
++ *
++ * Constructor
++ * @param view
++ *        The view requiring the InsideOutBox.
++ * @param box
++ *        The box object containing the InsideOutBox. Required to add/remove
++ *        children during box manipulation (toggling opened or closed).
+  */
+-function InspectorTreeView(aWindow)
++InsideOutBox = function(view, box)
+ {
+-  this.tree = document.getElementById("inspector-tree");
+-  this.treeBody = document.getElementById("inspector-tree-body");
+-  this.view = Cc["@mozilla.org/inspector/dom-view;1"]
+-              .createInstance(Ci.inIDOMView);
+-  this.view.showSubDocuments = true;
+-  this.view.whatToShow = NodeFilter.SHOW_ALL;
+-  this.tree.view = this.view;
+-  this.contentWindow = aWindow;
+-  this.view.rootNode = aWindow.document;
+-  this.view.rebuild();
+-}
++  this.view = view;
++  this.box = box;
+ 
+-InspectorTreeView.prototype = {
+-  get editable() { return false; },
+-  get selection() { return this.view.selection; },
++  this.rootObject = null;
+ 
++  this.rootObjectBox = null;
++  this.selectedObjectBox = null;
++  this.highlightedObjectBox = null;
++  this.scrollIntoView = false;
++};
++
++InsideOutBox.prototype =
++{
+   /**
+-   * Destroy the view.
++   * Highlight the given object node in the tree.
++   * @param aObject
++   *        the object to highlight.
++   * @returns objectBox
+    */
+-  destroy: function ITV_destroy()
++  highlight: function IOBox_highlight(aObject)
+   {
+-    this.tree.view = null;
+-    this.view = null;
+-    this.tree = null;
++    let objectBox = this.createObjectBox(aObject);
++    this.highlightObjectBox(objectBox);
++    return objectBox;
+   },
+ 
+   /**
+-   * Get the cell text at a given row and column.
+-   *
+-   * @param aRow
+-   *        The row index of the desired cell.
+-   * @param aCol
+-   *        The column index of the desired cell.
+-   * @returns string
++   * Open the given object node in the tree.
++   * @param aObject
++   *        The object node to open.
++   * @returns objectBox
+    */
+-  getCellText: function ITV_getCellText(aRow, aCol)
++  openObject: function IOBox_openObject(aObject)
+   {
+-    return this.view.getCellText(aRow, aCol);
++    let object = aObject;
++    let firstChild = this.view.getChildObject(object, 0);
++    if (firstChild)
++      object = firstChild;
++
++    let objectBox = this.createObjectBox(object);
++    this.openObjectBox(objectBox);
++    return objectBox;
+   },
+ 
+   /**
+-   * Get the index of the selected row.
+-   *
+-   * @returns number
++   * Open the tree up to the given object node.
++   * @param aObject
++   *        The object in the tree to open to.
++   * @returns objectBox
+    */
+-  get selectionIndex()
++  openToObject: function IOBox_openToObject(aObject)
+   {
+-    return this.selection.currentIndex;
++    let objectBox = this.createObjectBox(aObject);
++    this.openObjectBox(objectBox);
++    return objectBox;
+   },
+ 
+   /**
+-   * Get the corresponding node for the currently-selected row in the tree.
+-   *
+-   * @returns DOMNode
++   * Select the given object node in the tree.
++   * @param aObject
++   *        The object node to select.
++   * @param makeBoxVisible
++   *        Do we open the objectBox?
++   * @param forceOpen
++   *        Force the object box open?
++   * @param scrollIntoView
++   *        Scroll the objectBox into view?
++   * @returns objectBox
+    */
+-  get selectedNode()
++  select:
++  function IOBox_select(aObject, makeBoxVisible, forceOpen, scrollIntoView)
+   {
+-    let rowIndex = this.selectionIndex;
+-    return this.view.getNodeFromRowIndex(rowIndex);
++    let objectBox = this.createObjectBox(aObject);
++    this.selectObjectBox(objectBox, forceOpen);
++    if (makeBoxVisible) {
++      this.openObjectBox(objectBox);
++      if (scrollIntoView) {
++        // object.scrollIntoView(true);
++        this.view.scrollIntoCenterView(objectBox, this.box.ownerDocument, true);
++      }
++    }
++    return objectBox;
+   },
+ 
+   /**
+-   * Set the selected row in the table to the specified index.
+-   *
+-   * @param anIndex
+-   *        The index to set the selection to.
++   * Expand the given object in the tree.
++   * @param aObject
++   *        The tree node to expand.
+    */
+-  set selectedRow(anIndex)
++  expandObject: function IOBox_expandObject(aObject)
+   {
+-    this.view.selection.select(anIndex);
+-    this.tree.treeBoxObject.ensureRowIsVisible(anIndex);
++    let objectBox = this.createObjectBox(aObject);
++    if (objectBox)
++      this.expandObjectBox(objectBox);
+   },
+ 
+   /**
+-   * Set the selected node to the specified document node.
+-   *
+-   * @param aNode
+-   *        The document node to select in the tree.
++   * Contract the given object in the tree.
++   * @param aObject
++   *        The tree node to contract.
+    */
+-  set selectedNode(aNode)
++  contractObject: function IOBox_contractObject(aObject)
+   {
+-    let rowIndex = this.view.getRowIndexFromNode(aNode);
+-    if (rowIndex > -1) {
+-      this.selectedRow = rowIndex;
+-    } else {
+-      this.selectElementInTree(aNode);
++    let objectBox = this.createObjectBox(aObject);
++    if (objectBox)
++      this.contractObjectBox(objectBox);
++  },
++
++  /**
++   * Highlight the given objectBox in the tree.
++   * @param aObjectBox
++   *        The objectBox to highlight.
++   */
++  highlightObjectBox: function IOBox_highlightObjectBox(aObjectBox)
++  {
++    if (this.highlightedObjectBox) {
++      this.view.style.removeClass(this.highlightedObjectBox, "highlighted");
++
++      let highlightedBox = this.getParentObjectBox(this.highlightedObjectBox);
++      for (; highlightedBox; highlightedBox = this.getParentObjectBox(highlightedBox))
++        this.view.style.removeClass(highlightedBox, "highlightOpen");
++    }
++
++    this.highlightedObjectBox = aObjectBox;
++
++    if (aObjectBox) {
++      this.view.style.setClass(aObjectBox, "highlighted");
++
++      let highlightedBox = this.getParentObjectBox(aObjectBox);
++      for (; highlightedBox; highlightedBox = this.getParentObjectBox(highlightedBox))
++        this.view.style.setClass(highlightedBox, "highlightOpen");
++
++      aObjectBox.scrollIntoView(true);
+     }
+   },
+ 
+   /**
+-   * Select the given node in the tree, searching for and expanding rows
+-   * as-needed.
+-   *
+-   * @param aNode
+-   *        The document node to select in the three.
+-   * @returns boolean
+-   *          Whether a node was selected or not if not found.
++   * Select the given objectBox in the tree, forcing it to be open if necessary.
++   * @param aObjectBox
++   *        The objectBox to select.
++   * @param forceOpen
++   *        Force the box (subtree) to be open?
+    */
+-  selectElementInTree: function ITV_selectElementInTree(aNode)
++  selectObjectBox: function IOBox_selectObjectBox(aObjectBox, forceOpen)
+   {
+-    if (!aNode) {
+-      this.view.selection.select(null);
+-      return false;      
++    let isSelected = this.selectedObjectBox &&
++      aObjectBox == this.selectedObjectBox;
++
++    if (!isSelected) {
++      this.view.style.removeClass(this.selectedObjectBox, "selected");
++      this.selectedObjectBox = aObjectBox;
++
++      if (aObjectBox) {
++        this.view.style.setClass(aObjectBox, "selected");
++
++        // Force it open the first time it is selected
++        if (forceOpen)
++          this.toggleObjectBox(aObjectBox, true);
++      }
++    }
++  },
++
++  /**
++   * Open the ancestors of the given object box.
++   * @param aObjectBox
++   *        The object box to open.
++   */
++  openObjectBox: function IOBox_openObjectBox(aObjectBox)
++  {
++    if (aObjectBox) {
++      // Set all of the node's ancestors to be permanently open
++      let parentBox = this.getParentObjectBox(aObjectBox);
++      let labelBox;
++      for (; parentBox; parentBox = this.getParentObjectBox(parentBox)) {
++        this.view.style.setClass(parentBox, "open");
++        labelBox = parentBox.getElementsByClassName('nodeLabelBox').item(0);
++        if (labelBox)
++          labelBox.setAttribute('aria-expanded', 'true')
++      }
++    }
++  },
++
++  /**
++   * Expand the given object box.
++   * @param aObjectBox
++   *        The object box to expand.
++   */
++  expandObjectBox: function IOBox_expandObjectBox(aObjectBox)
++  {
++    let nodeChildBox = this.getChildObjectBox(aObjectBox);
++
++    // no children means nothing to expand, return
++    if (!nodeChildBox)
++      return;
++
++    if (!aObjectBox.populated) {
++      let firstChild = this.view.getChildObject(aObjectBox.repObject, 0);
++      this.populateChildBox(firstChild, nodeChildBox);
++    }
++    let labelBox = aObjectBox.getElementsByClassName('nodeLabelBox').item(0);
++    if (labelBox)
++      labelBox.setAttribute('aria-expanded', 'true');
++    this.view.style.setClass(aObjectBox, "open");
++  },
++
++  /**
++   * Contract the given object box.
++   * @param aObjectBox
++   *        The object box to contract.
++   */
++  contractObjectBox: function IOBox_contractObjectBox(aObjectBox)
++  {
++    this.view.style.removeClass(aObjectBox, "open");
++    let nodeLabel = aObjectBox.getElementsByClassName("nodeLabel").item(0);
++    let labelBox = nodeLabel.getElementsByClassName('nodeLabelBox').item(0);
++    if (labelBox)
++      labelBox.setAttribute('aria-expanded', 'false');
++  },
++
++  /**
++   * Toggle the given object box, forcing open if requested.
++   * @param aObjectBox
++   *        The object box to toggle.
++   * @param forceOpen
++   *        Force the objectbox open?
++   */
++  toggleObjectBox: function IOBox_toggleObjectBox(aObjectBox, forceOpen)
++  {
++    let isOpen = this.view.style.hasClass(aObjectBox, "open");
++    let nodeLabel = aObjectBox.getElementsByClassName("nodeLabel").item(0);
++    let labelBox = nodeLabel.getElementsByClassName('nodeLabelBox').item(0);
++
++    if (!forceOpen && isOpen)
++      this.contractObjectBox(aObjectBox);
++    else if (!isOpen)
++      this.expandObjectBox(aObjectBox);
++  },
++
++  /**
++   * Creates all of the boxes for an object, its ancestors, and siblings.
++   * @param aObject
++   *        The tree node to create the object boxes for.
++   * @returns anObjectBox or null
++   */
++  createObjectBox: function IOBox_createObjectBox(aObject)
++  {
++    if (!aObject)
++      return null;
++
++    this.rootObject = this.getRootNode(aObject) || aObject;
++
++    // Get or create all of the boxes for the target and its ancestors
++    let objectBox = this.createObjectBoxes(aObject, this.rootObject);
++
++    if (!objectBox)
++      return null;
++    else if (aObject == this.rootObject)
++      return objectBox;
++    else
++      return this.populateChildBox(aObject, objectBox.parentNode);
++  },
++
++  /**
++   * Creates all of the boxes for an object, its ancestors, and siblings up to
++   * a root.
++   * @param aObject
++   *        The tree's object node to create the object boxes for.
++   * @param aRootObject
++   *        The root object at which to stop building object boxes.
++   * @returns an object box or null
++   */
++  createObjectBoxes: function IOBox_createObjectBoxes(aObject, aRootObject)
++  {
++    if (!aObject)
++      return null;
++
++    if (aObject == aRootObject) {
++      if (!this.rootObjectBox || this.rootObjectBox.repObject != aRootObject) {
++        if (this.rootObjectBox) {
++          try {
++            this.box.removeChild(this.rootObjectBox);
++          } catch (exc) {
++            InspectorUI._log("this.box.removeChild(this.rootObjectBox) FAILS " +
++              this.box + " must not contain " + this.rootObjectBox);
++          }
++        }
++
++        this.highlightedObjectBox = null;
++        this.selectedObjectBox = null;
++        this.rootObjectBox = this.view.createObjectBox(aObject, true);
++        this.box.appendChild(this.rootObjectBox);
++      }
++      return this.rootObjectBox;
++    } else {
++      let parentNode = this.view.getParentObject(aObject);
++      let parentObjectBox = this.createObjectBoxes(parentNode, aRootObject);
++
++      if (!parentObjectBox)
++        return null;
++
++      let parentChildBox = this.getChildObjectBox(parentObjectBox);
++
++      if (!parentChildBox)
++        return null;
++
++      let childObjectBox = this.findChildObjectBox(parentChildBox, aObject);
++
++      return childObjectBox ? childObjectBox
++        : this.populateChildBox(aObject, parentChildBox);
++    }
++  },
++
++  /**
++   * Locate the object box for a given object node.
++   * @param aObject
++   *        The given object node in the tree.
++   * @returns an object box or null.
++   */
++  findObjectBox: function IOBox_findObjectBox(aObject)
++  {
++    if (!aObject)
++      return null;
++
++    if (aObject == this.rootObject) {
++      return this.rootObjectBox;
++    } else {
++      let parentNode = this.view.getParentObject(aObject);
++      let parentObjectBox = this.findObjectBox(parentNode);
++      if (!parentObjectBox)
++        return null;
++
++      let parentChildBox = this.getChildObjectBox(parentObjectBox);
++      if (!parentChildBox)
++        return null;
++
++      return this.findChildObjectBox(parentChildBox, aObject);
++    }
++  },
++
++  /**
++   * Append an object box to a parent.
++   * @param aParentNodeBox
++   *        The box to attach the object to.
++   * @param aRepObject
++   *        A object with an associated objectbox.
++   * @returns an object box or null
++   */
++  appendChildBox: function IOBox_appendChildBox(aParentNodeBox, aRepObject)
++  {
++    let childBox = this.getChildObjectBox(aParentNodeBox);
++    let objectBox = this.findChildObjectBox(childBox, aRepObject);
++
++    // aRepObject already a child of aParentNodeBox, return
++    if (objectBox)
++      return objectBox;
++
++    objectBox = this.view.createObjectBox(aRepObject);
++    if (objectBox) {
++      let childBox = this.getChildObjectBox(aParentNodeBox); // todo - redundant?
++      childBox.appendChild(objectBox);
+     }
+ 
+-    // Keep searching until a pre-created ancestor is found, then 
+-    // open each ancestor until the found element is created.
+-    let domUtils = Cc["@mozilla.org/inspector/dom-utils;1"].
+-                    getService(Ci.inIDOMUtils);
+-    let line = [];
+-    let parent = aNode;
+-    let index = null;
++    return objectBox;
++  },
+ 
+-    while (parent) {
+-      index = this.view.getRowIndexFromNode(parent);
+-      line.push(parent);
+-      if (index < 0) {
+-        // Row for this node hasn't been created yet.
+-        parent = domUtils.getParentForNode(parent,
+-          this.view.showAnonymousContent);
+-      } else {
++  /**
++   * Insert a child before a given sibling in the tree.
++   * @param aParentNodeBox
++   *        The parent node to insert the object under.
++   * @param aRepObject
++   *        The object to create an object box for that will be inserted.
++   * @param aNextSibling
++   *        The sibling to insert the repObject before.
++   * @returns objectbox or null
++   */
++  insertChildBoxBefore:
++  function IOBox_insertChildBoxBefore(aParentNodeBox, aRepObject, aNextSibling)
++  {
++    let childBox = this.getChildObjectBox(aParentNodeBox);
++    let objectBox = this.findChildObjectBox(childBox, aRepObject);
++
++    // aRepObject is already in the tree
++    if (objectBox)
++      return objectBox;
++
++    objectBox = this.view.createObjectBox(aRepObject);
++    if (objectBox) {
++      let siblingBox = this.findChildObjectBox(childBox, aNextSibling);
++      childBox.insertBefore(objectBox, siblingBox);
++    }
++    return objectBox;
++  },
++
++  /**
++   * Remove the given object from the tree described by the parentNodeBox.
++   * @param aParentNodeBox
++   *        A subtree from which to remove aRepObject
++   * @param aRepObject
++   *        The object to remove from the tree
++   */
++  removeChildBox: function IOBox_removeChildBox(aParentNodeBox, aRepObject)
++  {
++    let childBox = this.getChildObjectBox(aParentNodeBox);
++    let objectBox = this.findChildObjectBox(childBox, aRepObject);
++    if (objectBox)
++      childBox.removeChild(objectBox);
++  },
++
++  /**
++   * We want all children of the parent of repObject.
++   */
++  populateChildBox: function(repObject, nodeChildBox)
++  {
++    if (!repObject)
++      return null;
++
++    let parentObjectBox = this.view.style.getAncestorByClass(nodeChildBox, "nodeBox");
++
++    if (parentObjectBox.populated)
++      return this.findChildObjectBox(nodeChildBox, repObject);
++
++    let lastSiblingBox = this.getChildObjectBox(nodeChildBox);
++    let siblingBox = nodeChildBox.firstChild;
++    let targetBox = null;
++    let view = this.view;
++    let targetSibling = null;
++    let parentNode = view.getParentObject(repObject); // todo
++
++    for (let i = 0; 1; ++i) {
++      targetSibling = view.getChildObject(parentNode, i, targetSibling); // todo
++      if (!targetSibling)
+         break;
++
++      // Check if we need to start appending, or continue to insert before
++      if (lastSiblingBox && lastSiblingBox.repObject == targetSibling)
++        lastSiblingBox = null;
++
++      if (!siblingBox || siblingBox.repObject != targetSibling) {
++        let newBox = view.createObjectBox(targetSibling);
++        if (newBox) {
++          if (lastSiblingBox)
++            nodeChildBox.insertBefore(newBox, lastSiblingBox);
++          else
++            nodeChildBox.appendChild(newBox);
++        }
++
++        siblingBox = newBox;
+       }
++
++      if (targetSibling == repObject)
++        targetBox = siblingBox;
++
++      if (siblingBox && siblingBox.repObject == targetSibling)
++        siblingBox = siblingBox.nextSibling;
+     }
+ 
+-    // We have all the ancestors, now open them one-by-one from the top
+-    // to bottom.
+-    let lastIndex;
+-    let view = this.tree.treeBoxObject.view;
++    if (targetBox)
++      parentObjectBox.populated = true;
+ 
+-    for (let i = line.length - 1; i >= 0; --i) {
+-      index = this.view.getRowIndexFromNode(line[i]);
+-      if (index < 0) {
+-        // Can't find the row, so stop trying to descend.
+-        break;
+-      }
+-      if (i > 0 && !view.isContainerOpen(index)) {
+-        view.toggleOpenState(index);
+-      }
+-      lastIndex = index;
++    return targetBox;
++  },
++
++  /**
++   * Get the parent object box of a given object box.
++   * @params aObjectBox
++   *         The object box of the parent.
++   * @returns an object box or null
++   */
++  getParentObjectBox: function IOBox_getParentObjectBox(aObjectBox)
++  {
++    let parent = aObjectBox.parentNode ? aObjectBox.parentNode.parentNode : null;
++    return parent && parent.repObject ? parent : null;
++  },
++
++  /**
++   * Get the child object box of a given object box.
++   * @param aObjectBox
++   *        The object box whose child you want.
++   * @returns an object box or null
++   */
++  getChildObjectBox: function IOBox_getChildObjectBox(aObjectBox)
++  {
++    return aObjectBox.getElementsByClassName("nodeChildBox").item(0);
++  },
++
++  /**
++   * Find the child object box for a given repObject within the subtree
++   * rooted at aParentNodeBox
++   * @param aParentNodeBox
++   *        root of the subtree in which to search for repObject
++   * @param aRepObject
++   *        The object you wish to locate in the subtree.
++   * @returns an object box or null
++   */
++  findChildObjectBox: function IOBox_findChildObjectBox(aParentNodeBox, aRepObject)
++  {
++    for (let childBox = aParentNodeBox.firstChild; childBox; childBox = childBox.nextSibling) {
++      if (childBox.repObject == aRepObject)
++        return childBox;
+     }
++    return null; // not found
++  },
+ 
+-    if (lastIndex >= 0) {
+-      this.selectedRow = lastIndex;
+-      return true;
++  /**
++   * Determines if the given node is an ancestor of the current root.
++   * @param aNode
++   *        The node to look for within the tree.
++   * @returns boolean
++   */
++  isInExistingRoot: function IOBox_isInExistingRoot(aNode)
++  {
++    let parentNode = aNode;
++    while (parentNode && parentNode != this.rootObject) {
++      parentNode = this.view.getParentObject(parentNode);
+     }
+-    
+-    return false;
++    return parentNode == this.rootObject;
++  },
++
++  /**
++   * Get the root node of a given node.
++   * @param aNode
++   *        The node whose root you wish to retrieve.
++   * @returns a root node or null
++   */
++  getRootNode: function IOBox_getRootNode(aNode)
++  {
++    let node = aNode;
++    let parentNode = aNode;
++    do {
++      parentNode = this.view.getParentObject(node);
++      if (!parentNode)
++        return node;
++      else
++        node = parentNode;
++    } while (parentNode);
++    return null;
+   },
+ };
+ 
+ ///////////////////////////////////////////////////////////////////////////
++//// Local Helpers
++
++
++
++///////////////////////////////////////////////////////////////////////////
+ //// InspectorUI
+ 
+ /**
+@@ -495,9 +938,11 @@
+   browser: null,
+   _showTreePanel: true,
+   _showStylePanel: true,
+-  _showDOMPanel: true,
++  _showDOMPanel: false,
+   selectEventsSuppressed: false,
++  showTextNodesWithWhitespace: false,
+   inspecting: false,
++  noScrollIntoView: false,
+ 
+   /**
+    * Toggle the inspector interface elements on or off.
+@@ -507,7 +952,7 @@
+    */
+   toggleInspectorUI: function IUI_toggleInspectorUI(aEvent)
+   {
+-    if (this.isPanelOpen) {
++    if (this.isTreePanelOpen) {
+       this.closeInspectorUI();
+     } else {
+       this.openInspectorUI();
+@@ -536,8 +981,8 @@
+       this.stylePanel.hidePopup();
+     } else {
+       this.openStylePanel();
+-      if (this.treeView.selectedNode) {
+-        this.updateStylePanel(this.treeView.selectedNode);
++      if (this.selection) {
++        this.updateStylePanel(this.selection);
+       }
+     }
+     this._showStylePanel = !this._showStylePanel;
+@@ -552,8 +997,8 @@
+       this.domPanel.hidePopup();
+     } else {
+       this.openDOMPanel();
+-      if (this.treeView.selectedNode) {
+-        this.updateDOMPanel(this.treeView.selectedNode);
++      if (this.selection) {
++        this.updateDOMPanel(this.selection);
+       }
+     }
+     this._showDOMPanel = !this._showDOMPanel;
+@@ -564,7 +1009,8 @@
+    *
+    * @returns boolean
+    */
+-  get isPanelOpen()
++
++  get isTreePanelOpen()
+   {
+     return this.treePanel && this.treePanel.state == "open";
+   },
+@@ -590,25 +1036,207 @@
+   },
+ 
+   /**
++   * Return the default selection element for the inspected document.
++   */
++  get defaultSelection()
++  {
++    let doc = this.win.document;
++    return doc.body ? doc.body :
++      this.getPreviousElement(doc.documentElement.lastChild);
++  },
++
++  getPreviousElement: function IUI_getPreviousElement(aNode)
++  {
++    while (aNode && aNode.nodeType != 1)
++      aNode = aNode.previousSibling;
++
++    return aNode;
++  },
++
++  /**
++   * Return the owner panel of the node.
++   */
++  getOwnerPanel: function IUI_getOwnerPanel(node)
++  {
++    for (; node; node = node.parentNode) {
++      if (node.ownerPanel)
++        return node.ownerPanel;
++    }
++  },
++
++  /**
+    * Open the inspector's tree panel and initialize it.
+    */
+   openTreePanel: function IUI_openTreePanel()
+   {
+     if (!this.treePanel) {
+-      this.treePanel = document.getElementById("inspector-panel");
++      this.treePanel = document.getElementById("inspector-tree-panel");
+       this.treePanel.hidden = false;
+     }
+-    if (!this.isPanelOpen) {
+-      const panelWidthRatio = 7 / 8;
+-      const panelHeightRatio = 1 / 5;
+-      let bar = document.getElementById("status-bar");
+-      this.treePanel.openPopupAtScreen(this.win.screenX + 80,
+-        this.win.outerHeight + this.win.screenY);
+-      this.treePanel.sizeTo(this.win.outerWidth * panelWidthRatio, 
+-        this.win.outerHeight * panelHeightRatio);
+-      this.tree = document.getElementById("inspector-tree");
+-      this.createDocumentModel();
++
++    const panelWidthRatio = 7 / 8;
++    const panelHeightRatio = 1 / 5;
++    this.treePanel.openPopup(this.browser, "overlap", 80, this.win.innerHeight,
++      false, false);
++    this.treePanel.sizeTo(this.win.outerWidth * panelWidthRatio,
++      this.win.outerHeight * panelHeightRatio);
++
++    this.treeBrowser = document.getElementById("inspector-tree-browser");
++    let self = this;
++
++    this.treeBrowser.addEventListener("load", function() {
++      self.treeBrowser.removeEventListener("load", arguments.callee, true);
++      self.treeBrowserDocument = self.treeBrowser.contentDocument;
++      self.treePanelDiv = self.treeBrowserDocument.createElement("div");
++      self.treeBrowserDocument.body.appendChild(self.treePanelDiv);
++      self.treePanelDiv.ownerPanel = self;
++      self.ioBox = new InsideOutBox(self, self.treePanelDiv);
++      self.ioBox.createObjectBox(self.win.document.documentElement);
++      Services.obs.notifyObservers(null, "inspector-opened", null);
++    }, true);
++
++    this.treeBrowser.reload();
++  },
++
++  getNodeTag: function IUI_getNodeTag(node, expandAll)
++  {
++    if (node instanceof Element) {
++      if (node instanceof HTMLHtmlElement && node.ownerDocument
++          && node.ownerDocument.doctype)
++        return this.HTMLTemplates.HTMLHtmlElement.tag;
++      if (node instanceof HTMLAppletElement)
++        return this.HTMLTemplates.EmptyElement.tag;
++      else if (this.isContainerElement(node))
++        return this.HTMLTemplates.CompleteElement.tag;
++      else if (this.isEmptyElement(node))
++        return this.HTMLTemplates.EmptyElement.tag;
++      else if (this.hasNoElementChildren(node))
++        return this.HTMLTemplates.TextElement.tag;
++      else
++        return this.HTMLTemplates.Element.tag;
+     }
++    else if (node instanceof Text)
++      return this.HTMLTemplates.TextNode.tag;
++    else if (node instanceof CDATASection)
++      return this.HTMLTemplates.CDATANode.tag;
++    else if (node instanceof Comment)
++      return this.HTMLTemplates.CommentNode.tag;
++    else if (node instanceof SourceText)
++      return this.HTMLTemplates.SourceText.tag;
++    else
++      return this.HTMLTemplates.Nada.tag;
++  },
++
++  createObjectBox: function IUI_createObjectBox(object, isRoot)
++  {
++    let tag = this.getNodeTag(object);
++    if (tag)
++      return tag.replace({object: object}, this.treeBrowserDocument);
++  },
++
++  getParentObject: function IUI_getParentObject(node)
++  {
++    let parentNode = node ? node.parentNode : null;
++
++    if (parentNode) {
++      if (parentNode.nodeType == 9) { // then parentNode is Document element
++        if (parentNode.defaultView) {
++          return parentNode.defaultView.frameElement;
++        } else if (this.embeddedBrowserParents) {
++          let skipParent = this.embeddedBrowserParents[node];
++          // HTML element? could be iframe?
++          if (skipParent)
++            return skipParent;
++        } else // parent is document element, but no window at defaultView.
++          return null;
++      } else if (!parentNode.localName) {
++        return null;
++      } else
++        return parentNode;
++    } else {
++      // Documents have no parentNode; Attr, Document, DocumentFragment, Entity,
++      // and Notation. top level windows have no parentNode
++      if (node && node.nodeType == 9) {
++        // document type
++        if (node.defaultView) {
++          // generally a reference to the window object for the document,
++          // however that is not defined in the specification
++          let embeddingFrame = node.defaultView.frameElement;
++          if (embeddingFrame)
++            return embeddingFrame.parentNode;
++        } else // a Document object without a parentNode or window
++          return null;  // top level has no parent
++      }
++    }
++  },
++
++  getChildObject: function IUI_getChildObject(node, index, previousSibling)
++  {
++    if (!node)
++      return;
++
++    /* if (this.isSourceElement(node)) {
++      if (index == 0)
++        return this.getElementSourceText(node);
++      else
++        return null;  // no siblings of source elements
++    } else */
++    if (node.contentDocument) {
++      // then the node is a frame
++      if (index == 0) {
++        if (!this.embeddedBrowserParents)
++          this.embeddedBrowserParents = {};
++        let skipChild = node.contentDocument.documentElement;
++        this.embeddedBrowserParents[skipChild] = node;
++
++        return skipChild;  // the node's HTMLElement
++      } else
++        return null;
++    } else if (node.getSVGDocument && node.getSVGDocument()) {
++      // then the node is a frame
++      if (index == 0) {
++        if (!this.embeddedBrowserParents)
++          this.embeddedBrowserParents = {};
++        let skipChild = node.getSVGDocument().documentElement; // unwrap
++        this.embeddedBrowserParents[skipChild] = node;
++
++        return skipChild;  // the node's SVGElement
++      } else
++        return null;
++    }
++
++    let child = null;
++    if (previousSibling)  // then we are walking
++      child = this.getNextSibling(previousSibling);  // may return null, meaning done with iteration.
++    else
++      child = this.getFirstChild(node); // child is set at the beginning of an iteration.
++
++    if (this.showTextNodesWithWhitespace)  // then the index is true to the node list
++      return child;
++    else {
++      for (; child; child = this.getNextSibling(child)) {
++        if (!this.isWhitespaceText(child))
++          return child;
++      }
++    }
++    return null;  // we have no children worth showing.
++  },
++
++  getFirstChild: function IUI_getFirstChild(node)
++  {
++    this.treeWalker = node.ownerDocument.createTreeWalker(node,
++      NodeFilter.SHOW_ALL, null, false);
++    return this.treeWalker.firstChild();
++  },
++
++  getNextSibling: function IUI_getNextSibling(node)
++  {
++    let next = this.treeWalker.nextSibling();
++
++    if (!next)
++      delete this.treeWalker;
++
++    return next;
+   },
+ 
+   /**
+@@ -665,17 +1293,21 @@
+   openInspectorUI: function IUI_openInspectorUI()
+   {
+     // initialization
++    if (!this.domplate) {
++      Cu.import("resource:///modules/domplate.jsm", this);
++      let dom = Cu.getGlobalForObject(Node);
++      this.setDOM(dom);
++    }
+     this.browser = gBrowser.selectedBrowser;
+     this.win = this.browser.contentWindow;
+     if (!this.style) {
+       Cu.import("resource:///modules/stylePanel.jsm", this);
+       this.style.initialize();
+     }
++    this.toolsInspectCmd = document.getElementById("Tools:Inspect");
+ 
+     // open inspector UI
+-    if (this._showTreePanel) {
+-      this.openTreePanel();
+-    }
++    this.openTreePanel();
+     if (this._showStylePanel) {
+       this.styleBox = document.getElementById("inspector-style-listbox");
+       this.clearStylePanel();
+@@ -705,7 +1337,7 @@
+     this.win.document.addEventListener("scroll", this, false);
+     this.win.addEventListener("resize", this, false);
+     gBrowser.tabContainer.addEventListener("TabSelect", this, false);
+-    this.inspectCmd.setAttribute("checked", true);
++    this.toolsInspectCmd.setAttribute("checked", true);
+   },
+ 
+   /**
+@@ -724,16 +1356,25 @@
+    */
+   closeInspectorUI: function IUI_closeInspectorUI()
+   {
++    let toolsInspectCmd = document.getElementById("Tools:Inspect");
+     this.win.document.removeEventListener("scroll", this, false);
+     this.win.removeEventListener("resize", this, false);
+     gBrowser.tabContainer.removeEventListener("TabSelect", this, false);
+     this.stopInspecting();
++    toolsInspectCmd.setAttribute("checked", "false");
+     if (this.highlighter && this.highlighter.isHighlighting) {
+       this.highlighter.unhighlight();
+     }
+-    if (this.isPanelOpen) {
++    if (this.isTreePanelOpen) {
++      if (this.treePanelDiv) {
++        this.treePanelDiv.ownerPanel = null;
++        delete this.treePanelDiv;
++        delete this.treeBrowserDocument;
++      }
++      if (this.treeBrowser)
++        delete this.treeBrowser;
+       this.treePanel.hidePopup();
+-      this.treeView.destroy();
++      delete this.ioBox;
+     }
+     if (this.isStylePanelOpen) {
+       this.stylePanel.hidePopup();
+@@ -746,6 +1387,7 @@
+     }
+     this.inspectCmd.setAttribute("checked", false);
+     this.browser = this.win = null; // null out references to browser and window
++    Services.obs.notifyObservers(null, "inspector-closed", null);
+   },
+ 
+   /**
+@@ -772,24 +1414,50 @@
+     this.inspecting = false;
+     this.toggleDimForPanel(this.stylePanel);
+     this.toggleDimForPanel(this.domPanel);
+-    if (this.treeView.selection) {
+-      this.updateStylePanel(this.treeView.selectedNode);
+-      this.updateDOMPanel(this.treeView.selectedNode);
++    if (this.highlighter.node) {
++      this.select(this.highlighter.node, true);
+     }
+   },
+ 
++  /**
++   * Select an object in the tree view.
++   * @param aNode
++   *        node to inspect
++   * @param forceUpdate
++   *        force an update?
++   */
++  select: function IUI_select(aNode, forceUpdate)
++  {
++    if (!aNode)
++      aNode = this.defaultSelection;
++
++    if (forceUpdate || aNode != this.selection) {
++      this.selection = aNode;
++      let box = this.ioBox.createObjectBox(this.selection);
++      if (!this.inspecting) {
++        this.highlighter.highlightNode(this.selection);
++        this.updateStylePanel(this.selection);
++        this.updateDOMPanel(this.selection);
++      } else {
++        box.scrollIntoView(true); // todo scrollIntoCenterView would be nicer
++      }
++      this.updateSelection(this.selection);
++    }
++  },
++
++  /**
++   * Update the tree panel's IOBox' selection.
++   * @param aNode
++   */
++  updateSelection: function IUI_updateSelection(aNode)
++  {
++    this.ioBox.select(aNode, true, true);
++  },
++
+   /////////////////////////////////////////////////////////////////////////
+   //// Model Creation Methods
+ 
+   /**
+-   * Create treeView object from content window.
+-   */
+-  createDocumentModel: function IUI_createDocumentModel()
+-  {
+-    this.treeView = new InspectorTreeView(this.win);
+-  },
+-
+-  /**
+    * Add a new item to the style panel listbox.
+    *
+    * @param aLabel
+@@ -969,20 +1637,20 @@
+   },
+ 
+   /**
+-   * Event fired when a tree row is selected in the tree panel.
++   * Handle click events in the html tree panel.
+    */
+-  onTreeSelected: function IUI_onTreeSelected()
++  onTreeClick: function IUI_onTreeClick(event)
+   {
+-    if (this.selectEventsSuppressed) {
+-      return false;
++    let node;
++    if (this.style.hasClass(event.target, "twisty"))
++      node = this.getRepObject(event.target.nextSibling);
++    else
++      node = this.getRepObject(event.target);
++
++    if (node) {
++      this.toggleNode(node);
++      this.select(node);
+     }
+-
+-    let node = this.treeView.selectedNode;
+-    this.highlighter.highlightNode(node);
+-    this.stopInspecting();
+-    this.updateStylePanel(node);
+-    this.updateDOMPanel(node);
+-    return true;
+   },
+ 
+   /**
+@@ -1021,9 +1689,8 @@
+   {
+     this.highlighter.highlightNode(aNode);
+     this.selectEventsSuppressed = true;
+-    this.treeView.selectedNode = aNode;
++    this.select(aNode, true);
+     this.selectEventsSuppressed = false;
+-    this.updateStylePanel(aNode);
+   },
+ 
+   /**
+@@ -1059,7 +1726,197 @@
+   //// Utility functions
+ 
+   /**
+-   * debug logging facility
++   * Get the repObject from the HTML panel's domplate-constructed DOM node.
++   *
++   * @param element
++   *        The element in the HTML panel the user clicked.
++   * @returns either a real node or null
++   */
++  getRepObject: function IUI_getRepObject(element)
++  {
++    let target = null;
++    for (let child = element; child; child = child.parentNode) {
++      if (this.style.hasClass(child, "repTarget"))
++        target = child;
++
++      if (child.repObject) {
++        if (!target && this.style.hasClass(child, "repIgnore"))
++          break;
++        else
++          return child.repObject;
++      }
++    }
++    return null;
++  },
++
++  toggleNode: function IUI_toggleNode(element)
++  {
++    let box = this.ioBox.createObjectBox(element);
++    if (!this.style.hasClass(box, "open"))
++      this.ioBox.expandObject(element);
++    else
++      this.ioBox.contractObject(element);
++  },
++
++  isContainerElement: function IUI_isContainerElement(element)
++  {
++    let tag = element.localName.toLowerCase();
++    switch (tag) {
++      case "script":
++      case "style":
++      case "iframe":
++      case "frame":
++      case "tabbrowser":
++      case "browser":
++        return true;
++      case "link":
++        return element.getAttribute("rel") == "stylesheet";
++      case "embed":
++        return element.getSVGDocument();
++    }
++    return false;
++  },
++
++  isWhitespace: function IUI_isWhitespace(text)
++  {
++    return !RE_NOT_WHITESPACE.exec(text);
++  },
++
++  isWhitespaceText: function IUI_isWhitespaceText(node)
++  {
++    if (node instanceof HTMLAppletElement)
++      return false;
++    return node.nodeType == Node.TEXT_NODE && this.isWhitespace(node.nodeValue);
++  },
++
++  isSelfClosing: function IUI_isSelfClosing(element)
++  {
++    //if (isElementSVG(element) || isElementMathML(element))
++    //    return true;
++    var tag = element.localName.toLowerCase();
++    return (SELF_CLOSING_TAGS.hasOwnProperty(tag));
++  },
++
++  isEmptyElement: function IUI_isEmptyElement(element)
++  {
++    if (this.showTextNodesWithWhitespace) {
++      return !element.firstChild && this.isSelfClosing(element);
++    } else {
++      for (let child = element.firstChild; child; child = child.nextSibling) {
++        if (!this.isWhitespaceText(child))
++          return false;
++      }
++    }
++    return this.isSelfClosing(element);
++  },
++
++  /**
++   * Determines if the given node has any children which are elements.
++   *
++   * @param {Element} element Element to test.
++   * @return true if immediate children of type Element exist, false otherwise
++   */
++  hasNoElementChildren: function IUI_hasNoElementChildren(element)
++  {
++    if (element.childElementCount != 0)  // FF 3.5+
++      return false;
++
++    // https://developer.mozilla.org/en/XBL/XBL_1.0_Reference/DOM_Interfaces
++    if (element.ownerDocument instanceof Ci.nsIDOMDocumentXBL) {
++      let anonChildren = element.ownerDocument.getAnonymousNodes(element);
++      if (anonChildren) {
++        for (var i = 0; i < anonChildren.length; i++) {
++          if (anonChildren[i].nodeType == Node.ELEMENT_NODE)
++            return false;
++        }
++      }
++    }
++    return true;
++  },
++
++  /**
++   * Get the offset of an element within its document.
++   * @param aNode
++   * @returns an offset object (point)
++   */
++  getClientOffset: function IUI_getClientOffset(aNode)
++  {
++    function addOffset(elt, coords, view)
++    {
++      let p = elt.offsetParent;
++
++      let style = view.getComputedStyle(elt, "");
++
++      if (elt.offsetLeft)
++        coords.x += elt.offsetLeft + parseInt(style.borderLeftWidth);
++      if (elt.offsetTop)
++        coords.y += elt.offsetTop + parseInt(style.borderTopWidth);
++
++      if (p) {
++        if (p.nodeType == 1)
++          addOffset(p, coords, view);
++      }
++      else if (elt.ownerDocument.defaultView.frameElement)
++        addOffset(elt.ownerDocument.defaultView.frameElement, coords,
++          elt.ownerDocument.defaultView);
++    }
++
++    let coords = {x: 0, y: 0};
++    if (aNode) {
++      let view = aNode.ownerDocument.defaultView;
++      addOffset(aNode, coords, view);
++    }
++
++    return coords;
++  },
++
++  getOverflowParent: function IUI_getOverflowParent(element)
++  {
++    for (let scrollParent = element.parentNode; scrollParent; scrollParent = scrollParent.offsetParent) {
++      if (scrollParent.scrollHeight > scrollParent.offsetHeight)
++        return scrollParent;
++    }
++  },
++
++  scrollIntoCenterView:
++  function IUI_scrollIntoCenterView(element, scrollBox, notX, notY)
++  { // TODO needs fixin'
++    if (!element)
++      return;
++
++    if (!scrollBox)
++      scrollBox = this.getOverflowParent(element);
++
++    if (!scrollBox) {
++      return;
++    }
++
++    let offset = this.getClientOffset(element);
++
++    if (!notY) {
++      let topSpace = offset.y - scrollBox.scrollTop;
++      let bottomSpace = (scrollBox.scrollTop + scrollBox.clientHeight)
++        - (offset.y + element.offsetHeight);
++
++      if (topSpace < 0 || bottomSpace < 0) {
++        let centerY = offset.y - (scrollBox.clientHeight / 2);
++        scrollBox.scrollTop = centerY;
++      }
++    }
++
++    if (!notX) {
++      let leftSpace = offset.x - scrollBox.scrollLeft;
++      let rightSpace = (scrollBox.scrollLeft + scrollBox.clientWidth)
++        - (offset.x + element.clientWidth);
++
++      if (leftSpace < 0 || rightSpace < 0) {
++        let centerX = offset.x - (scrollBox.clientWidth / 2);
++        scrollBox.scrollLeft = centerX;
++      }
++    }
++  },
++
++  /**
+    * @param msg
+    *        text message to send to the log
+    */
+@@ -1067,6 +1924,12 @@
+   {
+     Services.console.logStringMessage(msg);
+   },
++
++  _debugTree: function DEBUGTREE()
++  {
++    let docEl = this.treeBrowser.contentDocument.documentElement;
++    this._log(docEl.innerHTML);
++  },
+ }
+ 
+ XPCOMUtils.defineLazyGetter(InspectorUI, "inspectCmd", function () {
+diff --git a/browser/base/content/stylePanel.jsm b/browser/base/content/stylePanel.jsm
+--- a/browser/base/content/stylePanel.jsm
++++ b/browser/base/content/stylePanel.jsm
+@@ -311,4 +311,88 @@
+       this.getStyleProperties(aNode, aRules, aUsedProps, aInherit);
+     }
+   },
++
++  // classList helpers
++  getAncestorByClass: function CSS_getAncestorByClass(node, className)
++  {
++    for (let parent = node; parent; parent = parent.parentNode) {
++      if (this.hasClass(parent, className))
++        return parent;
++    }
++
++    return null;
++  },
++
++  setClass: function CSS_setClass(node, name)
++  {
++    if (!node || node.nodeType != 1 || name == '')
++      return;
++
++    if (name.indexOf(" ") != -1) {
++      let classes = name.split(" "), len = classes.length;
++      for (var i = 0; i < len; i++) {
++        let cls = classes[i].trim();
++        if (cls != "") {
++          this.setClass(node, cls);
++        }
++      }
++      return;
++    }
++
++    if (!this.hasClass(node, name))
++      node.className = node.className.trim() + " " + name;
++  },
++
++  hasClass: function CSS_hasClass(node, name)
++  {
++    if (!node || node.nodeType != 1 || !node.className || name == '')
++      return false;
++
++  if (name.indexOf(" ") != -1) {
++      let classes = name.split(" "), len = classes.length, found = false;
++      for (var i = 0; i < len; i++) {
++        let cls = classes[i].trim();
++        if (cls != "") {
++          if (this.hasClass(node, cls) == false)
++            return false;
++          found = true;
++        }
++      }
++      return found;
++    }
++
++    let re;
++    if (name.indexOf("-") == -1)
++      re = new RegExp('(^|\\s)' + name + '(\\s|$)', "g");
++    else
++      re = new RegExp('(^|\\s)' + name + '(\\s|$)', "g")
++    return node.className.search(re) != -1;
++  },
++
++  removeClass: function CSS_removeClass(node, name)
++  {
++    if (!node || node.nodeType != 1 || node.className == '' || name == '')
++      return;
++
++    if (name.indexOf(" ") != -1) {
++      let classes = name.split(" "), len = classes.length;
++      for (var i = 0; i < len; i++) {
++        let cls = classes[i].trim();
++        if (cls != "") {
++          if (this.hasClass(node, cls) == false)
++            this.removeClass(node, cls);
++        }
++      }
++      return;
++    }
++
++    let re;
++    if (name.indexOf("-") == -1)
++      re = new RegExp('(^|\\s)' + name + '(\\s|$)', "g");
++    else
++      re = new RegExp('(^|\\s)' + name + '(\\s|$)', "g");
++
++    node.className = node.className.replace(re, " ");
++  },
+ };
++
+diff --git a/browser/base/content/test/Makefile.in b/browser/base/content/test/Makefile.in
+--- a/browser/base/content/test/Makefile.in
++++ b/browser/base/content/test/Makefile.in
+@@ -182,7 +182,7 @@
+                  browser_tabMatchesInAwesomebar.js \
+                  file_bug550565_popup.html \
+                  file_bug550565_favicon.ico \
+-    $(NULL)
++                 $(NULL)
+ 
+ ifneq (cocoa,$(MOZ_WIDGET_TOOLKIT))
+ _BROWSER_FILES += \
+diff --git a/browser/base/content/test/browser_inspector_domPanel.js b/browser/base/content/test/browser_inspector_domPanel.js
+--- a/browser/base/content/test/browser_inspector_domPanel.js
++++ b/browser/base/content/test/browser_inspector_domPanel.js
+@@ -56,12 +56,12 @@
+     '<p id="closing">end transmission</p>\n' +
+     '</div>';
+   doc.title = "Inspector DOM Test";
+-  setTimeout(setupDOMTests, 0);
++  executeSoon(setupDOMTests);
+ }
+ 
+ function setupDOMTests()
+ {
+-  document.addEventListener("popupshown", runDOMTests, false);
++  Services.obs.addObserver(runDOMTests, "inspector-opened", false);
+   InspectorUI.openInspectorUI();
+ }
+ 
+@@ -81,16 +81,15 @@
+   yield;
+ }
+ 
+-function runDOMTests(evt)
+-{
+-  if (evt.target.id != "inspector-dom-panel")
+-    return true;
+-  InspectorUI._log("runDOMtests");
+-  document.removeEventListener("popupshown", runDOMTests, false);
+-  document.addEventListener("popupshown", performTestComparisons, false);
+-  InspectorUI.stopInspecting();
+-  testGen = nodeGenerator();
+-  testGen.next();
++var runDOMTests = {
++  observe: function _runDOMTestsObserver(aSubject, aTopic, aData) {
++    InspectorUI._log("runDOMtests");
++    Services.obs.removeObserver(runDOMTests, "inspector-opened", false);
++    document.addEventListener("popupshown", performTestComparisons, false);
++    InspectorUI.stopInspecting();
++    testGen = nodeGenerator();
++    testGen.next();
++  },
+ }
+ 
+ function performTestComparisons(evt)
+@@ -99,7 +98,7 @@
+   if (evt.target.id != "highlighter-panel")
+     return true;
+ 
+-  ok(InspectorUI.treeView.selectedNode, "selection");
++  ok(InspectorUI.selection, "selection");
+   ok(InspectorUI._showDOMPanel, "_showDOMPanel");
+   is(InspectorUI.isDOMPanelOpen, InspectorUI._showDOMPanel, "DOM panel matches _showDOMPanel?");
+   ok(InspectorUI.highlighter.isHighlighting, "panel is highlighting");
+diff --git a/browser/base/content/test/browser_inspector_highlighter.js b/browser/base/content/test/browser_inspector_highlighter.js
+--- a/browser/base/content/test/browser_inspector_highlighter.js
++++ b/browser/base/content/test/browser_inspector_highlighter.js
+@@ -78,17 +78,16 @@
+ {
+   h1 = doc.querySelectorAll("h1")[0];
+   ok(h1, "we have the header node");
+-  document.addEventListener("popupshown", runSelectionTests, false);
++  Services.obs.addObserver(runSelectionTests, "inspector-opened", false);
+   InspectorUI.toggleInspectorUI();
+ }
+ 
+-function runSelectionTests(evt)
+-{
+-  if (evt.target.id != "inspector-panel")
+-    return true;
+-  document.removeEventListener("popupshown", runSelectionTests, false);
+-  document.addEventListener("popupshown", performTestComparisons, false);
+-  EventUtils.synthesizeMouse(h1, 2, 2, {type: "mousemove"}, content);
++var runSelectionTests = {
++  observe: function _runSelectionObserver(aSubject, aTopic, aData) {
++    Services.obs.removeObserver(runSelectionTests, "inspector-opened", false);
++    document.addEventListener("popupshown", performTestComparisons, false);
++    EventUtils.synthesizeMouse(h1, 2, 2, {type: "mousemove"}, content);
++  },
+ }
+ 
+ function performTestComparisons(evt)
+@@ -96,7 +95,7 @@
+   if (evt.target.id != "highlighter-panel")
+     return true;
+   document.removeEventListener("popupshown", performTestComparisons, false);
+-  is(h1, InspectorUI.treeView.selectedNode, "selection matches node");
++  is(h1, InspectorUI.selection, "selection matches node");
+   ok(InspectorUI.highlighter.isHighlighting, "panel is highlighting");
+   is(InspectorUI.highlighter.highlitNode, h1, "highlighter matches selection");
+   executeSoon(finishUp);
+diff --git a/browser/base/content/test/browser_inspector_initialization.js b/browser/base/content/test/browser_inspector_initialization.js
+--- a/browser/base/content/test/browser_inspector_initialization.js
++++ b/browser/base/content/test/browser_inspector_initialization.js
+@@ -42,35 +42,33 @@
+ function startInspectorTests()
+ {
+   ok(InspectorUI, "InspectorUI variable exists");
+-  document.addEventListener("popupshown", runInspectorTests, false);
++  Services.obs.addObserver(runInspectorTests, "inspector-opened", false);
+   InspectorUI.toggleInspectorUI();
+ }
+ 
+-function runInspectorTests(evt)
+-{
+-  if (evt.target.id != "inspector-dom-panel")
+-    return true;
+-  document.removeEventListener("popupshown", runInspectorTests, false);
+-  document.addEventListener("popuphidden", finishInspectorTests, false);
+-  ok(InspectorUI.inspecting, "Inspector is highlighting");
+-  ok(InspectorUI.isPanelOpen, "Inspector Tree Panel is open");
+-  ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
+-  ok(InspectorUI.isDOMPanelOpen, "Inspector DOM Panel is open");
+-  InspectorUI.toggleInspectorUI();
+-}
++var runInspectorTests = {
++  observe: function _runObserver(aSubject, aTopic, aData) {
++    Services.obs.removeObserver(runInspectorTests, "inspector-opened", false);
++    Services.obs.addObserver(finishInspectorTests, "inspector-closed", false);
++    ok(InspectorUI.inspecting, "Inspector is highlighting");
++    ok(InspectorUI.isTreePanelOpen, "Inspector Tree Panel is open");
++    ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
++    ok(InspectorUI.isDOMPanelOpen, "Inspector DOM Panel is open");
++    InspectorUI.toggleInspectorUI();
++  }
++};
+ 
+-function finishInspectorTests(evt)
+-{
+-  if (evt.target.id != "inspector-dom-panel")
+-    return true;
+-  document.removeEventListener("popuphidden", finishInspectorTests, false);
+-  ok(!InspectorUI.isDOMPanelOpen, "Inspector DOM Panel is closed");
+-  ok(!InspectorUI.isStylePanelOpen, "Inspector Style Panel is closed");
+-  ok(!InspectorUI.isPanelOpen, "Inspector Tree Panel is closed");
+-  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
+-  gBrowser.removeCurrentTab();
+-  finish();
+-}
++var finishInspectorTests = {
++  observe: function _finishObserver(aSubject, aTopic, aData) {
++    Services.obs.removeObserver(finishInspectorTests, "inspector-closed", false);
++    ok(!InspectorUI.isDOMPanelOpen, "Inspector DOM Panel is closed");
++    ok(!InspectorUI.isStylePanelOpen, "Inspector Style Panel is closed");
++    ok(!InspectorUI.isTreePanelOpen, "Inspector Tree Panel is closed");
++    ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++    gBrowser.removeCurrentTab();
++    finish();
++  }
++};
+ 
+ function test()
+ {
+diff --git a/browser/base/content/test/browser_inspector_stylePanel.js b/browser/base/content/test/browser_inspector_stylePanel.js
+--- a/browser/base/content/test/browser_inspector_stylePanel.js
++++ b/browser/base/content/test/browser_inspector_stylePanel.js
+@@ -64,7 +64,7 @@
+ {
+   spans = doc.querySelectorAll("span");
+   ok(spans, "captain, we have the spans");
+-  document.addEventListener("popupshown", runStyleTests, false);
++  Services.obs.addObserver(runStyleTests, "inspector-opened", false);
+   InspectorUI.openInspectorUI();
+ }
+ 
+@@ -76,23 +76,22 @@
+   }
+ }
+ 
+-function runStyleTests(evt)
+-{
+-  if (evt.target.id != "inspector-style-panel")
+-    return true;
+-  document.removeEventListener("popupshown", runStyleTests, false);
+-  document.addEventListener("popupshown", performTestComparisons, false);
+-  InspectorUI.stopInspecting();
+-  testGen = spanGenerator();
+-  testGen.next();
+-}
++var runStyleTests = {
++  observe: function _runStyleTestsObserver(aSubject, aTopic, aData) {
++    Services.obs.removeObserver(runStyleTests, "inspector-opened", false);
++    document.addEventListener("popupshown", performTestComparisons, false);
++    InspectorUI.stopInspecting();
++    testGen = spanGenerator();
++    testGen.next();
++  },
++};
+ 
+ function performTestComparisons(evt)
+ {
+   if (evt.target.id != "highlighter-panel")
+     return true;
+ 
+-  ok(InspectorUI.treeView.selectedNode, "selection");
++  ok(InspectorUI.selection, "selection");
+   ok(InspectorUI._showStylePanel, "_showStylePanel");
+   is(InspectorUI.isStylePanelOpen, InspectorUI._showStylePanel, "style panel matches _showStylePanel?");
+   ok(InspectorUI.highlighter.isHighlighting, "panel is highlighting");
+diff --git a/browser/base/content/test/browser_inspector_treeSelection.js b/browser/base/content/test/browser_inspector_treeSelection.js
+--- a/browser/base/content/test/browser_inspector_treeSelection.js
++++ b/browser/base/content/test/browser_inspector_treeSelection.js
+@@ -68,18 +68,17 @@
+ {
+   h1 = doc.querySelectorAll("h1")[0];
+   ok(h1, "we have the header node");
+-  document.addEventListener("popupshown", runSelectionTests, false);
++  Services.obs.addObserver(runSelectionTests, "inspector-opened", false);
+   InspectorUI.openInspectorUI();
+ }
+ 
+-function runSelectionTests(evt)
+-{
+-  if (evt.target.id != "inspector-panel")
+-    return true;
+-  document.removeEventListener("popupshown", runSelectionTests, false);
+-  InspectorUI.stopInspecting();
+-  document.addEventListener("popupshown", performTestComparisons, false);
+-  InspectorUI.treeView.selectedNode = h1;
++var runSelectionTests = {
++  observe: function _runSelectionTestObserver(aSubject, aTopic, aData) {
++    Services.obs.removeObserver(runSelectionTests, "inspector-opened", false);
++    InspectorUI.stopInspecting();
++    document.addEventListener("popupshown", performTestComparisons, false);
++    InspectorUI.inspectNode(h1);
++  },
+ }
+ 
+ function performTestComparisons(evt)
+@@ -87,7 +86,7 @@
+   if (evt.target.id != "highlighter-panel")
+     return true;
+   document.removeEventListener("popupshown", performTestComparisons, false);
+-  is(h1, InspectorUI.treeView.selectedNode, "selection matches node");
++  is(h1, InspectorUI.selection, "selection matches node");
+   ok(InspectorUI.highlighter.isHighlighting, "panel is highlighting");
+   is(h1, InspectorUI.highlighter.highlitNode, "highlighter highlighting correct node");
+   finishUp();
+diff --git a/browser/base/jar.mn b/browser/base/jar.mn
+--- a/browser/base/jar.mn
++++ b/browser/base/jar.mn
+@@ -27,6 +27,7 @@
+ *       content/browser/browser-tabPreviews.xml       (content/browser-tabPreviews.xml)
+ *       content/browser/credits.xhtml                 (content/credits.xhtml)
+ *       content/browser/fullscreen-video.xhtml        (content/fullscreen-video.xhtml)
++*       content/browser/inspector.html                (content/inspector.html)
+ *       content/browser/pageinfo/pageInfo.xul         (content/pageinfo/pageInfo.xul)
+ *       content/browser/pageinfo/pageInfo.js          (content/pageinfo/pageInfo.js)
+ *       content/browser/pageinfo/pageInfo.css         (content/pageinfo/pageInfo.css)
+diff --git a/browser/themes/gnomestripe/browser/inspector.css b/browser/themes/gnomestripe/browser/inspector.css
+new file mode 100644
+--- /dev/null
++++ b/browser/themes/gnomestripe/browser/inspector.css
+@@ -0,0 +1,528 @@
++/* Panel Base */
++
++/* See license.txt for terms of usage */
++
++html {
++  background-color: -moz-dialog;
++}
++
++body {
++  margin: 0;
++  overflow: auto;
++  font-family: Lucida Grande, sans-serif;
++  font-size: 11px;
++}
++
++h1 {
++  font-size: 17px;
++  border-bottom: 1px solid threedlightshadow;
++}
++
++a {
++  color: #0000ff;
++}
++
++pre {
++  margin: 0;
++  font: inherit;
++}
++
++code {
++  display: block;
++  white-space: pre;
++}
++
++/************************************************************************************************/
++
++.jumpHighlight {
++  background-color: cyan;
++}
++
++/************************************************************************************************/
++
++.collapsed,
++[collapsed="true"] {
++  display: none;
++}
++
++.obscured {
++  left: -999999px !important;
++}
++
++.measureBox {
++  position: absolute;
++  visibility: hidden;
++  top: 0;
++  left: 0;
++  white-space: nowrap;
++}
++
++/************************************************************************************************/
++
++.panelNode {
++  display: none;
++  overflow: auto;
++  position: absolute;
++  width: 100%;
++  height: 100%;
++  left: 0;
++  top: 0;
++  background-color: #FFFFFF;
++  color: #000000;
++}
++
++.panelNode[active="true"] {
++  display: block;
++}
++
++/************************************************************************************************/
++
++#trialBox {
++  z-index: 2147483647;
++  position: absolute;
++  top: 0;
++  left: 0;
++  width: 100%;
++  height: 100%;
++  background-color: -moz-dialog;
++}
++
++/************************************************************************************************/
++
++.infoTip {
++  z-index: 2147483647;
++  position: fixed;
++  padding: 2px 3px;
++  border: 1px solid #CBE087;
++  background: LightYellow;
++  font-family: Menlo, Andale Mono, monospace;
++  color: #000000;
++  display: none;
++  white-space: nowrap;
++  pointer-events: none;
++}
++
++.infoTip[active="true"] {
++  display: block;
++}
++
++.infoTipLoading {
++  width: 16px;
++  height: 16px;
++  background: url(chrome://firebug/skin/loading_16.gif) no-repeat;
++}
++
++.infoTipImageBox {
++  min-width: 100px;
++  text-align: center;
++}
++
++.infoTipCaption {
++  font: message-box;
++}
++
++.infoTipLoading > .infoTipImage,
++.infoTipLoading > .infoTipCaption {
++  display: none;
++}
++
++/************************************************************************************************/
++
++h1.groupHeader {
++  padding: 2px 4px;
++  margin: 0 0 4px 0;
++  border-top: 1px solid #CCCCCC;
++  border-bottom: 1px solid #CCCCCC;
++  background: url(chrome://firebug/skin/group.gif) repeat-x #FFFFFF;
++  font-size: inherit;
++}
++
++/************************************************************************************************/
++
++.fullPanelEditor {
++  z-index: 2147483647;
++  position: fixed;
++  left: 0 !important;
++  top: 0 !important;
++  right: 0 !important;
++  bottom: 0 !important;
++  width: 100% !important;
++  height: 100% !important;
++  margin: 0;
++  border: none;
++  font-family: Menlo, Andale Mono, monospace;
++  font-size: Inherit;
++}
++
++/************************************************************************************************/
++
++.useA11y .textEditorInner:focus {
++  outline: 2px solid #FF9933;
++}
++
++.useA11y .a11yFocus:focus,
++.useA11y .a11yFocusNoTab:focus,
++.useA11y .focusRow:focus{
++  outline: 2px solid #FF9933;
++  background-color: #FFFFD6;
++  z-index: 10000;
++}
++
++.useA11y :focus .objectLink-sourceLink {
++  background-color: transparent;
++}
++
++.useA11y .objectBox-null:focus,
++.useA11y .objectBox-undefined:focus{
++  background-color: #888888 !important;
++}
++
++.offScreen {
++  position: fixed;
++  left: -10000px;
++  width: 1px;
++  height: 1px;
++  overflow: hidden;
++}
++
++/* DOMPlate */
++
++.objectLink-element,
++.objectLink-textNode,
++.objectLink-function,
++.objectBox-stackTrace,
++.objectLink-profile {
++  font-family: Menlo, Andale Mono, monospace;
++}
++
++.objectLink-textNode {
++  white-space: pre-wrap;
++}
++
++.objectLink-styleRule,
++.objectLink-element,
++.objectLink-textNode {
++  color: #000088;
++}
++
++.selectorTag,
++.selectorId,
++.selectorClass {
++  font-family: Menlo, Andale Mono, monospace;
++  font-weight: normal;
++}
++
++.selectorTag {
++  color: #0000FF;
++}
++
++.selectorId {
++  color: DarkBlue;
++}
++
++.selectorClass {
++  color: red;
++}
++
++.selectorHidden > .selectorTag {
++  color: #5F82D9;
++}
++
++.selectorHidden > .selectorId {
++  color: #888888;
++}
++
++.selectorHidden > .selectorClass {
++  color: #D86060;
++}
++
++.selectorValue {
++  font-family: Menlo, Andale Mono, monospace;
++  font-style: italic;
++  color: #555555;
++}
++
++.panelNode-html {
++  -moz-box-sizing: padding-box;
++  padding: 4px 0 0 2px;
++}
++
++.nodeBox {
++  position: relative;
++  font-family: Menlo, Andale Mono, monospace;
++  padding-left: 13px;
++  -moz-user-select: -moz-none;
++}
++
++.nodeBox.search-selection {
++  -moz-user-select: text;
++}
++
++.twisty {
++  position: absolute;
++  left: 0px;
++  top: 0px;
++  width: 14px;
++  height: 14px;
++}
++
++.nodeChildBox {
++  margin-left: 12px;
++  display: none;
++}
++
++.nodeLabel,
++.nodeCloseLabel {
++  margin: -2px 2px 0 2px;
++  border: 2px solid transparent;
++  -moz-border-radius: 3px;
++  padding: 0 2px;
++  color: #000088;
++}
++
++.nodeCloseLabel {
++  display: none;
++}
++
++.nodeTag {
++  cursor: pointer;
++  color: blue;
++}
++
++.nodeValue {
++  color: #FF0000;
++  font-weight: normal;
++}
++
++.nodeText,
++.nodeComment {
++  margin: 0 2px;
++  vertical-align: top;
++}
++
++.nodeText {
++  color: #333333;
++}
++
++.docType {
++  position: absolute;
++  top: -16px;
++  font-family: Menlo, Andale Mono, monospace;
++  padding-left: 8px;
++  color: #999;
++  white-space: nowrap;
++  font-style: italic;
++}
++
++.htmlNodeBox {
++  top: 16px;
++}
++
++.nodeWhiteSpace {
++  border: 1px solid LightGray;
++  white-space: pre; /* otherwise the border will be collapsed around zero pixels */
++  margin-left: 1px;
++  color: gray;
++}
++
++.nodeWhiteSpace_Space {
++  border: 1px solid #ddd;
++}
++
++.nodeTextEntity {
++  border: 1px solid gray;
++  white-space: pre; /* otherwise the border will be collapsed around zero pixels */
++  margin-left: 1px;
++}
++
++.nodeComment {
++  color: DarkGreen;
++}
++
++/* */
++
++.nodeBox.highlightOpen > .nodeLabel {
++  background-color: #EEEEEE;
++}
++
++.nodeBox.highlightOpen > .nodeCloseLabel,
++.nodeBox.highlightOpen > .nodeChildBox,
++.nodeBox.open > .nodeCloseLabel,
++.nodeBox.open > .nodeChildBox {
++  display: block;
++}
++
++/* */
++
++.nodeBox.selected > .nodeLabel > .nodeLabelBox,
++.nodeBox.selected > .nodeLabel {
++  border-color: Highlight;
++  background-color: Highlight;
++  color: HighlightText !important;
++}
++
++.nodeBox.selected > .nodeLabel > .nodeLabelBox,
++.nodeBox.selected > .nodeLabel > .nodeLabelBox > .nodeTag,
++.nodeBox.selected > .nodeLabel > .nodeLabelBox > .nodeAttr > .nodeValue,
++.nodeBox.selected > .nodeLabel > .nodeLabelBox > .nodeText {
++  color: inherit !important;
++}
++
++/* */
++
++.nodeBox.highlighted > .nodeLabel {
++  border-color: Highlight !important;
++  background-color: cyan !important;
++  color: #000000 !important;
++}
++
++.nodeBox.highlighted > .nodeLabel > .nodeLabelBox,
++.nodeBox.highlighted > .nodeLabel > .nodeLabelBox > .nodeTag,
++.nodeBox.highlighted > .nodeLabel > .nodeLabelBox > .nodeAttr > .nodeValue,
++.nodeBox.highlighted > .nodeLabel > .nodeLabelBox > .nodeText {
++  color: #000000 !important;
++}
++
++/* */
++
++.nodeBox.nodeHidden .nodeLabel > .nodeLabelBox,
++.nodeBox.nodeHidden .nodeCloseLabel,
++.nodeBox.nodeHidden .nodeLabel > .nodeLabelBox > .nodeText,
++.nodeBox.nodeHidden .nodeText {
++  color: #888888;
++}
++
++.nodeBox.nodeHidden .nodeLabel > .nodeLabelBox > .nodeTag,
++.nodeBox.nodeHidden .nodeCloseLabel > .nodeCloseLabelBox > .nodeTag {
++  color: #5F82D9;
++}
++
++.nodeBox.nodeHidden .nodeLabel > .nodeLabelBox > .nodeAttr > .nodeValue {
++  color: #D86060;
++}
++
++.nodeBox.nodeHidden.selected > .nodeLabel > .nodeLabelBox,
++.nodeBox.nodeHidden.selected > .nodeLabel > .nodeLabelBox > .nodeTag,
++.nodeBox.nodeHidden.selected > .nodeLabel > .nodeLabelBox > .nodeAttr > .nodeValue,
++.nodeBox.nodeHidden.selected > .nodeLabel > .nodeLabelBox > .nodeText {
++  color: SkyBlue !important;
++}
++
++/* */
++
++.nodeBox.mutated > .nodeLabel,
++.nodeAttr.mutated,
++.nodeValue.mutated,
++.nodeText.mutated,
++.nodeBox.mutated > .nodeText {
++  background-color: #EFFF79;
++  color: #FF0000 !important;
++}
++
++.nodeBox.selected.mutated > .nodeLabel,
++.nodeBox.selected.mutated > .nodeLabel > .nodeLabelBox,
++.nodeBox.selected > .nodeLabel > .nodeLabelBox > .nodeAttr.mutated > .nodeValue,
++.nodeBox.selected > .nodeLabel > .nodeLabelBox > .nodeAttr > .nodeValue.mutated,
++.nodeBox.selected > .nodeLabel > .nodeLabelBox > .nodeText.mutated {
++  background-color: #EFFF79;
++  border-color: #EFFF79;
++  color: #FF0000 !important;
++}
++
++/* */
++
++.logRow-dirxml {
++  padding-left: 0;
++}
++
++.soloElement > .nodeBox  {
++  padding-left: 0;
++}
++
++.useA11y .nodeLabel.focused {
++  outline: 2px solid #FF9933;
++  -moz-outline-radius: 3px;
++  outline-offset: -2px;
++}
++
++.useA11y .nodeLabelBox:focus {
++  outline: none;
++}
++
++/* from panel.css */
++
++/* HTML panel */
++
++.nodeBox.selected > .nodeLabel > .nodeLabelBox,
++.nodeBox.selected > .nodeLabel {
++  border-color: #3875d7;
++  background-color: #3875d7;
++  color: #FFFFFF !important;
++}
++
++.nodeBox.highlighted > .nodeLabel {
++  border-color: #3875d7 !important;
++}
++
++/* skin/os/panel.css */
++
++/* See license.txt for terms of usage */
++
++html {
++  background-color: #f3f3f3;
++}
++
++body {
++  border-top: 1px solid #BBB9BA;
++}
++
++/************************************************************************************************/
++/* Twisties */
++
++.twisty,
++.logRow-errorMessage > .hasTwisty > .errorTitle,
++.logRow-log .objectBox-array.hasTwisty,
++.logRow-spy .spyHead .spyTitle,
++.logGroup > .logRow,
++.memberRow.hasChildren > .memberLabelCell > .memberLabel,
++.hasHeaders .netHrefLabel,
++.netPageRow > .netCol > .netPageTitle {
++  background-image: url("chrome://browser/skin/twistyClosed.png");
++  background-repeat: no-repeat;
++  background-position: 2px 3px;
++}
++
++.logRow-errorMessage > .hasTwisty.opened > .errorTitle,
++.logRow-log .objectBox-array.hasTwisty.opened,
++.logRow-spy.opened .spyHead .spyTitle,
++.logGroup.opened > .logRow,
++.memberRow.hasChildren.opened > .memberLabelCell > .memberLabel,
++.nodeBox.highlightOpen > .nodeLabel > .twisty,
++.nodeBox.open > .nodeLabel > .twisty,
++.netRow.opened > .netCol > .netHrefLabel,
++.netPageRow.opened > .netCol > .netPageTitle {
++  background-image: url("chrome://browser/skin/twistyOpen.png");
++}
++
++.memberRow.hasChildren > .memberLabelCell > .memberLabel,
++.hasHeaders .netHrefLabel {
++  background-position: 2px 2px;
++}
++
++.twisty {
++  background-position: 2px 1px;
++}
++
++/************************************************************************************************/
++/* HTML panel */
++
++.nodeBox.selected > .nodeLabel > .nodeLabelBox,
++.nodeBox.selected > .nodeLabel {
++  border-color: #3875d7;
++  background-color: #3875d7;
++  color: #FFFFFF !important;
++}
++
++.nodeBox.highlighted > .nodeLabel {
++  border-color: #3875d7 !important;
++}
+diff --git a/browser/themes/gnomestripe/browser/jar.mn b/browser/themes/gnomestripe/browser/jar.mn
+--- a/browser/themes/gnomestripe/browser/jar.mn
++++ b/browser/themes/gnomestripe/browser/jar.mn
+@@ -13,6 +13,7 @@
+ * skin/classic/browser/browser.css                    (browser.css)
+ * skin/classic/browser/engineManager.css              (engineManager.css)
+   skin/classic/browser/fullscreen-video.css
++  skin/classic/browser/inspector.css
+   skin/classic/browser/Geolocation-16.png
+   skin/classic/browser/Geolocation-64.png
+   skin/classic/browser/Go-arrow.png
+@@ -34,6 +35,8 @@
+   skin/classic/browser/setDesktopBackground.css
+   skin/classic/browser/Toolbar.png
+   skin/classic/browser/Toolbar-small.png
++  skin/classic/browser/twistyClosed.png
++  skin/classic/browser/twistyOpen.png
+   skin/classic/browser/urlbar-favicon-glow.png
+   skin/classic/browser/feeds/feedIcon.png             (feeds/feedIcon.png)
+   skin/classic/browser/feeds/feedIcon16.png           (feeds/feedIcon16.png)
+diff --git a/browser/themes/gnomestripe/browser/twistyClosed.png b/browser/themes/gnomestripe/browser/twistyClosed.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..f80319b0a4e21532f5139acd618ce6782117b2d2
+GIT binary patch
+literal 334
+zc$@)F0kQsxP)<h;3K|Lk000e1NJLTq000XB000XJ1^@s6sjPP<00004XF*Lt007q5
+z)K6G40000PbVXQnQ*UN;cVTj606}DLVr3vnZDD6+Qe|Oed2z{QJOBUy;7LS5RCwBy
+zQA-X1K@_YuL<|XuSlBp#IDm~axQ?SZ0c#71t=L#tiaip)5#uu%qd!{r%pgn%mAvli
+zyy}<gY9gh?uZZiVGZ@R^WcE>1EtgQQRS5LtMzbrwA?yc}HH6?GB;baT0Ow3G2}Uok
+zHZ&NcAq(C>m59+ZoP+%k$L{2M<w&K{sxtoBG&9KN3hI&<oh*dFe!o>aLq1=`W<AH{
+z?80+TQSs5X;Hf4L?QB<bp9|mnn|Nm};2dpmO40ANVJ)YAQih==>8Dud*c$1alVL@3
+g)*%1<;7x!50Gzmo@IIg>jQ{`u07*qoM6N<$f_#RHXaE2J
+
+diff --git a/browser/themes/gnomestripe/browser/twistyOpen.png b/browser/themes/gnomestripe/browser/twistyOpen.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..868012434599b589e3d75190202fe6b4a16270cd
+GIT binary patch
+literal 309
+zc$@(>0m}Y~P)<h;3K|Lk000e1NJLTq000XB000XJ1^@s6sjPP<00004XF*Lt007q5
+z)K6G40000PbVXQnQ*UN;cVTj606}DLVr3vnZDD6+Qe|Oed2z{QJOBUy$4Nv%RCwBy
+zkv$5+KoEuB62T&cH}C-B0c<>j*YPNxz}~_W*jQMJ*jNY_HW3qJ$j|;{+%Yjh7DXTI
+z56m}@x3hwX@T)q!Emk{P?@u40(V&mXcqqWm)7g@~sjgSfEMqi;Xx*xG1SO027%Zja
+z3u|B{GbFdrh09XI_j^v><6-N<#u!A=#hwaOl5I99vJ`oGci}h;klUiRafr(2!})Hs
+za^Y)mMiPh6(!xz{g6A>fw=mCfzTr7{>*dawCI0!rhX4Zrv(|{FCa*++00000NkvXX
+Hu0mjfk~@O2
+
+diff --git a/browser/themes/pinstripe/browser/inspector.css b/browser/themes/pinstripe/browser/inspector.css
+new file mode 100644
+--- /dev/null
++++ b/browser/themes/pinstripe/browser/inspector.css
+@@ -0,0 +1,526 @@
++/* Panel Base */
++
++/* See license.txt for terms of usage */
++
++html {
++  background-color: -moz-dialog;
++}
++
++body {
++  margin: 0;
++  overflow: auto;
++  font-family: Lucida Grande, sans-serif;
++  font-size: 11px;
++}
++
++h1 {
++  font-size: 17px;
++  border-bottom: 1px solid threedlightshadow;
++}
++
++a {
++  color: #0000ff;
++}
++
++pre {
++  margin: 0;
++  font: inherit;
++}
++
++code {
++  display: block;
++  white-space: pre;
++}
++
++/************************************************************************************************/
++
++.jumpHighlight {
++  background-color: cyan;
++}
++
++/************************************************************************************************/
++
++.collapsed,
++[collapsed="true"] {
++  display: none;
++}
++
++.obscured {
++  left: -999999px !important;
++}
++
++.measureBox {
++  position: absolute;
++  visibility: hidden;
++  top: 0;
++  left: 0;
++  white-space: nowrap;
++}
++
++/************************************************************************************************/
++
++.panelNode {
++  display: none;
++  overflow: auto;
++  position: absolute;
++  width: 100%;
++  height: 100%;
++  left: 0;
++  top: 0;
++  background-color: #FFFFFF;
++  color: #000000;
++}
++
++.panelNode[active="true"] {
++  display: block;
++}
++
++/************************************************************************************************/
++
++#trialBox {
++  z-index: 2147483647;
++  position: absolute;
++  top: 0;
++  left: 0;
++  width: 100%;
++  height: 100%;
++  background-color: -moz-dialog;
++}
++
++/************************************************************************************************/
++
++.infoTip {
++  z-index: 2147483647;
++  position: fixed;
++  padding: 2px 3px;
++  border: 1px solid #CBE087;
++  background: LightYellow;
++  font-family: Menlo, Andale Mono, monospace;
++  color: #000000;
++  display: none;
++  white-space: nowrap;
++  pointer-events: none;
++}
++
++.infoTip[active="true"] {
++  display: block;
++}
++
++.infoTipLoading {
++  width: 16px;
++  height: 16px;
++}
++
++.infoTipImageBox {
++  min-width: 100px;
++  text-align: center;
++}
++
++.infoTipCaption {
++  font: message-box;
++}
++
++.infoTipLoading > .infoTipImage,
++.infoTipLoading > .infoTipCaption {
++  display: none;
++}
++
++/************************************************************************************************/
++
++h1.groupHeader {
++  padding: 2px 4px;
++  margin: 0 0 4px 0;
++  border-top: 1px solid #CCCCCC;
++  border-bottom: 1px solid #CCCCCC;
++  font-size: inherit;
++}
++
++/************************************************************************************************/
++
++.fullPanelEditor {
++  z-index: 2147483647;
++  position: fixed;
++  left: 0 !important;
++  top: 0 !important;
++  right: 0 !important;
++  bottom: 0 !important;
++  width: 100% !important;
++  height: 100% !important;
++  margin: 0;
++  border: none;
++  font-family: Menlo, Andale Mono, monospace;
++  font-size: Inherit;
++}
++
++/************************************************************************************************/
++
++.useA11y .textEditorInner:focus {
++  outline: 2px solid #FF9933;
++}
++
++.useA11y .a11yFocus:focus,
++.useA11y .a11yFocusNoTab:focus,
++.useA11y .focusRow:focus{
++  outline: 2px solid #FF9933;
++  background-color: #FFFFD6;
++  z-index: 10000;
++}
++
++.useA11y :focus .objectLink-sourceLink {
++  background-color: transparent;
++}
++
++.useA11y .objectBox-null:focus,
++.useA11y .objectBox-undefined:focus{
++  background-color: #888888 !important;
++}
++
++.offScreen {
++  position: fixed;
++  left: -10000px;
++  width: 1px;
++  height: 1px;
++  overflow: hidden;
++}
++
++/* DOMPlate */
++
++.objectLink-element,
++.objectLink-textNode,
++.objectLink-function,
++.objectBox-stackTrace,
++.objectLink-profile {
++  font-family: Menlo, Andale Mono, monospace;
++}
++
++.objectLink-textNode {
++  white-space: pre-wrap;
++}
++
++.objectLink-styleRule,
++.objectLink-element,
++.objectLink-textNode {
++  color: #000088;
++}
++
++.selectorTag,
++.selectorId,
++.selectorClass {
++  font-family: Menlo, Andale Mono, monospace;
++  font-weight: normal;
++}
++
++.selectorTag {
++  color: #0000FF;
++}
++
++.selectorId {
++  color: DarkBlue;
++}
++
++.selectorClass {
++  color: red;
++}
++
++.selectorHidden > .selectorTag {
++  color: #5F82D9;
++}
++
++.selectorHidden > .selectorId {
++  color: #888888;
++}
++
++.selectorHidden > .selectorClass {
++  color: #D86060;
++}
++
++.selectorValue {
++  font-family: Menlo, Andale Mono, monospace;
++  font-style: italic;
++  color: #555555;
++}
++
++.panelNode-html {
++  -moz-box-sizing: padding-box;
++  padding: 4px 0 0 2px;
++}
++
++.nodeBox {
++  position: relative;
++  font-family: Menlo, Andale Mono, monospace;
++  padding-left: 13px;
++  -moz-user-select: -moz-none;
++}
++
++.nodeBox.search-selection {
++  -moz-user-select: text;
++}
++
++.twisty {
++  position: absolute;
++  left: 0px;
++  top: 0px;
++  width: 14px;
++  height: 14px;
++}
++
++.nodeChildBox {
++  margin-left: 12px;
++  display: none;
++}
++
++.nodeLabel,
++.nodeCloseLabel {
++  margin: -2px 2px 0 2px;
++  border: 2px solid transparent;
++  -moz-border-radius: 3px;
++  padding: 0 2px;
++  color: #000088;
++}
++
++.nodeCloseLabel {
++  display: none;
++}
++
++.nodeTag {
++  cursor: pointer;
++  color: blue;
++}
++
++.nodeValue {
++  color: #FF0000;
++  font-weight: normal;
++}
++
++.nodeText,
++.nodeComment {
++  margin: 0 2px;
++  vertical-align: top;
++}
++
++.nodeText {
++  color: #333333;
++}
++
++.docType {
++  position: absolute;
++  top: -16px;
++  font-family: Menlo, Andale Mono, monospace;
++  padding-left: 8px;
++  color: #999;
++  white-space: nowrap;
++  font-style: italic;
++}
++
++.htmlNodeBox {
++  top: 16px;
++}
++
++.nodeWhiteSpace {
++  border: 1px solid LightGray;
++  white-space: pre; /* otherwise the border will be collapsed around zero pixels */
++  margin-left: 1px;
++  color: gray;
++}
++
++.nodeWhiteSpace_Space {
++  border: 1px solid #ddd;
++}
++
++.nodeTextEntity {
++  border: 1px solid gray;
++  white-space: pre; /* otherwise the border will be collapsed around zero pixels */
++  margin-left: 1px;
++}
++
++.nodeComment {
++  color: DarkGreen;
++}
++
++/* */
++
++.nodeBox.highlightOpen > .nodeLabel {
++  background-color: #EEEEEE;
++}
++
++.nodeBox.highlightOpen > .nodeCloseLabel,
++.nodeBox.highlightOpen > .nodeChildBox,
++.nodeBox.open > .nodeCloseLabel,
++.nodeBox.open > .nodeChildBox {
++  display: block;
++}
++
++/* */
++
++.nodeBox.selected > .nodeLabel > .nodeLabelBox,
++.nodeBox.selected > .nodeLabel {
++  border-color: Highlight;
++  background-color: Highlight;
++  color: HighlightText !important;
++}
++
++.nodeBox.selected > .nodeLabel > .nodeLabelBox,
++.nodeBox.selected > .nodeLabel > .nodeLabelBox > .nodeTag,
++.nodeBox.selected > .nodeLabel > .nodeLabelBox > .nodeAttr > .nodeValue,
++.nodeBox.selected > .nodeLabel > .nodeLabelBox > .nodeText {
++  color: inherit !important;
++}
++
++/* */
++
++.nodeBox.highlighted > .nodeLabel {
++  border-color: Highlight !important;
++  background-color: cyan !important;
++  color: #000000 !important;
++}
++
++.nodeBox.highlighted > .nodeLabel > .nodeLabelBox,
++.nodeBox.highlighted > .nodeLabel > .nodeLabelBox > .nodeTag,
++.nodeBox.highlighted > .nodeLabel > .nodeLabelBox > .nodeAttr > .nodeValue,
++.nodeBox.highlighted > .nodeLabel > .nodeLabelBox > .nodeText {
++  color: #000000 !important;
++}
++
++/* */
++
++.nodeBox.nodeHidden .nodeLabel > .nodeLabelBox,
++.nodeBox.nodeHidden .nodeCloseLabel,
++.nodeBox.nodeHidden .nodeLabel > .nodeLabelBox > .nodeText,
++.nodeBox.nodeHidden .nodeText {
++  color: #888888;
++}
++
++.nodeBox.nodeHidden .nodeLabel > .nodeLabelBox > .nodeTag,
++.nodeBox.nodeHidden .nodeCloseLabel > .nodeCloseLabelBox > .nodeTag {
++  color: #5F82D9;
++}
++
++.nodeBox.nodeHidden .nodeLabel > .nodeLabelBox > .nodeAttr > .nodeValue {
++  color: #D86060;
++}
++
++.nodeBox.nodeHidden.selected > .nodeLabel > .nodeLabelBox,
++.nodeBox.nodeHidden.selected > .nodeLabel > .nodeLabelBox > .nodeTag,
++.nodeBox.nodeHidden.selected > .nodeLabel > .nodeLabelBox > .nodeAttr > .nodeValue,
++.nodeBox.nodeHidden.selected > .nodeLabel > .nodeLabelBox > .nodeText {
++  color: SkyBlue !important;
++}
++
++/* */
++
++.nodeBox.mutated > .nodeLabel,
++.nodeAttr.mutated,
++.nodeValue.mutated,
++.nodeText.mutated,
++.nodeBox.mutated > .nodeText {
++  background-color: #EFFF79;
++  color: #FF0000 !important;
++}
++
++.nodeBox.selected.mutated > .nodeLabel,
++.nodeBox.selected.mutated > .nodeLabel > .nodeLabelBox,
++.nodeBox.selected > .nodeLabel > .nodeLabelBox > .nodeAttr.mutated > .nodeValue,
++.nodeBox.selected > .nodeLabel > .nodeLabelBox > .nodeAttr > .nodeValue.mutated,
++.nodeBox.selected > .nodeLabel > .nodeLabelBox > .nodeText.mutated {
++  background-color: #EFFF79;
++  border-color: #EFFF79;
++  color: #FF0000 !important;
++}
++
++/* */
++
++.logRow-dirxml {
++  padding-left: 0;
++}
++
++.soloElement > .nodeBox  {
++  padding-left: 0;
++}
++
++.useA11y .nodeLabel.focused {
++  outline: 2px solid #FF9933;
++  -moz-outline-radius: 3px;
++  outline-offset: -2px;
++}
++
++.useA11y .nodeLabelBox:focus {
++  outline: none;
++}
++
++/* from panel.css */
++
++/* HTML panel */
++
++.nodeBox.selected > .nodeLabel > .nodeLabelBox,
++.nodeBox.selected > .nodeLabel {
++  border-color: #3875d7;
++  background-color: #3875d7;
++  color: #FFFFFF !important;
++}
++
++.nodeBox.highlighted > .nodeLabel {
++  border-color: #3875d7 !important;
++}
++
++/* skin/os/panel.css */
++
++/* See license.txt for terms of usage */
++
++html {
++  background-color: #f3f3f3;
++}
++
++body {
++  border-top: 1px solid #BBB9BA;
++}
++
++/************************************************************************************************/
++/* Twisties */
++
++.twisty,
++.logRow-errorMessage > .hasTwisty > .errorTitle,
++.logRow-log .objectBox-array.hasTwisty,
++.logRow-spy .spyHead .spyTitle,
++.logGroup > .logRow,
++.memberRow.hasChildren > .memberLabelCell > .memberLabel,
++.hasHeaders .netHrefLabel,
++.netPageRow > .netCol > .netPageTitle {
++  background-image: url("chrome://browser/skin/twistyClosed.png");
++  background-repeat: no-repeat;
++  background-position: 2px 3px;
++}
++
++.logRow-errorMessage > .hasTwisty.opened > .errorTitle,
++.logRow-log .objectBox-array.hasTwisty.opened,
++.logRow-spy.opened .spyHead .spyTitle,
++.logGroup.opened > .logRow,
++.memberRow.hasChildren.opened > .memberLabelCell > .memberLabel,
++.nodeBox.highlightOpen > .nodeLabel > .twisty,
++.nodeBox.open > .nodeLabel > .twisty,
++.netRow.opened > .netCol > .netHrefLabel,
++.netPageRow.opened > .netCol > .netPageTitle {
++  background-image: url("chrome://browser/skin/twistyOpen.png");
++}
++
++.memberRow.hasChildren > .memberLabelCell > .memberLabel,
++.hasHeaders .netHrefLabel {
++  background-position: 2px 2px;
++}
++
++.twisty {
++  background-position: 2px 1px;
++}
++
++/************************************************************************************************/
++/* HTML panel */
++
++.nodeBox.selected > .nodeLabel > .nodeLabelBox,
++.nodeBox.selected > .nodeLabel {
++  border-color: #3875d7;
++  background-color: #3875d7;
++  color: #FFFFFF !important;
++}
++
++.nodeBox.highlighted > .nodeLabel {
++  border-color: #3875d7 !important;
++}
+diff --git a/browser/themes/pinstripe/browser/jar.mn b/browser/themes/pinstripe/browser/jar.mn
+--- a/browser/themes/pinstripe/browser/jar.mn
++++ b/browser/themes/pinstripe/browser/jar.mn
+@@ -62,6 +62,9 @@
+   skin/classic/browser/feeds/audioFeedIcon.png              (feeds/audioFeedIcon.png)
+   skin/classic/browser/feeds/audioFeedIcon16.png            (feeds/audioFeedIcon16.png)
+   skin/classic/browser/setDesktopBackground.css
++  skin/classic/browser/inspector.css
++  skin/classic/browser/twistyClosed.png
++  skin/classic/browser/twistyOpen.png
+   skin/classic/browser/monitor.png
+   skin/classic/browser/monitor_16-10.png
+   skin/classic/browser/places/allBookmarks.png              (places/allBookmarks.png)
+diff --git a/browser/themes/pinstripe/browser/twistyClosed.png b/browser/themes/pinstripe/browser/twistyClosed.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..84cc235697252bcd4ca34102ad5d5f05a9064ba5
+GIT binary patch
+literal 292
+zc%17D@N?(olHy`uVBq!ia0vp^+#t-s1|(OmDOUqhEa{HEjtmUfZd~z?Faq)=OI#yL
+zg7ec#$`gxH85~pclTsBta}(23gHjVyDhp4h+5i=8^K@|xskk*|qAgd8fq>h7oovmB
+zW2f|b%{}IaeT<Vk;8xsR!N$#>;N_XTbm;@ewEBd^aC5!i2^`G%hmP}fa2z(c@c3`2
+z_??%#_(DT3+MI6@p7+Vbx8U5ub=g~TU(4>;Xa0KEqW9Gi*`AuLnyS`+_N3o7lSmGj
+zrrP`1WBI4<)W{1ayj!l7bZl%d?$bG~(2@{m$>Use`j4V}V2g=wpa|>dJY`QI7RLsg
+m^Mc0>KR^5RyvdxAjlu1D#gR+WoIXGwFnGH9xvX<aXaWF8MQv*U
+
+diff --git a/browser/themes/pinstripe/browser/twistyOpen.png b/browser/themes/pinstripe/browser/twistyOpen.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..14daff1ba8c75704bc0cd0d1a674b86208257d4b
+GIT binary patch
+literal 262
+zc%17D@N?(olHy`uVBq!ia0vp^+#t-s1|(OmDOUqhEa{HEjtmUfZd~z?Faq)=OI#yL
+zg7ec#$`gxH85~pclTsBta}(23gHjVyDhp4h+5i>J@N{tuskk*|q9fN~1p(J|m+4N^
+z(w;K5$Q<wu%bOZ=VRr>f{{v5*_>9ab;amJh|NhHwmVCGO^7=<n+4@TZvfm1Ax^`*b
+zdzEdu$xE-ib^G#w#mB32TI$TE6BnJC<E~GgTO2H5`AeKf_V~f5*TNkAe_kG~mULQR
+zUEj3#drpsJz0VJCi7vxQQ;N>$Kh&77|NKt6<^SS??F`Heo_aQq#dYfvfo^2*boFyt
+I=akR{0OG}EH~;_u
+
+diff --git a/browser/themes/winstripe/browser/inspector.css b/browser/themes/winstripe/browser/inspector.css
+new file mode 100644
+--- /dev/null
++++ b/browser/themes/winstripe/browser/inspector.css
+@@ -0,0 +1,500 @@
++/* Panel Base */
++
++/* See license.txt for terms of usage */
++
++html {
++  background-color: -moz-dialog;
++}
++
++body {
++  margin: 0;
++  overflow: auto;
++  font-family: Lucida Grande, sans-serif;
++  font-size: 11px;
++}
++
++h1 {
++  font-size: 17px;
++  border-bottom: 1px solid threedlightshadow;
++}
++
++a {
++  color: #0000ff;
++}
++
++pre {
++  margin: 0;
++  font: inherit;
++}
++
++code {
++  display: block;
++  white-space: pre;
++}
++
++/************************************************************************************************/
++
++.jumpHighlight {
++  background-color: cyan;
++}
++
++/************************************************************************************************/
++
++.collapsed,
++[collapsed="true"] {
++  display: none;
++}
++
++.obscured {
++  left: -999999px !important;
++}
++
++.measureBox {
++  position: absolute;
++  visibility: hidden;
++  top: 0;
++  left: 0;
++  white-space: nowrap;
++}
++
++/************************************************************************************************/
++
++.panelNode {
++  display: none;
++  overflow: auto;
++  position: absolute;
++  width: 100%;
++  height: 100%;
++  left: 0;
++  top: 0;
++  background-color: #FFFFFF;
++  color: #000000;
++}
++
++.panelNode[active="true"] {
++  display: block;
++}
++
++/************************************************************************************************/
++
++#trialBox {
++  z-index: 2147483647;
++  position: absolute;
++  top: 0;
++  left: 0;
++  width: 100%;
++  height: 100%;
++  background-color: -moz-dialog;
++}
++
++/************************************************************************************************/
++
++.infoTip {
++  z-index: 2147483647;
++  position: fixed;
++  padding: 2px 3px;
++  border: 1px solid #CBE087;
++  background: LightYellow;
++  font-family: Menlo, Andale Mono, monospace;
++  color: #000000;
++  display: none;
++  white-space: nowrap;
++  pointer-events: none;
++}
++
++.infoTip[active="true"] {
++  display: block;
++}
++
++.infoTipLoading {
++  width: 16px;
++  height: 16px;
++}
++
++.infoTipImageBox {
++  min-width: 100px;
++  text-align: center;
++}
++
++.infoTipCaption {
++  font: message-box;
++}
++
++.infoTipLoading > .infoTipImage,
++.infoTipLoading > .infoTipCaption {
++  display: none;
++}
++
++/************************************************************************************************/
++
++h1.groupHeader {
++  padding: 2px 4px;
++  margin: 0 0 4px 0;
++  border-top: 1px solid #CCCCCC;
++  border-bottom: 1px solid #CCCCCC;
++  font-size: inherit;
++}
++
++/************************************************************************************************/
++
++.fullPanelEditor {
++  z-index: 2147483647;
++  position: fixed;
++  left: 0 !important;
++  top: 0 !important;
++  right: 0 !important;
++  bottom: 0 !important;
++  width: 100% !important;
++  height: 100% !important;
++  margin: 0;
++  border: none;
++  font-family: Menlo, Andale Mono, monospace;
++  font-size: Inherit;
++}
++
++/************************************************************************************************/
++
++.useA11y .textEditorInner:focus {
++  outline: 2px solid #FF9933;
++}
++
++.useA11y .a11yFocus:focus,
++.useA11y .a11yFocusNoTab:focus,
++.useA11y .focusRow:focus{
++  outline: 2px solid #FF9933;
++  background-color: #FFFFD6;
++  z-index: 10000;
++}
++
++.useA11y :focus .objectLink-sourceLink {
++  background-color: transparent;
++}
++
++.useA11y .objectBox-null:focus,
++.useA11y .objectBox-undefined:focus{
++  background-color: #888888 !important;
++}
++
++.offScreen {
++  position: fixed;
++  left: -10000px;
++  width: 1px;
++  height: 1px;
++  overflow: hidden;
++}
++
++/* DOMPlate */
++
++.objectLink-element,
++.objectLink-textNode,
++.objectLink-function,
++.objectBox-stackTrace,
++.objectLink-profile {
++  font-family: Menlo, Andale Mono, monospace;
++}
++
++.objectLink-textNode {
++  white-space: pre-wrap;
++}
++
++.objectLink-styleRule,
++.objectLink-element,
++.objectLink-textNode {
++  color: #000088;
++}
++
++.selectorTag,
++.selectorId,
++.selectorClass {
++  font-family: Menlo, Andale Mono, monospace;
++  font-weight: normal;
++}
++
++.selectorTag {
++  color: #0000FF;
++}
++
++.selectorId {
++  color: DarkBlue;
++}
++
++.selectorClass {
++  color: red;
++}
++
++.selectorHidden > .selectorTag {
++  color: #5F82D9;
++}
++
++.selectorHidden > .selectorId {
++  color: #888888;
++}
++
++.selectorHidden > .selectorClass {
++  color: #D86060;
++}
++
++.selectorValue {
++  font-family: Menlo, Andale Mono, monospace;
++  font-style: italic;
++  color: #555555;
++}
++
++.panelNode-html {
++  -moz-box-sizing: padding-box;
++  padding: 4px 0 0 2px;
++}
++
++.nodeBox {
++  position: relative;
++  font-family: Menlo, Andale Mono, monospace;
++  padding-left: 13px;
++  -moz-user-select: -moz-none;
++}
++
++.nodeBox.search-selection {
++  -moz-user-select: text;
++}
++
++.twisty {
++  position: absolute;
++  left: 0px;
++  top: 0px;
++  width: 14px;
++  height: 14px;
++}
++
++.nodeChildBox {
++  margin-left: 12px;
++  display: none;
++}
++
++.nodeLabel,
++.nodeCloseLabel {
++  margin: -2px 2px 0 2px;
++  border: 2px solid transparent;
++  -moz-border-radius: 3px;
++  padding: 0 2px;
++  color: #000088;
++}
++
++.nodeCloseLabel {
++  display: none;
++}
++
++.nodeTag {
++  cursor: pointer;
++  color: blue;
++}
++
++.nodeValue {
++  color: #FF0000;
++  font-weight: normal;
++}
++
++.nodeText,
++.nodeComment {
++  margin: 0 2px;
++  vertical-align: top;
++}
++
++.nodeText {
++  color: #333333;
++}
++
++.docType {
++  position: absolute;
++  top: -16px;
++  font-family: Menlo, Andale Mono, monospace;
++  padding-left: 8px;
++  color: #999;
++  white-space: nowrap;
++  font-style: italic;
++}
++
++.htmlNodeBox {
++  top: 16px;
++}
++
++.nodeWhiteSpace {
++  border: 1px solid LightGray;
++  white-space: pre; /* otherwise the border will be collapsed around zero pixels */
++  margin-left: 1px;
++  color: gray;
++}
++
++.nodeWhiteSpace_Space {
++  border: 1px solid #ddd;
++}
++
++.nodeTextEntity {
++  border: 1px solid gray;
++  white-space: pre; /* otherwise the border will be collapsed around zero pixels */
++  margin-left: 1px;
++}
++
++.nodeComment {
++  color: DarkGreen;
++}
++
++/* */
++
++.nodeBox.highlightOpen > .nodeLabel {
++  background-color: #EEEEEE;
++}
++
++.nodeBox.highlightOpen > .nodeCloseLabel,
++.nodeBox.highlightOpen > .nodeChildBox,
++.nodeBox.open > .nodeCloseLabel,
++.nodeBox.open > .nodeChildBox {
++  display: block;
++}
++
++/* */
++
++.nodeBox.selected > .nodeLabel > .nodeLabelBox,
++.nodeBox.selected > .nodeLabel {
++  border-color: Highlight;
++  background-color: Highlight;
++  color: HighlightText !important;
++}
++
++.nodeBox.selected > .nodeLabel > .nodeLabelBox,
++.nodeBox.selected > .nodeLabel > .nodeLabelBox > .nodeTag,
++.nodeBox.selected > .nodeLabel > .nodeLabelBox > .nodeAttr > .nodeValue,
++.nodeBox.selected > .nodeLabel > .nodeLabelBox > .nodeText {
++  color: inherit !important;
++}
++
++/* */
++
++.nodeBox.highlighted > .nodeLabel {
++  border-color: Highlight !important;
++  background-color: cyan !important;
++  color: #000000 !important;
++}
++
++.nodeBox.highlighted > .nodeLabel > .nodeLabelBox,
++.nodeBox.highlighted > .nodeLabel > .nodeLabelBox > .nodeTag,
++.nodeBox.highlighted > .nodeLabel > .nodeLabelBox > .nodeAttr > .nodeValue,
++.nodeBox.highlighted > .nodeLabel > .nodeLabelBox > .nodeText {
++  color: #000000 !important;
++}
++
++/* */
++
++.nodeBox.nodeHidden .nodeLabel > .nodeLabelBox,
++.nodeBox.nodeHidden .nodeCloseLabel,
++.nodeBox.nodeHidden .nodeLabel > .nodeLabelBox > .nodeText,
++.nodeBox.nodeHidden .nodeText {
++  color: #888888;
++}
++
++.nodeBox.nodeHidden .nodeLabel > .nodeLabelBox > .nodeTag,
++.nodeBox.nodeHidden .nodeCloseLabel > .nodeCloseLabelBox > .nodeTag {
++  color: #5F82D9;
++}
++
++.nodeBox.nodeHidden .nodeLabel > .nodeLabelBox > .nodeAttr > .nodeValue {
++  color: #D86060;
++}
++
++.nodeBox.nodeHidden.selected > .nodeLabel > .nodeLabelBox,
++.nodeBox.nodeHidden.selected > .nodeLabel > .nodeLabelBox > .nodeTag,
++.nodeBox.nodeHidden.selected > .nodeLabel > .nodeLabelBox > .nodeAttr > .nodeValue,
++.nodeBox.nodeHidden.selected > .nodeLabel > .nodeLabelBox > .nodeText {
++  color: SkyBlue !important;
++}
++
++/* */
++
++.nodeBox.mutated > .nodeLabel,
++.nodeAttr.mutated,
++.nodeValue.mutated,
++.nodeText.mutated,
++.nodeBox.mutated > .nodeText {
++  background-color: #EFFF79;
++  color: #FF0000 !important;
++}
++
++.nodeBox.selected.mutated > .nodeLabel,
++.nodeBox.selected.mutated > .nodeLabel > .nodeLabelBox,
++.nodeBox.selected > .nodeLabel > .nodeLabelBox > .nodeAttr.mutated > .nodeValue,
++.nodeBox.selected > .nodeLabel > .nodeLabelBox > .nodeAttr > .nodeValue.mutated,
++.nodeBox.selected > .nodeLabel > .nodeLabelBox > .nodeText.mutated {
++  background-color: #EFFF79;
++  border-color: #EFFF79;
++  color: #FF0000 !important;
++}
++
++/* */
++
++.logRow-dirxml {
++  padding-left: 0;
++}
++
++.soloElement > .nodeBox  {
++  padding-left: 0;
++}
++
++.useA11y .nodeLabel.focused {
++  outline: 2px solid #FF9933;
++  -moz-outline-radius: 3px;
++  outline-offset: -2px;
++}
++
++.useA11y .nodeLabelBox:focus {
++  outline: none;
++}
++
++/* from panel.css */
++
++/* HTML panel */
++
++.nodeBox.selected > .nodeLabel > .nodeLabelBox,
++.nodeBox.selected > .nodeLabel {
++  border-color: #3875d7;
++  background-color: #3875d7;
++  color: #FFFFFF !important;
++}
++
++.nodeBox.highlighted > .nodeLabel {
++  border-color: #3875d7 !important;
++}
++
++/* skin/os/panel.css */
++
++/* See license.txt for terms of usage */
++
++/************************************************************************************************/
++/* Twisties */
++
++.twisty,
++.logRow-errorMessage > .hasTwisty > .errorTitle,
++.logRow-log .objectBox-array.hasTwisty,
++.logRow-spy .spyHead .spyTitle,
++.logGroup > .logRow,
++.memberRow.hasChildren > .memberLabelCell > .memberLabel,
++.hasHeaders .netHrefLabel,
++.netPageRow > .netCol > .netPageTitle {
++  background-image: url("chrome://browser/skin/twistyClosed.png");
++  background-repeat: no-repeat;
++  background-position: 2px 2px;
++  min-height: 12px;
++}
++
++.logRow-errorMessage > .hasTwisty.opened > .errorTitle,
++.logRow-log .objectBox-array.hasTwisty.opened,
++.logRow-spy.opened .spyHead .spyTitle,
++.logGroup.opened > .logRow,
++.memberRow.hasChildren.opened > .memberLabelCell > .memberLabel,
++.nodeBox.highlightOpen > .nodeLabel > .twisty,
++.nodeBox.open > .nodeLabel > .twisty,
++.netRow.opened > .netCol > .netHrefLabel,
++.netPageRow.opened > .netCol > .netPageTitle {
++  background-image: url("chrome://browser/skin/twistyOpen.png");
++}
++
++.twisty {
++  background-position: 4px 4px;
++}
+diff --git a/browser/themes/winstripe/browser/jar.mn b/browser/themes/winstripe/browser/jar.mn
+--- a/browser/themes/winstripe/browser/jar.mn
++++ b/browser/themes/winstripe/browser/jar.mn
+@@ -54,6 +54,9 @@
+         skin/classic/browser/feeds/videoFeedIcon.png                 (feeds/videoFeedIcon.png)
+         skin/classic/browser/feeds/videoFeedIcon16.png               (feeds/videoFeedIcon16.png)
+         skin/classic/browser/feeds/subscribe.css                     (feeds/subscribe.css)
++        skin/classic/browser/inspector.css
++        skin/classic/browser/twistyClosed.png
++        skin/classic/browser/twistyOpen.png
+         skin/classic/browser/places/places.css                       (places/places.css)
+ *       skin/classic/browser/places/organizer.css                    (places/organizer.css)
+         skin/classic/browser/places/bookmark.png                     (places/bookmark.png)
+@@ -160,6 +163,9 @@
+         skin/classic/aero/browser/feeds/videoFeedIcon.png            (feeds/videoFeedIcon-aero.png)
+         skin/classic/aero/browser/feeds/videoFeedIcon16.png          (feeds/videoFeedIcon16-aero.png)
+         skin/classic/aero/browser/feeds/subscribe.css                (feeds/subscribe.css)
++        skin/classic/aero/browser/inspector.css
++        skin/classic/aero/browser/twistyClosed.png
++        skin/classic/aero/browser/twistyOpen.png
+ *       skin/classic/aero/browser/places/places.css                  (places/places-aero.css)
+ *       skin/classic/aero/browser/places/organizer.css               (places/organizer-aero.css)
+         skin/classic/aero/browser/places/bookmark.png                (places/bookmark-aero.png)
+diff --git a/browser/themes/winstripe/browser/twistyClosed.png b/browser/themes/winstripe/browser/twistyClosed.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..f80319b0a4e21532f5139acd618ce6782117b2d2
+GIT binary patch
+literal 334
+zc$@)F0kQsxP)<h;3K|Lk000e1NJLTq000XB000XJ1^@s6sjPP<00004XF*Lt007q5
+z)K6G40000PbVXQnQ*UN;cVTj606}DLVr3vnZDD6+Qe|Oed2z{QJOBUy;7LS5RCwBy
+zQA-X1K@_YuL<|XuSlBp#IDm~axQ?SZ0c#71t=L#tiaip)5#uu%qd!{r%pgn%mAvli
+zyy}<gY9gh?uZZiVGZ@R^WcE>1EtgQQRS5LtMzbrwA?yc}HH6?GB;baT0Ow3G2}Uok
+zHZ&NcAq(C>m59+ZoP+%k$L{2M<w&K{sxtoBG&9KN3hI&<oh*dFe!o>aLq1=`W<AH{
+z?80+TQSs5X;Hf4L?QB<bp9|mnn|Nm};2dpmO40ANVJ)YAQih==>8Dud*c$1alVL@3
+g)*%1<;7x!50Gzmo@IIg>jQ{`u07*qoM6N<$f_#RHXaE2J
+
+diff --git a/browser/themes/winstripe/browser/twistyOpen.png b/browser/themes/winstripe/browser/twistyOpen.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..868012434599b589e3d75190202fe6b4a16270cd
+GIT binary patch
+literal 309
+zc$@(>0m}Y~P)<h;3K|Lk000e1NJLTq000XB000XJ1^@s6sjPP<00004XF*Lt007q5
+z)K6G40000PbVXQnQ*UN;cVTj606}DLVr3vnZDD6+Qe|Oed2z{QJOBUy$4Nv%RCwBy
+zkv$5+KoEuB62T&cH}C-B0c<>j*YPNxz}~_W*jQMJ*jNY_HW3qJ$j|;{+%Yjh7DXTI
+z56m}@x3hwX@T)q!Emk{P?@u40(V&mXcqqWm)7g@~sjgSfEMqi;Xx*xG1SO027%Zja
+z3u|B{GbFdrh09XI_j^v><6-N<#u!A=#hwaOl5I99vJ`oGci}h;klUiRafr(2!})Hs
+za^Y)mMiPh6(!xz{g6A>fw=mCfzTr7{>*dawCI0!rhX4Zrv(|{FCa*++00000NkvXX
+Hu0mjfk~@O2
+

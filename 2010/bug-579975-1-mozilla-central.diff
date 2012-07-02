@@ -1,0 +1,49 @@
+diff -r a80066930eb5 toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm	Mon Jul 19 12:15:21 2010 -0300
++++ b/toolkit/components/console/hudservice/HUDService.jsm	Mon Jul 19 21:55:18 2010 +0300
+@@ -1120,38 +1120,38 @@ HUD_SERVICE.prototype =
+       if (!displayNode) {
+         return;
+       }
+     }
+ 
+     var _msgLogLevel = this.scriptMsgLogLevel[aActivityObject.flags];
+     var msgLogLevel = this.getStr(_msgLogLevel);
+ 
++    var logLevel = "warn";
++
++    if (aActivityObject.flags in this.scriptErrorFlags) {
++      logLevel = this.scriptErrorFlags[aActivityObject.flags];
++    }
++
+     // check if we should be logging this message:
+-    var filterState = this.getFilterState(hudId, msgLogLevel);
++    var filterState = this.getFilterState(hudId, logLevel);
+ 
+     if (!filterState) {
+       // Ignore log message
+       return;
+     }
+ 
+     // in this case, the "activity object" is the
+     // nsIScriptError or nsIConsoleMessage
+     var message = {
+       activity: aActivityObject,
+       origin: "console-listener",
+       hudId: hudId,
+     };
+ 
+-    try {
+-      var logLevel = this.scriptErrorFlags[aActivityObject.flags];
+-    }
+-    catch (ex) {
+-      var logLevel = "warn";
+-    }
+     var lineColSubs = [aActivityObject.columnNumber,
+                        aActivityObject.lineNumber];
+     var lineCol = this.getFormatStr("errLineCol", lineColSubs);
+ 
+     var errFileSubs = [aActivityObject.sourceName];
+     var errFile = this.getFormatStr("errFile", errFileSubs);
+ 
+     var msgCategory = this.getStr("msgCategory");

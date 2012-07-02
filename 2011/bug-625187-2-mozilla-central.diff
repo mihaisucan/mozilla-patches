@@ -1,0 +1,73 @@
+diff --git a/toolkit/components/prompts/content/tabprompts.css b/toolkit/components/prompts/content/tabprompts.css
+--- a/toolkit/components/prompts/content/tabprompts.css
++++ b/toolkit/components/prompts/content/tabprompts.css
+@@ -6,16 +6,21 @@ tabmodalprompt {
+   -moz-box-orient: vertical;
+ }
+ 
+ .mainContainer {
+   min-width: 20em;
+   min-height: 12em;
+ }
+ 
++.info\.title {
++  margin-bottom: 1em !important;
++  font-weight: bold;
++}
++
+ .info\.body {
+   margin: 0 !important;
+   -moz-user-focus: normal;
+   -moz-user-select: text;
+   cursor: text !important;
+   white-space: pre-wrap;
+ }
+ 
+diff --git a/toolkit/components/prompts/content/tabprompts.xml b/toolkit/components/prompts/content/tabprompts.xml
+--- a/toolkit/components/prompts/content/tabprompts.xml
++++ b/toolkit/components/prompts/content/tabprompts.xml
+@@ -29,17 +29,17 @@
+                 <grid class="topContainer" flex="1">
+                     <columns>
+                         <column/>
+                         <column flex="1"/>
+                     </columns>
+ 
+                     <rows>
+                         <vbox anonid="infoContainer" align="center" pack="center" flex="1">
+-                            <description anonid="info.title" hidden="true"/>
++                            <description anonid="info.title" class="info.title" hidden="true" />
+                             <description anonid="info.body" class="info.body"/>
+                         </vbox>
+ 
+                         <row anonid="loginContainer" hidden="true" align="center">
+                             <label anonid="loginLabel" value="&editfield0.label;" control="loginTextbox"/>
+                             <textbox anonid="loginTextbox"/>
+                         </row>
+ 
+@@ -154,16 +154,25 @@
+                 linkedTab.addEventListener("TabClose", this, false);
+                 this.args.domWindow.addEventListener("pagehide", this, false);
+ 
+                 let tmp = {};
+                 Components.utils.import("resource://gre/modules/CommonDialog.jsm", tmp);
+                 this.Dialog = new tmp.CommonDialog(args, this.ui);
+                 this.Dialog.onLoad(null);
+ 
++                // Show the tabprompt title that shows the prompt origin when
++                // the prompt location is not the same as that of the top
++                // window.
++                let topLocation = this.args.domWindow.top.location;
++                let promptLocation = this.args.domWindow.location;
++                if (topLocation.host != promptLocation.host ||
++                    topLocation.protocol != promptLocation.protocol)
++                  this.ui.infoTitle.removeAttribute("hidden");
++
+                 // TODO: should unhide buttonSpacer on Windows when there are 4 buttons.
+                 //       Better yet, just drop support for 4-button dialogs. (bug 609510)
+ 
+                 this.onResize();
+             ]]>
+             </body>
+         </method>
+ 

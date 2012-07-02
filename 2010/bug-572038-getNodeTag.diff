@@ -1,0 +1,271 @@
+diff --git a/browser/base/content/domplate.jsm b/browser/base/content/domplate.jsm
+--- a/browser/base/content/domplate.jsm
++++ b/browser/base/content/domplate.jsm
+@@ -1,11 +1,11 @@
+ /* See license.txt for terms of usage */
+ 
+-var EXPORTED_SYMBOLS = ["domplate", "HTMLTemplates", "setDOM"];
++var EXPORTED_SYMBOLS = ["domplate", "HTMLTemplates", "domplateUtils"];
+ 
+ const Ci = Components.interfaces;
+ const Cu = Components.utils;
+ 
+ const invisibleTags = {
+   "head": true,
+   "base": true,
+   "basefont": true,
+@@ -32,18 +32,19 @@ const selfClosingTags = {
+   "param": 1,
+   "embed": 1
+ };
+ 
+ const reNotWhitespace = /[^\s]/;
+ const showTextNodesWithWhitespace = false;
+ 
+ var DOM = {};
++var domplateUtils = {};
+ 
+-let setDOM = function(glob)
++domplateUtils.setDOM = function(glob)
+ {
+   DOM = glob;
+ };
+ 
+ let domplate = function()
+ {
+   let lastSubject;
+   for (let i = 0; i < arguments.length; ++i)
+@@ -1006,17 +1007,17 @@ function hasNoElementChildren(element)
+         if (anonChildren[i].nodeType == Node.ELEMENT_NODE)
+           return false;
+       }
+     }
+   }
+   return true;
+ }
+ 
+-function getNodeTag(node, expandAll)
++domplateUtils.getNodeTag = function getNodeTag(node, expandAll)
+ {
+   if (node instanceof DOM.Element) {
+     if (node instanceof DOM.HTMLHtmlElement && node.ownerDocument 
+         && node.ownerDocument.doctype)
+       return HTMLTemplates.HTMLHtmlElement.tag;
+     else if (node instanceof DOM.HTMLAppletElement)
+       return getEmptyElementTag(node);
+     else if (isContainerElement(node))
+@@ -1708,17 +1709,17 @@ HTMLTemplates.CompleteElement = domplate
+         domplate.SPAN({"class": "nodeTag"},
+           "$object.nodeName|toLowerCase"),
+         "&gt;"
+       )
+     ),
+ 
+   getNodeTag: function(node)
+   {
+-    return getNodeTag(node, true);
++    return domplateUtils.getNodeTag(node, true);
+   },
+ 
+   childIterator: function(node)
+   {
+     if (node.contentDocument)
+       return [node.contentDocument.documentElement];
+ 
+     if (this.showTextNodesWithWhitespace)
+diff --git a/browser/base/content/inspector.js b/browser/base/content/inspector.js
+--- a/browser/base/content/inspector.js
++++ b/browser/base/content/inspector.js
+@@ -47,30 +47,16 @@ const INSPECTOR_INVISIBLE_ELEMENTS = {
+   "isindex": true,
+   "link": true,
+   "meta": true,
+   "script": true,
+   "style": true,
+   "title": true,
+ };
+ 
+-const SELF_CLOSING_TAGS = {
+-  "meta": 1,
+-  "link": 1,
+-  "area": 1,
+-  "base": 1,
+-  "col": 1,
+-  "input": 1,
+-  "img": 1,
+-  "br": 1,
+-  "hr": 1,
+-  "param": 1,
+-  "embed": 1
+-};
+-
+ const RE_NOT_WHITESPACE = /[^\s]/;
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ //// PanelHighlighter
+ 
+ /**
+  * A highlighter mechanism using xul panels.
+  *
+@@ -1093,48 +1079,19 @@ var InspectorUI = {
+       self.ioBox = new InsideOutBox(self, self.treePanelDiv);
+       self.ioBox.createObjectBox(self.win.document.documentElement);
+       Services.obs.notifyObservers(null, "inspector-opened", null);
+     }, true);
+ 
+     this.treeBrowser.reload();
+   },
+ 
+-  getNodeTag: function IUI_getNodeTag(node, expandAll)
+-  {
+-    if (node instanceof Element) {
+-      if (node instanceof HTMLHtmlElement && node.ownerDocument
+-          && node.ownerDocument.doctype)
+-        return this.HTMLTemplates.HTMLHtmlElement.tag;
+-      if (node instanceof HTMLAppletElement)
+-        return this.HTMLTemplates.EmptyElement.tag;
+-      else if (this.isContainerElement(node))
+-        return this.HTMLTemplates.CompleteElement.tag;
+-      else if (this.isEmptyElement(node))
+-        return this.HTMLTemplates.EmptyElement.tag;
+-      else if (this.hasNoElementChildren(node))
+-        return this.HTMLTemplates.TextElement.tag;
+-      else
+-        return this.HTMLTemplates.Element.tag;
+-    }
+-    else if (node instanceof Text)
+-      return this.HTMLTemplates.TextNode.tag;
+-    else if (node instanceof CDATASection)
+-      return this.HTMLTemplates.CDATANode.tag;
+-    else if (node instanceof Comment)
+-      return this.HTMLTemplates.CommentNode.tag;
+-    else if (node instanceof SourceText)
+-      return this.HTMLTemplates.SourceText.tag;
+-    else
+-      return this.HTMLTemplates.Nada.tag;
+-  },
+-
+   createObjectBox: function IUI_createObjectBox(object, isRoot)
+   {
+-    let tag = this.getNodeTag(object);
++    let tag = this.domplateUtils.getNodeTag(object);
+     if (tag)
+       return tag.replace({object: object}, this.treeBrowserDocument);
+   },
+ 
+   getParentObject: function IUI_getParentObject(node)
+   {
+     let parentNode = node ? node.parentNode : null;
+ 
+@@ -1291,17 +1248,17 @@ var InspectorUI = {
+    * document scrolling, resize and tabContainer.TabSelect.
+    */
+   openInspectorUI: function IUI_openInspectorUI()
+   {
+     // initialization
+     if (!this.domplate) {
+       Cu.import("resource:///modules/domplate.jsm", this);
+       let dom = Cu.getGlobalForObject(Node);
+-      this.setDOM(dom);
++      this.domplateUtils.setDOM(dom);
+     }
+     this.browser = gBrowser.selectedBrowser;
+     this.win = this.browser.contentWindow;
+     if (!this.style) {
+       Cu.import("resource:///modules/stylePanel.jsm", this);
+       this.style.initialize();
+     }
+     this.toolsInspectCmd = document.getElementById("Tools:Inspect");
+@@ -1753,92 +1710,28 @@ var InspectorUI = {
+   {
+     let box = this.ioBox.createObjectBox(element);
+     if (!this.style.hasClass(box, "open"))
+       this.ioBox.expandObject(element);
+     else
+       this.ioBox.contractObject(element);
+   },
+ 
+-  isContainerElement: function IUI_isContainerElement(element)
+-  {
+-    let tag = element.localName.toLowerCase();
+-    switch (tag) {
+-      case "script":
+-      case "style":
+-      case "iframe":
+-      case "frame":
+-      case "tabbrowser":
+-      case "browser":
+-        return true;
+-      case "link":
+-        return element.getAttribute("rel") == "stylesheet";
+-      case "embed":
+-        return element.getSVGDocument();
+-    }
+-    return false;
+-  },
+-
+   isWhitespace: function IUI_isWhitespace(text)
+   {
+     return !RE_NOT_WHITESPACE.exec(text);
+   },
+ 
+   isWhitespaceText: function IUI_isWhitespaceText(node)
+   {
+     if (node instanceof HTMLAppletElement)
+       return false;
+     return node.nodeType == Node.TEXT_NODE && this.isWhitespace(node.nodeValue);
+   },
+ 
+-  isSelfClosing: function IUI_isSelfClosing(element)
+-  {
+-    //if (isElementSVG(element) || isElementMathML(element))
+-    //    return true;
+-    var tag = element.localName.toLowerCase();
+-    return (SELF_CLOSING_TAGS.hasOwnProperty(tag));
+-  },
+-
+-  isEmptyElement: function IUI_isEmptyElement(element)
+-  {
+-    if (this.showTextNodesWithWhitespace) {
+-      return !element.firstChild && this.isSelfClosing(element);
+-    } else {
+-      for (let child = element.firstChild; child; child = child.nextSibling) {
+-        if (!this.isWhitespaceText(child))
+-          return false;
+-      }
+-    }
+-    return this.isSelfClosing(element);
+-  },
+-
+-  /**
+-   * Determines if the given node has any children which are elements.
+-   *
+-   * @param {Element} element Element to test.
+-   * @return true if immediate children of type Element exist, false otherwise
+-   */
+-  hasNoElementChildren: function IUI_hasNoElementChildren(element)
+-  {
+-    if (element.childElementCount != 0)  // FF 3.5+
+-      return false;
+-
+-    // https://developer.mozilla.org/en/XBL/XBL_1.0_Reference/DOM_Interfaces
+-    if (element.ownerDocument instanceof Ci.nsIDOMDocumentXBL) {
+-      let anonChildren = element.ownerDocument.getAnonymousNodes(element);
+-      if (anonChildren) {
+-        for (var i = 0; i < anonChildren.length; i++) {
+-          if (anonChildren[i].nodeType == Node.ELEMENT_NODE)
+-            return false;
+-        }
+-      }
+-    }
+-    return true;
+-  },
+-
+   /**
+    * Get the offset of an element within its document.
+    * @param aNode
+    * @returns an offset object (point)
+    */
+   getClientOffset: function IUI_getClientOffset(aNode)
+   {
+     function addOffset(elt, coords, view)

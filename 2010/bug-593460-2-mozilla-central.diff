@@ -1,0 +1,140 @@
+diff --git a/browser/base/content/browser.xul b/browser/base/content/browser.xul
+--- a/browser/base/content/browser.xul
++++ b/browser/base/content/browser.xul
+@@ -233,17 +233,17 @@
+     <panel id="inspector-tree-panel"
+            orient="vertical"
+            hidden="true"
+            ignorekeys="true"
+            noautofocus="true"
+            noautohide="true"
+            titlebar="normal"
+            close="true"
+-           onpopuphiding="InspectorUI.closeInspectorUI(true);"
++           onpopuphiding="InspectorUI.closeInspectorUI();"
+            label="&inspectPanelTitle.label;">
+       <toolbar id="inspector-toolbar"
+                nowindowdrag="true">
+         <toolbarbutton id="inspector-inspect-toolbutton"
+                        label="&inspectButton.label;"
+                        accesskey="&inspectButton.accesskey;"
+                        class="toolbarbutton-text"
+                        command="Inspector:Inspect"/>
+diff --git a/browser/base/content/inspector.js b/browser/base/content/inspector.js
+--- a/browser/base/content/inspector.js
++++ b/browser/base/content/inspector.js
+@@ -340,17 +340,17 @@ var InspectorUI = {
+    * Toggle the inspector interface elements on or off.
+    *
+    * @param aEvent
+    *        The event that requested the UI change. Toolbar button or menu.
+    */
+   toggleInspectorUI: function IUI_toggleInspectorUI(aEvent)
+   {
+     if (this.isTreePanelOpen) {
+-      this.closeInspectorUI(true);
++      this.closeInspectorUI();
+     } else {
+       this.openInspectorUI();
+     }
+   },
+ 
+   /**
+    * Toggle the status of the inspector, starting or stopping it. Invoked
+    * from the toolbar's Inspect button.
+@@ -700,28 +700,29 @@ var InspectorUI = {
+     }
+   },
+ 
+   /**
+    * Close inspector UI and associated panels. Unhighlight and stop inspecting.
+    * Remove event listeners for document scrolling, resize,
+    * tabContainer.TabSelect and others.
+    *
+-   * @param boolean aClearStore tells if you want the store associated to the
+-   * current tab/window to be cleared or not.
++   * @param boolean aDontClearStore tells if you want the store associated to 
++   * the current tab/window to be cleared or not. set this to true to not clear 
++   * the store, or false otherwise.
+    */
+-  closeInspectorUI: function IUI_closeInspectorUI(aClearStore)
++  closeInspectorUI: function IUI_closeInspectorUI(aDontClearStore)
+   {
+     if (this.closing || !this.win || !this.browser) {
+       return;
+     }
+ 
+     this.closing = true;
+ 
+-    if (aClearStore) {
++    if (!aDontClearStore) {
+       InspectorStore.deleteStore(this.winID);
+       this.win.removeEventListener("pagehide", this, true);
+     } else {
+       // Update the store before closing.
+       if (this.selection) {
+         InspectorStore.setValue(this.winID, "selectedNode",
+           this.selection);
+       }
+@@ -984,17 +985,17 @@ var InspectorUI = {
+           if (this.isTreePanelOpen && this.isStylePanelOpen && this.isDOMPanelOpen) {
+             document.removeEventListener("popupshowing", this, false);
+             Services.obs.notifyObservers(null, "inspector-opened", null);
+           }
+         break;
+       case "TabSelect":
+         winID = this.getWindowID(gBrowser.selectedBrowser.contentWindow);
+         if (this.isTreePanelOpen && winID != this.winID) {
+-          this.closeInspectorUI(false);
++          this.closeInspectorUI(true);
+           inspectorClosed = true;
+         }
+ 
+         if (winID && InspectorStore.hasID(winID)) {
+           if (inspectorClosed && this.closing) {
+             Services.obs.addObserver(function () {
+               InspectorUI.openInspectorUI();
+             }, "inspector-closed", false);
+diff --git a/browser/base/content/test/browser_inspector_initialization.js b/browser/base/content/test/browser_inspector_initialization.js
+--- a/browser/base/content/test/browser_inspector_initialization.js
++++ b/browser/base/content/test/browser_inspector_initialization.js
+@@ -49,17 +49,17 @@ function startInspectorTests()
+ function runInspectorTests()
+ {
+   Services.obs.removeObserver(runInspectorTests, "inspector-opened", false);
+   Services.obs.addObserver(finishInspectorTests, "inspector-closed", false);
+   ok(InspectorUI.inspecting, "Inspector is highlighting");
+   ok(InspectorUI.isTreePanelOpen, "Inspector Tree Panel is open");
+   ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
+   ok(InspectorUI.isDOMPanelOpen, "Inspector DOM Panel is open");
+-  InspectorUI.closeInspectorUI(true);
++  InspectorUI.closeInspectorUI();
+ }
+ 
+ function finishInspectorTests()
+ {
+   Services.obs.removeObserver(finishInspectorTests, "inspector-closed", false);
+   ok(!InspectorUI.isDOMPanelOpen, "Inspector DOM Panel is closed");
+   ok(!InspectorUI.isStylePanelOpen, "Inspector Style Panel is closed");
+   ok(!InspectorUI.isTreePanelOpen, "Inspector Tree Panel is closed");
+diff --git a/browser/base/content/test/browser_inspector_tab_switch.js b/browser/base/content/test/browser_inspector_tab_switch.js
+--- a/browser/base/content/test/browser_inspector_tab_switch.js
++++ b/browser/base/content/test/browser_inspector_tab_switch.js
+@@ -152,16 +152,17 @@ function inspectorTabUnload1(evt)
+   tab1window = tab1 = tab2 = div = null;
+ 
+   // Make sure the Inspector is still open and that the state is correct.
+   ok(!InspectorUI.inspecting, "Inspector is not highlighting");
+   ok(InspectorUI.isTreePanelOpen, "Inspector Tree Panel is open");
+   ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
+   is(InspectorStore.length, 1, "InspectorStore.length = 1");
+ 
++  InspectorUI.closeInspectorUI();
+   gBrowser.removeCurrentTab();
+   finish();
+ }
+ 
+ function test()
+ {
+   waitForExplicitFinish();
+ 

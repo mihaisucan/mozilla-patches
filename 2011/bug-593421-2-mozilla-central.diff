@@ -1,0 +1,349 @@
+# HG changeset patch
+# Parent c27e1cf415a7cf0e12435154537090de6a2a56d0
+# User Paul O’Shannessy <paul@oshannessy.com>
+Bug 593421 - Provide link to "Restore Previous Session" on Firefox Start [r=?, a=blocking2.0:betaN+]
+
+diff --git a/browser/base/content/aboutHome-restore-icon.png b/browser/base/content/aboutHome-restore-icon.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..82b2bb7f51fe39a9f2fce05d7e310c2378f46785
+GIT binary patch
+literal 4550
+zc$@*o5jpOOP)<h;3K|Lk000e1NJLTq002$^002S=1^@s6`Dox~0000PbVXQnQ*UN;
+zcVTj606}DLVr3vnZDD6+Qe|Oed2z{QJOBU@Xh}ptRCwC#Tnltm)w%x9bIzH`OdceG
+zgg^k1LRC<qE}=r96$(WZRODfCAt?ANiuSs0?_#xGUe{`uQbkmH5wWW(1*)L(xPVYz
+z^3aNx1(sJ3AAtl&LXt@`uk+gX|4+^&lVm2O%nWNu*sLAS>~r@2@BPjH@Bgv)8P4~k
+zso)f@-}r~-^0Mo3UJ$Pbj)yC)<Yvg=mRim$s9R9gpxM`1ZV|eAU2v*0Xn*dT=Z16s
+z5L7pW|7B^B*Go3OxfGk34VD8Of;M};<o5lEmlVY8$^#7;gFyu<&Xl!k=it!U5bzv8
+zzg!o%Bo4v`K8CkkB0xxIP*M>BQ;&citb3+p<MNlOm*{jC1X-ES%Lv-{T+;gHD&SRw
+zrqA_Z6TYengJl^Is;gdgzUso4<+Tw;$P{HOTwYGj4VEQMrG_Kllx_BgE8gtW|A))5
+zt9kt3motN&!g;(q>vqCMFpUM+z8I@v12<&kn5>{66@A}9W6T1}(7@7oTc1d3EW@(f
+znQ6d|4_7^Vq2g>Hs&1$7kuLcKo^B(jO$A=i>(71n;*rm`99AUZUc)f-&$q2VQap6L
+z<}J<~#dEyC31T*3bztYmRW@)uE@~XdegCx)!TI8gFYiCSf5RsZI9!jRcMQ)g9<YL;
+zsv>Cq$#b3>FRAJ>lBh_aVfvakU;U&j-V+5u8Z!9Cl>_@0joYwd`97jIVaCG)`HY+u
+z-}pIOggFN*x~4yzWtrTSvXqI68&@c(jsoX=juz{@KcFdwAP~%<`XJpi?Hl;?S$_mn
+zG!|GQ^e2SZ0c>NSKolScD^9$U)_+tb@N_L+ecj~wO{z+5cC}3K7WR>MuU@tpn|nFH
+zHu$>tb&<9)%hXFx9h+MA`Ih6?{$kc3`n+w`^20?#$3Ku&eBC<KRH4NebVUJ&Ycway
+zI4e0WsD(qu{K?WI2XN8joemZ+xrW%l0w-k@_MYG8_UQ{zN<Sn??DMl}6XlHTUm>tU
+z8_9-FQg~hj*^@aF4aLkhVDpW*$nMMulIok#_?dwqyZ4YZM(=kBxEyo_b2B8{VdOaI
+zR0VB?;~48u9W>&vrSTfOxCQ8uDWcvRz|aA-Iu~yC+Nh$m^vom`Mr#~2I{+NQo$ux#
+zSYN%a;`DdR|G8t!;czfubSB^ww@18X)XxXz_b8s7@Aln!A;6%u+O+`=tqGW+;Oh66
+zE_xC_hRI8gI*gsAprCNOH?G}<m!I7`_o)!GTvIqfY#%raoyfAUPcFpEI;<4^TGO9+
+zwo?K3x7S{<eO;PAVPR$WpCTjzjycuB@MQnijV0s+PJ7~63oe7Wk@Hy>)}bzBKp@h%
+zDulGgbw!mMEt&@-Zl8)(k?epxon>01pqMLPdm%zt44B-{Mv=vrI2KcF^-Q}>2<axA
+ztqp-60kc^AuP3M(P5)QcqZr^?lZgNpWT~J^Lb``&HDb{Mn`YpcV}e=Bdufw2%^<+S
+zO?faQ5_AiaG6tRVvACA}2p3{>uY`flntK=r#xM^3+%nCrx*pzCZMlQh0o~586=W$O
+zi)jXsHRHoBB5`Shu0Ev0*OdV<P(N`!9VCeIZ(Y7F<1lts0Ub>{L&HH+dJ7%an;Hjh
+z-HaXPTBavtY2i(#p*>gCzz)?0HRzM)0k0~h7rBc`9806bRn|q|bafC+UF#)CuHQ=T
+z%m;Z4kH|BZ(b3LE6{K96i0Y`yytCF>VBnxAuU3O9t?8D^i>|wQL%Z9I1pg9=M4l@-
+z&%W)E<Ayw+D{T&OYl-9ABFYjVom{P`3&Zxe7jvemkCois|C2nK4+^pZUbhU_=BsdB
+zR|N{ZJY)zKxOiOi^srs&n%d|dJ=3qNYWJbOM1yD%O`=UaQaR?tI7C&|Mw2zwREr#0
+z%N=jO%JmsHbDpGnDLpUn0uS9YU6AV$><C2<Mb3l*^&9G{FYMN}NZl8^wjH6qgMV`S
+zb&~Az`Et69P(9u|RM}P3w~Gu_0UpZy8Zg<NEphw?r2P!?SUhglQ;e){Y9%fP8+Mt3
+ze9f?6(_4!OwE3u-2$~F%AVBXN89cZwX@R-}m1U(b?p*iY9>;Ig9cyM=^}U-u+U;n@
+zR;>R$;*NWU<rfwIM;CX-EsE%ZZ>lxWIYmJ579kG-dA&Sw?$gXArZ<}{MwK|e#3e6s
+zA1r-|>pf=1SW)%9z=@LWP7r8r-qii)&pp3!#qu|3DRV%Jx<RqJ!bOv>G~V4C))0Vu
+z#@|1CjxV>{0;DC;o&rPK!~=O9`*7(?o2NYX3`>v1vDh`Pl}i$DQM`m2h?vlG<m8@$
+z>RrVNE`it;dSy^R_n-Zy<bDM0HDu$bgd#;c_dWWIj+H!L)_d&CpHii3YNLBj2uRP?
+zQeUD$w1_6rCLYAAc+`EpiFdN&Z-YZ@nkv58O-<Rbd=W3I8Gk?v>f_MeccW@{QLS+K
+z*C&37s`+sYU<6EyaiKf%9M#w{(lZXQl-h0}8bpg|5^dr^yadJbJn>GwJJJd`2Jwvp
+zOX44eZurd);a%?gXmgwB7I=8@SDyR*CmYw&W(w^#>60IQnzioRcl6Z3yh|NMweRgy
+z2DiRXeVny0K(vS^(YD8qyoe|9rZFTlhj^;m#vMsDaPR-m%K|667jV2N5Jd(5s+|7i
+zroX*KJ50fQADwStZ3EhSe|`xa5NS5{1F8lm&!M)~&rx5ZL9~b_(Iy`DUIX$Z-ZX|(
+z0~eJ%K4H+1q#IX!^Y9GxwMN_Ndi<Ovb5LDT{+we7jCNcn0o|3+c1oM1M^b)HZS6cy
+z;Dv}b@c=t@CXk;un#Pb4H!coF&8iv)=}Rs6O>;_q&oLN6DU7qX)IbL9==QZM$s%g^
+zJ~BTclUv5!-4#TkH=~^=N*;<r(csZ{<tBRGp`{UR;z7KaZG#1c#z139euZm`4&PQB
+zA$hZkbaf_7jIM3u;POUreKfz9s2@$z?e_E_@1t2YILPpNd)WXa=0`4!Mm+3vzq8ia
+zW1u-EX;xWGfY8#aIuEv4<1U?_VDUnK<^W)sCK%z+r=(W*%z28n(~lE4aJ5*BvAwi9
+z=%ss!`Vmc{O+1K~-4CVJ;>GJ|EXlhgF+N<ZAIDnXOwu^myKbCN+|1O127k@*#++sQ
+zi?N}FYb2g)Va0;MPz~KHy%2yzmXc@_5Br=*^jqNgVjJ)zjRPdMs;S>7!dTSTw84Q4
+zOHY+lbRap(YA;k)_RLY5vb>ZzQF032DH=6(<mYRaaVO5!gJH%cW7#}dbHIUP@T6;w
+zX>mtr)Uv>}q{)lcq&f50#lGP~dw16QWbWKGxeD0fCRtZm{ehtR{?Yws(_gNxzTi4q
+z?g!m$DS1Sjc*OFQ9Q4!Xj<EK!BbR8#6#)WKwV|f0qQ1Eo>o@7)dG@wP-Gz$($`CBQ
+zKc$c;Qge<rh>Gt?(Vew5&=BZaa<&ewHEYqIc(9n|K^1K$J85^M^_rW&s<KpARq)7M
+zDYK%$aTsK}e(=Gv#asva8r$A~cWp)Ksp-6_RbHFtf}YtfbnZAh{zy^5a15#T`D<&t
+zl~o6u`Vnp75j9A}8^=(V>^u@-!#6K}kV>m+Wr*w;?a@YEijW1j62A`grC2nGq14us
+z2R|FD1?u<bsyy6K=z#*C3nWP-)$N19{QA-}<sRDbi5j{_9#P;-@QBvGoO!3jsxk)g
+zvLh*7<Cvv|_h!1H@gql*wSB6K^}TEM6U>PQ0!RM2w`BcaUY}G~RlWf9u)n}7!l3S6
+z_+g<BdUneh(yeRW?>GN-3Fq+SZ5~`Ba5ir(viD+^{NGyRfTcIcC#gAi`rAzfJ_*Ia
+zvQ?EA<?Hi@-8J%~<*!}TJ-BoB;|!}Ehf>;U+k5XW`C{khTN`T5ziw*5N|m>un^%V3
+z-LmJ8p7KC{qDi!ghkdvgc@po+b7fm-ENKk#+Y4APZ9nqxzFlV}E3!4)-FRdQkpo<t
+zULc-<aL10KAb6IOLaIM~^7!ektN!}CkCwf1<GF87OscOw|GX9stVB`+$jP;7^P<g*
+zcuJPG{ot-`WvSU8PPog}7SUufz<17ijIDcXiC%ra{KdlVeMZ-Y48bII6<s&x-*)#S
+z|5&kf$;fFBGhYX`^oSOzF48ldkWKt_%ZBav|88d{k^I{xJwmieO?i~(La%66mzDmJ
+z`q}-H%w)4T>dLpDI#0@!oBOw{Kfr0h^~Kq8)RzNZ$yk^-?5?3F&=;%lhdWH~&Icc3
+zSYxxmbhf1-@74)7^NROHqD?${X30Q2iFdnMm`ij=S{jE0ejIBB=)Y4Z%zV_&)Rup9
+z@;RJKuzRN5m@5+`1t+?}(6yg_y5=qJXju)^hqVsV9X0JC)_2S_Qa>|q*u>$yJ98b;
+zB-+FSJ(nQyB;GWJWaiMZU9JSNYLZ3ANZ@2vZvL+e@(P#GMono=h@9DMl)O#3!zTUe
+ztB+SM^WSz4qr){h9vArB=;%_K-PJg>V8pO@{p*4nR0ksVVVuf6YdGxtFt2!CMOrec
+zXwPf~x@HJaS9SJT;z_(&s<r{*U~>_xnp_<}^AVDa@UD;kzOunzwJ_f!z_od9;OUho
+zL6&*dyEJe3<Xx6!{<w7e-?=k2K{#4g3x`kFz^7kT+Lf-UjqcGi^epwEzBUb{MKp<a
+zLv7W<ogb`TK|G0f%C@89SXD7LR)sWd4@Mo@?eD$&hf#M=3;4407F=JDA)K)f-JtUz
+zyNC0ZxhHqTloBwsH5RkBavWESVb($Cq~lFErYxT0N8>a1pj!5`4>KcRT{2`SqC+=G
+zpaHGyj<qWnJ1&fwqOmst2d!dNG4?bLwDOo!A?f2En9DZ4z0}@Vp@|I}H}O<f*Y2<P
+z?xK3TVI)8R`hy1L&iXOY^&8%@e$!$gWR1x;<DFDGf|ltPZNO9som@k!uP!fpeBY)I
+zH%2#rh-WGfzO=xGwK;UtR^n3irTt>YT=u{3EG1Wh;RM$W7&7!k(KY@5Q}tv_x;9ru
+zM~k!1$oWG$G(;N1w4iga&@IymCJr(%*v~}wh0ey=Z)!0UwEDUa&YU{_$72WfpK$gv
+zbmGNQd|D_L8`gFwAKC(!!mn-Ij5%!6J8#&>8*rjWvCh3|#O-h77WVwLq_{_9DV&t8
+zD$SesF}b|x*US(sFm+uE2X|MMmo7ZGd)pTdVC15h#Dk^bXj(IH&C(>sZq}p|I4Waj
+zJZw9&o8MVR>yVBUr<cv9=NA=cUo-HgpQs++2uXGgveTfVFu)E$4D*=%zK|9<6bjVs
+zK6Uuuu8K3?)i_{LRG}kXD;?u)101l99xO~xaV8o;04eqgBM<?stMPiRGbTPJ9JHE`
+zl-irn(f>`PW5Q)A2|})xRyFyMtHS{P@*$eIx%u5Ubq6RR=8z2+XVmn(h5gv&7+*`{
+zkkG0&i(?v3vc?DS{)eKVm>m{?%UD`0V=PXP4{<_`tEIJ7Z6$GO3c0Qn<YLmuiS``u
+zS{?A?UeP!)l_zSyPc`Vgs6tq@*ms5m4lrTKtG=i4V$Q*DtE^5gYdm7{BqRB1vH=OK
+zs_l46>TJ)=<2W#l#lQ=PIwfS5IS4VBhgi(A5C61!gGPiHyWgb1^!hpHo`sI*tTwOP
+zbc*6cF7%R0(~s9Mh{ehQjsuaW(><{rg~r<H4MX##M2QBAYX;8HHM1~Jfp2T{t3b6=
+z3bPe3${Vu}_O{T;LkAj0^}nH(aZ*-AeWdA)y{iSB42=l+UKe!p^0hlQ9iaV=rr%bw
+zv|#-!g_&8uE6h@$)BSouM`A8!LZqSg6(?>6!PWhG``+o2qX)Yc_tFJ{FXVvb(5CLy
+zYT1BUhW1ss!M|kRhBb?vtc=z4GiX@pEejQ^0-fmhNIF;y2e9ZHKuxO3oCedm$+z%Q
+kuG&>ACJABN+5Z<{0HClKKcZXS%>V!Z07*qoM6N<$f^3WY_y7O^
+
+diff --git a/browser/base/content/aboutHome.css b/browser/base/content/aboutHome.css
+--- a/browser/base/content/aboutHome.css
++++ b/browser/base/content/aboutHome.css
+@@ -247,16 +247,103 @@ a:hover {
+ }
+ 
+ #defaultSnippets:hover:active {
+   background-color: rgb(210,210,210);
+   box-shadow: 0 2px 3px rgba(0,0,0,.3) inset,
+               0 1px 0 rgba(255,255,255,.5);
+ }
+ 
++#sessionRestoreContainer {
++  padding-top: 1.5%;
++  height: 33%;
++  text-align: center;
++}
++
++@media all and (max-height: 370px) {
++  #sessionRestoreContainer {
++    position: relative;
++    top: -5px;
++    padding-top: 0;
++  }
++}
++
++#restorePreviousSession {
++  padding: 0 10px 0 7.5%;
++  height: 100%;
++  border: 0;
++  border-radius: 4px;
++  box-shadow: 0 0 0 1px rgba(9,37,59,0),
++              0 1px 2px rgba(9,37,59,0),
++              0 0 10px rgba(255,255,255,0),
++              0 -3px 0 rgba(180,194,212,0) inset;
++  -moz-transition-property: background-color, box-shadow;
++  -moz-transition-duration: 0.25s;
++  -moz-transition-timing-function: ease-out;
++  background: transparent url("chrome://browser/content/aboutHome-restore-icon.png") no-repeat 10px 50%;
++  background-size: auto 77%;
++  color: rgb(50,50,50);
++  font-weight: bold;
++}
++
++@media all and (max-aspect-ratio: 8/16) {
++  #restorePreviousSession { padding-left: 25% }
++}
++
++@media all and (min-aspect-ratio: 8/16) and (max-aspect-ratio: 10/16) {
++  #restorePreviousSession { padding-left: 18% }
++}
++
++@media all and (min-aspect-ratio: 10/16) and (max-aspect-ratio: 12/16) {
++  #restorePreviousSession { padding-left: 15% }
++}
++
++@media all and (min-aspect-ratio: 12/16) and (max-aspect-ratio: 15/16) {
++  #restorePreviousSession { padding-left: 12% }
++}
++
++@media all and (min-aspect-ratio: 15/16) and (max-aspect-ratio: 20/16) {
++  #restorePreviousSession { padding-left: 9% }
++}
++
++@media all and (min-aspect-ratio: 31/16) and (max-aspect-ratio: 51/16) {
++  #restorePreviousSession { padding-left: 5% }
++}
++
++@media all and (min-aspect-ratio: 51/16) {
++  #restorePreviousSession { padding-left: 3% }
++}
++
++#restorePreviousSession:disabled {
++  display: none;
++}
++
++#restorePreviousSession:hover {
++  background-image: url("chrome://browser/content/aboutHome-restore-icon.png"),
++                    -moz-linear-gradient(rgba(255,255,255,.7), rgba(255,255,255,.2));
++  background-position: 10px 50%, 0 0;
++  background-size: auto 77%, auto auto;
++  border-radius: 4px;
++  box-shadow: 0 0 0 1px rgba(9,37,59,.2),
++              0 1px 2px rgba(9,37,59,.2),
++              0 0 10px rgba(255,255,255,.4),
++              0 -3px 0 rgba(180,194,212,.3) inset;
++}
++
++#restorePreviousSession:hover:active {
++  background-image: url("chrome://browser/content/aboutHome-restore-icon.png"),
++                    -moz-linear-gradient(rgba(255,255,255,.0), rgba(255,255,255,.2));
++  background-position: 10px 50%, 0 0;
++  background-size: auto 77%, auto auto;
++  background-color: rgba(23,75,115,.1);
++  box-shadow: 0 0 0 1px rgba(9,37,59,.2),
++              0 1px 2px rgba(9,37,59,.4) inset,
++              0 1px 5px rgba(9,37,59,.15) inset;
++}
++
+ #bottomSection {
+   position: absolute;
+   color: rgb(150,150,150);
+   font-size: 10px;
+   width: 100%;
+   text-align: center;
+   bottom: 2%;
+ }
+diff --git a/browser/base/content/aboutHome.xhtml b/browser/base/content/aboutHome.xhtml
+--- a/browser/base/content/aboutHome.xhtml
++++ b/browser/base/content/aboutHome.xhtml
+@@ -44,16 +44,18 @@
+   <!ENTITY % htmlDTD
+     PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+     "DTD/xhtml1-strict.dtd">
+   %htmlDTD;
+   <!ENTITY % globalDTD SYSTEM "chrome://global/locale/global.dtd">
+   %globalDTD;
+   <!ENTITY % aboutHomeDTD SYSTEM "chrome://browser/locale/aboutHome.dtd">
+   %aboutHomeDTD;
++  <!ENTITY % browserDTD SYSTEM "chrome://browser/locale/browser.dtd" >
++  %browserDTD;
+ ]>
+ 
+ <html xmlns="http://www.w3.org/1999/xhtml">
+   <head>
+     <title>&abouthome.pageTitle;</title>
+ 
+     <link rel="icon" type="image/png" id="favicon"
+           href="chrome://branding/content/icon16.png"/>
+@@ -90,16 +92,20 @@
+       <div id="snippetContainer">
+         <div id="defaultSnippets">
+           <span hidden="true">&abouthome.defaultSnippet1.v1;</span>
+           <span hidden="true">&abouthome.defaultSnippet2.v1;</span>
+         </div>
+ 
+         <div id="snippets" hidden="true"/>
+       </div>
++
++      <div id="sessionRestoreContainer">
++        <button id="restorePreviousSession">&historyRestoreLastSession.label;</button>
++      </div>
+     </div>
+ 
+     <div id="bottomSection">
+       <div id="aboutMozilla">
+         <a href="http://www.mozilla.com/about/">&abouthome.aboutMozilla;</a>
+       </div>
+     </div>
+   </body>
+diff --git a/browser/base/content/browser.js b/browser/base/content/browser.js
+--- a/browser/base/content/browser.js
++++ b/browser/base/content/browser.js
+@@ -2549,16 +2549,29 @@ function BrowserImport()
+   }
+ #else
+   window.openDialog("chrome://browser/content/migration/migration.xul",
+                     "migration", "modal,centerscreen,chrome,resizable=no");
+ #endif
+ }
+ 
+ /**
++ *  Handle load of some pages (about:*) so that we can make modifications
++ *  to the DOM for unprivileged pages.
++ */
++function BrowserOnAboutPageLoad(document) {
++  if (/^about:home$/.test(document.documentURI)) {
++    let ss = Components.classes["@mozilla.org/browser/sessionstore;1"].
++             getService(Components.interfaces.nsISessionStore);
++    if (!ss.canRestoreLastSession)
++      document.getElementById("sessionRestoreContainer").hidden = true;
++  }
++}
++
++/**
+  * Handle command events bubbling up from error page content
+  */
+ function BrowserOnClick(event) {
+     // Don't trust synthetic events
+     if (!event.isTrusted || event.target.localName != "button")
+       return;
+ 
+     var ot = event.originalTarget;
+@@ -2670,16 +2683,25 @@ function BrowserOnClick(event) {
+           title,
+           value,
+           "chrome://global/skin/icons/blacklist_favicon.png",
+           notificationBox.PRIORITY_CRITICAL_HIGH,
+           buttons
+         );
+       }
+     }
++    else if (/^about:home$/.test(errorDoc.documentURI)) {
++      if (ot == errorDoc.getElementById("restorePreviousSession")) {
++        let ss = Cc["@mozilla.org/browser/sessionstore;1"].
++                 getService(Ci.nsISessionStore);
++        if (ss.canRestoreLastSession)
++          ss.restoreLastSession();
++        errorDoc.getElementById("sessionRestoreContainer").hidden = true;
++      }
++    }
+ }
+ 
+ /**
+  * Re-direct the browser to a known-safe page.  This function is
+  * used when, for example, the user browses to a known malware page
+  * and is presented with about:blocked.  The "Get me out of here!"
+  * button should take the user to the default start page so that even
+  * when their own homepage is infected, we can get them somewhere safe.
+@@ -4618,16 +4640,19 @@ var TabsProgressListener = {
+ 
+     if (aStateFlags & Ci.nsIWebProgressListener.STATE_STOP &&
+         /^about:/.test(aWebProgress.DOMWindow.document.documentURI)) {
+       aBrowser.addEventListener("click", BrowserOnClick, false);
+       aBrowser.addEventListener("pagehide", function () {
+         aBrowser.removeEventListener("click", BrowserOnClick, false);
+         aBrowser.removeEventListener("pagehide", arguments.callee, true);
+       }, true);
++
++      // We also want to make changes to page UI for unprivileged about pages.
++      BrowserOnAboutPageLoad(aWebProgress.DOMWindow.document);
+     }
+   },
+ 
+   onLocationChange: function (aBrowser, aWebProgress, aRequest, aLocationURI) {
+     // Filter out any sub-frame loads
+     if (aBrowser.contentWindow == aWebProgress.DOMWindow)
+       FullZoom.onLocationChange(aLocationURI, false, aBrowser);
+   },
+diff --git a/browser/base/jar.mn b/browser/base/jar.mn
+--- a/browser/base/jar.mn
++++ b/browser/base/jar.mn
+@@ -15,16 +15,17 @@ browser.jar:
+ %  style chrome://global/content/customizeToolbar.xul chrome://browser/skin/
+ *       content/browser/aboutDialog.xul               (content/aboutDialog.xul)
+ *       content/browser/aboutDialog.js                (content/aboutDialog.js)
+         content/browser/aboutDialog.css               (content/aboutDialog.css)
+ *       content/browser/aboutRobots.xhtml             (content/aboutRobots.xhtml)
+ *       content/browser/aboutHome.xhtml               (content/aboutHome.xhtml)
+ *       content/browser/aboutHome.js                  (content/aboutHome.js)
+ *       content/browser/aboutHome.css                 (content/aboutHome.css)
++        content/browser/aboutHome-restore-icon.png    (content/aboutHome-restore-icon.png)
+         content/browser/aboutRobots-icon.png          (content/aboutRobots-icon.png)
+         content/browser/aboutRobots-widget-left.png   (content/aboutRobots-widget-left.png)
+ *       content/browser/browser.css                   (content/browser.css)
+ *       content/browser/browser.js                    (content/browser.js)
+ *       content/browser/browser.xul                   (content/browser.xul)
+ *       content/browser/browser-tabPreviews.xml       (content/browser-tabPreviews.xml)
+ *       content/browser/fullscreen-video.xhtml        (content/fullscreen-video.xhtml)
+ *       content/browser/inspector.html                (content/inspector.html)

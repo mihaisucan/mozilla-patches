@@ -1,0 +1,220 @@
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -103,16 +103,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_601909_remember_height.js \
+ 	browser_webconsole_bug_613013_console_api_iframe.js \
+ 	browser_webconsole_bug_597756_reopen_closed_tab.js \
+ 	browser_webconsole_bug_600183_charset.js \
+ 	browser_webconsole_bug_601177_log_levels.js \
+ 	browser_webconsole_bug_587615_lastTimestamp.js \
+ 	browser_webconsole_bug_597460_filter_scroll.js \
++	browser_webconsole_bug_613280_jsterm_copy.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613280_jsterm_copy.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613280_jsterm_copy.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613280_jsterm_copy.js
+@@ -0,0 +1,76 @@
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "data:text/html,Web Console test for bug 613280";
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoaded, true);
++}
++
++function tabLoaded() {
++  browser.removeEventListener("load", tabLoaded, true);
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content)
++  let HUD = HUDService.hudReferences[hudId];
++  let input = HUD.jsterm.inputNode;
++  let selection = getSelection();
++  let contentSelection = browser.contentWindow.wrappedJSObject.getSelection();
++
++  let clipboard_setup = function() {
++    goDoCommand("cmd_copy");
++  };
++
++  let clipboard_copy_done = function() {
++    selection.removeAllRanges();
++    finishTest();
++  };
++
++  // Check if we first need to clear any existing selections.
++  if (selection.rangeCount > 0 || contentSelection.rangeCount > 0 ||
++      input.selectionStart != input.selectionEnd) {
++    if (input.selectionStart != input.selectionEnd) {
++      input.selectionStart = input.selectionEnd = 0;
++    }
++
++    if (selection.rangeCount > 0) {
++      selection.removeAllRanges();
++    }
++
++    if (contentSelection.rangeCount > 0) {
++      contentSelection.removeAllRanges();
++    }
++
++    goUpdateCommand("cmd_copy");
++  }
++
++  let controller = top.document.commandDispatcher.
++                   getControllerForCommand("cmd_copy");
++  is(controller.isCommandEnabled("cmd_copy"), false, "cmd_copy is disabled");
++
++  HUD.jsterm.execute("'bug613280: hello world!'");
++
++  let range = top.document.createRange();
++  let selectedNode = HUD.outputNode.
++                     querySelector(".hud-group > label:last-child");
++  range.selectNode(selectedNode);
++  selection.addRange(range);
++
++  selectedNode.focus();
++
++  goUpdateCommand("cmd_copy");
++
++  controller = top.document.commandDispatcher.
++               getControllerForCommand("cmd_copy");
++  is(controller.isCommandEnabled("cmd_copy"), true, "cmd_copy is enabled");
++
++  waitForClipboard(selectedNode.textContent, clipboard_setup,
++    clipboard_copy_done, clipboard_copy_done);
++}
+diff --git a/toolkit/themes/gnomestripe/global/webConsole.css b/toolkit/themes/gnomestripe/global/webConsole.css
+--- a/toolkit/themes/gnomestripe/global/webConsole.css
++++ b/toolkit/themes/gnomestripe/global/webConsole.css
+@@ -170,16 +170,22 @@
+ .jsterm-input-node > .textbox-input-box > .textbox-textarea {
+   overflow-x: hidden;
+ }
+ 
+ .jsterm-output-line {
+   font-size: 1em;
+ }
+ 
++.jsterm-input-line,
++.jsterm-output-line {
++  -moz-user-select: text;
++  -moz-user-focus: normal;
++}
++
+ .hud-console-filter-toolbar {
+   padding: 1px 0px;
+   -moz-box-align: center;
+ }
+ 
+ .jsterm-close-button {
+   background: none;
+   border: none;
+diff --git a/toolkit/themes/pinstripe/global/webConsole.css b/toolkit/themes/pinstripe/global/webConsole.css
+--- a/toolkit/themes/pinstripe/global/webConsole.css
++++ b/toolkit/themes/pinstripe/global/webConsole.css
+@@ -16,17 +16,18 @@
+  * The Initial Developer of the Original Code is
+  *   Mozilla Corporation
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   David Dahl <ddahl@mozilla.com>
+  *   Patrick Walton <pcwalton@mozilla.com>
+-
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+  * decision by deleting the provisions above and replace them with the notice
+@@ -171,16 +172,22 @@
+ .jsterm-input-node > .textbox-input-box > .textbox-textarea {
+   overflow-x: hidden;
+ }
+ 
+ .jsterm-output-line {
+   font-size: 1em;
+ }
+ 
++.jsterm-input-line,
++.jsterm-output-line {
++  -moz-user-select: text;
++  -moz-user-focus: normal;
++}
++
+ .hud-console-filter-toolbar {
+   background: @scopeBarBackground@;
+   border-bottom: @scopeBarSeparatorBorder@;
+   padding: 0px 1px;
+   -moz-appearance: none;
+   -moz-box-align: center;
+ }
+ 
+diff --git a/toolkit/themes/winstripe/global/webConsole.css b/toolkit/themes/winstripe/global/webConsole.css
+--- a/toolkit/themes/winstripe/global/webConsole.css
++++ b/toolkit/themes/winstripe/global/webConsole.css
+@@ -16,17 +16,18 @@
+  * The Initial Developer of the Original Code is
+  *   Mozilla Corporation
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   David Dahl <ddahl@mozilla.com>
+  *   Patrick Walton <pcwalton@mozilla.com>
+-
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+  * decision by deleting the provisions above and replace them with the notice
+@@ -168,16 +169,22 @@
+ .jsterm-input-node > .textbox-input-box > .textbox-textarea {
+   overflow-x: hidden;
+ }
+ 
+ .jsterm-output-line {
+   font-size: 1em;
+ }
+ 
++.jsterm-input-line,
++.jsterm-output-line {
++  -moz-user-select: text;
++  -moz-user-focus: normal;
++}
++
+ .hud-console-filter-toolbar {
+   padding: 1px 0px;
+   -moz-box-align: center;
+   -moz-appearance: none;
+   background-color: -moz-dialog;
+   border-top: none;
+ }
+ 

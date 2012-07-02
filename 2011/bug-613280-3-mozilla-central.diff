@@ -1,0 +1,100 @@
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -114,16 +114,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_abbreviate_source_url.js \
+ 	browser_webconsole_view_source.js \
+ 	browser_webconsole_bug_602572_log_bodies_checkbox.js \
+ 	browser_webconsole_bug_614793_jsterm_scroll.js \
+ 	browser_webconsole_bug_599725_response_headers.js \
+ 	browser_webconsole_bug_613642_maintain_scroll.js \
+ 	browser_webconsole_bug_613642_prune_scroll.js \
+ 	browser_webconsole_bug_618078_network_exceptions.js \
++	browser_webconsole_bug_613280_jsterm_copy.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613280_jsterm_copy.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613280_jsterm_copy.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613280_jsterm_copy.js
+@@ -0,0 +1,74 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ */
++
++const TEST_URI = "data:text/html,Web Console test for bug 613280";
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoaded, true);
++}
++
++function tabLoaded() {
++  browser.removeEventListener("load", tabLoaded, true);
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let HUD = HUDService.hudReferences[hudId];
++  let input = HUD.jsterm.inputNode;
++  let selection = getSelection();
++  let contentSelection = browser.contentWindow.wrappedJSObject.getSelection();
++
++  let clipboard_setup = function() {
++    goDoCommand("cmd_copy");
++  };
++
++  let clipboard_copy_done = function() {
++    finishTest();
++  };
++
++  // Check if we first need to clear any existing selections.
++  if (selection.rangeCount > 0 || contentSelection.rangeCount > 0 ||
++      input.selectionStart != input.selectionEnd) {
++    if (input.selectionStart != input.selectionEnd) {
++      input.selectionStart = input.selectionEnd = 0;
++    }
++
++    if (selection.rangeCount > 0) {
++      selection.removeAllRanges();
++    }
++
++    if (contentSelection.rangeCount > 0) {
++      contentSelection.removeAllRanges();
++    }
++
++    goUpdateCommand("cmd_copy");
++  }
++
++  let controller = top.document.commandDispatcher.
++                   getControllerForCommand("cmd_copy");
++  is(controller.isCommandEnabled("cmd_copy"), false, "cmd_copy is disabled");
++
++  HUD.jsterm.execute("'bug613280: hello world!'");
++
++  HUD.outputNode.selectedIndex = HUD.outputNode.itemCount - 1;
++  HUD.outputNode.focus();
++
++  goUpdateCommand("cmd_copy");
++
++  controller = top.document.commandDispatcher.
++               getControllerForCommand("cmd_copy");
++  is(controller.isCommandEnabled("cmd_copy"), true, "cmd_copy is enabled");
++
++  waitForClipboard(getExpectedClipboardText(HUD.outputNode.selectedItem),
++    clipboard_setup, clipboard_copy_done, clipboard_copy_done);
++}
++
++function getExpectedClipboardText(aItem) {
++  return "[" + ConsoleUtils.timestampString(aItem.timestamp) + "] " +
++         aItem.clipboardText;
++}

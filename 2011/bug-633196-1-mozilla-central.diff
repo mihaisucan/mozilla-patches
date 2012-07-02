@@ -1,0 +1,143 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -4066,20 +4066,19 @@ JSTerm.prototype = {
+    *        A node to popup the panel next to (using "after_pointer").
+    * @returns object the created and opened propertyPanel.
+    */
+   openPropertyPanel: function JST_openPropertyPanel(aEvalString, aOutputObject,
+                                                     aAnchor)
+   {
+     let self = this;
+     let propPanel;
+-    // The property panel has two buttons:
+-    // 1. `Update`: reexecutes the string executed on the command line. The
++    // The property panel has one button:
++    //    `Update`: reexecutes the string executed on the command line. The
+     //    result will be inspected by this panel.
+-    // 2. `Close`: destroys the panel.
+     let buttons = [];
+ 
+     // If there is a evalString passed to this function, then add a `Update`
+     // button to the panel so that the evalString can be reexecuted to update
+     // the content of the panel.
+     if (aEvalString !== null) {
+       buttons.push({
+         label: HUDService.getStr("update.button"),
+@@ -4097,32 +4096,24 @@ JSTerm.prototype = {
+           }
+           catch (ex) {
+             self.console.error(ex);
+           }
+         }
+       });
+     }
+ 
+-    buttons.push({
+-      label: HUDService.getStr("close.button"),
+-      accesskey: HUDService.getStr("close.accesskey"),
+-      class: "jsPropertyPanelCloseButton",
+-      oncommand: function () {
+-        propPanel.destroy();
+-        aAnchor._panelOpen = false;
+-      }
+-    });
+-
+     let doc = self.parentNode.ownerDocument;
+     let parent = doc.getElementById("mainPopupSet");
+     let title = (aEvalString
+         ? HUDService.getFormatStr("jsPropertyInspectTitle", [aEvalString])
+         : HUDService.getStr("jsPropertyTitle"));
++
+     propPanel = new PropertyPanel(parent, doc, title, aOutputObject, buttons);
++    propPanel.linkNode = aAnchor;
+ 
+     let panel = propPanel.panel;
+     panel.openPopup(aAnchor, "after_pointer", 0, 0, false, false);
+     panel.sizeTo(350, 450);
+     return propPanel;
+   },
+ 
+   /**
+diff --git a/toolkit/components/console/hudservice/PropertyPanel.jsm b/toolkit/components/console/hudservice/PropertyPanel.jsm
+--- a/toolkit/components/console/hudservice/PropertyPanel.jsm
++++ b/toolkit/components/console/hudservice/PropertyPanel.jsm
+@@ -425,17 +425,18 @@ function appendChild(aDocument, aParent,
+  */
+ function PropertyPanel(aParent, aDocument, aTitle, aObject, aButtons)
+ {
+   // Create the underlying panel
+   this.panel = createElement(aDocument, "panel", {
+     label: aTitle,
+     titlebar: "normal",
+     noautofocus: "true",
+-    noautohide: "true"
++    noautohide: "true",
++    close: "true",
+   });
+ 
+   // Create the tree.
+   let tree = this.tree = createElement(aDocument, "tree", {
+     flex: 1,
+     hidecolumnpicker: "true"
+   });
+ 
+@@ -479,24 +480,34 @@ function PropertyPanel(aParent, aDocumen
+ 
+   // Set the treeView object on the tree view. This has to be done *after* the
+   // panel is shown. This is because the tree binding must be attached first.
+   this.panel.addEventListener("popupshown", function onPopupShow()
+   {
+     self.panel.removeEventListener("popupshown", onPopupShow, false);
+     self.tree.view = self.treeView;
+   }, false);
++
++  this.panel.addEventListener("popuphidden", function onPopupHide()
++  {
++    self.panel.removeEventListener("popuphidden", onPopupHide, false);
++    self.destroy();
++  }, false);
+ }
+ 
+ /**
+  * Destroy the PropertyPanel. This closes the poped up panel and removes
+  * it from the browser DOM.
+  *
+  * @returns void
+  */
+ PropertyPanel.prototype.destroy = function PP_destroy()
+ {
+-  this.panel.hidePopup();
+   this.panel.parentNode.removeChild(this.panel);
+   this.treeView = null;
+   this.panel = null;
+   this.tree = null;
++
++  if (this.linkNode) {
++    this.linkNode._panelOpen = false;
++    this.linkNode = null;
++  }
+ }
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594477_clickable_output.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594477_clickable_output.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594477_clickable_output.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594477_clickable_output.js
+@@ -112,18 +112,17 @@ function properyPanelShown(aEvent) {
+   document.addEventListener("popupshown", propertyPanelShowFailure, false);
+ 
+   // The property panel should not open for the second time.
+   EventUtils.sendMouseEvent({type: "mousedown"}, outputItem);
+   EventUtils.sendMouseEvent({type: "click"}, outputItem);
+ 
+   executeSoon(function() {
+     aEvent.target.addEventListener("popuphidden", propertyPanelHidden, false);
+-    let closeButton = aEvent.target.querySelector(".jsPropertyPanelCloseButton");
+-    closeButton.doCommand();
++    aEvent.target.hidePopup();
+   });
+ }
+ 
+ function propertyPanelShowFailure(aEvent) {
+   document.removeEventListener(aEvent.type, arguments.callee, false);
+ 
+   ok(false, "the property panel should not show");
+ }

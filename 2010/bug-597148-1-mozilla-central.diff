@@ -1,0 +1,288 @@
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -53,16 +53,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_586388_select_all.js  \
+ 	browser_webconsole_bug_588967_input_expansion.js \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_581231_close_button.js \
+ 	browser_webconsole_consoleonpage.js \
+ 	browser_webconsole_bug_587617_output_copy.js \
++	browser_webconsole_bug_597148_page_exception.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+ 	testscript.js \
+@@ -73,15 +74,18 @@ _BROWSER_TEST_PAGES = \
+ 	test-error.html \
+ 	test-duplicate-error.html \
+ 	test-image.png \
+ 	test-encoding-ISO-8859-1.html \
+ 	test-bug-593003-iframe-wrong-hud.html \
+ 	test-bug-593003-iframe-wrong-hud-iframe.html \
+ 	test-console-replaced-api.html \
+ 	test-own-console.html \
++	test-bug-597148.html \
++	test-bug-597148.css \
++	test-bug-597148.js \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597148_page_exception.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597148_page_exception.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597148_page_exception.js
+@@ -0,0 +1,116 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/HUDService.jsm");
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-597148.html";
++
++let testEnded = false;
++let notificationBox;
++
++let consoleObserver = {
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
++
++  observe: function _observer(aMessage) {
++    // We ignore errors we don't care about.
++    if (!(aMessage instanceof Ci.nsIScriptError) ||
++        aMessage.category != "content javascript") {
++      return;
++    }
++
++    ok(false, "exception in the web page: " + aMessage.message);
++  },
++};
++
++function tabLoad(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  notificationBox = gBrowser.getNotificationBox(gBrowser.selectedBrowser);
++  tabActivateWebConsole();
++
++  gBrowser.selectedBrowser.addEventListener("load", tabReload, true);
++  Services.console.registerListener(consoleObserver);
++  BrowserReloadSkipCache();
++}
++
++function tabReload(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++  testEnd();
++}
++
++function tabActivateWebConsole() {
++  if (testEnded) {
++    return;
++  }
++
++  let DOMNodeInserted = false;
++  let DOMNodeInserted_handler = function(aEvent) {
++    let input = notificationBox.querySelector(".jsterm-input-node");
++    if (input && !DOMNodeInserted) {
++      DOMNodeInserted = true;
++      document.removeEventListener(aEvent.type, arguments.callee, false);
++      executeSoon(tabDeactivateWebConsole);
++    }
++  };
++
++  document.addEventListener("DOMNodeInserted", DOMNodeInserted_handler, false);
++
++  try {
++    HUDService.activateHUDForContext(gBrowser.selectedTab);
++  }
++  catch(ex) {
++    ok(false, "HUDService.activateHUDForContext() exception: " + ex);
++  }
++}
++
++function tabDeactivateWebConsole() {
++  let DOMNodeRemoved = false;
++  let DOMNodeRemoved_handler = function(aEvent) {
++    executeSoon(function() {
++      if (!DOMNodeRemoved && !notificationBox.querySelector(".hud-box")) {
++        DOMNodeRemoved = true;
++        document.removeEventListener(aEvent.type, arguments.callee, false);
++        executeSoon(tabActivateWebConsole);
++      }
++    });
++  };
++
++  if (!testEnded) {
++    document.addEventListener("DOMNodeRemoved", DOMNodeRemoved_handler, false);
++  }
++
++  try {
++    HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++  }
++  catch(ex) {
++    ok(false, "HUDService.deactivateHUDForContext() exception: " + ex);
++  }
++}
++
++function testEnd() {
++  testEnded = true;
++  notificationBox = null;
++  Services.console.unregisterListener(consoleObserver);
++
++  gBrowser.removeCurrentTab();
++  finish();
++}
++
++function test() {
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", tabLoad, true);
++  
++  content.location = TEST_URI;
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-597148.css b/toolkit/components/console/hudservice/tests/browser/test-bug-597148.css
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-597148.css
+@@ -0,0 +1,16 @@
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++html {
++  background: url("test-image.png?s=1");
++}
++
++body {
++  background: url("test-image.png?s=2");
++}
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-597148.html b/toolkit/components/console/hudservice/tests/browser/test-bug-597148.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-597148.html
+@@ -0,0 +1,81 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
++<title>Test bug 597148</title>
++<!-- ***** BEGIN LICENSE BLOCK *****
++  -  Any copyright is dedicated to the Public Domain.
++  -  http://creativecommons.org/publicdomain/zero/1.0/
++  -
++  -  Contributor(s):
++  -   Mihai Șucan <mihai.sucan@gmail.com>
++  -
++  -  ***** END LICENSE BLOCK ***** -->
++
++  <link rel="stylesheet" type="text/css" href="test-bug-597148-style.css?0">
++  <link rel="stylesheet" type="text/css" href="test-bug-597148-style.css?1">
++  <link rel="stylesheet" type="text/css" href="test-bug-597148-style.css?2">
++  <link rel="stylesheet" type="text/css" href="test-bug-597148-style.css?3">
++  <link rel="stylesheet" type="text/css" href="test-bug-597148-style.css?4">
++  <link rel="stylesheet" type="text/css" href="test-bug-597148-style.css?5">
++  <link rel="stylesheet" type="text/css" href="test-bug-597148-style.css?6">
++  <link rel="stylesheet" type="text/css" href="test-bug-597148-style.css?7">
++  <link rel="stylesheet" type="text/css" href="test-bug-597148-style.css?8">
++  <link rel="stylesheet" type="text/css" href="test-bug-597148-style.css?9">
++
++</head>
++<body>
++  <img src="test-image.png?0">
++  <img src="test-image.png?1">
++  <img src="test-image.png?2">
++  <img src="test-image.png?3">
++  <img src="test-image.png?4">
++  <img src="test-image.png?5">
++  <img src="test-image.png?6">
++  <img src="test-image.png?7">
++  <img src="test-image.png?8">
++  <img src="test-image.png?9">
++  <img src="test-image.png?10">
++  <img src="test-image.png?11">
++  <img src="test-image.png?12">
++  <img src="test-image.png?13">
++  <img src="test-image.png?14">
++  <img src="test-image.png?15">
++  <img src="test-image.png?16">
++  <img src="test-image.png?17">
++  <img src="test-image.png?18">
++  <img src="test-image.png?19">
++  <img src="test-image.png?20">
++  <img src="test-image.png?21">
++  <img src="test-image.png?22">
++  <img src="test-image.png?23">
++  <img src="test-image.png?24">
++  <img src="test-image.png?25">
++  <img src="test-image.png?26">
++  <img src="test-image.png?27">
++  <img src="test-image.png?28">
++  <img src="test-image.png?29">
++  <img src="test-image.png?30">
++  <img src="test-image.png?31">
++  <img src="test-image.png?32">
++  <img src="test-image.png?33">
++  <img src="test-image.png?34">
++  <img src="test-image.png?35">
++  <img src="test-image.png?36">
++  <img src="test-image.png?37">
++  <img src="test-image.png?38">
++  <img src="test-image.png?39">
++  <img src="test-image.png?40">
++  <img src="test-image.png?41">
++  <img src="test-image.png?42">
++  <img src="test-image.png?43">
++  <img src="test-image.png?44">
++  <img src="test-image.png?45">
++  <img src="test-image.png?46">
++  <img src="test-image.png?47">
++  <img src="test-image.png?48">
++  <img src="test-image.png?49">
++
++  <script type="text/javascript" src="test-bug-597148.js"></script>
++</body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-597148.js b/toolkit/components/console/hudservice/tests/browser/test-bug-597148.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-597148.js
+@@ -0,0 +1,15 @@
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++function foobar() {
++  return "hello world!";
++}
++
++foobar();
++

@@ -1,0 +1,445 @@
+diff --git a/layout/style/Loader.cpp b/layout/style/Loader.cpp
+--- a/layout/style/Loader.cpp
++++ b/layout/style/Loader.cpp
+@@ -941,17 +941,17 @@ SheetLoadData::OnStreamComplete(nsIUnich
+     const nsAFlatString& ctypeUTF16 = NS_ConvertASCIItoUTF16(contentType);
+     const PRUnichar *strings[] = { specUTF16.get(), ctypeUTF16.get() };
+ 
+     nsCOMPtr<nsIURI> referrer = GetReferrerURI();
+     nsContentUtils::ReportToConsole(nsContentUtils::eCSS_PROPERTIES,
+                                     errorMessage,
+                                     strings, NS_ARRAY_LENGTH(strings),
+                                     referrer, EmptyString(), 0, 0, errorFlag,
+-                                    "CSS Loader");
++                                    "CSS Loader", mLoader->mDocument);
+ 
+     if (errorFlag == nsIScriptError::errorFlag) {
+       LOG_WARN(("  Ignoring sheet with improper MIME type %s",
+                 contentType.get()));
+       mLoader->SheetComplete(this, NS_ERROR_NOT_AVAILABLE);
+       return NS_OK;
+     }
+   }
+diff --git a/layout/style/Loader.h b/layout/style/Loader.h
+--- a/layout/style/Loader.h
++++ b/layout/style/Loader.h
+@@ -325,16 +325,21 @@ public:
+    * to do so will fail with a return code of
+    * NS_ERROR_NOT_AVAILABLE. Note that this DOES NOT disable
+    * currently loading styles or already processed styles.
+    */
+   PRBool GetEnabled() { return mEnabled; }
+   void SetEnabled(PRBool aEnabled) { mEnabled = aEnabled; }
+ 
+   /**
++   * Get the document we live for. May return null.
++   */
++  nsIDocument* GetDocument() const { return mDocument; }
++
++  /**
+    * Return true if this loader has pending loads (ones that would send
+    * notifications to an nsICSSLoaderObserver attached to this loader).
+    * If called from inside nsICSSLoaderObserver::StyleSheetLoaded, this will
+    * return PR_FALSE if and only if that is the last StyleSheetLoaded
+    * notification the CSSLoader knows it's going to send.  In other words, if
+    * two sheets load at once (via load coalescing, e.g.), HasPendingLoads()
+    * will return PR_TRUE during notification for the first one, and PR_FALSE
+    * during notification for the second one.
+diff --git a/layout/style/nsCSSParser.cpp b/layout/style/nsCSSParser.cpp
+--- a/layout/style/nsCSSParser.cpp
++++ b/layout/style/nsCSSParser.cpp
+@@ -238,16 +238,28 @@ public:
+                             PRUint32 aLineNumber, // for error reporting
+                             nscolor* aColor);
+ 
+   nsresult ParseSelectorString(const nsSubstring& aSelectorString,
+                                nsIURI* aURL, // for error reporting
+                                PRUint32 aLineNumber, // for error reporting
+                                nsCSSSelectorList **aSelectorList);
+ 
++  nsCSSStyleSheet* GetStyleSheet() const {
++    return mSheet ? mSheet.get() : nsnull;
++  }
++
++  mozilla::css::Loader* GetChildLoader() const {
++    return mChildLoader;
++  }
++
++  void SetOwningParser(nsCSSParser* aOwningParser) {
++    mOwningParser = aOwningParser;
++  }
++
+ protected:
+   class nsAutoParseCompoundProperty;
+   friend class nsAutoParseCompoundProperty;
+ 
+   void AppendRule(nsICSSRule* aRule);
+   friend void AppendRuleToSheet(nsICSSRule*, void*); // calls AppendRule
+ 
+   /**
+@@ -658,16 +670,19 @@ protected:
+   // errors cause the data to be ignored, and to ensure that a
+   // non-'!important' declaration does not override an '!important'
+   // one.)
+   nsCSSExpandedDataBlock mTempData;
+ 
+   // All data from successfully parsed properties are placed into |mData|.
+   nsCSSExpandedDataBlock mData;
+ 
++  // The owning nsCSSParser object.
++  nsCSSParser* mOwningParser;
++
+ public:
+   // Used from nsCSSParser constructors and destructors
+   CSSParserImpl* mNextFree;
+ };
+ 
+ static void AppendRuleToArray(nsICSSRule* aRule, void* aArray)
+ {
+   static_cast<nsCOMArray<nsICSSRule>*>(aArray)->AppendObject(aRule);
+@@ -730,16 +745,17 @@ CSSParserImpl::CSSParserImpl()
+     mNavQuirkMode(PR_FALSE),
+     mUnsafeRulesEnabled(PR_FALSE),
+     mHTMLMediaMode(PR_FALSE),
+     mParsingCompoundProperty(PR_FALSE),
+     mFoundUnresolvablePrefix(PR_FALSE)
+ #ifdef DEBUG
+     , mScannerInited(PR_FALSE)
+ #endif
++    , mOwningParser(nsnull)
+     , mNextFree(nsnull)
+ {
+ }
+ 
+ CSSParserImpl::~CSSParserImpl()
+ {
+   mData.AssertInitialState();
+   mTempData.AssertInitialState();
+@@ -793,26 +809,27 @@ CSSParserImpl::Reset()
+ {
+   NS_ASSERTION(! mScannerInited, "resetting with scanner active");
+   SetStyleSheet(nsnull);
+   SetQuirkMode(PR_FALSE);
+ #ifdef MOZ_SVG
+   SetSVGMode(PR_FALSE);
+ #endif // MOZ_SVG
+   SetChildLoader(nsnull);
++  SetOwningParser(nsnull);
+ }
+ 
+ void
+ CSSParserImpl::InitScanner(nsIUnicharInputStream* aInput, nsIURI* aSheetURI,
+                            PRUint32 aLineNumber, nsIURI* aBaseURI,
+                            nsIPrincipal* aSheetPrincipal)
+ {
+   NS_ASSERTION(! mScannerInited, "already have scanner");
+ 
+-  mScanner.Init(aInput, nsnull, 0, aSheetURI, aLineNumber);
++  mScanner.Init(aInput, nsnull, 0, aSheetURI, aLineNumber, mOwningParser);
+ #ifdef DEBUG
+   mScannerInited = PR_TRUE;
+ #endif
+   mBaseURI = aBaseURI;
+   mSheetURI = aSheetURI;
+   mSheetPrincipal = aSheetPrincipal;
+ 
+   mHavePushBack = PR_FALSE;
+@@ -822,17 +839,18 @@ void
+ CSSParserImpl::InitScanner(const nsSubstring& aString, nsIURI* aSheetURI,
+                            PRUint32 aLineNumber, nsIURI* aBaseURI,
+                            nsIPrincipal* aSheetPrincipal)
+ {
+   // Having it not own the string is OK since the caller will hold on to
+   // the stream until we're done parsing.
+   NS_ASSERTION(! mScannerInited, "already have scanner");
+ 
+-  mScanner.Init(nsnull, aString.BeginReading(), aString.Length(), aSheetURI, aLineNumber);
++  mScanner.Init(nsnull, aString.BeginReading(), aString.Length(), aSheetURI,
++                aLineNumber, mOwningParser);
+ 
+ #ifdef DEBUG
+   mScannerInited = PR_TRUE;
+ #endif
+   mBaseURI = aBaseURI;
+   mSheetURI = aSheetURI;
+   mSheetPrincipal = aSheetPrincipal;
+ 
+@@ -8952,16 +8970,18 @@ nsCSSParser::nsCSSParser(mozilla::css::L
+     impl->SetChildLoader(aLoader);
+     impl->SetQuirkMode(aLoader->GetCompatibilityMode() ==
+                        eCompatibility_NavQuirks);
+   }
+   if (aSheet) {
+     impl->SetStyleSheet(aSheet);
+   }
+ 
++  impl->SetOwningParser(this);
++
+   mImpl = static_cast<void*>(impl);
+ }
+ 
+ nsCSSParser::~nsCSSParser()
+ {
+   CSSParserImpl *impl = static_cast<CSSParserImpl*>(mImpl);
+   impl->Reset();
+   impl->mNextFree = gFreeList;
+@@ -9102,8 +9122,20 @@ nsresult
+ nsCSSParser::ParseSelectorString(const nsSubstring&  aSelectorString,
+                                  nsIURI*             aURI,
+                                  PRUint32            aLineNumber,
+                                  nsCSSSelectorList** aSelectorList)
+ {
+   return static_cast<CSSParserImpl*>(mImpl)->
+     ParseSelectorString(aSelectorString, aURI, aLineNumber, aSelectorList);
+ }
++
++mozilla::css::Loader*
++nsCSSParser::GetChildLoader()
++{
++  return static_cast<CSSParserImpl*>(mImpl)->GetChildLoader();
++}
++
++nsCSSStyleSheet*
++nsCSSParser::GetStyleSheet()
++{
++  return static_cast<CSSParserImpl*>(mImpl)->GetStyleSheet();
++}
+diff --git a/layout/style/nsCSSParser.h b/layout/style/nsCSSParser.h
+--- a/layout/style/nsCSSParser.h
++++ b/layout/style/nsCSSParser.h
+@@ -93,16 +93,20 @@ public:
+ #ifdef  MOZ_SVG
+   // Set whether or not we are in an SVG element
+   nsresult SetSVGMode(PRBool aSVGMode);
+ #endif
+ 
+   // Set loader to use for child sheets
+   nsresult SetChildLoader(mozilla::css::Loader* aChildLoader);
+ 
++  mozilla::css::Loader* GetChildLoader();
++
++  nsCSSStyleSheet* GetStyleSheet();
++
+   /**
+    * Parse aInput into the stylesheet that was previously set by calling
+    * SetStyleSheet.  Calling this method without calling SetStyleSheet first is
+    * an error.
+    *
+    * @param aInput the data to parse
+    * @param aSheetURL the URI to use as the sheet URI (for error reporting).
+    *                  This must match the URI of the sheet passed to
+diff --git a/layout/style/nsCSSScanner.cpp b/layout/style/nsCSSScanner.cpp
+--- a/layout/style/nsCSSScanner.cpp
++++ b/layout/style/nsCSSScanner.cpp
+@@ -53,16 +53,19 @@
+ #include "nsIComponentManager.h"
+ #include "nsReadableUtils.h"
+ #include "nsIURI.h"
+ #include "nsIConsoleService.h"
+ #include "nsIScriptError.h"
+ #include "nsIStringBundle.h"
+ #include "nsContentUtils.h"
+ #include "mozilla/Services.h"
++#include "mozilla/css/Loader.h"
++#include "nsCSSParser.h"
++#include "nsCSSStyleSheet.h"
+ 
+ #ifdef CSS_REPORT_PARSE_ERRORS
+ static PRBool gReportErrors = PR_TRUE;
+ static nsIConsoleService *gConsoleService;
+ static nsIFactory *gScriptErrorFactory;
+ static nsIStringBundle *gStringBundle;
+ #endif
+ 
+@@ -263,16 +266,19 @@ nsCSSScanner::nsCSSScanner()
+   : mInputStream(nsnull)
+   , mReadPointer(nsnull)
+   , mLowLevelError(NS_OK)
+ #ifdef MOZ_SVG
+   , mSVGMode(PR_FALSE)
+ #endif
+ #ifdef CSS_REPORT_PARSE_ERRORS
+   , mError(mErrorBuf, NS_ARRAY_LENGTH(mErrorBuf), 0)
++  , mWindowID(0)
++  , mWindowIDCached(PR_FALSE)
++  , mCSSParser(nsnull)
+ #endif
+ {
+   MOZ_COUNT_CTOR(nsCSSScanner);
+   mPushback = mLocalPushback;
+   mPushbackSize = NS_ARRAY_LENGTH(mLocalPushback);
+   // No need to init the other members, since they represent state
+   // which can get cleared.  We'll init them every time Init() is
+   // called.
+@@ -342,17 +348,18 @@ nsCSSScanner::ReleaseGlobals()
+   NS_IF_RELEASE(gScriptErrorFactory);
+   NS_IF_RELEASE(gStringBundle);
+ #endif
+ }
+ 
+ void
+ nsCSSScanner::Init(nsIUnicharInputStream* aInput, 
+                    const PRUnichar * aBuffer, PRUint32 aCount, 
+-                   nsIURI* aURI, PRUint32 aLineNumber)
++                   nsIURI* aURI, PRUint32 aLineNumber,
++                   nsCSSParser* aCSSParser)
+ {
+   NS_PRECONDITION(!mInputStream, "Should not have an existing input stream!");
+   NS_PRECONDITION(!mReadPointer, "Should not have an existing input buffer!");
+ 
+   // Read from stream via my own buffer
+   if (aInput) {
+     NS_PRECONDITION(!aBuffer, "Shouldn't have both input and buffer!");
+     NS_PRECONDITION(aCount == 0, "Shouldn't have count with a stream");
+@@ -383,16 +390,17 @@ nsCSSScanner::Init(nsIUnicharInputStream
+ 
+   // Reset variables that we use to keep track of our progress through the input
+   mOffset = 0;
+   mPushbackCount = 0;
+   mLowLevelError = NS_OK;
+ 
+ #ifdef CSS_REPORT_PARSE_ERRORS
+   mColNumber = 0;
++  mCSSParser = aCSSParser;
+ #endif
+ }
+ 
+ #ifdef CSS_REPORT_PARSE_ERRORS
+ 
+ // @see REPORT_UNEXPECTED_EOF in nsCSSParser.cpp
+ #define REPORT_UNEXPECTED_EOF(lf_) \
+   ReportUnexpectedEOF(#lf_)
+@@ -418,29 +426,47 @@ nsCSSScanner::ClearError()
+ void
+ nsCSSScanner::OutputError()
+ {
+   if (mError.IsEmpty()) return;
+  
+   // Log it to the Error console
+ 
+   if (InitGlobals() && gReportErrors) {
++    if (!mWindowIDCached && mCSSParser) {
++      nsCSSStyleSheet* sheet = mCSSParser->GetStyleSheet();
++      mozilla::css::Loader* loader = mCSSParser->GetChildLoader();
++      nsIDocument* doc = nsnull;
++      if (sheet) {
++        doc = sheet->GetOwningDocument();
++      } else if (loader) {
++        doc = loader->GetDocument();
++      }
++      if (doc) {
++        mWindowID = doc->OuterWindowID();
++      }
++      mWindowIDCached = PR_TRUE;
++    }
++
+     nsresult rv;
+-    nsCOMPtr<nsIScriptError> errorObject =
++    nsCOMPtr<nsIScriptError2> errorObject =
+       do_CreateInstance(gScriptErrorFactory, &rv);
++
+     if (NS_SUCCEEDED(rv)) {
+-      rv = errorObject->Init(mError.get(),
+-                             NS_ConvertUTF8toUTF16(mFileName).get(),
+-                             EmptyString().get(),
+-                             mErrorLineNumber,
+-                             mErrorColNumber,
+-                             nsIScriptError::warningFlag,
+-                             "CSS Parser");
+-      if (NS_SUCCEEDED(rv))
+-        gConsoleService->LogMessage(errorObject);
++      rv = errorObject->InitWithWindowID(mError.get(),
++                                         NS_ConvertUTF8toUTF16(mFileName).get(),
++                                         EmptyString().get(),
++                                         mErrorLineNumber,
++                                         mErrorColNumber,
++                                         nsIScriptError::warningFlag,
++                                         "CSS Parser", mWindowID);
++      if (NS_SUCCEEDED(rv)) {
++        nsCOMPtr<nsIScriptError> logError = do_QueryInterface(errorObject);
++        gConsoleService->LogMessage(logError);
++      }
+     }
+   }
+   ClearError();
+ }
+ 
+ static PRBool
+ InitStringBundle()
+ {
+@@ -577,16 +603,18 @@ nsCSSScanner::Close()
+   mInputStream = nsnull;
+   mReadPointer = nsnull;
+ 
+   // Clean things up so we don't hold on to memory if our parser gets recycled.
+ #ifdef CSS_REPORT_PARSE_ERRORS
+   mFileName.Truncate();
+   mURI = nsnull;
+   mError.Truncate();
++  mWindowID = 0;
++  mWindowIDCached = PR_FALSE;
+ #endif
+   if (mPushback != mLocalPushback) {
+     delete [] mPushback;
+     mPushback = mLocalPushback;
+     mPushbackSize = NS_ARRAY_LENGTH(mLocalPushback);
+   }
+ }
+ 
+diff --git a/layout/style/nsCSSScanner.h b/layout/style/nsCSSScanner.h
+--- a/layout/style/nsCSSScanner.h
++++ b/layout/style/nsCSSScanner.h
+@@ -39,16 +39,17 @@
+ 
+ /* tokenization of CSS style sheets */
+ 
+ #ifndef nsCSSScanner_h___
+ #define nsCSSScanner_h___
+ 
+ #include "nsString.h"
+ #include "nsCOMPtr.h"
++#include "nsCSSParser.h"
+ class nsIUnicharInputStream;
+ 
+ // XXX turn this off for minimo builds
+ #define CSS_REPORT_PARSE_ERRORS
+ 
+ #define CSS_BUFFER_SIZE 256
+ 
+ // for #ifdef CSS_REPORT_PARSE_ERRORS
+@@ -137,17 +138,18 @@ class nsCSSScanner {
+   ~nsCSSScanner();
+ 
+   // Init the scanner.
+   // |aLineNumber == 1| is the beginning of a file, use |aLineNumber == 0|
+   // when the line number is unknown.
+   // Either aInput or (aBuffer and aCount) must be set.
+   void Init(nsIUnicharInputStream* aInput, 
+             const PRUnichar *aBuffer, PRUint32 aCount,
+-            nsIURI* aURI, PRUint32 aLineNumber);
++            nsIURI* aURI, PRUint32 aLineNumber,
++            nsCSSParser* aCSSParser);
+   void Close();
+ 
+   static PRBool InitGlobals();
+   static void ReleaseGlobals();
+ 
+ #ifdef  MOZ_SVG
+   // Set whether or not we are processing SVG
+   void SetSVGMode(PRBool aSVGMode) {
+@@ -243,12 +245,15 @@ protected:
+   PRPackedBool mSVGMode;
+ #endif
+ #ifdef CSS_REPORT_PARSE_ERRORS
+   nsXPIDLCString mFileName;
+   nsCOMPtr<nsIURI> mURI;  // Cached so we know to not refetch mFileName
+   PRUint32 mErrorLineNumber, mColNumber, mErrorColNumber;
+   nsFixedString mError;
+   PRUnichar mErrorBuf[200];
++  PRUint64 mWindowID;
++  PRBool mWindowIDCached;
++  nsCSSParser* mCSSParser;
+ #endif
+ };
+ 
+ #endif /* nsCSSScanner_h___ */

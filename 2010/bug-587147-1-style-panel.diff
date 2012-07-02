@@ -1,0 +1,218 @@
+diff --git a/browser/base/content/csshtmltree.js b/browser/base/content/csshtmltree.js
+--- a/browser/base/content/csshtmltree.js
++++ b/browser/base/content/csshtmltree.js
+@@ -68,31 +68,30 @@ let CssHtmlTree = function(styleWin, css
+   this.templateProperties = this.styleDocument.getElementById('templateProperties');
+   // The rules section nests inside templateProperties
+   this.templateRules = this.styleDocument.getElementById('templateRules');
+ 
+   // The element that we're inspecting
+   this.viewedElement = null;
+   // And the document that it comes from
+   this.viewedDocument = null;
+-
+-  this.createStyleGroupViews();
+ };
+ 
+ CssHtmlTree.prototype = {
+   /**
+    * Focus the output display on a specific element
+    * @param element The highlighted node to get styles for.
+    */
+   highlight: function CssHtmlTree_highlight(element)
+   {
+     this.viewedElement = element;
+ 
+     if (this.viewedElement) {
+       this.viewedDocument = element.ownerDocument;
++      this.createStyleGroupViews();
+       this._populateMainTemplates();
+     } else {
+       this.viewedDocument = null;
+       this.header.innerHTML = '';
+       this.groups.innerHTML = '';
+     }
+   },
+ 
+diff --git a/browser/base/content/test/Makefile.in b/browser/base/content/test/Makefile.in
+--- a/browser/base/content/test/Makefile.in
++++ b/browser/base/content/test/Makefile.in
+@@ -148,16 +148,17 @@ _BROWSER_FILES = \
+                  browser_getshortcutoruri.js \
+                  browser_inspector_initialization.js \
+                  browser_inspector_treeSelection.js \
+                  browser_inspector_highlighter.js \
+                  browser_inspector_stylePanel.js \
+                  browser_inspector_iframeTest.js \
+                  browser_inspector_scrolling.js \
+                  browser_inspector_cssinfo_order.js \
++                 browser_inspector_stylepanel_groupview.js \
+                  browser_pageInfo.js \
+                  browser_page_style_menu.js \
+                  browser_pinnedTabs.js \
+                  browser_plainTextLinks.js \
+                  browser_pluginnotification.js \
+                  browser_popupUI.js \
+                  browser_relatedTabs.js \
+                  browser_sanitize-passwordDisabledHosts.js \
+diff --git a/browser/base/content/test/browser_inspector_stylepanel_groupview.js b/browser/base/content/test/browser_inspector_stylepanel_groupview.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_inspector_stylepanel_groupview.js
+@@ -0,0 +1,156 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Inspector Initializationa and Shutdown Tests.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Rob Campbell <rcampbell@mozilla.com>
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++let doc;
++let panelDoc;
++let groupTitle;
++
++function startInspectorTests()
++{
++  ok(InspectorUI, "InspectorUI variable exists");
++  document.addEventListener("popupshown", runInspectorTests, false);
++  InspectorUI.toggleInspectorUI();
++}
++
++function runInspectorTests(evt)
++{
++  if (evt.target.id != "inspector-style-panel")
++    return true;
++  document.removeEventListener(evt.type, arguments.callee, false);
++
++  ok(InspectorUI.inspecting, "Inspector is highlighting");
++  ok(InspectorUI.isPanelOpen, "Inspector Tree Panel is open");
++  ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
++
++  InspectorUI.toggleInspection();
++  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++
++  let div = doc.getElementsByTagName("div")[0];
++  ok(div, "we have the div element");
++
++  InspectorUI.inspectNode(div);
++
++  panelDoc = document.getElementById("inspector-style-browser").contentDocument;
++  ok(panelDoc, "we have the style panel document");
++
++  groupTitle = panelDoc.querySelector("#groups > .group:first-child > h1");
++  ok(groupTitle, "we have the group title element");
++
++  let group = groupTitle.parentNode;
++  let properties = group.querySelector("div > div > .property-header");
++  ok(!properties, "the group view is closed, no properties displayed");
++
++  groupTitle.addEventListener("click", groupTitleClicked1, false);
++
++  EventUtils.sendMouseEvent({type: "click"}, groupTitle, panelDoc.defaultView);
++}
++
++function groupTitleClicked1(evt)
++{
++  evt.target.removeEventListener(evt.type, arguments.callee, false);
++
++  let group = groupTitle.parentNode;
++  let properties = group.querySelector("div > div > .property-header");
++  ok(properties, "the group view is open, we found a property");
++
++  InspectorUI.inspectNode(doc.body);
++
++  // Search again for the group title. The elements have been recreated.
++  groupTitle = panelDoc.querySelector("#groups > .group:first-child > h1");
++  ok(groupTitle, "we found the group title element again");
++
++  group = groupTitle.parentNode;
++
++  // The group view should be closed.
++  properties = group.querySelector("div > div > .property-header");
++  ok(!properties, "the group view is closed, no properties displayed");
++
++  groupTitle.addEventListener("click", groupTitleClicked2, false);
++
++  // Open the group view again.
++  EventUtils.sendMouseEvent({type: "click"}, groupTitle, panelDoc.defaultView);
++}
++
++function groupTitleClicked2(evt)
++{
++  evt.target.removeEventListener(evt.type, arguments.callee, false);
++
++  let group = groupTitle.parentNode;
++  let properties = group.querySelector("div > div > .property-header");
++  ok(properties, "the group view is open for the second time, we found a property");
++
++  // We are done!
++  document.addEventListener("popuphidden", finishInspectorTests, false);
++  InspectorUI.toggleInspectorUI();
++}
++
++function finishInspectorTests(evt)
++{
++  if (evt.target.id != "inspector-style-panel")
++    return true;
++
++  document.removeEventListener(evt.type, arguments.callee, false);
++
++  ok(!InspectorUI.isStylePanelOpen, "Inspector Style Panel is closed");
++  ok(!InspectorUI.isPanelOpen, "Inspector Tree Panel is closed");
++  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++
++  gBrowser.removeCurrentTab();
++  finish();
++}
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function(evt) {
++    gBrowser.selectedBrowser.removeEventListener(evt.type, arguments.callee,
++      true);
++    doc = content.document;
++    waitForFocus(startInspectorTests, content);
++  }, true);
++
++  content.location = "data:text/html,<!DOCTYPE html><html><head><style> " +
++    ".test, #test { color: green } div { color: blue } " +
++    "</style></head><body>" +
++    "<div class='test'>cssInfo.rules order test for Inspector</div>" +
++    "</body></html>";
++}

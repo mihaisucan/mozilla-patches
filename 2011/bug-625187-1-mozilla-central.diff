@@ -1,0 +1,47 @@
+diff --git a/toolkit/components/prompts/content/tabprompts.css b/toolkit/components/prompts/content/tabprompts.css
+--- a/toolkit/components/prompts/content/tabprompts.css
++++ b/toolkit/components/prompts/content/tabprompts.css
+@@ -6,16 +6,21 @@ tabmodalprompt {
+   -moz-box-orient: vertical;
+ }
+ 
+ .mainContainer {
+   min-width: 20em;
+   min-height: 12em;
+ }
+ 
++.info\.title {
++  margin-bottom: 1em !important;
++  font-weight: bold;
++}
++
+ .info\.body {
+   margin: 0 !important;
+   -moz-user-focus: normal;
+   -moz-user-select: text;
+   cursor: text !important;
+   white-space: pre-wrap;
+ }
+ 
+diff --git a/toolkit/components/prompts/content/tabprompts.xml b/toolkit/components/prompts/content/tabprompts.xml
+--- a/toolkit/components/prompts/content/tabprompts.xml
++++ b/toolkit/components/prompts/content/tabprompts.xml
+@@ -29,17 +29,17 @@
+                 <grid anonid="topContainer" class="topContainer" flex="1">
+                     <columns>
+                         <column/>
+                         <column flex="1"/>
+                     </columns>
+ 
+                     <rows>
+                         <vbox anonid="infoContainer" align="center" pack="center" flex="1">
+-                            <description anonid="info.title" hidden="true"/>
++                            <description anonid="info.title" class="info.title"/>
+                             <description anonid="info.body" class="info.body"/>
+                         </vbox>
+ 
+                         <row anonid="loginContainer" hidden="true" align="center">
+                             <label anonid="loginLabel" value="&editfield0.label;" control="loginTextbox"/>
+                             <textbox anonid="loginTextbox"/>
+                         </row>
+ 

@@ -1,0 +1,83 @@
+diff --git a/browser/base/content/domplate.jsm b/browser/base/content/domplate.jsm
+--- a/browser/base/content/domplate.jsm
++++ b/browser/base/content/domplate.jsm
+@@ -97,16 +97,19 @@ var domplateUtils = {};
+  * Utility function to allow outside caller to set a global scope within
+  * domplate's DOM object. Specifically for access to DOM constants and classes.
+  * @param aGlobal
+  *        The global object whose scope we wish to capture.
+  */
+ domplateUtils.setDOM = function(aGlobal)
+ {
+   DOM = aGlobal;
++  if (!aGlobal) {
++    womb = null;
++  }
+ };
+ 
+ /**
+  * main domplate constructor function.
+  */
+ 
+ let domplate = function()
+ {
+@@ -1628,19 +1631,19 @@ BaseTemplates.AttrTag =
+     "&nbsp;",
+     domplate.SPAN({"class": "nodeName editable"}, "$attr.nodeName"),
+     "=&quot;",
+     domplate.SPAN({"class": "nodeValue editable"}, "$attr.nodeValue"),
+     "&quot;");
+ 
+ BaseTemplates.TextTag =
+   domplate.SPAN({"class": "nodeText editable"},
+-    domplate.FOR("char", "$object|getNodeTextGroups",
+-      domplate.SPAN({"class": "$char.class $char.extra"},
+-        "$char.str")));
++    domplate.FOR("chr", "$object|getNodeTextGroups",
++      domplate.SPAN({"class": "$chr.class $chr.extra"},
++        "$chr.str")));
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ //// HTMLTemplates
+ 
+ 
+ 
+ HTMLTemplates.CompleteElement = domplate(BaseTemplates.Element,
+ {
+diff --git a/browser/base/content/inspector.js b/browser/base/content/inspector.js
+--- a/browser/base/content/inspector.js
++++ b/browser/base/content/inspector.js
+@@ -736,24 +736,33 @@ var InspectorUI = {
+     if (this.highlighter && this.highlighter.isHighlighting) {
+       this.highlighter.unhighlight();
+     }
+ 
+     if (this.isTreePanelOpen)
+       this.treePanel.hidePopup();
+     if (this.treePanelDiv) {
+       this.treePanelDiv.ownerPanel = null;
++      let parent = this.treePanelDiv.parentNode;
++      parent.removeChild(this.treePanelDiv);
+       delete this.treePanelDiv;
+       delete this.treeBrowserDocument;
+     }
+ 
+     if (this.treeBrowser)
+       delete this.treeBrowser;
+     delete this.ioBox;
+ 
++    if (this.domplate) {
++      this.domplateUtils.setDOM(null);
++      delete this.domplate;
++      delete this.HTMLTemplates;
++      delete this.domplateUtils;
++    }
++
+     if (this.isStylePanelOpen) {
+       this.stylePanel.hidePopup();
+     }
+     if (this.domPanel) {
+       this.domPanel.hidePopup();
+       this.domBox = null;
+       this.domTreeView = null;
+       this.propertyPanel.destroy();

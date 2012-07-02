@@ -1,0 +1,262 @@
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -49,16 +49,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_HUDServiceTestsAll.js \
+ 	browser_webconsole_bug_585237_line_limit.js \
+ 	browser_webconsole_bug_586388_select_all.js  \
+ 	browser_webconsole_bug_588967_input_expansion.js \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_581231_close_button.js \
++	browser_webconsole_bug_594741_top_sites.js \
+ 	browser_warn_user_about_replaced_api.js \
+ 	browser_webconsole_consoleonpage.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594741_top_sites.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594741_top_sites.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594741_top_sites.js
+@@ -0,0 +1,236 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/HUDService.jsm");
++
++const DEFAULT_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
++
++// Taken from Alexa's list of top sites. (2010-09-13)
++const TOP_SITES = ["http://www.google.com", "http://www.facebook.com", "http://www.youtube.com", "http://www.yahoo.com", "http://www.live.com", "http://www.baidu.com", "http://en.wikipedia.org", "http://www.twitter.com", "http://www.msn.com", "http://www.taobao.com/", "http://www.yahoo.co.jp", "http://www.google.co.in", "http://www.amazon.com", "http://www.ebay.com", "http://www.bing.com", "http://www.microsoft.com", "http://www.linkedin.com", "http://www.yandex.ru", "http://www.163.com", "http://www.myspace.com", "http://www.hi5.com", "http://www.craiglist.com", "http://www.mail.ru", "http://www.flickr.com", "http://www.imdb.com", "http://www.apple.com", "http://bbc.co.uk", "http://www.cnn.com", "http://www.adobe.com", "http://www.cnet.com", "http://www.nytimes.com", "http://www.godaddy.com", "http://www.dailymotion.com", "http://www.digg.com", "http://www.deviantart.com", "http://www.weather.com"];
++
++let pos = -1;
++let loads = 0;
++let max_loads = 4;
++let loadTimeout = null;
++
++function pageNext() {
++  if (++pos == TOP_SITES.length || ++loads == max_loads) {
++    executeSoon(testEnd);
++    return;
++  }
++
++  gBrowser.tabContainer.advanceSelectedTab(1, true);
++
++  executeSoon(function() {
++    loadTimeout = setTimeout(function() {
++      if (loadTimeout) {
++        loadTimeout = null;
++        gBrowser.selectedBrowser.removeEventListener("load", pageLoad, true);
++
++        ok(false, "timeout: failed to load " + content.location);
++        pageNext();
++      }
++    }, 60000);
++
++    gBrowser.selectedBrowser.addEventListener("load", pageLoad, true);
++    content.location = TOP_SITES[pos];
++  });
++}
++
++function pageLoad(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++  if (loadTimeout) {
++    clearTimeout(loadTimeout);
++    loadTimeout = null;
++  }
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  ok(!hudId, "Web Console is not open for " + content.location);
++
++  let startPageReload = function() {
++    gBrowser.selectedBrowser.addEventListener("load", pageReload, true);
++    content.location.reload();
++  };
++
++  let notificationBox = gBrowser.getNotificationBox(gBrowser.selectedBrowser);
++  let DOMNodeInserted = false;
++  let DOMNodeInserted_handler = function(aEvent) {
++    let input = notificationBox.querySelector(".jsterm-input-node");
++    if (input && !DOMNodeInserted) {
++      DOMNodeInserted = true;
++      document.removeEventListener(aEvent.type, arguments.callee, false);
++
++      if (hudTimeout) {
++        clearTimeout(hudTimeout);
++        hudTimeout = null;
++      }
++
++      if (!input.getAttribute("focused")) {
++        input.addEventListener("focus", function(aEvent) {
++          input.removeEventListener(aEvent.type, arguments.callee, false);
++          executeSoon(startPageReload);
++        }, false);
++      }
++      else {
++        executeSoon(startPageReload);
++      }
++    }
++  };
++
++  document.addEventListener("DOMNodeInserted", DOMNodeInserted_handler, false);
++
++  let hudTimeout = null;
++
++  try {
++    hudTimeout = setTimeout(function() {
++      hudTimeout = null;
++      if (!DOMNodeInserted) {
++        document.removeEventListener("DOMNodeInserted",
++          DOMNodeInserted_handler, false);
++
++        ok(false, "timeout: HUDService.activateHUDForContext() failed to show" +
++          " the UI on " + content.location);
++
++        try {
++          HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++        }
++        catch (ex) {
++          ok(false, "HUDService.deactivateHUDForContext() exception on " +
++            content.location + ": " + ex);
++        }
++
++        executeSoon(pageNext);
++      }
++    }, 2000);
++
++    HUDService.activateHUDForContext(gBrowser.selectedTab);
++  }
++  catch (ex) {
++    ok(false, "failed to open the Web Console on " + content.location);
++    Cu.reportError("HUDService exception: " + ex);
++
++    document.removeEventListener("DOMNodeInserted", DOMNodeInserted_handler,
++      false);
++
++    if (hudTimeout) {
++      clearTimeout(hudTimeout);
++      hudTimeout = null;
++    }
++
++    try {
++      HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++    }
++    catch (ex) {
++      ok(false, "HUDService.deactivateHUDForContext() exception on " +
++        content.location + ": " + ex);
++    }
++
++    executeSoon(pageNext);
++  }
++}
++
++function pageReload(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  let notificationBox = gBrowser.getNotificationBox(gBrowser.selectedBrowser);
++  let hudBox = notificationBox.querySelector(".hud-box");
++  ok(hudBox, "we have the .hud-box element on " + content.location);
++
++  try {
++    let hudId = HUDService.getHudIdByWindow(content);
++    ok(hudId, "we have a hudId for " + content.location);
++    let win = HUDService.getContentWindowFromHUDId(hudId);
++    is(win, content, "we have the correct window object on " + content.location);
++  }
++  catch (ex) {
++    ok(false, "failed to determine if the Web Console is open on " + content.location);
++    Cu.reportError("HUDService exception: " + ex);
++  }
++
++  let DOMNodeRemoved = false;
++  let DOMNodeRemoved_handler = function(aEvent) {
++    executeSoon(function() {
++      if (!DOMNodeRemoved && !notificationBox.querySelector(".hud-box")) {
++        DOMNodeRemoved = true;
++        document.removeEventListener(aEvent.type, arguments.callee, false);
++
++        if (hudTimeout) {
++          clearTimeout(hudTimeout);
++          hudTimeout = null;
++        }
++
++        executeSoon(pageNext);
++      }
++    });
++  };
++  document.addEventListener("DOMNodeRemoved", DOMNodeRemoved_handler, false);
++
++  let hudTimeout = null;
++  try {
++    hudTimeout = setTimeout(function() {
++      hudTimeout = null;
++      if (!DOMNodeRemoved) {
++        document.removeEventListener("DOMNodeRemoved",
++          DOMNodeRemoved_handler, false);
++
++        ok(false, "timeout: HUDService.deactivateHUDForContext() failed to " +
++          "hide the UI on " + content.location);
++
++        pageNext();
++      }
++    }, 2000);
++
++    HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++  }
++  catch (ex) {
++    ok(false, "failed to close the Web Console on " + content.location);
++    Cu.reportError("HUDService exception: " + ex);
++
++    document.removeEventListener("DOMNodeRemoved", DOMNodeRemoved_handler,
++      false);
++
++    if (hudTimeout) {
++      clearTimeout(hudTimeout);
++      hudTimeout = null;
++    }
++
++    pageNext();
++  }
++}
++
++function testEnd() {
++  gBrowser.removeCurrentTab();
++  finish();
++}
++
++function test() {
++  waitForExplicitFinish();
++
++  pos = Math.floor(Math.random() * (TOP_SITES.length - max_loads));
++  requestLongerTimeout(5);
++
++  // Block all popups.
++  Services.prefs.setIntPref("privacy.popups.policy", 2);
++
++  gBrowser.selectedBrowser.addEventListener("load", function(aEvent) {
++    gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++    gBrowser.selectedTab = gBrowser.addTab();
++
++    gBrowser.selectedBrowser.addEventListener("load", function(aEvent) {
++      gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++      pageNext();
++    }, true);
++    content.location = DEFAULT_URI;
++  }, true);
++  content.location = DEFAULT_URI;
++}

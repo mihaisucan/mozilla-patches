@@ -1,0 +1,213 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -2447,16 +2447,25 @@ HUD_SERVICE.prototype =
+                 data = [ httpActivity.url,
+                          httpActivity.response.status ];
+ 
+                 msgObject.messageNode.appendChild(
+                   msgObject.textFactory(
+                     msgObject.prefix +
+                     self.getFormatStr("networkUrlWithStatus", data) + "\n"));
+ 
++                let status = parseInt(httpActivity.response.status.
++                  replace(/^HTTP\/\d\.\d (\d+).+$/, "$1"));
++
++                if (status) {
++                  msgObject.messageNode.classList.
++                    add((status >= 400 && status < 600) ?
++                      "hud-error" : "hud-info");
++                }
++
+                 break;
+ 
+               case activityDistributor.ACTIVITY_SUBTYPE_TRANSACTION_CLOSE:
+                 msgObject = httpActivity.messageObject;
+ 
+ 
+                 let timing = httpActivity.timing;
+                 let requestDuration =
+@@ -2762,27 +2771,29 @@ HUD_SERVICE.prototype =
+     }
+     return sequencer(aInt);
+   },
+ 
+   scriptErrorFlags: {
+     0: "error",
+     1: "warn",
+     2: "exception",
+-    4: "strict"
++    4: "error", // strict error
++    5: "warn", // strict warning
+   },
+ 
+   /**
+    * replacement strings (L10N)
+    */
+   scriptMsgLogLevel: {
+     0: "typeError",
+     1: "typeWarning",
+     2: "typeException",
+-    4: "typeStrict",
++    4: "typeError", // strict error
++    5: "typeStrict", // strict warning
+   },
+ 
+   /**
+    * Closes the Console, if any, that resides on the given tab.
+    *
+    * @param nsIDOMNode aTab
+    *        The tab on which to close the console.
+    * @returns void
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -94,16 +94,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_594477_clickable_output.js \
+ 	browser_webconsole_bug_589162_css_filter.js \
+ 	browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js \
+ 	browser_webconsole_bug_595350_multiple_windows_and_tabs.js \
+ 	browser_webconsole_bug_594497_history_arrow_keys.js \
+ 	browser_webconsole_bug_588342_document_focus.js \
+ 	browser_webconsole_bug_595934_message_categories.js \
+ 	browser_webconsole_bug_601352_scroll.js \
++	browser_webconsole_bug_601177_log_levels.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ # compartment-disabled
+ #	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+@@ -129,15 +130,17 @@ _BROWSER_TEST_PAGES = \
+ 	test-bug-595934-css-loader.css^headers^ \
+ 	test-bug-595934-dom-html.html \
+ 	test-bug-595934-imagemap.html \
+ 	test-bug-595934-html.html \
+ 	test-bug-595934-malformedxml.xhtml \
+ 	test-bug-595934-svg.xhtml \
+ 	test-bug-597136-external-script-errors.html \
+ 	test-bug-597136-external-script-errors.js \
++	test-bug-601177-log-levels.html \
++	test-bug-601177-log-levels.js \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601177_log_levels.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601177_log_levels.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601177_log_levels.js
+@@ -0,0 +1,73 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-601177-log-levels.html";
++
++let msgs;
++
++function onContentLoaded()
++{
++  let hudId = HUDService.getHudIdByWindow(content);
++  let HUD = HUDService.hudWeakReferences[hudId].get();
++  msgs = HUD.outputNode.querySelectorAll(".hud-group > *");
++
++  ok(findEntry("hud-info", "test-bug-601177-log-levels.html"),
++    "found test-bug-601177-log-levels.html");
++
++  ok(findEntry("hud-info", "test-bug-601177-log-levels.js"),
++    "found test-bug-601177-log-levels.js");
++
++  ok(findEntry("hud-info", "test-image.png"),
++    "found test-image.png");
++
++  ok(findEntry("hud-error", "foobar-known-to-fail.png"),
++    "found foobar-known-to-fail.png");
++
++  ok(findEntry("hud-exception", "foobarBug601177exception"),
++    "found exception");
++
++  ok(findEntry("hud-warn", "undefinedPropertyBug601177"),
++    "found strict warning");
++
++  msgs = null;
++  Services.prefs.setBoolPref("javascript.options.strict", false);
++  finishTest();
++}
++
++function findEntry(aClass, aString)
++{
++  for (let i = 0, n = msgs.length; i < n; i++) {
++    if (msgs[i].classList.contains(aClass) &&
++        msgs[i].textContent.indexOf(aString) > -1) {
++      return true;
++    }
++  }
++  return false;
++}
++
++function test()
++{
++  addTab("data:text/html,Web Console test for bug 601177: log levels");
++
++  Services.prefs.setBoolPref("javascript.options.strict", true);
++
++  browser.addEventListener("load", function(aEvent) {
++    browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++    openConsole();
++
++    browser.addEventListener("load", function(aEvent) {
++      browser.removeEventListener(aEvent.type, arguments.callee, true);
++      executeSoon(onContentLoaded);
++    }, true);
++    content.location = TEST_URI;
++  }, true);
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-601177-log-levels.html b/toolkit/components/console/hudservice/tests/browser/test-bug-601177-log-levels.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-601177-log-levels.html
+@@ -0,0 +1,19 @@
++<!DOCTYPE HTML>
++<html dir="ltr" xml:lang="en-US" lang="en-US">
++  <head>
++    <title>Web Console test for bug 601177: network messages</title>
++    <script src="test-bug-601177-log-levels.js" type="text/javascript"></script>
++    <script type="text/javascript"><!--
++      window.undefinedPropertyBug601177;
++    // --></script>
++    <!--
++       - Any copyright is dedicated to the Public Domain.
++       - http://creativecommons.org/publicdomain/zero/1.0/
++       -->
++  </head>
++  <body>
++    <h1>Web Console test for bug 601177: network messages</h1>
++    <img src="test-image.png?bug601177">
++    <img src="foobar-known-to-fail.png?bug601177">
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-601177-log-levels.js b/toolkit/components/console/hudservice/tests/browser/test-bug-601177-log-levels.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-601177-log-levels.js
+@@ -0,0 +1,6 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++window.foobarBug601177exception();

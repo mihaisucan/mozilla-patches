@@ -1,0 +1,798 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1329321560 -7200
+# Node ID 0f3ab5ebcbc75ddc373bc365d695f716efd48f3b
+# Parent  53621b54d3eb5644a3cf4be13419c833bfee5b17
+Bug 684445 - Orion source editor should have built-in context menu
+
+diff --git a/browser/devtools/scratchpad/scratchpad.js b/browser/devtools/scratchpad/scratchpad.js
+--- a/browser/devtools/scratchpad/scratchpad.js
++++ b/browser/devtools/scratchpad/scratchpad.js
+@@ -825,16 +825,17 @@ var Scratchpad = {
+     }
+ 
+     this.editor = new SourceEditor();
+ 
+     let config = {
+       mode: SourceEditor.MODES.JAVASCRIPT,
+       showLineNumbers: true,
+       initialText: initialText,
++      contextMenu: "scratchpad-text-popup",
+     };
+ 
+     let editorPlaceholder = document.getElementById("scratchpad-editor");
+     this.editor.init(editorPlaceholder, config,
+                      this._onEditorLoad.bind(this, state));
+   },
+ 
+   /**
+@@ -842,18 +843,16 @@ var Scratchpad = {
+    * editor initialization.
+    *
+    * @private
+    * @param object aState
+    *        The initial Scratchpad state object.
+    */
+   _onEditorLoad: function SP__onEditorLoad(aState)
+   {
+-    this.editor.addEventListener(SourceEditor.EVENTS.CONTEXT_MENU,
+-                                 this.onContextMenu);
+     this.editor.addEventListener(SourceEditor.EVENTS.DIRTY_CHANGED,
+                                  this._onDirtyChanged);
+     this.editor.focus();
+     this.editor.setCaretOffset(this.editor.getCharCount());
+     if (aState) {
+       this.editor.dirty = !aState.saved;
+     }
+ 
+@@ -871,63 +870,30 @@ var Scratchpad = {
+   insertTextAtCaret: function SP_insertTextAtCaret(aText)
+   {
+     let caretOffset = this.editor.getCaretOffset();
+     this.setText(aText, caretOffset, caretOffset);
+     this.editor.setCaretOffset(caretOffset + aText.length);
+   },
+ 
+   /**
+-   * The contextmenu event handler for the source editor. This method opens the
+-   * Scratchpad context menu popup at the pointer location.
+-   *
+-   * @param object aEvent
+-   *        An event object coming from the SourceEditor. This object needs to
+-   *        hold the screenX and screenY properties.
+-   */
+-  onContextMenu: function SP_onContextMenu(aEvent)
+-  {
+-    let menu = document.getElementById("scratchpad-text-popup");
+-    if (menu.state == "closed") {
+-      menu.openPopupAtScreen(aEvent.screenX, aEvent.screenY, true);
+-    }
+-  },
+-
+-  /**
+    * The Source Editor DirtyChanged event handler. This function updates the
+    * Scratchpad window title to show an asterisk when there are unsaved changes.
+    *
+    * @private
+    * @see SourceEditor.EVENTS.DIRTY_CHANGED
+    * @param object aEvent
+    *        The DirtyChanged event object.
+    */
+   _onDirtyChanged: function SP__onDirtyChanged(aEvent)
+   {
+     Scratchpad._updateTitle();
+   },
+ 
+   /**
+-   * The popupshowing event handler for the Edit menu. This method updates the
+-   * enabled/disabled state of the Undo and Redo commands, based on the editor
+-   * state such that the menu items render correctly for the user when the menu
+-   * shows.
+-   */
+-  onEditPopupShowing: function SP_onEditPopupShowing()
+-  {
+-    goUpdateGlobalEditMenuItems();
+-
+-    let undo = document.getElementById("sp-cmd-undo");
+-    undo.setAttribute("disabled", !this.editor.canUndo());
+-
+-    let redo = document.getElementById("sp-cmd-redo");
+-    redo.setAttribute("disabled", !this.editor.canRedo());
+-  },
+-
+-  /**
+    * Undo the last action of the user.
+    */
+   undo: function SP_undo()
+   {
+     this.editor.undo();
+   },
+ 
+   /**
+@@ -948,18 +914,16 @@ var Scratchpad = {
+   {
+     if (aEvent.target != document) {
+       return;
+     }
+ 
+     this.resetContext();
+     this.editor.removeEventListener(SourceEditor.EVENTS.DIRTY_CHANGED,
+                                     this._onDirtyChanged);
+-    this.editor.removeEventListener(SourceEditor.EVENTS.CONTEXT_MENU,
+-                                    this.onContextMenu);
+     this.editor.destroy();
+     this.editor = null;
+     this.initialized = false;
+   },
+ 
+   /**
+    * Prompt to save scratchpad if it has unsaved changes.
+    *
+diff --git a/browser/devtools/scratchpad/scratchpad.xul b/browser/devtools/scratchpad/scratchpad.xul
+--- a/browser/devtools/scratchpad/scratchpad.xul
++++ b/browser/devtools/scratchpad/scratchpad.xul
+@@ -75,18 +75,16 @@
+   <command id="sp-cmd-run" oncommand="Scratchpad.run();"/>
+   <command id="sp-cmd-inspect" oncommand="Scratchpad.inspect();"/>
+   <command id="sp-cmd-display" oncommand="Scratchpad.display();"/>
+   <command id="sp-cmd-contentContext" oncommand="Scratchpad.setContentContext();"/>
+   <command id="sp-cmd-browserContext" oncommand="Scratchpad.setBrowserContext();" disabled="true"/>
+   <command id="sp-cmd-resetContext" oncommand="Scratchpad.resetContext();"/>
+   <command id="sp-cmd-errorConsole" oncommand="Scratchpad.openErrorConsole();" disabled="true"/>
+   <command id="sp-cmd-webConsole" oncommand="Scratchpad.openWebConsole();"/>
+-  <command id="sp-cmd-undo" oncommand="Scratchpad.undo();" disabled="true"/>
+-  <command id="sp-cmd-redo" oncommand="Scratchpad.redo();" disabled="true"/>
+ </commandset>
+ 
+ <keyset id="sp-keyset">
+   <key id="sp-key-window"
+        key="&newWindowCmd.commandkey;"
+        command="sp-cmd-newWindow"
+        modifiers="accel"/>
+   <key id="sp-key-open"
+@@ -116,19 +114,19 @@
+   <key id="key_copy"
+        key="&copyCmd.key;"
+        modifiers="accel"/>
+   <key id="key_paste"
+        key="&pasteCmd.key;"
+        modifiers="accel"/>
+   <key id="key_selectAll" key="&selectAllCmd.key;" modifiers="accel"/>
+   <key id="key_undo" key="&undoCmd.key;" modifiers="accel"
+-       oncommand="Scratchpad.undo();"/>
++       command="se-cmd-undo"/>
+   <key id="key_redo" key="&undoCmd.key;" modifiers="accel,shift"
+-       oncommand="Scratchpad.redo();"/>
++       command="se-cmd-redo"/>
+   <key id="sp-key-run"
+        key="&run.key;"
+        command="sp-cmd-run"
+        modifiers="accel"/>
+   <key id="sp-key-inspect"
+        key="&inspect.key;"
+        command="sp-cmd-inspect"
+        modifiers="accel"/>
+@@ -213,27 +211,27 @@
+                 accesskey="&closeCmd.accesskey;"
+                 command="sp-cmd-close"/>
+     </menupopup>
+   </menu>
+ 
+   <menu id="sp-edit-menu" label="&editMenu.label;"
+         accesskey="&editMenu.accesskey;">
+     <menupopup id="sp-menu_editpopup"
+-               onpopupshowing="Scratchpad.onEditPopupShowing()">
++               onpopupshowing="goUpdateGlobalEditMenuItems()">
+       <menuitem id="sp-menu-undo"
+                 label="&undoCmd.label;"
+                 key="key_undo"
+                 accesskey="&undoCmd.accesskey;"
+-                command="sp-cmd-undo"/>
++                command="se-cmd-undo"/>
+       <menuitem id="sp-menu-redo"
+                 label="&redoCmd.label;"
+                 key="key_redo"
+                 accesskey="&redoCmd.accesskey;"
+-                command="sp-cmd-redo"/>
++                command="se-cmd-redo"/>
+       <menuseparator/>
+       <menuitem id="sp-menu-cut"
+                 label="&cutCmd.label;"
+                 key="key_cut"
+                 accesskey="&cutCmd.accesskey;"
+                 command="cmd_cut"/>
+       <menuitem id="sp-menu-copy"
+                 label="&copyCmd.label;"
+diff --git a/browser/devtools/scratchpad/test/browser_scratchpad_ui.js b/browser/devtools/scratchpad/test/browser_scratchpad_ui.js
+--- a/browser/devtools/scratchpad/test/browser_scratchpad_ui.js
++++ b/browser/devtools/scratchpad/test/browser_scratchpad_ui.js
+@@ -27,18 +27,16 @@ function runTests()
+     "sp-menu-save": "saveFile",
+     "sp-menu-saveas": "saveFileAs",
+     "sp-text-run": "run",
+     "sp-text-inspect": "inspect",
+     "sp-text-display": "display",
+     "sp-text-resetContext": "resetContext",
+     "sp-menu-content": "setContentContext",
+     "sp-menu-browser": "setBrowserContext",
+-    "sp-menu-undo": "undo",
+-    "sp-menu-redo": "redo",
+   };
+ 
+   let lastMethodCalled = null;
+   sp.__noSuchMethod__ = function(aMethodName) {
+     lastMethodCalled = aMethodName;
+   };
+ 
+   for (let id in methodsAndItems) {
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -139,16 +139,17 @@ function SourceEditor() {
+ 
+   SourceEditor.DEFAULTS.tabSize =
+     Services.prefs.getIntPref(SourceEditor.PREFS.TAB_SIZE);
+   SourceEditor.DEFAULTS.expandTab =
+     Services.prefs.getBoolPref(SourceEditor.PREFS.EXPAND_TAB);
+ 
+   this._onOrionSelection = this._onOrionSelection.bind(this);
+   this._onTextChanged = this._onTextChanged.bind(this);
++  this._onOrionContextMenu = this._onOrionContextMenu.bind(this);
+ 
+   this._eventTarget = {};
+   this._eventListenersQueue = [];
+   this.ui = new SourceEditorUI(this);
+ }
+ 
+ SourceEditor.prototype = {
+   _view: null,
+@@ -165,16 +166,17 @@ SourceEditor.prototype = {
+   _currentLineAnnotation: null,
+   _primarySelectionTimeout: null,
+   _mode: null,
+   _expandTab: null,
+   _tabSize: null,
+   _iframeWindow: null,
+   _eventTarget: null,
+   _eventListenersQueue: null,
++  _contextMenu: null,
+   _dirty: false,
+ 
+   /**
+    * The Source Editor user interface manager.
+    * @type object
+    *       An instance of the SourceEditorUI.
+    */
+   ui: null,
+@@ -279,16 +281,27 @@ SourceEditor.prototype = {
+     this._view.addEventListener("Load", onOrionLoad);
+     if (config.highlightCurrentLine || Services.appinfo.OS == "Linux") {
+       this.addEventListener(SourceEditor.EVENTS.SELECTION,
+                             this._onOrionSelection);
+     }
+     this.addEventListener(SourceEditor.EVENTS.TEXT_CHANGED,
+                            this._onTextChanged);
+ 
++    if (typeof config.contextMenu == "string") {
++      let chromeDocument = this.parentElement.ownerDocument;
++      this._contextMenu = chromeDocument.getElementById(config.contextMenu);
++    } else if (typeof config.contextMenu == "object" ) {
++      this._contextMenu = config._contextMenu;
++    }
++    if (this._contextMenu) {
++      this.addEventListener(SourceEditor.EVENTS.CONTEXT_MENU,
++                            this._onOrionContextMenu);
++    }
++
+     let KeyBinding = window.require("orion/textview/keyBinding").KeyBinding;
+     let TextDND = window.require("orion/textview/textDND").TextDND;
+     let Rulers = window.require("orion/textview/rulers");
+     let LineNumberRuler = Rulers.LineNumberRuler;
+     let AnnotationRuler = Rulers.AnnotationRuler;
+     let OverviewRuler = Rulers.OverviewRuler;
+     let UndoStack = window.require("orion/textview/undoStack").UndoStack;
+     let AnnotationModel = window.require("orion/textview/annotations").AnnotationModel;
+@@ -598,16 +611,32 @@ SourceEditor.prototype = {
+    * @private
+    */
+   _onTextChanged: function SE__onTextChanged()
+   {
+     this._updateDirty();
+   },
+ 
+   /**
++   * The Orion contextmenu event handler. This method opens the default or
++   * the custom context menu popup at the pointer location.
++   *
++   * @param object aEvent
++   *        The contextmenu event object coming from Orion. This object should
++   *        hold the screenX and screenY properties.
++   */
++  _onOrionContextMenu: function SE__onOrionContextMenu(aEvent)
++  {
++    if (this._contextMenu.state == "closed") {
++      this._contextMenu.openPopupAtScreen(aEvent.screenX || 0,
++                                          aEvent.screenY || 0, true);
++    }
++  },
++
++  /**
+    * Update the dirty state of the editor based on the undo stack.
+    * @private
+    */
+   _updateDirty: function SE__updateDirty()
+   {
+     this.dirty = !this._undoStack.isClean();
+   },
+ 
+@@ -881,28 +910,38 @@ SourceEditor.prototype = {
+       this._eventTarget.removeEventListener(aEventType, aCallback);
+     } else {
+       this._eventListenersQueue.push(["remove", aEventType, aCallback]);
+     }
+   },
+ 
+   /**
+    * Undo a change in the editor.
++   *
++   * @return boolean
++   *         True if there was a change undone, false otherwise.
+    */
+   undo: function SE_undo()
+   {
+-    return this._undoStack.undo();
++    let result = this._undoStack.undo();
++    this.ui._onUndoRedo();
++    return result;
+   },
+ 
+   /**
+    * Redo a change in the editor.
++   *
++   * @return boolean
++   *         True if there was a change redone, false otherwise.
+    */
+   redo: function SE_redo()
+   {
+-    return this._undoStack.redo();
++    let result = this._undoStack.redo();
++    this.ui._onUndoRedo();
++    return result;
+   },
+ 
+   /**
+    * Check if there are changes that can be undone.
+    *
+    * @return boolean
+    *         True if there are changes that can be undone, false otherwise.
+    */
+@@ -924,16 +963,17 @@ SourceEditor.prototype = {
+ 
+   /**
+    * Reset the Undo stack.
+    */
+   resetUndo: function SE_resetUndo()
+   {
+     this._undoStack.reset();
+     this._updateDirty();
++    this.ui._onUndoRedo();
+   },
+ 
+   /**
+    * Set the "dirty" state of the editor. Set this to false when you save the
+    * text being edited. The dirty state will become true once the user makes
+    * changes to the text.
+    *
+    * @param boolean aNewValue
+@@ -1392,16 +1432,23 @@ SourceEditor.prototype = {
+                                this._onOrionSelection);
+     }
+     this._onOrionSelection = null;
+ 
+     this.removeEventListener(SourceEditor.EVENTS.TEXT_CHANGED,
+                              this._onTextChanged);
+     this._onTextChanged = null;
+ 
++    if (this._contextMenu) {
++      this.removeEventListener(SourceEditor.EVENTS.CONTEXT_MENU,
++                               this._onOrionContextMenu);
++      this._contextMenu = null;
++    }
++    this._onOrionContextMenu = null;
++
+     if (this._primarySelectionTimeout) {
+       let window = this.parentElement.ownerDocument.defaultView;
+       window.clearTimeout(this._primarySelectionTimeout);
+       this._primarySelectionTimeout = null;
+     }
+ 
+     this._view.destroy();
+     this.ui.destroy();
+diff --git a/browser/devtools/sourceeditor/source-editor-overlay.xul b/browser/devtools/sourceeditor/source-editor-overlay.xul
+--- a/browser/devtools/sourceeditor/source-editor-overlay.xul
++++ b/browser/devtools/sourceeditor/source-editor-overlay.xul
+@@ -30,18 +30,61 @@
+    - under the terms of either the GPL or the LGPL, and not to allow others to
+    - use your version of this file under the terms of the MPL, indicate your
+    - decision by deleting the provisions above and replace them with the notice
+    - and other provisions required by the GPL or the LGPL. If you do not delete
+    - the provisions above, a recipient may use your version of this file under
+    - the terms of any one of the MPL, the GPL or the LGPL.
+    -
+    - ***** END LICENSE BLOCK ***** -->
+-
++<!DOCTYPE overlay SYSTEM "chrome://browser/locale/devtools/sourceeditor.dtd">
+ <overlay id="sourceEditorOverlay"
+          xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul">
++
++  <!-- This Source Editor overlay requires that the editMenuOverlay.xul is
++       loaded, and you also need the globalOverlay.js script in the XUL document
++       where the source-editor-overlay.xul is loaded. -->
++
+   <commandset id="sourceEditorCommands">
+     <command id="cmd_find" oncommand="goDoCommand('cmd_find')"/>
+     <command id="cmd_findAgain" oncommand="goDoCommand('cmd_findAgain')" disabled="true"/>
+     <command id="cmd_findPrevious" oncommand="goDoCommand('cmd_findPrevious')" disabled="true"/>
+     <command id="cmd_gotoLine" oncommand="goDoCommand('cmd_gotoLine')"/>
++    <command id="se-cmd-undo" oncommand="goDoCommand('se-cmd-undo')" disabled="true"/>
++    <command id="se-cmd-redo" oncommand="goDoCommand('se-cmd-redo')" disabled="true"/>
+   </commandset>
++
++  <menupopup id="sourceEditorContextMenu"
++             onpopupshowing="goUpdateGlobalEditMenuItems()">
++    <menuitem id="se-menu-undo"
++              label="&undoCmd.label;"
++              key="key_undo"
++              accesskey="&undoCmd.accesskey;"
++              command="se-cmd-undo"/>
++    <menuseparator/>
++    <menuitem id="se-menu-cut"
++              label="&cutCmd.label;"
++              key="key_cut"
++              accesskey="&cutCmd.accesskey;"
++              command="cmd_cut"/>
++    <menuitem id="se-menu-copy"
++              label="&copyCmd.label;"
++              key="key_copy"
++              accesskey="&copyCmd.accesskey;"
++              command="cmd_copy"/>
++    <menuitem id="se-menu-paste"
++              label="&pasteCmd.label;"
++              key="key_paste"
++              accesskey="&pasteCmd.accesskey;"
++              command="cmd_paste"/>
++    <menuitem id="se-menu-delete"
++              label="&deleteCmd.label;"
++              key="key_delete"
++              accesskey="&deleteCmd.accesskey;"
++              command="cmd_delete"/>
++    <menuseparator/>
++    <menuitem id="se-menu-selectAll"
++              label="&selectAllCmd.label;"
++              key="key_selectAll"
++              accesskey="&selectAllCmd.accesskey;"
++              command="cmd_selectAll"/>
++  </menupopup>
+ </overlay>
+diff --git a/browser/devtools/sourceeditor/source-editor-ui.jsm b/browser/devtools/sourceeditor/source-editor-ui.jsm
+--- a/browser/devtools/sourceeditor/source-editor-ui.jsm
++++ b/browser/devtools/sourceeditor/source-editor-ui.jsm
+@@ -45,16 +45,17 @@ Cu.import("resource://gre/modules/Servic
+ var EXPORTED_SYMBOLS = ["SourceEditorUI"];
+ 
+ /**
+  * The Source Editor component user interface.
+  */
+ function SourceEditorUI(aEditor)
+ {
+   this.editor = aEditor;
++  this._onDirtyChanged = this._onDirtyChanged.bind(this);
+ }
+ 
+ SourceEditorUI.prototype = {
+   /**
+    * Initialize the user interface. This is called by the SourceEditor.init()
+    * method.
+    */
+   init: function SEU_init()
+@@ -67,16 +68,18 @@ SourceEditorUI.prototype = {
+    * initialization and it is ready for usage. Currently this code sets up the
+    * nsIController.
+    */
+   onReady: function SEU_onReady()
+   {
+     if (this._ownerWindow.controllers) {
+       this._controller = new SourceEditorController(this.editor);
+       this._ownerWindow.controllers.insertControllerAt(0, this._controller);
++      this.editor.addEventListener(this.editor.EVENTS.DIRTY_CHANGED,
++                                   this._onDirtyChanged);
+     }
+   },
+ 
+   /**
+    * The "go to line" command UI. This displays a prompt that allows the user to
+    * input the line number to jump to.
+    */
+   gotoLine: function SEU_gotoLine()
+@@ -173,21 +176,49 @@ SourceEditorUI.prototype = {
+ 
+     if (this._ownerWindow.goUpdateCommand) {
+       this._ownerWindow.goUpdateCommand("cmd_findAgain");
+       this._ownerWindow.goUpdateCommand("cmd_findPrevious");
+     }
+   },
+ 
+   /**
++   * This is executed after each undo/redo operation.
++   * @private
++   */
++  _onUndoRedo: function SEU__onUndoRedo()
++  {
++    if (this._ownerWindow.goUpdateCommand) {
++      this._ownerWindow.goUpdateCommand("se-cmd-undo");
++      this._ownerWindow.goUpdateCommand("se-cmd-redo");
++    }
++  },
++
++  /**
++   * The DirtyChanged event handler for the editor. This tracks the editor state
++   * changes to make sure the Source Editor overlay Undo/Redo commands are kept
++   * up to date.
++   * @private
++   */
++  _onDirtyChanged: function SEU__onDirtyChanged()
++  {
++    this._onUndoRedo();
++  },
++
++  /**
+    * Destroy the SourceEditorUI instance. This is called by the
+    * SourceEditor.destroy() method.
+    */
+   destroy: function SEU_destroy()
+   {
++    if (this._ownerWindow.controllers) {
++      this.editor.removeEventListener(this.editor.EVENTS.DIRTY_CHANGED,
++                                      this._onDirtyChanged);
++    }
++
+     this._ownerWindow = null;
+     this.editor = null;
+     this._controller = null;
+   },
+ };
+ 
+ /**
+  * The Source Editor nsIController implements features that need to be available
+@@ -215,16 +246,18 @@ SourceEditorController.prototype = {
+   {
+     let result;
+ 
+     switch (aCommand) {
+       case "cmd_find":
+       case "cmd_findAgain":
+       case "cmd_findPrevious":
+       case "cmd_gotoLine":
++      case "se-cmd-undo":
++      case "se-cmd-redo":
+         result = true;
+         break;
+       default:
+         result = false;
+         break;
+     }
+ 
+     return result;
+@@ -246,16 +279,22 @@ SourceEditorController.prototype = {
+       case "cmd_find":
+       case "cmd_gotoLine":
+         result = true;
+         break;
+       case "cmd_findAgain":
+       case "cmd_findPrevious":
+         result = this._editor.lastFind && this._editor.lastFind.lastFound != -1;
+         break;
++      case "se-cmd-undo":
++        result = this._editor.canUndo();
++        break;
++      case "se-cmd-redo":
++        result = this._editor.canRedo();
++        break;
+       default:
+         result = false;
+         break;
+     }
+ 
+     return result;
+   },
+ 
+@@ -276,13 +315,19 @@ SourceEditorController.prototype = {
+         this._editor.ui.findNext();
+         break;
+       case "cmd_findPrevious":
+         this._editor.ui.findPrevious();
+         break;
+       case "cmd_gotoLine":
+         this._editor.ui.gotoLine();
+         break;
++      case "se-cmd-undo":
++        this._editor.undo();
++        break;
++      case "se-cmd-redo":
++        this._editor.redo();
++        break;
+     }
+   },
+ 
+   onEvent: function() { }
+ };
+diff --git a/browser/devtools/sourceeditor/source-editor.jsm b/browser/devtools/sourceeditor/source-editor.jsm
+--- a/browser/devtools/sourceeditor/source-editor.jsm
++++ b/browser/devtools/sourceeditor/source-editor.jsm
+@@ -194,16 +194,32 @@ SourceEditor.DEFAULTS = {
+    *   - accel - boolean for the Accel key (Cmd on Macs, Ctrl on Linux/Windows).
+    *   - shift - boolean for the Shift key.
+    *   - alt - boolean for the Alt key.
+    *   - callback - optional function to invoke, if the action is not predefined
+    *   in the editor.
+    * @type array
+    */
+   keys: null,
++
++  /**
++   * The editor context menu you want to display when the user right-clicks
++   * within the editor. This property can be:
++   *   - a string that tells the ID of the xul:menupopup you want. This needs to
++   *   be available within the editor parentElement.ownerDocument.
++   *   - an nsIDOMElement object reference pointing to the xul:menupopup you
++   *   want to open when the contextmenu event is fired.
++   *
++   * Set this property to a falsey value to disable the default context menu.
++   *
++   * @see SourceEditor.EVENTS.CONTEXT_MENU for more control over the contextmenu
++   * event.
++   * @type string|nsIDOMElement
++   */
++  contextMenu: "sourceEditorContextMenu",
+ };
+ 
+ /**
+  * Known editor events you can listen for.
+  */
+ SourceEditor.EVENTS = {
+   /**
+    * The contextmenu event is fired when the editor context menu is invoked. The
+@@ -211,16 +227,18 @@ SourceEditor.EVENTS = {
+    *   - x - the pointer location on the x axis, relative to the document the
+    *   user is editing.
+    *   - y - the pointer location on the y axis, relative to the document the
+    *   user is editing.
+    *   - screenX - the pointer location on the x axis, relative to the screen.
+    *   This value comes from the DOM contextmenu event.screenX property.
+    *   - screenY - the pointer location on the y axis, relative to the screen.
+    *   This value comes from the DOM contextmenu event.screenY property.
++   *
++   * @see SourceEditor.DEFAULTS.contextMenu
+    */
+   CONTEXT_MENU: "ContextMenu",
+ 
+   /**
+    * The TextChanged event is fired when the editor content changes. The event
+    * object properties:
+    *   - start - the character offset in the document where the change has
+    *   occured.
+@@ -283,16 +301,22 @@ function extend(aDestination, aSource)
+     }
+   }
+ }
+ 
+ /**
+  * Add methods common to all components.
+  */
+ extend(SourceEditor.prototype, {
++  // Expose the static constants on the SourceEditor instances.
++  EVENTS: SourceEditor.EVENTS,
++  MODES: SourceEditor.MODES,
++  THEMES: SourceEditor.THEMES,
++  DEFAULTS: SourceEditor.DEFAULTS,
++
+   _lastFind: null,
+ 
+   /**
+    * Find a string in the editor.
+    *
+    * @param string aString
+    *        The string you want to search for. If |aString| is not given the
+    *        currently selected text is used.
+diff --git a/browser/devtools/styleeditor/styleeditor.xul b/browser/devtools/styleeditor/styleeditor.xul
+--- a/browser/devtools/styleeditor/styleeditor.xul
++++ b/browser/devtools/styleeditor/styleeditor.xul
+@@ -40,29 +40,38 @@
+  %styleEditorDTD;
+ ]>
+ <?xml-stylesheet href="chrome://global/skin/global.css" type="text/css"?>
+ <?xml-stylesheet href="chrome://browser/content/splitview.css" type="text/css"?>
+ <?xml-stylesheet href="chrome://browser/skin/devtools/common.css" type="text/css"?>
+ <?xml-stylesheet href="chrome://browser/skin/devtools/splitview.css" type="text/css"?>
+ <?xml-stylesheet href="chrome://browser/content/styleeditor.css" type="text/css"?>
+ <?xml-stylesheet href="chrome://browser/skin/devtools/styleeditor.css" type="text/css"?>
++<?xul-overlay href="chrome://global/content/editMenuOverlay.xul"?>
++<?xul-overlay href="chrome://browser/content/source-editor-overlay.xul"?>
+ <xul:window xmlns:xul="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+         xmlns="http://www.w3.org/1999/xhtml"
+         id="style-editor-chrome-window"
+         title="&window.title;"
+         windowtype="Tools:StyleEditor"
+         width="800" height="280"
+         persist="screenX screenY width height sizemode">
+ <xul:script type="application/javascript" src="chrome://global/content/globalOverlay.js"/>
+ 
++<xul:popupset id="style-editor-popups">
++  <xul:menupopup id="sourceEditorContextMenu"/>
++</xul:popupset>
++
++<xul:commandset id="editMenuCommands"/>
++<xul:commandset id="sourceEditorCommands"/>
+ <xul:commandset id="style-editor-commandset">
+   <xul:command id="style-editor-cmd-close" oncommand="window.close();"/>
+ </xul:commandset>
+ 
++<xul:keyset id="editMenuKeys"/>
+ <xul:keyset id="style-editor-keyset">
+   <xul:key id="style-editor-key-close"
+            key="&closeCmd.key;"
+            command="style-editor-cmd-close"
+            modifiers="accel"/>
+ </xul:keyset>
+ 
+ <xul:box id="style-editor-chrome" class="splitview-root loading">
+diff --git a/browser/locales/en-US/chrome/browser/devtools/sourceeditor.dtd b/browser/locales/en-US/chrome/browser/devtools/sourceeditor.dtd
+new file mode 100644
+--- /dev/null
++++ b/browser/locales/en-US/chrome/browser/devtools/sourceeditor.dtd
+@@ -0,0 +1,24 @@
++<!-- LOCALIZATION NOTE : FILE This file contains the Source Editor component
++  - strings. The source editor component is used within the Scratchpad and
++  - Style Editor tools. -->
++
++<!-- LOCALIZATION NOTE : FILE Do not translate commandkeys -->
++
++<!-- LOCALIZATION NOTE : FILE The correct localization of this file might be to
++  - keep it in English, or another language commonly spoken among web developers.
++  - You want to make that choice consistent across the developer tools.
++  - A good criteria is the language in which you'd find the best
++  - documentation on web development on the web. -->
++
++<!ENTITY undoCmd.label             "Undo">
++<!ENTITY undoCmd.accesskey         "U">
++<!ENTITY cutCmd.label              "Cut">
++<!ENTITY cutCmd.accesskey          "t">
++<!ENTITY copyCmd.label             "Copy">
++<!ENTITY copyCmd.accesskey         "C">
++<!ENTITY pasteCmd.label            "Paste">
++<!ENTITY pasteCmd.accesskey        "P">
++<!ENTITY deleteCmd.label           "Delete">
++<!ENTITY deleteCmd.accesskey       "D">
++<!ENTITY selectAllCmd.label        "Select All">
++<!ENTITY selectAllCmd.accesskey    "A">
+diff --git a/browser/locales/jar.mn b/browser/locales/jar.mn
+--- a/browser/locales/jar.mn
++++ b/browser/locales/jar.mn
+@@ -25,16 +25,17 @@
+     locale/browser/devtools/scratchpad.properties     (%chrome/browser/devtools/scratchpad.properties)
+     locale/browser/devtools/scratchpad.dtd            (%chrome/browser/devtools/scratchpad.dtd)
+     locale/browser/devtools/styleeditor.properties    (%chrome/browser/devtools/styleeditor.properties)
+     locale/browser/devtools/styleeditor.dtd           (%chrome/browser/devtools/styleeditor.dtd)
+     locale/browser/devtools/styleinspector.properties (%chrome/browser/devtools/styleinspector.properties)
+     locale/browser/devtools/styleinspector.dtd        (%chrome/browser/devtools/styleinspector.dtd)
+     locale/browser/devtools/webConsole.dtd            (%chrome/browser/devtools/webConsole.dtd)
+     locale/browser/devtools/sourceeditor.properties   (%chrome/browser/devtools/sourceeditor.properties)
++    locale/browser/devtools/sourceeditor.dtd          (%chrome/browser/devtools/sourceeditor.dtd)
+     locale/browser/newTab.dtd                      (%chrome/browser/newTab.dtd)
+     locale/browser/newTab.properties               (%chrome/browser/newTab.properties)
+     locale/browser/openLocation.dtd                (%chrome/browser/openLocation.dtd)
+     locale/browser/openLocation.properties         (%chrome/browser/openLocation.properties)
+ *   locale/browser/pageInfo.dtd                    (%chrome/browser/pageInfo.dtd)
+     locale/browser/pageInfo.properties             (%chrome/browser/pageInfo.properties)
+     locale/browser/quitDialog.properties           (%chrome/browser/quitDialog.properties)
+ *   locale/browser/safeMode.dtd                    (%chrome/browser/safeMode.dtd)

@@ -1,0 +1,135 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1390,17 +1390,17 @@ HUD_SERVICE.prototype =
+     }
+ 
+     var outputNode = aHUD.querySelector(".hud-output-node");
+ 
+     while (outputNode.firstChild) {
+       outputNode.removeChild(outputNode.firstChild);
+     }
+ 
+-    outputNode.lastTimestamp = 0;
++    aHUD.lastTimestamp = 0;
+   },
+ 
+   /**
+    * get a unique ID from the sequence generator
+    *
+    * @returns integer
+    */
+   sequenceId: function HS_sequencerId()
+@@ -4160,17 +4160,21 @@ JSTerm.prototype = {
+   clearOutput: function JST_clearOutput()
+   {
+     let outputNode = this.outputNode;
+ 
+     while (outputNode.firstChild) {
+       outputNode.removeChild(outputNode.firstChild);
+     }
+ 
+-    outputNode.lastTimestamp = 0;
++    let hudBox = outputNode;
++    while (!hudBox.classList.contains("hud-box")) {
++      hudBox = hudBox.parentNode;
++    }
++    hudBox.lastTimestamp = 0;
+   },
+ 
+   /**
+    * Updates the size of the input field (command line) to fit its contents.
+    *
+    * @returns void
+    */
+   resizeInput: function JST_resizeInput()
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -56,16 +56,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_581231_close_button.js \
+ 	browser_webconsole_bug_595350_multiple_windows_and_tabs.js \
+ 	browser_webconsole_consoleonpage.js \
+ 	browser_webconsole_bug_587617_output_copy.js \
+ 	browser_webconsole_bug_588342_document_focus.js \
++	browser_webconsole_bug_587615_lastTimestamp.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+ 	testscript.js \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_587615_lastTimestamp.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_587615_lastTimestamp.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_587615_lastTimestamp.js
+@@ -0,0 +1,64 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/HUDService.jsm");
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
++
++function tabLoad(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  waitForFocus(function() {
++    HUDService.activateHUDForContext(gBrowser.selectedTab);
++
++    let hudId = HUDService.getHudIdByWindow(content);
++    let HUD = HUDService.hudWeakReferences[hudId].get();
++    let display = HUDService.getOutputNodeById(hudId);
++
++    content.wrappedJSObject.console.log("hello world!");
++
++    isnot(display.lastTimestamp, 0, "display.lastTimestamp is not 0");
++
++    HUDService.clearDisplay(hudId);
++
++    is(display.lastTimestamp, 0, "display.lastTimestamp is 0");
++
++    content.wrappedJSObject.console.log("hello world 2!");
++
++    isnot(display.lastTimestamp, 0, "display.lastTimestamp is not 0");
++
++    HUD.jsterm.clearOutput();
++
++    is(display.lastTimestamp, 0, "display.lastTimestamp is 0");
++
++    testEnd();
++  }, content);
++}
++
++function testEnd() {
++  HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++
++  executeSoon(function() {
++    gBrowser.removeCurrentTab();
++    finish();
++  });
++}
++
++function test() {
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", tabLoad, true);
++
++  content.location = TEST_URI;
++}
++

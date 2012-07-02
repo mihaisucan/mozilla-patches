@@ -1,0 +1,2046 @@
+diff --git a/browser/base/content/browser.js b/browser/base/content/browser.js
+--- a/browser/base/content/browser.js
++++ b/browser/base/content/browser.js
+@@ -173,16 +173,17 @@ let gInitialPages = [
+   "about:blank",
+   "about:privatebrowsing",
+   "about:sessionrestore"
+ ];
+ 
+ #include browser-fullZoom.js
+ #include inspector.js
+ #include csslogic.js
++#include csshtmltree.js
+ #include browser-places.js
+ #include browser-tabPreviews.js
+ #include browser-tabview.js
+ 
+ #ifdef MOZ_SERVICES_SYNC
+ #include browser-syncui.js
+ #endif
+ 
+diff --git a/browser/base/content/browser.xul b/browser/base/content/browser.xul
+--- a/browser/base/content/browser.xul
++++ b/browser/base/content/browser.xul
+@@ -30,16 +30,17 @@
+ #   Pierre Chanial <chanial@noos.fr>
+ #   Dean Tessman <dean_tessman@hotmail.com>
+ #   Johnathan Nightingale <johnath@mozilla.com>
+ #   Dão Gottwald <dao@mozilla.com>
+ #   Ehsan Akhgari <ehsan.akhgari@gmail.com>
+ #   Robert Strong <robert.bugzilla@gmail.com>
+ #   Rob Campbell <rcampbell@mozilla.com>
+ #   Patrick Walton <pcwalton@mozilla.com>
++#   Joe Walker <jwalker@mozilla.com>
+ #
+ # Alternatively, the contents of this file may be used under the terms of
+ # either the GNU General Public License Version 2 or later (the "GPL"), or
+ # the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+ # in which case the provisions of the GPL or the LGPL are applicable instead
+ # of those above. If you wish to allow use of your version of this file only
+ # under the terms of either the GPL or the LGPL, and not to allow others to
+ # use your version of this file under the terms of the MPL, indicate your
+@@ -294,17 +295,20 @@
+     <panel id="inspector-style-panel"
+            hidden="true"
+            orient="vertical"
+            ignorekeys="true"
+            noautofocus="true"
+            noautohide="true"
+            titlebar="normal"
+            label="&inspectStylePanelTitle.label;">
+-        <listbox id="inspector-style-listbox" flex="1"/>
++        <browser id="inspector-style-browser"
++                 flex="1"
++                 src="chrome://browser/content/csshtmltree.xhtml"
++                 disablehistory="true"/>
+         <hbox align="end">
+           <spacer flex="1" />
+           <resizer dir="bottomend" />
+         </hbox>
+     </panel>
+ 
+     <menupopup id="toolbar-context-menu"
+                onpopupshowing="onViewToolbarsPopupShowing(event);">
+diff --git a/browser/base/content/csshtmltree.js b/browser/base/content/csshtmltree.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/csshtmltree.js
+@@ -0,0 +1,782 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is the Mozilla Inspector Module.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Joe Walker (jwalker@mozilla.com) (original author)
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++/**
++ * CssHtmlTree is a panel that manages the display of a table sorted by style.
++ * There should be one instance of CssHtmlTree per style display (of which there will
++ * generally only be one).
++ *
++ * @constructor
++ * @params {Document} aStyleWin The main XUL browser document
++ * @params {CssLogic} aCssLogic How we dig into the CSS properties. See csslogic.js
++ * @params {nsIStringBundle} aStrings The string bundle from where we can get
++ * localized strings for the UI.
++ */
++function CssHtmlTree(aStyleWin, aCssLogic, aStrings)
++{
++  // 'window' in that it contains a document
++  this.styleWin = aStyleWin;
++  this.cssLogic = aCssLogic;
++  this.strings = aStrings;
++
++  // The document in which we display the results.
++  this.styleDocument = this.styleWin.contentWindow.document;
++
++  // Template and destination for the block at the top (see csshtmltree.xhtml).
++  this.header = this.styleDocument.getElementById("header");
++  this.templateHeader = this.styleDocument.getElementById("templateHeader");
++  // The main section of css property groups without nested properties/rules.
++  this.groups = this.styleDocument.getElementById("groups");
++  this.templateGroups = this.styleDocument.getElementById("templateGroups");
++  // Template for the properties that nest inside templateGroups.
++  this.templateProperties = this.styleDocument.
++    getElementById("templateProperties");
++  // The rules section nests inside templateProperties.
++  this.templateRules = this.styleDocument.getElementById("templateRules");
++
++  // The element that we're inspecting.
++  this.viewedElement = null;
++  // And the document that it comes from.
++  this.viewedDocument = null;
++};
++
++CssHtmlTree.prototype = {
++  /**
++   * Focus the output display on a specific element.
++   * @param {nsIDOMElement} aElement The highlighted node to get styles for.
++   */
++  highlight: function CssHtmlTree_highlight(aElement)
++  {
++    this.viewedElement = aElement;
++
++    if (this.viewedElement) {
++      this.viewedDocument = this.viewedElement.ownerDocument;
++      this.createStyleGroupViews();
++      this._populateMainTemplates();
++    } else {
++      this.viewedDocument = null;
++      this.header.innerHTML = "";
++      this.groups.innerHTML = "";
++    }
++  },
++
++  /**
++   * Process the main template.
++   */
++  _populateMainTemplates: function CssHtmlTree_populateMainTemplate()
++  {
++    let self = this;
++    let data = {
++      path_elements: CssLogic.getShortNamePath(this.viewedElement),
++      sheets: this.cssLogic.sheets,
++      toggleSpecificity: function CssHtmlTree_toggleSpecificity()
++      {
++        self.styleDocument.getElementById("groups")
++            .classList.toggle("showSpecificity");
++      },
++      str: {
++        lookingAtLabel: this.strings.GetStringFromName("style.lookingAtLabel"),
++        specificityLabel: this.strings.GetStringFromName("style.specificityLabel"),
++        specificityHelpLink: this.strings.GetStringFromName("style.specificityHelpLink")
++      }
++    };
++    this._template(this.templateHeader, this.header, data);
++
++    data = { styleGroups: this.styleGroups };
++    this._template(this.templateGroups, this.groups, data);
++  },
++
++  /**
++   * Clone the given template node, and process it by resolving ${} references
++   * in the template.
++   *
++   * @param {nsIDOMElement} aTemplate the template note to use.
++   * @param {nsIDOMElement} aDestination the destination node where the
++   * processed nodes will be displayed.
++   * @param {object} aData the data to pass to the template.
++   */
++  _template: function CssHtmlTree_template(aTemplate, aDestination, aData)
++  {
++    aDestination.innerHTML = "";
++    // All the templater does is to populate a given DOM tree with the given
++    // values, so we need to clone the template first.
++    let duplicated = aTemplate.cloneNode(true);
++    (new Templater()).processNode(duplicated, aData);
++    while (duplicated.firstChild) {
++      aDestination.appendChild(duplicated.firstChild);
++    }
++  },
++
++  /**
++   * The CSS groups as displayed by the UI.
++   */
++  createStyleGroupViews: function CssHtmlTree_createStyleGroupViews()
++  {
++    // Take care if you want to change the names of the group titles, these
++    // strings are used in internationalization, so the changes need to be
++    // followed through to the nsIStringBundle of the Inspector
++    // (see inspector.properties).
++    this.styleGroups = [
++      new StyleGroupView(this, 'Fonts and Color', [
++        'color',
++        'font-family',
++        'font-size',
++        'font-size-adjust',
++        'font-stretch',
++        'font-style',
++        'font-variant',
++        'font-weight',
++        'line-height',
++        'text-decoration',
++      ]),
++
++      new StyleGroupView(this, 'Text', [
++        'direction',
++        'letter-spacing',
++        'text-align',
++        'text-indent',
++        'text-rendering',
++        'text-shadow',
++        'text-transform',
++        'vertical-align',
++        'white-space',
++        'word-spacing',
++        'word-wrap',
++        'quotes',
++        '-moz-column-count',
++        '-moz-column-gap',
++        '-moz-column-rule-color',
++        '-moz-column-rule-style',
++        '-moz-column-rule-width',
++        '-moz-column-width',
++      ]),
++
++      new StyleGroupView(this, 'Background', [
++        'background-attachment',
++        'background-clip',
++        'background-color',
++        'background-image',
++        'background-origin',
++        'background-position',
++        'background-repeat',
++        'background-size',
++      ]),
++
++      new StyleGroupView(this, 'Dimensions', [
++        'width',
++        'height',
++        'max-width',
++        'max-height',
++        'min-width',
++        'min-height',
++        'margin-top',
++        'margin-right',
++        'margin-bottom',
++        'margin-left',
++        'padding-top',
++        'padding-right',
++        'padding-bottom',
++        'padding-left',
++        'clip',
++        'resize',
++        '-moz-box-sizing',
++      ]),
++
++      new StyleGroupView(this, 'Positioning and Page Flow', [
++        'top',
++        'right',
++        'bottom',
++        'left',
++        'display',
++        'float',
++        'clear',
++        'position',
++        'visibility',
++        'overflow-x',
++        'overflow-y',
++        'z-index',
++      ]),
++
++      new StyleGroupView(this, 'Borders', [
++        'border-top-width',
++        'border-right-width',
++        'border-bottom-width',
++        'border-left-width',
++        'border-top-color',
++        'border-right-color',
++        'border-bottom-color',
++        'border-left-color',
++        'border-top-style',
++        'border-right-style',
++        'border-bottom-style',
++        'border-left-style',
++        'border-collapse',
++        'border-spacing',
++        'outline-top-width',
++        'outline-right-width',
++        'outline-bottom-width',
++        'outline-left-width',
++        'outline-top-color',
++        'outline-right-color',
++        'outline-bottom-color',
++        'outline-left-color',
++        'outline-top-style',
++        'outline-right-style',
++        'outline-bottom-style',
++        'outline-left-style',
++        'outline-offset',
++        '-moz-border-radius-topleft',
++        '-moz-border-radius-topright',
++        '-moz-border-radius-bottomright',
++        '-moz-border-radius-bottomleft',
++        '-moz-outline-radius-topleft',
++        '-moz-outline-radius-topright',
++        '-moz-outline-radius-bottomright',
++        '-moz-outline-radius-bottomleft',
++      ]),
++
++      new StyleGroupView(this, 'Bullets', [
++        'list-style-image',
++        'list-style-position',
++        'list-style-type',
++      ]),
++
++      new StyleGroupView(this, 'Effects and Other', [
++        'caption-side',
++        'content',
++        'counter-increment',
++        'counter-reset',
++        'cursor',
++        'empty-cells',
++        'image-rendering',
++        'opacity',
++        'pointer-events',
++        'table-layout',
++        '-moz-box-shadow',
++        '-moz-transform',
++        '-moz-transition',
++        '-moz-user-focus',
++        '-moz-user-input',
++        '-moz-user-modify',
++        '-moz-user-select',
++      ]),
++    ];
++  },
++};
++
++/**
++ * A container to give easy access to style group data from the template engine.
++ *
++ * @constructor
++ * @param {CssHtmlTree} aTree the instance of the CssHtmlTree object that we are
++ * working with.
++ * @param {string} aName the style group name.
++ * @param {array} aPropertyNames the list of property names associated to this
++ * style group view.
++ */
++function StyleGroupView(aTree, aName, aPropertyNames)
++{
++  this.tree = aTree;
++  this.name = aName;
++  this.localName = this.tree.strings.GetStringFromName("style.group." +
++    this.name.replace(/ /g, "_"));
++
++  this.properties = [];
++  aPropertyNames.forEach(function(aPropertyName) {
++    this.properties.push(new PropertyView(this.tree, this, aPropertyName));
++  }, this);
++
++  this.closed = true;
++  this.element = null; // Assigned by templating process.
++  this.populated = false;
++}
++
++StyleGroupView.prototype = {
++  /**
++   * The click event handler for the title of the style group view.
++   */
++  click: function StyleGroupView_click()
++  {
++    // TODO: Animate opening/closing. See bug 587752.
++    if (!this.closed) {
++      this.element.style.display = "none";
++      this.toggle.innerHTML = "&#x25B6;";
++      this.closed = true;
++      return;
++    }
++
++    if (!this.populated) {
++      let data = { properties: this.properties };
++      this.tree._template(this.tree.templateProperties, this.element, data);
++      this.populated = true;
++    }
++
++    this.element.style.display = "block";
++    this.toggle.innerHTML = "&#x25BC;";
++    this.closed = false;
++  },
++};
++
++/**
++ * A container to give easy access to property data from the template engine.
++ *
++ * @constructor
++ * @param {CssHtmlTree} aTree the CssHtmlTree instance we are working with.
++ * @param {StyleGroupView} aGroup the StyleGroupView instance we are working
++ * with.
++ * @param {string} aName the CSS property name for which this PropertyView
++ * instance will render the rules.
++ */
++function PropertyView(aTree, aGroup, aName)
++{
++  this.tree = aTree;
++  this.group = aGroup;
++  this.name = aName;
++
++  this.closed = true;
++  this.element = null; // Assigned by templating process.
++  this.populated = false;
++};
++
++PropertyView.prototype = {
++  /**
++   * The click event handler for the property name of the property view.
++   */
++  click: function PropertyView_click()
++  {
++    // TODO: Animate opening/closing. See bug 587752.
++    if (!this.closed) {
++      this.element.style.display = "none";
++      if (this.toggle) {
++        this.toggle.innerHTML = "&#x25B6;";
++      }
++      this.closed = true;
++      return;
++    }
++
++    if (!this.populated) {
++      let data = {
++        cssInfo: this.tree.cssLogic.getCssInfo(this.name),
++
++        statusText: function(aStatus) {
++          return CssLogic.STATUS_NAMES[aStatus];
++        },
++
++        selectorText: function(aSelector) {
++          let result = aSelector;
++          if (aSelector == "@element.style") {
++            result = InspectorUI.cssHtmlTree.strings.
++              GetStringFromName("style.elementSelector");
++          }
++          return result;
++        },
++      };
++      this.tree._template(this.tree.templateRules, this.element, data);
++      this.populated = true;
++    }
++
++    this.element.style.display = "block";
++    if (this.toggle) {
++      this.toggle.innerHTML = "&#x25BC;";
++    }
++    this.closed = false;
++  },
++
++  /**
++   * Get the computed style for the current property.
++   *
++   * @returns {string} the computed style for the current property of the
++   * currently highlighted element.
++   */
++  get value() {
++    return this.tree.cssLogic.getCssInfo(this.name).value;
++  },
++
++  /**
++   * Compute the title of the property view. The title includes the number of
++   * rules that hold the current property.
++   *
++   * @param {nsIDOMElement} aElement reference to the DOM element where the rule
++   * title needs to be displayed.
++   * @returns {string} "" empty string. The rule title is computed
++   * asynchronously.
++   */
++  ruleTitle: function PropertyView_ruleTitle(aElement)
++  {
++    Scheduler.addJob(function() {
++      if (!InspectorUI.isStylePanelOpen) {
++        return;
++      }
++
++      let ruleCount = this.tree.cssLogic.getCssInfo(this.name).ruleCount;
++      if (ruleCount > 1) {
++        let stringName = ruleCount > 1 ? "numberOfRulesPlural" :
++          "numberOfRulesSingular";
++        aElement.textContent = this.tree.strings.
++          formatStringFromName("style.property." + stringName, [ruleCount], 1);
++
++        this.toggle = aElement.ownerDocument.createElement("span");
++        this.toggle.className = "toggle";
++        this.toggle.innerHTML = "&#x25B6;";
++        aElement.appendChild(this.toggle);
++      }
++    }, this);
++
++    return "";
++  },
++};
++
++/**
++ * A quick job scheduler to allow us to do lots of work without choking the
++ * main thread.
++ * TODO: There must be a better way to not choke the main thread. See bug
++ * 587760.
++ */
++let Scheduler = {
++  jobs: [],
++  interJobDelay: 100,
++  _timeout: null,
++
++  /**
++   * Add a job to the scheduler.
++   *
++   * @param {function} aFunction the function you want executed.
++   * @param {object} aScope the scope within which the function will execute.
++   * The "this" object inside the function.
++   */
++  addJob: function Scheduler_addJob(aFunction, aScope)
++  {
++    this.jobs.unshift({ func: aFunction, scope: aScope });
++    this._scheduleNextJob();
++  },
++
++  /**
++   * Schedule the execution of the next job.
++   * @private
++   */
++  _scheduleNextJob: function Scheduler_scheduleNextJob()
++  {
++    let self = this;
++    if (self._timeout) {
++      return;
++    }
++
++    self._timeout = setTimeout(function() {
++      self._timeout = null;
++      if (!self.jobs.length) {
++        return;
++      }
++
++      let job = self.jobs.pop();
++      job.func.apply(job.scope);
++      self._scheduleNextJob();
++    }, this.interJobDelay);
++  },
++}
++
++
++
++////////////////////////////////////////////////////////////////////////////////
++
++/**
++ * A templater that allows one to quickly template DOM nodes.
++ * @constructor
++ */
++function Templater() {
++};
++
++/**
++ * Recursive function to walk the tree processing the attributes as it goes.
++ *
++ * @param {nsIDOMNode} aNode the node to process.
++ * @param {object} aData the data to use for node processing.
++ */
++Templater.prototype.processNode = function Templater_processNode(aNode, aData)
++{
++  let self = this;
++  let recurse = true;
++  // Process attributes.
++  if (aNode.attributes && aNode.attributes.length) {
++    aData.__element = aNode;
++    // It's good to clean up the attributes when we've processed them,
++    // but if we do it straight away, we mess up the array index.
++    let attrs = Array.prototype.slice.call(aNode.attributes);
++    for (let i = 0, n = attrs.length; i < n; i++) {
++      let value = attrs[i].value;
++      let name = attrs[i].name;
++
++      if (name == "save") {
++        // Save attributes are a setter using the node.
++        value = self.stripBraces(value);
++        self.property(value, aData, aNode);
++        aNode.removeAttribute("save");
++      } else if (name == "if") {
++        value = self.stripBraces(value);
++        try {
++          let reply = self.envEval(value, aData, attrs[i].value);
++          recurse = !!reply;
++        } catch (ex) {
++          self.error("Error with '" + value + "': " + ex);
++          recurse = false;
++        }
++        if (!recurse) {
++          aNode.parentNode.removeChild(aNode);
++        }
++        aNode.removeAttribute("if");
++      } else if (name == "foreach") {
++        let paramName = "param";
++        if (value.charAt(0) == "$") {
++          // No custom loop variable name. Use the default: 'param'.
++          value = self.stripBraces(value);
++        } else {
++          // Extract the loop variable name from 'NAME in ${ARRAY}'.
++          let nameArr = value.split(" in ");
++          paramName = nameArr[0].trim();
++          value = self.stripBraces(nameArr[1].trim());
++        }
++        recurse = false;
++        try {
++          let processMember = function(aMember) {
++            let clone = aNode.cloneNode(true);
++            clone.removeAttribute("foreach");
++            aNode.parentNode.insertBefore(clone, aNode);
++            aData[paramName] = aMember;
++            self.processNode(clone, aData);
++            delete aData[paramName];
++          };
++          let reply = self.envEval(value, aData, attrs[i].value);
++          if (Array.isArray(reply)) {
++            reply.forEach(processMember);
++          } else {
++            for (let param in reply) {
++              if (reply.hasOwnProperty(param)) {
++                processMember(param);
++              }
++            }
++          }
++          aNode.parentNode.removeChild(aNode);
++        } catch (ex) {
++          self.error("Error with '" + value + "'" + ex);
++          recurse = false;
++        }
++        aNode.removeAttribute("foreach");
++      } else if (name.substring(0, 2) == "on") {
++        // Event registration relies on property doing a bind.
++        value = self.stripBraces(value);
++        let func = self.property(value, aData);
++        if (typeof func != 'function') {
++          self.error("Expected " + value +
++            " to resolve to a function, but got " + typeof func);
++        }
++        aNode.removeAttribute(name);
++        let capture = aNode.hasAttribute("capture" + name.substring(2));
++        aNode.addEventListener(name.substring(2), func, capture);
++        if (capture) {
++          aNode.removeAttribute("capture" + name.substring(2));
++        }
++      } else {
++        // Replace references in other attributes.
++        let newValue = value.replace(/\$\{[^}]*\}/g, function(aPath) {
++          return self.envEval(aPath.slice(2, -1), aData, value);
++        });
++        // Remove '_' prefix of attribute names so the DOM won't try
++        // to use them before we've processed the template.
++        if (name.charAt(0) == "_") {
++          aNode.removeAttribute(name);
++          aNode.setAttribute(name.substring(1), newValue);
++        } else if (value !== newValue) {
++          attrs[i].value = newValue;
++        }
++      }
++    }
++  }
++
++  // Process child nodes.
++  if (recurse) {
++    self.processChildren(aNode, aData);
++  }
++
++  // Process TextNodes.
++  if (aNode.nodeType == Node.TEXT_NODE) {
++    // Replace references in other attributes.
++    value = aNode.data;
++    // We can't use the string.replace() with function trick because we need
++    // to support functions that return DOM nodes, so we can't have the
++    // conversion to a string.
++    // Instead we process the string as an array of parts. In order to split
++    // the string up, we first replace ${ with \uF001$ and } with \uF002
++    // We can then split using \uF001 or \uF002 to get an array of strings
++    // where scripts are prefixed with $.
++    // \uF001 and \uF002 are just unicode chars reserved for private use.
++    value = value.replace(/\$\{([^}]*)\}/g, '\uF001$$$1\uF002');
++    let parts = value.split(/\uF001|\uF002/);
++    if (parts.length > 1) {
++      parts.forEach(function(aPart) {
++        if (!aPart) {
++          return;
++        }
++        if (aPart.charAt(0) == '$') {
++          aPart = self.envEval(aPart.slice(1), aData, aNode.data);
++        }
++        // Hmmm isDOMElement ...
++        if (typeof aPart.cloneNode != "function") {
++          aPart = aNode.ownerDocument.createTextNode(aPart.toString());
++        }
++        aNode.parentNode.insertBefore(aPart, aNode);
++      });
++      aNode.parentNode.removeChild(aNode);
++    }
++  }
++};
++
++/**
++ * Loop through the child nodes of the given node, calling processNode on them
++ * all. Note this first clones the set of nodes, so the set of nodes that we
++ * visit will be unaffected by additions or removals.
++ * @param {nsIDOMNode} aNode The node from which to find children to visit.
++ * @param {object} aData The data to pass to processNode.
++ */
++Templater.prototype.processChildren = function Templater_processChildren(aNode,
++  aData)
++{
++  let children = Array.prototype.slice.call(aNode.childNodes);
++  for (let i = 0, n = children.length; i < n; i++) {
++    this.processNode(children[i], aData);
++  }
++};
++
++/**
++ * Warn of string does not begin '${' and end '}'.
++ *
++ * @param {string} aString the string to check.
++ * @returns {string} The string stripped of ${ and }, or untouched if it does
++ * not match.
++ */
++Templater.prototype.stripBraces = function Templater_stripBraces(aString)
++{
++  if (!aString.match(/^\$\{.+\}$/)) {
++    this.error("Expected " + aString + " to match ${...}");
++    return aString;
++  }
++  return aString.slice(2, -1);
++};
++
++/**
++ * Combined getter and setter that works with a path through some data set.
++ * For example:
++ * <ul>
++ * <li>property('a.b', { a: { b: 99 }}); // returns 99
++ * <li>property('a', { a: { b: 99 }}); // returns { b: 99 }
++ * <li>property('a', { a: { b: 99 }}, 42); // returns 99 and alters the
++ * input data to be { a: { b: 42 }}
++ * </ul>
++ * @param {array|string} aPath An array of strings indicating the path through
++ * the data, or a string to be cut into an array using <tt>split(".")</tt>.
++ * @param {object} aData An object to look in for the <tt>aPath</tt> argument.
++ * @param {mixed} [aNewValue] (optional) If defined, this value will replace the
++ * original value for the data at the path specified.
++ * @returns {mixed} The value pointed to by <tt>aPath</tt> before any
++ * <tt>aNewValue</tt> is applied.
++ */
++Templater.prototype.property = function Templater_property(aPath, aData,
++  aNewValue)
++{
++  if (typeof aPath == "string") {
++    aPath = aPath.split(".");
++  }
++  let value = aData[aPath[0]];
++  if (aPath.length == 1) {
++    if (aNewValue !== undefined) {
++      aData[aPath[0]] = aNewValue;
++    }
++    if (typeof value == "function") {
++      return function() { return value.apply(aData, arguments); }
++    }
++    return value;
++  }
++  if (!value) {
++    this.error("Can't find path=" + aPath + " in data=" + aData);
++    return null;
++  }
++  return this.property(aPath.slice(1), value, aNewValue);
++};
++
++/**
++ * Like eval, but that creates a context of the variables in
++ * <tt>aEnvironment</tt> in which the script is evaluated.
++ * WARNING: This script uses 'with' which is generally regarded to be evil.
++ * The alternative is to create a Function at runtime that takes X parameters
++ * according to the X keys in the aEnvironment object, and then call that
++ * function using the values in the aEnvironment object. This is likely to be
++ * slow, but workable.
++ *
++ * @param {string} aScript The string to be evaluated.
++ * @param {object} aEnvironment The environment in which to eval the script.
++ * @param {string} [aContext] Optional debugging string in case of failure.
++ * @returns {mixed} The return value of the script, or the error message if the
++ * script execution failed.
++ */
++Templater.prototype.envEval = function Templater_envEval(aScript, aEnvironment,
++  aContext)
++{
++  with (aEnvironment) {
++    try {
++      return eval(aScript);
++    } catch (ex) {
++      let message = "Template error evaluating '" + aScript + "'";
++      if (aContext && aScript != aContext) {
++        message += " within '" + aContext + "'";
++      }
++      this.error(message + ": " + ex);
++      return message;
++    }
++  }
++};
++
++/**
++ * A generic way of reporting errors, for easy overloading in different
++ * environments.
++ *
++ * @param {string} aError the error message to report.
++ */
++Templater.prototype.error = function Templater_error(aError)
++{
++  Cu.reportError(aError);
++};
+diff --git a/browser/base/content/csshtmltree.xhtml b/browser/base/content/csshtmltree.xhtml
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/csshtmltree.xhtml
+@@ -0,0 +1,229 @@
++<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
++  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
++
++<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
++<head>
++  <!-- The title is localized when the Style panel is open by inspector.js -->
++  <title>Style</title>
++
++  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
++  <style type="text/css">
++    body {
++      font-family: Lucida Grande, sans-serif;
++      font-size: 11px;
++      background: #EEE;
++    }
++
++    span.path {
++      font-size: 11px;
++      word-spacing: -1px;
++    }
++    span.path_element, span.path_element_link {
++      -moz-border-radius: 2px;
++      padding: 2px 3px;
++      text-shadow: #FFF 0px 1px 0px;
++      font-weight: bold;
++      font-size: 11px;
++    }
++    a.path_element {
++      background: -moz-linear-gradient(top, #BBE, #99C);
++    }
++    a.path_element:last-of-type {
++      background: -moz-linear-gradient(top, #FFC, #DD8);
++    }
++    span.path_crumb:last-of-type {
++      color: red;
++    }
++    div#header {
++      width: 95%;
++      padding: 5px;
++    }
++    td.sheet_line {
++      text-align: end;
++    }
++    td#path_list {
++      text-align: start;
++    }
++    div#header label {
++      font-weight: bold;
++    }
++    #sheets {
++      -moz-margin-end: 10px;
++      margin-top: 5px;
++    }
++    h1 {
++      font-size: 13px;
++      padding: 2px 10px;
++      margin: 0px;
++      background: -moz-linear-gradient(top, #BBB, #999);
++      -moz-border-radius: 2px;
++      text-shadow: #FFF 0px 1px 0px;
++    }
++    h1 .toggle {
++      font-size: 11px;
++      float: right;
++      color: #333;
++    }
++
++    div.property-header {
++      padding: 2px 5px;
++      background: -moz-linear-gradient(top, #F8F8F8, #E8E8E8);
++      color: #666;
++    }
++    /* Take away these two :visited rules to get a core dumper */
++    .link { color: #55A;  }
++    .link:visited { color: #55A;  }
++    a.link { text-decoration: none; }
++    a.link:visited { text-decoration: none; }
++    span.rule-count {
++      float: right;
++    }
++    .rule-count .toggle {
++      margin-left: 6px;
++    }
++    span.property-name {
++      font-size: 12px;
++      font-weight: bold;
++      -moz-padding-end: 4px;
++      color: #000;
++    }
++    span.property-value {
++      -moz-padding-end: 5px;
++      font-size: 10px;
++    }
++    div.group {
++      margin-top: 10px;
++    }
++    div.group, div#header {
++      background: #FFF;
++      border-color: #E1E1E1;
++      border-style: solid;
++      border-width: 1px;
++      -moz-box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
++      -moz-border-radius: 4px 4px 4px 4px;
++    }
++
++    table.rules {
++      -moz-margin-start: 20px;
++      max-height: 150px;
++      overflow-y: auto;
++    }
++    td.rule-text, td.rule-status {
++      white-space: nowrap;
++      overflow-x: hidden;
++    }
++    .rule-specificity {
++      display: none;
++    }
++    .showSpecificity .rule-specificity {
++      display: table-cell;
++    }
++  </style>
++</head>
++<body role="application">
++
++<!-- The output from #templateHeader (below) is inserted here. -->
++<div id="header">
++</div>
++
++<!-- The output from #templateGroups (below) is inserted here. -->
++<div id="groups">
++</div>
++
++<!--
++To visually debug the templates without running firefox, alter the display:none
++-->
++<div style="display:none;">
++  <!--
++  The header at the top of the window showing options and what we're looking at
++  templateHeader needs data like this:
++  {
++    path_elements: [ 'div[0]', '#main', '#content', 'p[4]' ],
++    sheets: [ { source: 'foo.css' }, { source: 'bar.css' }, ... ],
++    toggleSpecificity: function() {} // toggle the display of specificity data
++  }
++  -->
++  <div id="templateHeader">
++    <table>
++      <tr>
++        <td class="path_line">
++          <!-- TODO: Looking at styling is broken. See bug 585566. -->
++          <label>${str.lookingAtLabel}</label>
++          <span class="path" foreach="element in ${path_elements}">
++            <a href="#" class="path_element">${element}</a>
++            <span class="path_crumb">&#x27EB;</span>
++          </span>
++        </td>
++      </tr>
++      <tr>
++        <td class="sheet_line">
++          <label for="specificity">${str.specificityLabel}</label>
++          <input _id="specificity" type="checkbox" save="${specificity}"
++              onchange="${toggleSpecificity}"/>
++          <a target="_blank" class="link"
++              href="https://developer.mozilla.org/en/CSS/Specificity">${str.specificityHelpLink}</a>
++        </td>
++      </tr>
++    </table>
++  </div>
++
++  <!--
++  Template for the top level groups of properties
++  templateGroups needs data like this:
++  {
++    styleGroups: [ // A reference to CssHtmlTree.styleGroups
++      ..., // Instances of StyleGroupView from csshtmltree.js
++    ],
++  }
++  -->
++  <div id="templateGroups">
++    <div class="group" foreach="group in ${styleGroups}">
++      <h1 onclick="${group.click}">
++        ${group.localName}
++        <span class="toggle" save="${group.toggle}">&#x25B6;</span>
++      </h1>
++      <div save="${group.element}"></div>
++    </div>
++  </div>
++
++  <!--
++  Inside each group of properties we have the properties themselves
++  templateProperties needs data like this:
++  {
++    property: [ ..., ] // Array of PropertyViews from csshtmltree.js
++  }
++  -->
++  <div id="templateProperties">
++    <div foreach="property in ${properties}">
++      <div class="property-header open" onclick="${property.click}">
++        <span class="property-name">${property.name}</span>
++        <span class="property-value">${property.value}</span>
++        <span class="rule-count link">${property.ruleTitle(__element)}</span>
++      </div>
++      <table class="rules" save="${property.element}"></table>
++    </div>
++  </div>
++
++  <!--
++  Inside each property we have a list of rules that affect that property
++  templateRules needs data like this:
++  {
++    cssInfo: ..., // from cssLogic.getCssInfo(property)
++    statusText: function(status) {}, // convert rule.status to readable text
++  }
++  The table element is only there do the DOM doesn't muck with the tr
++  -->
++  <table id="templateRules">
++    <tr foreach="rule in ${cssInfo.rules}">
++      <td class="rule-text">${selectorText(rule.selector)} &#x2192;
++        ${rule.value}</td>
++      <td class="rule-specificity">${rule.specificity}</td>
++      <td><a target="_blank" href="view-source:${rule.href}"
++          class="link">${rule.source}</a></td>
++      <td class="rule-status">${statusText(rule.status)}</td>
++    </tr>
++  </table>
++</div>
++
++</body>
++</html>
+diff --git a/browser/base/content/inspector.js b/browser/base/content/inspector.js
+--- a/browser/base/content/inspector.js
++++ b/browser/base/content/inspector.js
+@@ -367,17 +367,17 @@ function InspectorTreeView(aWindow)
+   this.tree.view = this.view;
+   this.contentWindow = aWindow;
+   this.view.rootNode = aWindow.document;
+   this.view.rebuild();
+ }
+ 
+ InspectorTreeView.prototype = {
+   get editable() { return false; },
+-  get selection() { return this.view.selection; },
++  get selection() { return this.view ? this.view.selection : null; },
+ 
+   /**
+    * Destroy the view.
+    */
+   destroy: function ITV_destroy()
+   {
+     this.tree.view = null;
+     this.view = null;
+@@ -396,32 +396,32 @@ InspectorTreeView.prototype = {
+   getCellText: function ITV_getCellText(aRow, aCol)
+   {
+     return this.view.getCellText(aRow, aCol);
+   },
+ 
+   /**
+    * Get the index of the selected row.
+    *
+-   * @returns number
++   * @returns number the index of the selected row, or -1 if no row is selected.
+    */
+   get selectionIndex()
+   {
+-    return this.selection.currentIndex;
++    return this.selection ? this.selection.currentIndex : -1;
+   },
+ 
+   /**
+    * Get the corresponding node for the currently-selected row in the tree.
+    *
+    * @returns DOMNode
+    */
+   get selectedNode()
+   {
+     let rowIndex = this.selectionIndex;
+-    return this.view.getNodeFromRowIndex(rowIndex);
++    return rowIndex > -1 ? this.view.getNodeFromRowIndex(rowIndex) : null;
+   },
+ 
+   /**
+    * Set the selected row in the table to the specified index.
+    *
+    * @param anIndex
+    *        The index to set the selection to.
+    */
+@@ -522,16 +522,33 @@ var InspectorUI = {
+   _showDOMPanel: false,
+   highlightColor: "#EEEE66",
+   highlightThickness: 4,
+   highlightOpacity: 0.4,
+   selectEventsSuppressed: false,
+   inspecting: false,
+ 
+   /**
++   * The Stylesheet inspection logic. Setup by init()
++   * An instance of CssLogic (see csslogic.js)
++   */
++  cssLogic: null,
++
++  /**
++   * An instance of CssHtmlTree (see csshtmltree.js). Setup by init()
++   */
++  cssHtmlTree: null,
++
++  /**
++   * The visual floating window that displays style information.
++   * i.e. this is a reference to panel#inspector-style-panel from browser.xul
++   */
++  stylePanel: null,
++
++  /**
+    * Toggle the inspector interface elements on or off.
+    *
+    * @param aEvent
+    *        The event that requested the UI change. Toolbar button or menu.
+    */
+   toggleInspectorUI: function IUI_toggleInspectorUI(aEvent)
+   {
+     if (this.isPanelOpen) {
+@@ -550,17 +567,18 @@ var InspectorUI = {
+     if (this.inspecting) {
+       this.stopInspecting();
+     } else {
+       this.startInspecting();
+     }
+   },
+ 
+   /**
+-   * Toggle the style panel. Invoked from the toolbar's Style button.
++   * Toggle the style panel.
++   * Invoked from the toolbar's Style button (see browser-sets.inc)
+    */
+   toggleStylePanel: function IUI_toggleStylePanel()
+   {
+     if (this._showStylePanel) {
+       this.stylePanel.hidePopup();
+     } else {
+       this.openStylePanel();
+       if (this.treeView.selectedNode) {
+@@ -577,17 +595,16 @@ var InspectorUI = {
+    */
+   get isPanelOpen()
+   {
+     return this.treePanel && this.treePanel.state == "open";
+   },
+ 
+   /**
+    * Is the style panel open?
+-   *
+    * @returns boolean
+    */
+   get isStylePanelOpen()
+   {
+     return this.stylePanel && this.stylePanel.state == "open";
+   },
+ 
+   /**
+@@ -614,16 +631,21 @@ var InspectorUI = {
+   /**
+    * Open the style panel if not already onscreen.
+    */
+   openStylePanel: function IUI_openStylePanel()
+   {
+     if (!this.stylePanel) {
+       this.stylePanel = document.getElementById("inspector-style-panel");
+       this.stylePanel.hidden = false;
++
++      // Set the localized document title for the Style browser.
++      let styleWin = document.getElementById("inspector-style-browser");
++      let title = styleWin.contentDocument.getElementsByTagName("title")[0];
++      title.textContent = this.stylePanel.getAttribute("label");
+     }
+     if (!this.isStylePanelOpen) {
+       // open at top right of browser panel, offset by 20px from top.
+       this.stylePanel.openPopup(this.browser, "end_before", 0, 20, false, false);
+       // size panel to 200px wide by half browser height - 60.
+       this.stylePanel.sizeTo(200, this.win.outerHeight / 2 - 60);
+     }
+   },
+@@ -653,34 +675,45 @@ var InspectorUI = {
+    * Open inspector UI. tree, style and DOM panels if enabled. Add listeners for
+    * document scrolling, resize and tabContainer.TabSelect.
+    */
+   openInspectorUI: function IUI_openInspectorUI()
+   {
+     // initialization
+     this.browser = gBrowser.selectedBrowser;
+     this.win = this.browser.contentWindow;
++
++    if (!this.inspectorBundle) {
++      this.inspectorBundle = Services.strings.
++        createBundle("chrome://browser/locale/inspector.properties");
++    }
++
+     if (!this.style) {
+       Cu.import("resource:///modules/stylePanel.jsm", this);
+       this.style.initialize();
+     }
+ 
+     // open inspector UI
+     if (this._showTreePanel) {
+       this.openTreePanel();
+     }
+     if (this._showStylePanel) {
+-      this.styleBox = document.getElementById("inspector-style-listbox");
+-      this.clearStylePanel();
++      if (!CssLogic.STATUS_NAMES.length) {
++        CssLogic.cacheStatusNames(this.inspectorBundle);
++      }
++
++      let styleWin = document.getElementById("inspector-style-browser");
++      this.cssLogic = new CssLogic(this.style, this.inspectorBundle);
++      this.cssHtmlTree = new CssHtmlTree(styleWin, this.cssLogic,
++        this.inspectorBundle);
+       this.openStylePanel();
+     }
+     if (this._showDOMPanel) {
+       this.openDOMPanel();
+     }
+-    this.inspectorBundle = Services.strings.createBundle("chrome://browser/locale/inspector.properties");
+     this.initializeHighlighter();
+     this.startInspecting();
+     this.win.document.addEventListener("scroll", this, false);
+     this.win.addEventListener("resize", this, false);
+     gBrowser.tabContainer.addEventListener("TabSelect", this, false);
+     this.inspectCmd.setAttribute("checked", true);
+   },
+ 
+@@ -752,116 +785,32 @@ var InspectorUI = {
+    * Create treeView object from content window.
+    */
+   createDocumentModel: function IUI_createDocumentModel()
+   {
+     this.treeView = new InspectorTreeView(this.win);
+   },
+ 
+   /**
+-   * add a new item to the listbox
+-   *
+-   * @param aLabel
+-   *        A bit of text to put in the listitem's label attribute.
+-   * @param aType
+-   *        The type of item.
+-   * @param content
+-   *        Text content or value of the listitem.
+-   */
+-  addStyleItem: function IUI_addStyleItem(aLabel, aType, aContent)
+-  {
+-    let itemLabelString = this.inspectorBundle.GetStringFromName("style.styleItemLabel");
+-    let item = document.createElement("listitem");
+-
+-    // Do not localize these strings
+-    let label = aLabel;
+-    item.className = "style-" + aType;
+-    if (aContent) {
+-      label = itemLabelString.replace("#1", aLabel);
+-      label = label.replace("#2", aContent);
+-    }
+-    item.setAttribute("label", label);
+-
+-    this.styleBox.appendChild(item);
+-  },
+-
+-  /**
+-   * Create items for each rule included in the given array.
+-   *
+-   * @param aRules
+-   *        an array of rule objects
+-   */
+-  createStyleRuleItems: function IUI_createStyleRuleItems(aRules)
+-  {
+-    let selectorLabel = this.inspectorBundle.GetStringFromName("style.selectorLabel");
+-
+-    aRules.forEach(function(rule) {
+-      this.addStyleItem(selectorLabel, "selector", rule.id);
+-      rule.properties.forEach(function(property) {
+-        if (property.overridden)
+-          return; // property marked overridden elsewhere
+-        // Do not localize the strings below this line
+-        let important = "";
+-        if (property.important)
+-          important += " !important";
+-        this.addStyleItem(property.name, "property", property.value + important);
+-      }, this);
+-    }, this);
+-  },
+-
+-  /**
+-   * Create rule items for each section as well as the element's style rules,
+-   * if any.
+-   *
+-   * @param aRules
+-   *        Array of rules corresponding to the element's style object.
+-   * @param aSections
+-   *        Array of sections encapsulating the inherited rules for selectors
+-   *        and elements.
+-   */
+-  createStyleItems: function IUI_createStyleItems(aRules, aSections)
+-  {
+-    this.createStyleRuleItems(aRules);
+-    let inheritedString = 
+-        this.inspectorBundle.GetStringFromName("style.inheritedFrom");
+-    aSections.forEach(function(section) {
+-      let sectionTitle = section.element.tagName;
+-      if (section.element.id)
+-        sectionTitle += "#" + section.element.id;
+-      let replacedString = inheritedString.replace("#1", sectionTitle);
+-      this.addStyleItem(replacedString, "section");
+-      this.createStyleRuleItems(section.rules);
+-    }, this);
+-  },
+-
+-  /**
+-   * Remove all items from the Style Panel's listbox.
+-   */
+-  clearStylePanel: function IUI_clearStylePanel()
+-  {
+-    for (let i = this.styleBox.childElementCount; i >= 0; --i)
+-      this.styleBox.removeItemAt(i);
+-  },
+-
+-  /**
+    * Update the contents of the style panel with styles for the currently
+    * inspected node.
+-   *
+-   * @param aNode
+-   *        The highlighted node to get styles for.
++   * @param nsIDOMElement aElement The highlighted node to get styles for.
+    */
+-  updateStylePanel: function IUI_updateStylePanel(aNode)
++  updateStylePanel: function IUI_updateStylePanel(aElement)
+   {
+-    if (this.inspecting || !this.isStylePanelOpen)
++    if (this.inspecting || !this.isStylePanelOpen) {
+       return;
+-    let rules = [], styleSections = [], usedProperties = {};
+-    this.style.getInheritedRules(aNode, styleSections, usedProperties);
+-    this.style.getElementRules(aNode, rules, usedProperties);
+-    this.clearStylePanel();
+-    this.createStyleItems(rules, styleSections);
++    }
++
++    try {
++      this.cssLogic.highlight(aElement);
++      this.cssHtmlTree.highlight(aElement);
++    } catch (ex) {
++      this._log("error in InspectorUI.updateStylePanel(): " + ex);
++    }
+   },
+ 
+   /////////////////////////////////////////////////////////////////////////
+   //// Event Handling
+ 
+   /**
+    * Main callback handler for events.
+    *
+@@ -942,19 +891,26 @@ var InspectorUI = {
+   //// Utility Methods
+ 
+   /**
+    * inspect the given node, highlighting it on the page and selecting the
+    * correct row in the tree panel
+    *
+    * @param aNode
+    *        the element in the document to inspect
++   * @param aForce
++   *        force the refresh of all panels for the inspected element.
+    */
+-  inspectNode: function IUI_inspectNode(aNode)
++  inspectNode: function IUI_inspectNode(aNode, aForce)
+   {
++    if (this.treeView.selection && this.treeView.selectedNode == aNode &&
++      !aForce) {
++      return;
++    }
++
+     this.highlighter.highlightNode(aNode);
+     this.selectEventsSuppressed = true;
+     this.treeView.selectedNode = aNode;
+     this.selectEventsSuppressed = false;
+     this.updateStylePanel(aNode);
+   },
+ 
+   /**
+diff --git a/browser/base/content/test/Makefile.in b/browser/base/content/test/Makefile.in
+--- a/browser/base/content/test/Makefile.in
++++ b/browser/base/content/test/Makefile.in
+@@ -148,16 +148,18 @@ _BROWSER_FILES = \
+                  browser_gestureSupport.js \
+                  browser_getshortcutoruri.js \
+                  browser_inspector_initialization.js \
+                  browser_inspector_treeSelection.js \
+                  browser_inspector_highlighter.js \
+                  browser_inspector_stylePanel.js \
+                  browser_inspector_iframeTest.js \
+                  browser_inspector_scrolling.js \
++                 browser_inspector_cssinfo_order.js \
++                 browser_inspector_stylepanel_groupview.js \
+                  browser_pageInfo.js \
+                  browser_page_style_menu.js \
+                  browser_pinnedTabs.js \
+                  browser_plainTextLinks.js \
+                  browser_pluginnotification.js \
+                  browser_popupUI.js \
+                  browser_relatedTabs.js \
+                  browser_sanitize-passwordDisabledHosts.js \
+diff --git a/browser/base/content/test/browser_inspector_cssinfo_order.js b/browser/base/content/test/browser_inspector_cssinfo_order.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_inspector_cssinfo_order.js
+@@ -0,0 +1,117 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Inspector Initializationa and Shutdown Tests.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Rob Campbell <rcampbell@mozilla.com>
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++let doc;
++
++function startInspectorTests()
++{
++  ok(InspectorUI, "InspectorUI variable exists");
++  document.addEventListener("popupshown", runInspectorTests, false);
++  InspectorUI.toggleInspectorUI();
++}
++
++function runInspectorTests(evt)
++{
++  if (evt.target.id != "inspector-style-panel")
++    return true;
++  document.removeEventListener(evt.type, arguments.callee, false);
++
++  ok(InspectorUI.inspecting, "Inspector is highlighting");
++  ok(InspectorUI.isPanelOpen, "Inspector Tree Panel is open");
++  ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
++
++  InspectorUI.toggleInspection();
++  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++
++  let div = doc.getElementsByTagName("div")[0];
++  ok(div, "we have the div element");
++
++  InspectorUI.inspectNode(div);
++
++  let cssInfo = InspectorUI.cssLogic.getCssInfo("color");
++  let rules = cssInfo.rules;
++
++  ok(cssInfo, "we have cssInfo('color')");
++  ok(Array.isArray(rules), "cssInfo.rules property is an array");
++  is(rules.length, 3, "rules.length = 3");
++
++  // Check rules order.
++  is(rules[0].selector, ".test", "first rule: .test");
++  is(rules[1].selector, "div", "second rule: div");
++  is(rules[2].selector, "#test", "third rule: #test");
++
++  document.addEventListener("popuphidden", finishInspectorTests, false);
++  InspectorUI.toggleInspectorUI();
++}
++
++function finishInspectorTests(evt)
++{
++  if (evt.target.id != "inspector-style-panel")
++    return true;
++
++  document.removeEventListener(evt.type, arguments.callee, false);
++
++  ok(!InspectorUI.isStylePanelOpen, "Inspector Style Panel is closed");
++  ok(!InspectorUI.isPanelOpen, "Inspector Tree Panel is closed");
++  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++
++  gBrowser.removeCurrentTab();
++  finish();
++}
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function(evt) {
++    gBrowser.selectedBrowser.removeEventListener(evt.type, arguments.callee,
++      true);
++    doc = content.document;
++    waitForFocus(startInspectorTests, content);
++  }, true);
++
++  content.location = "data:text/html,<!DOCTYPE html><html><head><style> " +
++    ".test, #test { color: green } div { color: blue } " +
++    "</style></head><body>" +
++    "<div class='test'>cssInfo.rules order test for Inspector</div>" +
++    "</body></html>";
++}
++
+diff --git a/browser/base/content/test/browser_inspector_initialization.js b/browser/base/content/test/browser_inspector_initialization.js
+--- a/browser/base/content/test/browser_inspector_initialization.js
++++ b/browser/base/content/test/browser_inspector_initialization.js
+@@ -43,17 +43,17 @@ function startInspectorTests()
+ {
+   ok(InspectorUI, "InspectorUI variable exists");
+   document.addEventListener("popupshown", runInspectorTests, false);
+   InspectorUI.toggleInspectorUI();
+ }
+ 
+ function runInspectorTests(evt)
+ {
+-  if (evt.target.id != "inspector-panel")
++  if (evt.target.id != "inspector-style-panel")
+     return true;
+   document.removeEventListener("popupshown", runInspectorTests, false);
+   document.addEventListener("popuphidden", finishInspectorTests, false);
+   ok(InspectorUI.inspecting, "Inspector is highlighting");
+   ok(InspectorUI.isPanelOpen, "Inspector Tree Panel is open");
+   ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
+   todo(InspectorUI.isDOMPanelOpen, "Inspector DOM Panel is open");
+   InspectorUI.toggleInspectorUI();
+diff --git a/browser/base/content/test/browser_inspector_stylePanel.js b/browser/base/content/test/browser_inspector_stylePanel.js
+--- a/browser/base/content/test/browser_inspector_stylePanel.js
++++ b/browser/base/content/test/browser_inspector_stylePanel.js
+@@ -17,111 +17,132 @@
+  *
+  * The Initial Developer of the Original Code is
+  * The Mozilla Foundation.
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Rob Campbell <rcampbell@mozilla.com> (original author)
++ *   Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+  * decision by deleting the provisions above and replace them with the notice
+  * and other provisions required by the GPL or the LGPL. If you do not delete
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ let doc;
+-let spans;
+-let testGen;
+ 
+ function createDocument()
+ {
+-  doc.body.innerHTML = '<div id="first" style="{ margin: 10em; ' +
+-    'font-size: 14pt; font-family: helvetica, sans-serif; color: #AAA}">\n' +
++  doc.body.innerHTML = '<style type="text/css"><!-- ' +
++    'span { font-variant: small-caps } </style> ' +
++    '<div id="first" style="margin: 10em; ' +
++    'font-size: 14pt; font-family: helvetica, sans-serif; color: #AAA">\n' +
+     '<h1>Some header text</h1>\n' +
+-    '<p id="salutation" style="{font-size: 12pt}">hi.</p>\n' +
+-    '<p id="body" style="{font-size: 12pt}">I am a test-case. This text exists ' +
+-    'solely to provide some things to <span style="{color: yellow}">' +
+-    'highlight</span> and <span style="{font-weight: bold}">count</span> ' +
++    '<p id="salutation" style="font-size: 12pt">hi.</p>\n' +
++    '<p id="body" style="font-size: 12pt">I am a test-case. This text exists ' +
++    'solely to provide some things to <span style="color: yellow">' +
++    'highlight</span> and <span style="font-weight: bold">count</span> ' +
+     'style list-items in the box at right. If you are reading this, ' +
+     'you should go do something else instead. Maybe read a book. Or better ' +
+     'yet, write some test-cases for another bit of code. ' +
+-    '<span style="{font-style: italic}">Maybe more inspector test-cases!</span></p>\n' +
++    '<span style="font-style: italic">Maybe more inspector test-cases!</span></p>\n' +
+     '<p id="closing">end transmission</p>\n' +
+     '</div>';
+   doc.title = "Inspector Style Test";
+-  setupStyleTests();
+-}
+ 
+-function setupStyleTests()
+-{
+-  spans = doc.querySelectorAll("span");
+-  ok(spans, "captain, we have the spans");
+   document.addEventListener("popupshown", runStyleTests, false);
+   InspectorUI.openInspectorUI();
+ }
+ 
+ function spanGenerator()
+ {
+   for (var i = 0; i < spans.length; ++i) {
+     InspectorUI.inspectNode(spans[i]);
+     yield;
+   }
+ }
+ 
+ function runStyleTests(evt)
+ {
+   if (evt.target.id != "inspector-style-panel")
+     return true;
+-  document.removeEventListener("popupshown", runStyleTests, false);
+-  document.addEventListener("popupshown", performTestComparisons, false);
++  document.removeEventListener(evt.type, arguments.callee, false);
++
++  ok(InspectorUI._showStylePanel, "_showStylePanel");
++  is(InspectorUI.isStylePanelOpen, InspectorUI._showStylePanel,
++    "style panel matches _showStylePanel?");
++
+   InspectorUI.stopInspecting();
+-  testGen = spanGenerator();
+-  testGen.next();
++  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++
++  var spans = doc.querySelectorAll("span");
++  ok(spans, "captain, we have the spans");
++
++  for (var i = 0, n = spans.length; i < n; i++) {
++    InspectorUI.inspectNode(spans[i]);
++
++    is(InspectorUI.treeView.selectedNode, spans[i], "selection");
++    is(InspectorUI.treeView.selectedNode,
++      InspectorUI.cssHtmlTree.viewedElement,
++      "style panel node matches the selected node");
++    is(InspectorUI.cssHtmlTree.viewedElement,
++      InspectorUI.cssLogic.viewedElement,
++      "cssLogic node matches the cssHtmlTree node");
++
++    // The Fonts and Color group.
++    ok(groupRuleCount(0) > 0, "we have rules for the current span");
++  }
++
++  finishUp();
+ }
+ 
+-function performTestComparisons(evt)
++function groupRuleCount(groupId)
+ {
+-  if (evt.target.id != "highlighter-panel")
+-    return true;
++  var groupRules = 0;
+ 
+-  ok(InspectorUI.treeView.selectedNode, "selection");
+-  ok(InspectorUI._showStylePanel, "_showStylePanel");
+-  is(InspectorUI.isStylePanelOpen, InspectorUI._showStylePanel, "style panel matches _showStylePanel?");
+-  ok(InspectorUI.highlighter.isHighlighting, "panel is highlighting");
+-  ok(InspectorUI.styleBox.itemCount > 0, "styleBox has items");
++  var group = InspectorUI.cssHtmlTree.styleGroups[groupId];
+ 
+-  try {
+-    testGen.next();
+-  } catch(StopIteration) {
+-    document.removeEventListener("popupshown", performTestComparisons, false);
+-    finishUp();
+-  }
++  ok(group, "we have a StyleGroupView");
++  ok(group.tree, "we have the CssHtmlTree object");
++
++  var cssLogic = group.tree.cssLogic;
++
++  ok(cssLogic, "we have the CssLogic object");
++  ok(group.properties.length > 0, "the StyleGroupView has properties");
++
++  group.properties.forEach(function (property) {
++    groupRules += cssLogic.getCssInfo(property.name).ruleCount;
++  });
++
++  return groupRules;
+ }
+ 
+-function finishUp() {
++function finishUp()
++{
+   InspectorUI.closeInspectorUI();
+   gBrowser.removeCurrentTab();
+   finish();
+ }
+ 
+ function test()
+ {
+   waitForExplicitFinish();
+   gBrowser.selectedTab = gBrowser.addTab();
+-  gBrowser.selectedBrowser.addEventListener("load", function() {
+-    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++  gBrowser.selectedBrowser.addEventListener("load", function(evt) {
++    gBrowser.selectedBrowser.removeEventListener(evt.type, arguments.callee, true);
+     doc = content.document;
+     waitForFocus(createDocument, content);
+   }, true);
+-  
+-  content.location = "data:text/html,basic tests for inspector";
++
++  content.location = "data:text/html,basic style panel tests for inspector";
+ }
+ 
+diff --git a/browser/base/content/test/browser_inspector_stylepanel_groupview.js b/browser/base/content/test/browser_inspector_stylepanel_groupview.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_inspector_stylepanel_groupview.js
+@@ -0,0 +1,156 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Inspector Initializationa and Shutdown Tests.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Rob Campbell <rcampbell@mozilla.com>
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++let doc;
++let panelDoc;
++let groupTitle;
++
++function startInspectorTests()
++{
++  ok(InspectorUI, "InspectorUI variable exists");
++  document.addEventListener("popupshown", runInspectorTests, false);
++  InspectorUI.toggleInspectorUI();
++}
++
++function runInspectorTests(evt)
++{
++  if (evt.target.id != "inspector-style-panel")
++    return true;
++  document.removeEventListener(evt.type, arguments.callee, false);
++
++  ok(InspectorUI.inspecting, "Inspector is highlighting");
++  ok(InspectorUI.isPanelOpen, "Inspector Tree Panel is open");
++  ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
++
++  InspectorUI.toggleInspection();
++  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++
++  let div = doc.getElementsByTagName("div")[0];
++  ok(div, "we have the div element");
++
++  InspectorUI.inspectNode(div);
++
++  panelDoc = document.getElementById("inspector-style-browser").contentDocument;
++  ok(panelDoc, "we have the style panel document");
++
++  groupTitle = panelDoc.querySelector("#groups > .group:first-child > h1");
++  ok(groupTitle, "we have the group title element");
++
++  let group = groupTitle.parentNode;
++  let properties = group.querySelector("div > div > .property-header");
++  ok(!properties, "the group view is closed, no properties displayed");
++
++  groupTitle.addEventListener("click", groupTitleClicked1, false);
++
++  EventUtils.sendMouseEvent({type: "click"}, groupTitle, panelDoc.defaultView);
++}
++
++function groupTitleClicked1(evt)
++{
++  evt.target.removeEventListener(evt.type, arguments.callee, false);
++
++  let group = groupTitle.parentNode;
++  let properties = group.querySelector("div > div > .property-header");
++  ok(properties, "the group view is open, we found a property");
++
++  InspectorUI.inspectNode(doc.body);
++
++  // Search again for the group title. The elements have been recreated.
++  groupTitle = panelDoc.querySelector("#groups > .group:first-child > h1");
++  ok(groupTitle, "we found the group title element again");
++
++  group = groupTitle.parentNode;
++
++  // The group view should be closed.
++  properties = group.querySelector("div > div > .property-header");
++  ok(!properties, "the group view is closed, no properties displayed");
++
++  groupTitle.addEventListener("click", groupTitleClicked2, false);
++
++  // Open the group view again.
++  EventUtils.sendMouseEvent({type: "click"}, groupTitle, panelDoc.defaultView);
++}
++
++function groupTitleClicked2(evt)
++{
++  evt.target.removeEventListener(evt.type, arguments.callee, false);
++
++  let group = groupTitle.parentNode;
++  let properties = group.querySelector("div > div > .property-header");
++  ok(properties, "the group view is open for the second time, we found a property");
++
++  // We are done!
++  document.addEventListener("popuphidden", finishInspectorTests, false);
++  InspectorUI.toggleInspectorUI();
++}
++
++function finishInspectorTests(evt)
++{
++  if (evt.target.id != "inspector-style-panel")
++    return true;
++
++  document.removeEventListener(evt.type, arguments.callee, false);
++
++  ok(!InspectorUI.isStylePanelOpen, "Inspector Style Panel is closed");
++  ok(!InspectorUI.isPanelOpen, "Inspector Tree Panel is closed");
++  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++
++  gBrowser.removeCurrentTab();
++  finish();
++}
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function(evt) {
++    gBrowser.selectedBrowser.removeEventListener(evt.type, arguments.callee,
++      true);
++    doc = content.document;
++    waitForFocus(startInspectorTests, content);
++  }, true);
++
++  content.location = "data:text/html,<!DOCTYPE html><html><head><style> " +
++    ".test, #test { color: green } div { color: blue } " +
++    "</style></head><body>" +
++    "<div class='test'>cssInfo.rules order test for Inspector</div>" +
++    "</body></html>";
++}
+diff --git a/browser/base/jar.mn b/browser/base/jar.mn
+--- a/browser/base/jar.mn
++++ b/browser/base/jar.mn
+@@ -22,16 +22,17 @@ browser.jar:
+         content/browser/aboutRobots-widget-left.png   (content/aboutRobots-widget-left.png)
+         content/browser/aboutRobots-widget-right.png  (content/aboutRobots-widget-right.png)
+ *       content/browser/browser.css                   (content/browser.css)
+ *       content/browser/browser.js                    (content/browser.js)
+ *       content/browser/browser.xul                   (content/browser.xul)
+ *       content/browser/browser-tabPreviews.xml       (content/browser-tabPreviews.xml)
+ *       content/browser/credits.xhtml                 (content/credits.xhtml)
+ *       content/browser/fullscreen-video.xhtml        (content/fullscreen-video.xhtml)
++*       content/browser/csshtmltree.xhtml             (content/csshtmltree.xhtml)
+ *       content/browser/pageinfo/pageInfo.xul         (content/pageinfo/pageInfo.xul)
+ *       content/browser/pageinfo/pageInfo.js          (content/pageinfo/pageInfo.js)
+ *       content/browser/pageinfo/pageInfo.css         (content/pageinfo/pageInfo.css)
+ *       content/browser/pageinfo/pageInfo.xml         (content/pageinfo/pageInfo.xml)
+ *       content/browser/pageinfo/feeds.js             (content/pageinfo/feeds.js)
+ *       content/browser/pageinfo/feeds.xml            (content/pageinfo/feeds.xml)
+ *       content/browser/pageinfo/permissions.js       (content/pageinfo/permissions.js)
+ *       content/browser/pageinfo/security.js          (content/pageinfo/security.js)
+diff --git a/browser/locales/en-US/chrome/browser/inspector.properties b/browser/locales/en-US/chrome/browser/inspector.properties
+--- a/browser/locales/en-US/chrome/browser/inspector.properties
++++ b/browser/locales/en-US/chrome/browser/inspector.properties
+@@ -4,8 +4,78 @@ style.selectorLabel=Selector
+ 
+ # LOCALIZATION NOTE  (style.inheritedFrom): used in Style panel in
+ #  inspector. Describes which tagname[#id] the properties are inherited from.
+ style.inheritedFrom=Inherited from: #1
+ 
+ # LOCALIZATION NOTE (style.styleItemLabel: used in Style panel in inspector.
+ #  Used for construction of list items, #1 = label, #2 = content.
+ style.styleItemLabel=#1: #2
++
++# LOCALIZATION NOTE (style.lookingAtLabel): This is used inside the Style panel
++# of the Inspector tool. This is the label for the path of the highlighted
++# element in the web page. This path is based on the document tree.
++style.lookingAtLabel=Looking at:
++
++# LOCALIZATION NOTE (style.specificityLabel): This is used inside the Style
++# panel of the Inspector tool. This allows the user to enable the showing of the
++# specificity of the style sheet rules.
++style.specificityLabel=Show specificity:
++
++# LOCALIZATION NOTE (style.specificityHelpLink): This is used inside the Style
++# panel of the Inspector tool. This allows the user to display additional
++# information on the specificity of style sheet rules.
++style.specificityHelpLink=Help!
++
++# LOCALIZATION NOTE (style.group): These strings are used inside the Style
++# panel of the Inspector tool. Style properties are displayed in groups and
++# these are the group names.
++style.group.Fonts_and_Color=Fonts and Color
++style.group.Text=Text
++style.group.Background=Background
++style.group.Dimensions=Dimensions
++style.group.Positioning_and_Page_Flow=Positioning and Page Flow
++style.group.Borders=Borders
++style.group.Bullets=Bullets
++style.group.Effects_and_Other=Effects and Other
++
++# LOCALIZATION NOTE (style.property.numberOfRulesSingular): This is used inside
++# the Style panel of the Inspector tool. For each style property the panel shows
++# the number of rules which hold that specific property, counted from all of the
++# stylesheet in the web page inspected. This string is used when there is only
++# one rule.
++style.property.numberOfRulesSingular=%1$S rule
++
++# LOCALIZATION NOTE (style.property.numberOfRulesSingular): This is used inside
++# the Style panel of the Inspector tool. For each style property the panel shows
++# the number of rules which hold that specific property, counted from all of the
++# stylesheet in the web page inspected. This string is used when there are
++# multiple rules (more than one).
++style.property.numberOfRulesPlural=%1$S rules
++
++# LOCALIZATION NOTE (style.rule.status): These strings are used inside the Style
++# panel of the Inspector tool. For each style property the panel shows the rules
++# which hold that specific property. For every rule, the rule status is also
++# displayed: a rule can be the best match, a match, a parent match, or a rule
++# did not match the element the user has highlighted.
++style.rule.status.BEST=Best Match
++style.rule.status.MATCHED=Matched
++style.rule.status.PARENT_MATCH=Parent Match
++style.rule.status.UNMATCHED=Unmatched
++
++# LOCALIZATION NOTE (style.rule.sourceUnknown):
++# LOCALIZATION NOTE (style.rule.sourceElement):
++# LOCALIZATION NOTE (style.rule.sourceInline):
++# This string is used inside the Style panel of the Inspector tool. For each
++# style property the panel shows the rules which hold that specific property.
++# For every rule, the rule source is also displayed: a rule can come from a
++# file, from the same page (inline), from the element itself (element), or from
++# an unknown source.
++style.rule.sourceUnknown=unknown
++style.rule.sourceInline=inline
++style.rule.sourceElement=element
++
++# LOCALIZATION NOTE (style.property.numberOfRulesSingular): This is used inside
++# the Style panel of the Inspector tool. For each property the panel shows
++# the rule with its selector. Rules can come from element.style. In this case,
++# one can translate element.style to the local language.
++style.elementSelector=element.style
++

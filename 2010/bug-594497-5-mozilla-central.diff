@@ -1,0 +1,408 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -115,16 +115,20 @@ const NEW_GROUP_DELAY = 5000;
+ // search.
+ const SEARCH_DELAY = 200;
+ 
+ // The number of lines that are displayed in the console output by default.
+ // The user can change this number by adjusting the hidden
+ // "devtools.hud.loglimit" preference.
+ const DEFAULT_LOG_LIMIT = 200;
+ 
++// Constants used for defining the direction of JSTerm input history navigation.
++const HISTORY_BACK = -1;
++const HISTORY_FORWARD = 1;
++
+ // The maximum number of bytes a Network ResponseListener can hold.
+ const RESPONSE_BODY_LIMIT = 1048576; // 1 MB
+ 
+ const ERRORS = { LOG_MESSAGE_MISSING_ARGS:
+                  "Missing arguments: aMessage, aConsoleNode and aMessageNode are required.",
+                  CANNOT_GET_HUD: "Cannot getHeads Up Display with provided ID",
+                  MISSING_ARGS: "Missing arguments",
+                  LOG_OUTPUT_FAILED: "Log Failure: Could not append messageNode to outputNode",
+@@ -4462,30 +4466,29 @@ JSTerm.prototype = {
+         switch(aEvent.keyCode) {
+           case 13:
+             // return
+             self.execute();
+             aEvent.preventDefault();
+             break;
+           case 38:
+             // up arrow: history previous
+-            if (self.caretInFirstLine()){
+-              self.historyPeruse(true);
+-              if (aEvent.cancelable) {
+-                let inputEnd = self.inputNode.value.length;
+-                self.inputNode.setSelectionRange(inputEnd, inputEnd);
++            if (self.caretAtStartOfInput()) {
++              let updated = self.historyPeruse(HISTORY_BACK);
++              if (updated && aEvent.cancelable) {
++                self.inputNode.setSelectionRange(0, 0);
+                 aEvent.preventDefault();
+               }
+             }
+             break;
+           case 40:
+             // down arrow: history next
+-            if (self.caretInLastLine()){
+-              self.historyPeruse(false);
+-              if (aEvent.cancelable) {
++            if (self.caretAtEndOfInput()) {
++              let updated = self.historyPeruse(HISTORY_FORWARD);
++              if (updated && aEvent.cancelable) {
+                 let inputEnd = self.inputNode.value.length;
+                 self.inputNode.setSelectionRange(inputEnd, inputEnd);
+                 aEvent.preventDefault();
+               }
+             }
+             break;
+           case 9:
+             // tab key
+@@ -4527,68 +4530,93 @@ JSTerm.prototype = {
+             break;
+         }
+         return;
+       }
+     }
+     return handleKeyDown;
+   },
+ 
+-  historyPeruse: function JST_historyPeruse(aFlag) {
++  /**
++   * Go up/down the history stack of input values.
++   *
++   * @param number aDirection
++   *        History navigation direction: HISTORY_BACK or HISTORY_FORWARD.
++   *
++   * @returns boolean
++   *          True if the input value changed, false otherwise.
++   */
++  historyPeruse: function JST_historyPeruse(aDirection)
++  {
+     if (!this.history.length) {
+-      return;
++      return false;
+     }
+ 
+     // Up Arrow key
+-    if (aFlag) {
++    if (aDirection == HISTORY_BACK) {
+       if (this.historyPlaceHolder <= 0) {
+-        return;
++        return false;
+       }
+ 
+       let inputVal = this.history[--this.historyPlaceHolder];
+       if (inputVal){
+         this.setInputValue(inputVal);
+       }
+     }
+     // Down Arrow key
+-    else {
++    else if (aDirection == HISTORY_FORWARD) {
+       if (this.historyPlaceHolder == this.history.length - 1) {
+         this.historyPlaceHolder ++;
+         this.setInputValue("");
+-        return;
+       }
+       else if (this.historyPlaceHolder >= (this.history.length)) {
+-        return;
++        return false;
+       }
+       else {
+         let inputVal = this.history[++this.historyPlaceHolder];
+         if (inputVal){
+           this.setInputValue(inputVal);
+         }
+       }
+     }
++    else {
++      throw new Error("Invalid argument 0");
++    }
++
++    return true;
+   },
+ 
+   refocus: function JSTF_refocus()
+   {
+     this.inputNode.blur();
+     this.inputNode.focus();
+   },
+ 
+-  caretInFirstLine: function JSTF_caretInFirstLine()
++  /**
++   * Check if the caret is at the start of the input.
++   *
++   * @returns boolean
++   *          True if the caret is at the start of the input.
++   */
++  caretAtStartOfInput: function JST_caretAtStartOfInput()
+   {
+-    var firstLineBreak = this.codeInputString.indexOf("\n");
+-    return ((firstLineBreak == -1) ||
+-            (this.inputNode.selectionStart <= firstLineBreak));
++    return this.inputNode.selectionStart == this.inputNode.selectionEnd &&
++        this.inputNode.selectionStart == 0;
+   },
+ 
+-  caretInLastLine: function JSTF_caretInLastLine()
++  /**
++   * Check if the caret is at the end of the input.
++   *
++   * @returns boolean
++   *          True if the caret is at the end of the input, or false otherwise.
++   */
++  caretAtEndOfInput: function JST_caretAtEndOfInput()
+   {
+-    var lastLineBreak = this.codeInputString.lastIndexOf("\n");
+-    return (this.inputNode.selectionEnd > lastLineBreak);
++    return this.inputNode.selectionStart == this.inputNode.selectionEnd &&
++        this.inputNode.selectionStart == this.inputNode.value.length;
+   },
+ 
+   history: [],
+ 
+   // Stores the data for the last completion.
+   lastCompletion: null,
+ 
+   /**
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -88,16 +88,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_581231_close_button.js \
+ 	browser_webconsole_bug_582201_duplicate_errors.js \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_583816_tab_focus.js \
+ 	browser_webconsole_bug_594477_clickable_output.js \
+ 	browser_webconsole_bug_589162_css_filter.js \
+ 	browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js \
++	browser_webconsole_bug_594497_history_arrow_keys.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594497_history_arrow_keys.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594497_history_arrow_keys.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594497_history_arrow_keys.js
+@@ -0,0 +1,133 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
++
++let inputNode, testKey, values, pos;
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  waitForFocus(function() {
++    openConsole();
++
++    let hudId = HUDService.getHudIdByWindow(content);
++    HUD = HUDService.hudWeakReferences[hudId].get();
++
++    let display = HUDService.getOutputNodeById(hudId);
++    inputNode = display.querySelector(".jsterm-input-node");
++
++    inputNode.focus();
++
++    ok(!inputNode.value, "inputNode.value is empty");
++
++    values = ["document", "window", "document.body"];
++    values.push(values.join(";\n"), "document.location");
++
++    // Execute each of the values;
++    for (let i = 0; i < values.length; i++) {
++      HUD.jsterm.setInputValue(values[i]);
++      HUD.jsterm.execute();
++    }
++
++    inputNode.addEventListener("keyup", onKeyUp, false);
++
++    // Let's navigate the history: go up.
++    testKey = "VK_UP";
++    pos = values.length - 1;
++    testNext();
++  }, content);
++}
++
++function testNext() {
++  EventUtils.synthesizeKey(testKey, {});
++}
++
++function onKeyUp() {
++  is(inputNode.value, values[pos], "inputNode.value = '" + values[pos] + "'");
++
++  if (testKey == "VK_UP") {
++    pos--;
++    if (pos >= 0) {
++      testNext();
++    }
++    else {
++      testMore();
++    }
++  }
++  else {
++    pos++;
++    if (pos < values.length) {
++      testNext();
++    }
++    else {
++      testMore();
++    }
++  }
++}
++
++function testMore() {
++  if (testKey == "VK_UP") {
++    // Let's navigate the history again: go down.
++    testKey = "VK_DOWN";
++    pos = 0;
++    testNext();
++    return;
++  }
++
++  inputNode.removeEventListener("keyup", onKeyUp, false);
++
++  // Test how the Up key works at caret position 2.
++  HUD.jsterm.setInputValue(values[3]);
++
++  inputNode.setSelectionRange(2, 2);
++
++  inputNode.addEventListener("keyup", function(aEvent) {
++    this.removeEventListener(aEvent.type, arguments.callee, false);
++
++    is(this.value, values[3], "inputNode.value = '" + values[3] +
++      "' after VK_UP from caret position 2");
++
++    is(this.selectionStart, 0, "inputNode.selectionStart = 0");
++    is(this.selectionStart, this.selectionEnd, "inputNode.selectionEnd = 0");
++  }, false);
++
++  EventUtils.synthesizeKey("VK_UP", {});
++
++  // Test how the Up key works at caret position (length -2).
++  inputNode.setSelectionRange(values[3].length - 2, values[3].length - 2);
++
++  inputNode.addEventListener("keyup", function(aEvent) {
++    this.removeEventListener(aEvent.type, arguments.callee, false);
++
++    is(this.value, values[3], "inputNode.value = '" + values[3] +
++      "' after VK_UP from caret position 2");
++
++    is(this.selectionStart, this.value.length, "inputNode.selectionStart = " +
++      this.value.length);
++    is(this.selectionStart, this.selectionEnd, "inputNode.selectionEnd = " +
++      this.value.length);
++
++    testEnd();
++  }, false);
++
++  EventUtils.synthesizeKey("VK_DOWN", {});
++}
++
++function testEnd() {
++  inputNode = testKey = values = pos = null;
++  executeSoon(finishTest);
++}
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoad, true);
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_history.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_history.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_history.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_history.js
+@@ -37,16 +37,20 @@
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ // Tests the console history feature accessed via the up and down arrow keys.
+ 
+ const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
+ 
++// Constants used for defining the direction of JSTerm input history navigation.
++const HISTORY_BACK = -1;
++const HISTORY_FORWARD = 1;
++
+ function test() {
+   addTab(TEST_URI);
+   browser.addEventListener("DOMContentLoaded", testHistory, false);
+ }
+ 
+ function testHistory() {
+   browser.removeEventListener("DOMContentLoaded", testHistory, false);
+ 
+@@ -60,45 +64,45 @@ function testHistory() {
+   let executeList = ["document", "window", "window.location"];
+ 
+   for each (var item in executeList) {
+     input.value = item;
+     jsterm.execute();
+   }
+ 
+   for (var i = executeList.length - 1; i != -1; i--) {
+-    jsterm.historyPeruse(true);
++    jsterm.historyPeruse(HISTORY_BACK);
+     is (input.value, executeList[i], "check history previous idx:" + i);
+   }
+ 
+-  jsterm.historyPeruse(true);
++  jsterm.historyPeruse(HISTORY_BACK);
+   is (input.value, executeList[0], "test that item is still index 0");
+ 
+-  jsterm.historyPeruse(true);
++  jsterm.historyPeruse(HISTORY_BACK);
+   is (input.value, executeList[0], "test that item is still still index 0");
+ 
+ 
+   for (var i = 1; i < executeList.length; i++) {
+-    jsterm.historyPeruse(false);
++    jsterm.historyPeruse(HISTORY_FORWARD);
+     is (input.value, executeList[i], "check history next idx:" + i);
+   }
+ 
+-  jsterm.historyPeruse(false);
++  jsterm.historyPeruse(HISTORY_FORWARD);
+   is (input.value, "", "check input is empty again");
+ 
+   // Simulate pressing Arrow_Down a few times and then if Arrow_Up shows
+   // the previous item from history again.
+-  jsterm.historyPeruse(false);
+-  jsterm.historyPeruse(false);
+-  jsterm.historyPeruse(false);
++  jsterm.historyPeruse(HISTORY_FORWARD);
++  jsterm.historyPeruse(HISTORY_FORWARD);
++  jsterm.historyPeruse(HISTORY_FORWARD);
+ 
+   is (input.value, "", "check input is still empty");
+ 
+   let idxLast = executeList.length - 1;
+-  jsterm.historyPeruse(true);
++  jsterm.historyPeruse(HISTORY_BACK);
+   is (input.value, executeList[idxLast], "check history next idx:" + idxLast);
+ 
+   jsterm.clearOutput();
+   jsterm.history.splice(0);   // workaround for bug 592552
+ 
+   finishTest();
+ }
+ 

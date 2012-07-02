@@ -1,0 +1,30 @@
+# HG changeset patch
+# Date 1301138459 -7200
+# User Mihai Șucan <mihai.sucan@gmail.com>
+# Parent 34e80695c6c6bc292eb6c334de6fa3b137cae355
+fix test for bug 632347, in debug builds
+
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_632347_iterators_generators.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_632347_iterators_generators.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_632347_iterators_generators.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_632347_iterators_generators.js
+@@ -115,18 +115,15 @@ function tabLoaded() {
+      "gen2 is correctly displayed in the Property Panel");
+ 
+   ok(find("iter1: Iterator", false),
+      "iter1 is correctly displayed in the Property Panel");
+ 
+   ok(find("iter2: Iterator", false),
+      "iter2 is correctly displayed in the Property Panel");
+ 
+-  /*
+-   * - disabled, see bug 632347, c#9
+-   * ok(find("parent: Window", true),
+-   *   "window.parent is correctly displayed in the Property Panel");
+-   */
++  ok(find("closed: false", false),
++    "window.closed is correctly displayed in the Property Panel");
+ 
+   panel.destroy();
+ 
+   finishTest();
+ }

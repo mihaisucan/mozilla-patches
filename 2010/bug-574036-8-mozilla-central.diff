@@ -1,0 +1,332 @@
+diff -r 01877f113dab toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm	Fri Jul 30 11:57:19 2010 +0200
++++ b/toolkit/components/console/hudservice/HUDService.jsm	Fri Jul 30 21:13:43 2010 +0300
+@@ -20,16 +20,17 @@
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   David Dahl <ddahl@mozilla.com> (original author)
+  *   Rob Campbell <rcampbell@mozilla.com>
+  *   Johnathan Nightingale <jnightingale@mozilla.com>
+  *   Patrick Walton <pcwalton@mozilla.com>
++ *   Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -1611,16 +1612,18 @@ function HeadsUpDisplay(aConfig)
+   }
+   catch(ex) {
+     Cu.reportError(ex);
+   }
+ 
+   this.XULFactory = NodeFactory("xul", "xul", this.chromeDocument);
+   this.textFactory = NodeFactory("text", "xul", this.chromeDocument);
+ 
++  this.chromeWindow = HUDService.getChromeWindowFromContentWindow(this.contentWindow);
++
+   // create a panel dynamically and attach to the parentNode
+   let hudBox = this.createHUD();
+ 
+   let splitter = this.chromeDocument.createElement("splitter");
+   splitter.setAttribute("class", "hud-splitter");
+ 
+   this.notificationBox.insertBefore(splitter,
+                                     this.notificationBox.childNodes[1]);
+@@ -1694,20 +1697,23 @@ HeadsUpDisplay.prototype = {
+    * Re-attaches a console when the contentWindow is recreated
+    *
+    * @returns void
+    */
+   reattachConsole: function HUD_reattachConsole()
+   {
+     this.hudId = this.HUDBox.getAttribute("id");
+ 
+-    // set outputNode
++    // set outputNode and contextMenu
+     this.outputNode = this.HUDBox.querySelectorAll(".hud-output-node")[0];
++    this.contextMenu = this.HUDBox.querySelector("menupopup");
+ 
+     this.chromeDocument = this.HUDBox.ownerDocument;
++    this.chromeWindow = HUDService.
++      getChromeWindowFromContentWindow(this.contentWindow);
+ 
+     if (this.outputNode) {
+       // createConsole
+       this.createConsole();
+     }
+     else {
+       throw new Error("Cannot get output node");
+     }
+@@ -1801,16 +1807,17 @@ HeadsUpDisplay.prototype = {
+     let consoleWrap = this.makeXULNode("vbox");
+     this.consoleWrap = consoleWrap;
+     consoleWrap.setAttribute("class", "hud-console-wrapper");
+     consoleWrap.setAttribute("flex", "1");
+ 
+     this.outputNode = this.makeXULNode("vbox");
+     this.outputNode.setAttribute("class", "hud-output-node");
+     this.outputNode.setAttribute("flex", "1");
++    this.outputNode.setAttribute("context", this.hudId + "-output-contextmenu");
+ 
+     this.filterSpacer = this.makeXULNode("spacer");
+     this.filterSpacer.setAttribute("flex", "1");
+ 
+     this.filterBox = this.makeXULNode("textbox");
+     this.filterBox.setAttribute("class", "hud-filter-box");
+     this.filterBox.setAttribute("hudId", this.hudId);
+     this.filterBox.setAttribute("placeholder", this.getStr("stringFilter"));
+@@ -1825,32 +1832,42 @@ HeadsUpDisplay.prototype = {
+     this.consoleClearButton = this.makeXULNode("button");
+     this.consoleClearButton.setAttribute("class", "hud-console-clear");
+     this.consoleClearButton.setAttribute("label", this.getStr("btnClear"));
+     this.consoleClearButton.setAttribute("buttonType", "clear");
+     this.consoleClearButton.setAttribute("hudId", this.hudId);
+     var command = "HUDConsoleUI.command(this)";
+     this.consoleClearButton.setAttribute("oncommand", command);
+ 
++    this.copyOutputMenuItem = this.makeXULNode("menuitem");
++    this.copyOutputMenuItem.setAttribute("label", this.getStr("copyCmd.label"));
++    this.copyOutputMenuItem.setAttribute("accesskey", this.getStr("copyCmd.accesskey"));
++    this.copyOutputMenuItem.setAttribute("key", "key_copy");
++    this.copyOutputMenuItem.setAttribute("command", "cmd_copy");
++
++    this.contextMenu = this.makeXULNode("menupopup");
++    this.contextMenu.setAttribute("id", this.hudId + "-output-contextmenu");
++    this.contextMenu.appendChild(this.copyOutputMenuItem);
++
+     this.filterPrefs = HUDService.getDefaultFilterPrefs(this.hudId);
+ 
+     let consoleFilterToolbar = this.makeFilterToolbar();
+     consoleFilterToolbar.setAttribute("id", "viewGroup");
+     this.consoleFilterToolbar = consoleFilterToolbar;
+     consoleWrap.appendChild(consoleFilterToolbar);
+ 
+     consoleWrap.appendChild(this.outputNode);
++    outerWrap.appendChild(this.contextMenu);
+     outerWrap.appendChild(consoleWrap);
+ 
+     this.jsTermParentNode = outerWrap;
+     this.HUDBox.appendChild(outerWrap);
+     return this.HUDBox;
+   },
+ 
+-
+   /**
+    * sets the click events for all binary toggle filter buttons
+    *
+    * @returns void
+    */
+   setFilterTextBoxEvents: function HUD_setFilterTextBoxEvents()
+   {
+     var self = this;
+diff -r 01877f113dab toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Fri Jul 30 11:57:19 2010 +0200
++++ b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Fri Jul 30 21:13:43 2010 +0300
+@@ -1,9 +1,9 @@
+-/* vim:set ts=2 sw=2 sts=2 et: */
++/* vim:set ts=2 sw=2 sts=2 et tw=80: */
+ /* ***** BEGIN LICENSE BLOCK *****
+  * Version: MPL 1.1/GPL 2.0/LGPL 2.1
+  *
+  * The contents of this file are subject to the Mozilla Public License Version
+  * 1.1 (the "License"); you may not use this file except in compliance with
+  * the License. You may obtain a copy of the License at
+  * http://www.mozilla.org/MPL/
+  *
+@@ -16,16 +16,17 @@
+  *
+  * The Initial Developer of the Original Code is Mozilla Foundation.
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *  David Dahl <ddahl@mozilla.com>
+  *  Patrick Walton <pcwalton@mozilla.com>
++ *  Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -279,17 +280,17 @@ function testNet()
+     var errMsg = "Could not get logged network message for js file";
+ 
+     var display = HUDService.getDisplayByURISpec(TEST_NETWORK_URI);
+     var outputNode = display.querySelectorAll(".hud-output-node")[0];
+ 
+     testLogEntry(outputNode, "Network:",
+       { success: successMsg, err: errMsg });
+ 
+-    testPageReload();
++    testCopyOutputMenuItem();
+   }, false);
+ 
+   content.location = TEST_NETWORK_URI;
+ }
+ 
+ function testOutputOrder()
+ {
+   let HUD = HUDService.hudWeakReferences[hudId].get();
+@@ -657,16 +658,59 @@ function testErrorOnPageReload() {
+     }, false);
+ 
+     button.dispatchEvent(clickEvent);
+   }, false);
+ 
+   content.location.href = TEST_ERROR_URI;
+ }
+ 
++function testCopyOutputMenuItem()
++{
++  var HUD = HUDService.hudWeakReferences[hudId].get();
++  var selection = getSelection();
++  var console = tab.linkedBrowser.contentWindow.wrappedJSObject.console;
++
++  if (selection.rangeCount > 0) {
++    selection.removeAllRanges();
++  }
++
++  // test 1: check that the copyOutputMenuItem is disabled
++  HUD.contextMenu.addEventListener("popupshowing", function () {
++    HUD.contextMenu.removeEventListener("popupshowing", arguments.callee, false);
++
++    ok(HUD.copyOutputMenuItem.disabled, "HUD.copyOutputMenuItem is disabled");
++
++    console.log("Hello world!");
++
++    var range = HUD.chromeDocument.createRange();
++    range.selectNode(HUD.outputNode.firstChild);
++    selection.addRange(range);
++
++    // test 2: check that the copyOutputMenuItem is enabled, because a node is
++    // selected.
++    HUD.contextMenu.addEventListener("popupshowing", function () {
++      HUD.contextMenu.removeEventListener("popupshowing", arguments.callee,
++        false);
++
++      ok(!HUD.copyOutputMenuItem.disabled, "HUD.copyOutputMenuItem is enabled");
++
++      selection.removeAllRanges();
++
++      testPageReload();
++    }, false);
++
++    EventUtils.sendMouseEvent({type:'click', button: 2}, HUD.outputNode,
++      HUD.chromeWindow);
++  }, false);
++
++  EventUtils.sendMouseEvent({type:'click', button: 2}, HUD.outputNode,
++    HUD.chromeWindow);
++}
++
+ function testEnd() {
+   // testUnregister();
+   executeSoon(function () {
+     HUDService.deactivateHUDForContext(tab);
+     HUDService.shutdown();
+   });
+   finish();
+ }
+diff -r 01877f113dab toolkit/locales/en-US/chrome/global/headsUpDisplay.properties
+--- a/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties	Fri Jul 30 11:57:19 2010 +0200
++++ b/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties	Fri Jul 30 21:13:43 2010 +0300
+@@ -30,8 +30,10 @@ btnLog=Log
+ tipLog=Toggle console.log logging
+ btnGlobal=Global Messages
+ tipGlobal=Toggle Global Message logging
+ localConsole=Local Console
+ btnClear=Clear Console
+ tipClear=Clear the console output
+ stringFilter=Filter
+ stringFilterClear=Clear Filter
++copyCmd.label=Copy
++copyCmd.accesskey=C
+diff -r 01877f113dab toolkit/themes/pinstripe/global/headsUpDisplay.css
+--- a/toolkit/themes/pinstripe/global/headsUpDisplay.css	Fri Jul 30 11:57:19 2010 +0200
++++ b/toolkit/themes/pinstripe/global/headsUpDisplay.css	Fri Jul 30 21:13:43 2010 +0300
+@@ -9,17 +9,17 @@
+  * Software distributed under the License is distributed on an "AS IS" basis,
+  * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+  * for the specific language governing rights and limitations under the
+  * License.
+  *
+  * The Original Code is DevTools code
+  *
+  * The Initial Developer of the Original Code is
+- *   Mozilla Corporation
++ * the Mozilla Foundation.
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   David Dahl <ddahl@mozilla.com>
+ 
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+@@ -53,16 +53,17 @@
+     font-size: 1em;
+     padding-top: 0.33em;
+     font-weight: bold;
+ }
+ 
+ .hud-output-node div {
+     -moz-user-select: text;
+     white-space: pre-wrap;
++    -moz-user-focus: normal;
+ }
+ 
+ .hud-output-node .hud-network {
+     color: blue;
+ }
+ 
+ .hud-output-node .hud-error {
+     color: red;
+diff -r 01877f113dab toolkit/themes/winstripe/global/headsUpDisplay.css
+--- a/toolkit/themes/winstripe/global/headsUpDisplay.css	Fri Jul 30 11:57:19 2010 +0200
++++ b/toolkit/themes/winstripe/global/headsUpDisplay.css	Fri Jul 30 21:13:43 2010 +0300
+@@ -9,17 +9,17 @@
+  * Software distributed under the License is distributed on an "AS IS" basis,
+  * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+  * for the specific language governing rights and limitations under the
+  * License.
+  *
+  * The Original Code is DevTools code
+  *
+  * The Initial Developer of the Original Code is
+- *   Mozilla Corporation
++ * the Mozilla Foundation.
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   David Dahl <ddahl@mozilla.com>
+ 
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+@@ -53,16 +53,17 @@
+     font-size: 1em;
+     padding-top: 0.33em;
+     font-weight: bold;
+ }
+ 
+ .hud-output-node div {
+     -moz-user-select: text;
+     white-space: pre-wrap;
++    -moz-user-focus: normal;
+ }
+ 
+ .hud-output-node .hud-network {
+     color: blue;
+ }
+ 
+ .hud-output-node .hud-error {
+     color: red;

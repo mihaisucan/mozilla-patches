@@ -1,0 +1,276 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -291,25 +291,40 @@ ResponseListener.prototype =
+    */
+   onStopRequest: function RL_onStopRequest(aRequest, aContext, aStatusCode)
+   {
+     try {
+     this.originalListener.onStopRequest(aRequest, aContext, aStatusCode);
+     }
+     catch (ex) { }
+ 
+-    this.setResponseHeader(aRequest);
+-
+     if (HUDService.saveRequestAndResponseBodies) {
+       this.httpActivity.response.body = this.receivedData;
+     }
+     else {
+       this.httpActivity.response.bodyDiscarded = true;
+     }
+ 
++    // Retrieve the response headers, as they are, from the server.
++    let response = null;
++    for each (let item in HUDService.openResponseHeaders) {
++      if (item.channel === aRequest) {
++        response = item;
++        break;
++      }
++    }
++
++    if (response) {
++      this.httpActivity.response.header = response.headers;
++      delete HUDService.openResponseHeaders[response.id];
++    }
++    else {
++      this.setResponseHeader(aRequest);
++    }
++
+     if (HUDService.lastFinishedRequestCallback) {
+       HUDService.lastFinishedRequestCallback(this.httpActivity);
+     }
+ 
+     // Call update on all panels.
+     this.httpActivity.panels.forEach(function(weakRef) {
+       let panel = weakRef.get();
+       if (panel) {
+@@ -2008,16 +2023,23 @@ HUD_SERVICE.prototype =
+    *
+    * @returns void
+    */
+   suspend: function HS_suspend()
+   {
+     activityDistributor.removeObserver(this.httpObserver);
+     delete this.httpObserver;
+ 
++    Services.obs.removeObserver(this.httpResponseExaminer,
++                                "http-on-examine-response");
++    delete this.httpResponseExaminer;
++
++    this.openRequests = {};
++    this.openResponseHeaders = {};
++
+     // delete the storage as it holds onto channels
+     delete this.storage;
+     delete this.defaultFilterPrefs;
+     delete this.defaultGlobalConsolePrefs;
+ 
+     HUDWindowObserver.uninit();
+     HUDConsoleObserver.uninit();
+     ConsoleAPIObserver.shutdown();
+@@ -2321,16 +2343,21 @@ HUD_SERVICE.prototype =
+   },
+ 
+   /**
+    * Requests that haven't finished yet.
+    */
+   openRequests: {},
+ 
+   /**
++   * Response headers for requests that haven't finished yet.
++   */
++  openResponseHeaders: {},
++
++  /**
+    * Assign a function to this property to listen for finished httpRequests.
+    * Used by unit tests.
+    */
+   lastFinishedRequestCallback: null,
+ 
+   /**
+    * Opens a NetworkPanel.
+    *
+@@ -2613,16 +2640,62 @@ HUD_SERVICE.prototype =
+         0x804b000a: "STATUS_WAITING_FOR",
+         0x804b0006: "STATUS_RECEIVING_FROM"
+       }
+     };
+ 
+     this.httpObserver = httpObserver;
+ 
+     activityDistributor.addObserver(httpObserver);
++
++    // This is used to find the correct HTTP response headers.
++    this.httpResponseExaminer = {
++      observe: function (aSubject, aTopic)
++      {
++        if (aTopic != "http-on-examine-response" ||
++            !(aSubject instanceof Ci.nsIHttpChannel)) {
++          return;
++        }
++
++        let channel = aSubject.QueryInterface(Ci.nsIHttpChannel);
++        let win = NetworkHelper.getWindowForRequest(channel);
++        if (!win) {
++          return;
++        }
++        let hudId = self.getHudIdByWindow(win);
++        if (!hudId) {
++          return;
++        }
++
++        let response = {
++          id: self.sequenceId(),
++          hudId: hudId,
++          channel: channel,
++          headers: {},
++        };
++
++        try {
++          channel.visitResponseHeaders({
++            visitHeader: function(aName, aValue) {
++              response.headers[aName] = aValue;
++            }
++          });
++        }
++        catch (ex) {
++          delete response.headers;
++        }
++
++        if (response.headers) {
++          self.openResponseHeaders[response.id] = response;
++        }
++      },
++    };
++
++    Services.obs.addObserver(this.httpResponseExaminer,
++                             "http-on-examine-response", false);
+   },
+ 
+   /**
+    * Logs network activity.
+    *
+    * @param string aType
+    *        The severity of the message.
+    * @param object aActivityObject
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -101,16 +101,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_601352_scroll.js \
+ 	browser_webconsole_bug_592442_closing_brackets.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_601909_remember_height.js \
+ 	browser_webconsole_bug_613013_console_api_iframe.js \
+ 	browser_webconsole_bug_597756_reopen_closed_tab.js \
+ 	browser_webconsole_bug_600183_charset.js \
+ 	browser_webconsole_bug_601177_log_levels.js \
++	browser_webconsole_bug_599725_response_headers.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+@@ -139,15 +140,16 @@ _BROWSER_TEST_PAGES = \
+ 	test-bug-597136-external-script-errors.html \
+ 	test-bug-597136-external-script-errors.js \
+ 	test-bug-613013-console-api-iframe.html \
+ 	test-bug-597756-reopen-closed-tab.html \
+ 	test-bug-600183-charset.html \
+ 	test-bug-600183-charset.html^headers^ \
+ 	test-bug-601177-log-levels.html \
+ 	test-bug-601177-log-levels.js \
++	test-bug-599725-response-headers.sjs \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_599725_response_headers.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_599725_response_headers.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_599725_response_headers.js
+@@ -0,0 +1,48 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-599725-response-headers.sjs";
++
++let lastFinishedRequest = null;
++
++function requestDoneCallback(aHttpRequest)
++{
++  lastFinishedRequest = aHttpRequest;
++}
++
++function performTest()
++{
++  ok(lastFinishedRequest, "page load was logged");
++
++  let headers = lastFinishedRequest.response.header;
++  ok(headers, "we have the response headers");
++  ok(!headers["Content-Type"], "we do not have the Content-Type header");
++  ok(headers["Content-Length"] != 60, "Content-Length != 60");
++
++  lastFinishedRequest = null;
++  HUDService.lastFinishedRequestCallback = null;
++  finishTest();
++}
++
++function test()
++{
++  addTab(TEST_URI);
++
++  browser.addEventListener("load", function(aEvent) {
++    browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++    openConsole();
++
++    HUDService.lastFinishedRequestCallback = requestDoneCallback;
++
++    browser.addEventListener("load", performTest, true);
++    content.location.reload();
++  }, true);
++}
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-599725-response-headers.sjs b/toolkit/components/console/hudservice/tests/browser/test-bug-599725-response-headers.sjs
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-599725-response-headers.sjs
+@@ -0,0 +1,25 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++function handleRequest(request, response)
++{
++  var Etag = '"4c881ab-b03-435f0a0f9ef00"';
++  var IfNoneMatch = request.hasHeader("If-None-Match")
++                    ? request.getHeader("If-None-Match")
++                    : "";
++
++  var page = "<!DOCTYPE html><html><body><p>hello world!</p></body></html>";
++
++  response.setHeader("Etag", Etag, false);
++
++  if (IfNoneMatch == Etag) {
++    response.setStatusLine(request.httpVersion, "304", "Not Modified");
++  }
++  else {
++    response.setHeader("Content-Type", "text/html", false);
++    response.setHeader("Content-Length", page.length + "", false);
++    response.write(page);
++  }
++}

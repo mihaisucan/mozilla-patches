@@ -1,0 +1,159 @@
+diff --git a/browser/base/content/csshtmltree.js b/browser/base/content/csshtmltree.js
+--- a/browser/base/content/csshtmltree.js
++++ b/browser/base/content/csshtmltree.js
+@@ -338,18 +338,28 @@ StyleGroupView.prototype = {
+     if (!this.closed) {
+       this.element.style.display = "none";
+       this.toggle.innerHTML = "&#x25B6;";
+       this.closed = true;
+       return;
+     }
+ 
+     if (!this.populated) {
+-      let data = { properties: this.properties };
++      let data = {
++        properties: this.properties,
++        str: {
++          propertyHelpLinkTitle: this.tree.strings.
++            GetStringFromName("style.property.helpLinkTitle"),
++          propertyHelpLinkButton: this.tree.strings.
++            GetStringFromName("style.property.helpLinkButton"),
++        },
++      };
++
+       this.tree._template(this.tree.templateProperties, this.element, data);
++
+       this.populated = true;
+     }
+ 
+     this.element.style.display = "block";
+     this.toggle.innerHTML = "&#x25BC;";
+     this.closed = false;
+   },
+ };
+@@ -368,24 +378,32 @@ function PropertyView(aTree, aGroup, aNa
+ {
+   this.tree = aTree;
+   this.group = aGroup;
+   this.name = aName;
+ 
+   this.closed = true;
+   this.element = null; // Assigned by templating process.
+   this.populated = false;
++
++  this.link = "https://developer.mozilla.org/en/CSS/" + aName;
+ };
+ 
+ PropertyView.prototype = {
+   /**
+    * The click event handler for the property name of the property view.
++   *
++   * @param {Event} aEvent the DOM event.
+    */
+-  click: function PropertyView_click()
++  click: function PropertyView_click(aEvent)
+   {
++    if (aEvent.target.tagName.toLowerCase() == "a") {
++      return;
++    }
++
+     // TODO: Animate opening/closing. See bug 587752.
+     if (!this.closed) {
+       this.element.style.display = "none";
+       if (this.toggle) {
+         this.toggle.innerHTML = "&#x25B6;";
+       }
+       this.closed = true;
+       return;
+diff --git a/browser/base/content/csshtmltree.xhtml b/browser/base/content/csshtmltree.xhtml
+--- a/browser/base/content/csshtmltree.xhtml
++++ b/browser/base/content/csshtmltree.xhtml
+@@ -76,22 +76,31 @@
+     a.link { text-decoration: none; }
+     a.link:visited { text-decoration: none; }
+     span.rule-count {
+       float: right;
+     }
+     .rule-count .toggle {
+       margin-left: 6px;
+     }
+-    span.property-name {
++    .property-name {
+       font-size: 12px;
+       font-weight: bold;
+       -moz-padding-end: 4px;
+       color: #000;
+     }
++    .property-name > a {
++      visibility: hidden;
++      margin: 0 4px;
++      color: #666;
++      text-shadow: #FFF 2px 2px 1px;
++    }
++    .property-name:hover > a {
++      visibility: visible;
++    }
+     span.property-value {
+       -moz-padding-end: 5px;
+       font-size: 10px;
+     }
+     div.group {
+       margin-top: 10px;
+     }
+     div.group, div#header {
+@@ -191,17 +200,20 @@ To visually debug the templates without 
+   templateProperties needs data like this:
+   {
+     property: [ ..., ] // Array of PropertyViews from csshtmltree.js
+   }
+   -->
+   <div id="templateProperties">
+     <div foreach="property in ${properties}">
+       <div class="property-header open" onclick="${property.click}">
+-        <span class="property-name">${property.name}</span>
++        <span class="property-name"><a target="_blank"
++            title="${str.propertyHelpLinkTitle}"
++            href="${property.link}">${str.propertyHelpLinkButton}</a>
++          ${property.name}</span>
+         <span class="property-value">${property.value}</span>
+         <span class="rule-count link">${property.ruleTitle(__element)}</span>
+       </div>
+       <table class="rules" save="${property.element}"></table>
+     </div>
+   </div>
+ 
+   <!--
+diff --git a/browser/locales/en-US/chrome/browser/inspector.properties b/browser/locales/en-US/chrome/browser/inspector.properties
+--- a/browser/locales/en-US/chrome/browser/inspector.properties
++++ b/browser/locales/en-US/chrome/browser/inspector.properties
+@@ -60,16 +60,30 @@ style.property.numberOfRulesPlural=%1$S 
+ # LOCALIZATION NOTE (style.property.important): This is used inside
+ # the Style panel of the Inspector tool. For each style property the developer
+ # can mark it as important, or not. This string is displayed in the hover tool
+ # tip when the user is on top of a rule within a property view, if the CSS
+ # property is marked as important in that rule. Also note that this string is
+ # prepended to the style.rule.specificity string *if* the property is important.
+ style.property.important=!important,
+ 
++# LOCALIZATION NOTE (style.property.helpLinkTitle): This is used inside
++# the Style panel of the Inspector tool. For each style property the user can
++# hover it and get a help link button which allows one to quickly jump to the
++# documentation from the Mozilla Developer Network site. This is the link title
++# shows in the hover tooltip.
++style.property.helpLinkTitle=Read the documentation for this property
++
++# LOCALIZATION NOTE (style.property.helpLinkTitle): This is used inside
++# the Style panel of the Inspector tool. For each style property the user can
++# hover it and get a help link button which allows one to quickly jump to the
++# documentation from the Mozilla Developer Network site. This is the link title 
++# shows in the hover tooltip.
++style.property.helpLinkButton=?
++
+ # LOCALIZATION NOTE (style.rule.status): These strings are used inside the Style
+ # panel of the Inspector tool. For each style property the panel shows the rules
+ # which hold that specific property. For every rule, the rule status is also
+ # displayed: a rule can be the best match, a match, a parent match, or a rule
+ # did not match the element the user has highlighted.
+ style.rule.status.BEST=Best Match
+ style.rule.status.MATCHED=Matched
+ style.rule.status.PARENT_MATCH=Parent Match

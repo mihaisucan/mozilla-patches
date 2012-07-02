@@ -1,0 +1,436 @@
+diff --git a/browser/base/content/inspector.js b/browser/base/content/inspector.js
+--- a/browser/base/content/inspector.js
++++ b/browser/base/content/inspector.js
+@@ -694,16 +694,19 @@ var InspectorUI = {
+ 
+     if (InspectorStore.getValue(this.winID, "inspecting"))
+       this.startInspecting();
+ 
+     this.win.document.addEventListener("scroll", this, false);
+     this.win.addEventListener("resize", this, false);
+     this.inspectCmd.setAttribute("checked", true);
+     document.addEventListener("popupshown", this, false);
++
++    gBrowser.addProgressListener(InspectorProgressListener,
++                                 Ci.nsIWebProgress.NOTIFY_STATE_DOCUMENT);
+   },
+ 
+   /**
+    * Initialize highlighter.
+    */
+   initializeHighlighter: function IUI_initializeHighlighter()
+   {
+     this.highlighter = new PanelHighlighter(this.browser);
+@@ -744,16 +747,18 @@ var InspectorUI = {
+   closeInspectorUI: function IUI_closeInspectorUI(aClearStore)
+   {
+     if (this.closing || !this.win || !this.browser) {
+       return;
+     }
+ 
+     this.closing = true;
+ 
++    gBrowser.removeProgressListener(InspectorProgressListener);
++
+     if (aClearStore) {
+       InspectorStore.deleteStore(this.winID);
+       this.win.removeEventListener("pagehide", this, true);
+     } else {
+       // Update the store before closing.
+       if (this.selection) {
+         InspectorStore.setValue(this.winID, "selectedNode",
+           this.selection);
+@@ -1281,16 +1286,129 @@ var InspectorUI = {
+    */
+   _log: function LOG(msg)
+   {
+     Services.console.logStringMessage(msg);
+   },
+ }
+ 
+ /**
++ * The InspectorProgressListener object is an nsIWebProgressListener which
++ * handles onStateChange events for the inspected browser. If the user makes
++ * changes to the web page and he tries to navigate away, he is prompted to
++ * confirm page navigation, such that he's given the chance to prevent the loss
++ * of edits.
++ */
++var InspectorProgressListener = {
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIWebProgressListener]),
++
++  onStateChange: function IPL_onStateChange(aProgress, aRequest, aFlag, aStatus) {
++    // Remove myself if the Inspector is no longer open.
++    if (!InspectorUI.isTreePanelOpen) {
++      gBrowser.removeProgressListener(InspectorProgressListener);
++      return;
++    }
++
++    // Skip non-start states.
++    if (!(aFlag & Ci.nsIWebProgressListener.STATE_START)) {
++      return;
++    }
++
++    let win = aProgress.DOMWindow;
++
++    // If the request is about to happen in a new window, we are not concerned
++    // about the request.
++    if (win != InspectorUI.win) {
++      return;
++    }
++
++    // Close the Inspector if there are no edits in the Inspector panels.
++    if (!InspectorUI.isDirty) {
++      InspectorUI.closeInspectorUI(true);
++      return;
++    }
++
++    this.showNotification(aRequest);
++  },
++
++  onLocationChange: function() {},
++  onProgressChange: function() {},
++  onStatusChange: function() {},
++  onSecurityChange: function() {},
++
++  showNotification: function IPL_showNotification(aRequest)
++  {
++    aRequest.suspend();
++
++    let notificationBox = gBrowser.getNotificationBox(InspectorUI.browser);
++    let notification = notificationBox.getNotificationWithValue("inspector-page-navigation");
++
++    if (notification) {
++      notification.nsIRequest.cancel(Cr.NS_BINDING_ABORTED);
++      notification.nsIRequest.resume();
++      notification.nsIRequest = aRequest;
++      return;
++    }
++
++    let buttons = [
++      {
++        id: "inspector.confirmNavigationAway.buttonYes",
++        label: InspectorUI.strings.
++          GetStringFromName("confirmNavigationAway.buttonYes"),
++        accessKey: InspectorUI.strings.
++          GetStringFromName("confirmNavigationAway.buttonYesAccesskey"),
++        callback: function(aNotification, aButton) {
++          if (aNotification.nsIRequest) {
++            aNotification.nsIRequest.resume();
++            aNotification.nsIRequest = null;
++            InspectorUI.closeInspectorUI(true);
++          }
++        },
++      },
++      {
++        id: "inspector.confirmNavigationAway.buttonNo",
++        label: InspectorUI.strings.
++          GetStringFromName("confirmNavigationAway.buttonNo"),
++        accessKey: InspectorUI.strings.
++          GetStringFromName("confirmNavigationAway.buttonNoAccesskey"),
++        callback: function(aNotification, aButton) {
++          if (aNotification.nsIRequest) {
++            aNotification.nsIRequest.cancel(Cr.NS_BINDING_ABORTED);
++            aNotification.nsIRequest.resume();
++            aNotification.nsIRequest = null;
++          }
++        },
++      },
++    ];
++
++    let message = InspectorUI.strings.
++      GetStringFromName("confirmNavigationAway.message");
++
++    notification = notificationBox.appendNotification(message,
++      "inspector-page-navigation", "chrome://browser/skin/Info.png",
++      notificationBox.PRIORITY_WARNING_HIGH, buttons);
++
++    notification.nsIRequest = aRequest;
++
++    notification.addEventListener("DOMNodeRemoved", function(aEvent) {
++      if (this != aEvent.target) {
++        return;
++      }
++
++      this.removeEventListener(aEvent.type, arguments.callee, false);
++      if (this.nsIRequest) {
++        this.nsIRequest.cancel(Cr.NS_BINDING_ABORTED);
++        this.nsIRequest.resume();
++        this.nsIRequest = null;
++      }
++    }, false);
++  },
++};
++
++/**
+  * The Inspector store is used for storing data specific to each tab window.
+  */
+ var InspectorStore = {
+   store: {},
+   length: 0,
+ 
+   /**
+    * Check if there is any data recorded for any tab/window.
+diff --git a/browser/base/content/test/Makefile.in b/browser/base/content/test/Makefile.in
+--- a/browser/base/content/test/Makefile.in
++++ b/browser/base/content/test/Makefile.in
+@@ -168,16 +168,17 @@ _BROWSER_FILES = \
+                  browser_inspector_domPanel.js \
+                  browser_inspector_iframeTest.js \
+                  browser_inspector_scrolling.js \
+                  browser_inspector_store.js \
+                  browser_inspector_tab_switch.js \
+                  browser_inspector_treePanel_output.js \
+                  browser_inspector_treePanel_input.html \
+                  browser_inspector_treePanel_result.html \
++                 browser_inspector_location_changed.js \
+                  browser_pageInfo.js \
+                  browser_page_style_menu.js \
+                  browser_pinnedTabs.js \
+                  browser_plainTextLinks.js \
+                  browser_pluginnotification.js \
+                  browser_popupUI.js \
+                  browser_relatedTabs.js \
+                  browser_sanitize-passwordDisabledHosts.js \
+diff --git a/browser/base/content/test/browser_inspector_location_changed.js b/browser/base/content/test/browser_inspector_location_changed.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_inspector_location_changed.js
+@@ -0,0 +1,216 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Inspector Location Changed Tests.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Rob Campbell <rcampbell@mozilla.com>
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++function startLocationTests() {
++  ok(InspectorUI, "InspectorUI variable exists");
++  Services.obs.addObserver(runInspectorTests, "inspector-opened", false);
++  InspectorUI.toggleInspectorUI();
++}
++
++function runInspectorTests() {
++  Services.obs.removeObserver(runInspectorTests, "inspector-opened", false);
++
++  let para = content.document.querySelector("p");
++  ok(para, "found the paragraph element");
++  is(para.textContent, "init", "paragraph content is correct");
++
++  ok(InspectorUI.inspecting, "Inspector is highlighting");
++  ok(InspectorUI.isTreePanelOpen, "Inspector Panel is open");
++  ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
++
++  InspectorUI.isDirty = true;
++
++  gBrowser.addProgressListener(TestProgressListener1,
++    Ci.nsIWebProgress.NOTIFY_STATE_DOCUMENT |
++    Ci.nsIWebProgress.NOTIFY_LOCATION);
++
++  content.location = "data:text/html,<div>location change test 1 for " +
++    "inspector</div><p>test1</p>";
++}
++
++let TestProgressListener1 = {
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIWebProgressListener]),
++
++  onLocationChange: function TPL1_onLocationChange(aProgress, aRequest, aURI) {
++    gBrowser.removeProgressListener(TestProgressListener1);
++    ok(false, "navigation was not cancelled");
++    testEnd();
++  },
++
++  onStateChange:
++  function TPL1_onStateChange(aProgress, aRequest, aFlag, aStatus) {
++    let win = aProgress.DOMWindow;
++    let uri = win.location.href;
++
++    if (aFlag & Ci.nsIWebProgressListener.STATE_START) {
++      let notificationBox = gBrowser.getNotificationBox(InspectorUI.browser);
++      let notification = notificationBox.
++        getNotificationWithValue("inspector-page-navigation");
++      ok(notification, "found the inspector-page-navigation notification");
++
++      // By closing the notification it is expected the page navigation is
++      // canceled.
++      notification.close();
++
++    } else if (aFlag & Ci.nsIWebProgressListener.STATE_STOP &&
++               uri.indexOf("init") > -1) {
++      // Continue to the next test.
++      gBrowser.removeProgressListener(TestProgressListener1);
++      ok(true, "location did not change");
++      locationTest();
++    }
++  },
++
++  onProgressChange: function() {},
++  onStatusChange: function() {},
++  onSecurityChange: function() {}
++};
++
++function locationTest()
++{
++  // Location did not change.
++  let para = content.document.querySelector("p");
++  ok(para, "found the paragraph element, second time");
++  is(para.textContent, "init", "paragraph content is correct");
++
++  ok(InspectorUI.inspecting, "Inspector is highlighting");
++  ok(InspectorUI.isTreePanelOpen, "Inspector Panel is open");
++  ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
++
++  gBrowser.addProgressListener(TestProgressListener2,
++    Ci.nsIWebProgress.NOTIFY_STATE_DOCUMENT |
++    Ci.nsIWebProgress.NOTIFY_LOCATION);
++
++  content.location = "data:text/html,<div>location change test 2 for " +
++    "inspector</div><p>test2</p>";
++}
++
++let TestProgressListener2 = {
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIWebProgressListener]),
++
++  onLocationChange: function TPL2_onLocationChange(aProgress, aRequest, aURI) {
++    gBrowser.removeProgressListener(TestProgressListener2);
++    ok(true, "navigation was not cancelled");
++  },
++
++  onStateChange:
++  function TPL2_onStateChange(aProgress, aRequest, aFlag, aStatus) {
++    let win = aProgress.DOMWindow;
++    let uri = win.location.href;
++
++    if (aFlag & Ci.nsIWebProgressListener.STATE_START) {
++      let notificationBox = gBrowser.getNotificationBox(InspectorUI.browser);
++      let notification = notificationBox.
++        getNotificationWithValue("inspector-page-navigation");
++      ok(notification, "found the inspector-page-navigation notification");
++      if (!notification) {
++        InspectorUI.closeInspectorUI(true);
++        testEnd();
++        return;
++      }
++
++      let buttons = notification.querySelectorAll("button");
++      let buttonYes = null;
++      for (let i = 0; i < buttons.length; i++) {
++        if (buttons[i].buttonInfo.id ==
++            "inspector.confirmNavigationAway.buttonYes") {
++          buttonYes = buttons[i];
++        }
++      }
++
++      gBrowser.addEventListener("load", location2Load, true);
++      // Accept page navigation.
++      buttonYes.buttonInfo.callback(notification, buttonYes);
++
++    } else if (aFlag & Ci.nsIWebProgressListener.STATE_STOP &&
++               uri.indexOf("init") > -1) {
++      // Continue to the next test.
++      gBrowser.removeProgressListener(TestProgressListener2);
++      ok(false, "location did not change");
++
++      InspectorUI.closeInspectorUI(true);
++      executeSoon(testEnd);
++    }
++  },
++
++  onProgressChange: function() {},
++  onStatusChange: function() {},
++  onSecurityChange: function() {}
++};
++
++let location2Load_count = 0;
++function location2Load(aEvent) {
++  location2Load_count++;
++  if (location2Load_count < 3) {
++    return;
++  }
++
++  gBrowser.removeEventListener(aEvent.type, location2Load, true);
++
++  let para = content.document.querySelector("p");
++  ok(para, "found the paragraph element, third time");
++  is(para.textContent, "test2", "paragraph content is correct");
++
++  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++  ok(!InspectorUI.isTreePanelOpen, "Inspector Panel is not open");
++  ok(!InspectorUI.isStylePanelOpen, "Inspector Style Panel is not open");
++
++  testEnd();
++}
++
++function testEnd() {
++  InspectorUI.isDirty = false;
++  gBrowser.removeCurrentTab();
++  executeSoon(finish);
++}
++
++function test() {
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function(aEvent) {
++    gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee,
++      true);
++    waitForFocus(startLocationTests, content);
++  }, true);
++
++  content.location = "data:text/html,<div>location change tests for " +
++    "inspector.</div><p>init</p>";
++}
+diff --git a/browser/locales/en-US/chrome/browser/inspector.properties b/browser/locales/en-US/chrome/browser/inspector.properties
+--- a/browser/locales/en-US/chrome/browser/inspector.properties
++++ b/browser/locales/en-US/chrome/browser/inspector.properties
+@@ -9,8 +9,18 @@ style.inheritedFrom=Inherited from: #1
+ # LOCALIZATION NOTE (style.styleItemLabel): used in Style panel in inspector.
+ #  Used for construction of list items, #1 = label, #2 = content.
+ style.styleItemLabel=#1: #2
+ 
+ # LOCALIZATION NOTE (object.objectPanelTitle): used in the Object Panel in the
+ #  Inspector tool. There's also inspectObjectButton in browser.dtd for the
+ #  toolbar button which allows users to open/close the Object panel.
+ object.objectPanelTitle=Object
++
++# LOCALIZATION NOTE (confirmNavigationAway): Used in the Inspector tool, when
++# the user tries to navigate away from a web page, to confirm the change of
++# page.
++confirmNavigationAway.message=You are about to leave the current location which will close the Inspector, losing any changes you may have made. Are you sure you want to continue?
++confirmNavigationAway.buttonYes=Yes
++confirmNavigationAway.buttonYesAccesskey=Y
++confirmNavigationAway.buttonNo=No
++confirmNavigationAway.buttonNoAccesskey=N
++

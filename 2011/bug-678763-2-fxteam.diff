@@ -1,0 +1,83 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1313584535 -10800
+# Node ID fe97e9cd85d90bc1e453385f5819675b80992968
+# Parent  a2b79dba671030d52bf6ee42227d0e1c6d3c7207
+Bug 678763 - Intermittent browser_sourceeditor_initialization.js | application timed out after 330 seconds with no output
+
+diff --git a/browser/devtools/sourceeditor/test/Makefile.in b/browser/devtools/sourceeditor/test/Makefile.in
+--- a/browser/devtools/sourceeditor/test/Makefile.in
++++ b/browser/devtools/sourceeditor/test/Makefile.in
+@@ -43,9 +43,9 @@ relativesrcdir = browser/devtools/source
+ 
+ include $(DEPTH)/config/autoconf.mk
+ include $(topsrcdir)/config/rules.mk
+ 
+ _BROWSER_TEST_FILES = \
+ 		browser_sourceeditor_initialization.js \
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+-#	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
++	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js b/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js
+--- a/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js
++++ b/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js
+@@ -14,31 +14,25 @@ function test()
+ {
+   waitForExplicitFinish();
+ 
+   const windowUrl = "data:text/xml,<?xml version='1.0'?>" +
+     "<window xmlns='http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul'" +
+     " title='test for bug 660784' width='600' height='500'><hbox flex='1'/></window>";
+   const windowFeatures = "chrome,titlebar,toolbar,centerscreen,resizable,dialog=no";
+ 
+-  gBrowser.selectedTab = gBrowser.addTab();
+-  gBrowser.selectedBrowser.addEventListener("load", function onTabLoad() {
+-    gBrowser.selectedBrowser.removeEventListener("load", onTabLoad, true);
+-
+-    testWin = Services.ww.openWindow(null, windowUrl, "_blank", windowFeatures, null);
+-    testWin.addEventListener("load", initEditor, false);
+-  }, true);
+-
+-  content.location = "data:text/html,<p>bug 660784 - test the SourceEditor";
+-
++  testWin = Services.ww.openWindow(null, windowUrl, "_blank", windowFeatures, null);
++  testWin.addEventListener("load", function onWindowLoad() {
++    testWin.removeEventListener("load", onWindowLoad, false);
++    waitForFocus(initEditor, testWin);
++  }, false);
+ }
+ 
+ function initEditor()
+ {
+-  testWin.removeEventListener("load", initEditor, false);
+   testDoc = testWin.document;
+ 
+   let hbox = testDoc.querySelector("hbox");
+ 
+   editor = new SourceEditor();
+   let config = {
+     showLineNumbers: true,
+     placeholderText: "foobarbaz",
+@@ -322,20 +316,17 @@ function editorLoaded()
+ 
+   editor.destroy();
+   ok(!editor.parentElement && !editor.editorElement, "destroy() works");
+ 
+   testWin.close();
+ 
+   testWin = testDoc = editor = null;
+ 
+-  waitForFocus(function() {
+-    gBrowser.removeCurrentTab();
+-    finish();
+-  }, content);
++  waitForFocus(finish, window);
+ }
+ 
+ function testBackspaceKey()
+ {
+   editor.setText("       a\n  b\n c");
+   editor.setCaretOffset(7);
+   EventUtils.synthesizeKey("VK_BACK_SPACE", {}, testWin);
+   is(editor.getText(), "a\n  b\n c", "line outdented (Backspace)");

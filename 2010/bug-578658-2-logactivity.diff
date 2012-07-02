@@ -1,0 +1,100 @@
+diff -r d225b78f6738 toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm	Thu Jul 15 09:59:24 2010 -0400
++++ b/toolkit/components/console/hudservice/HUDService.jsm	Thu Jul 22 13:56:55 2010 +0300
+@@ -770,34 +770,34 @@ HUD_SERVICE.prototype =
+   /**
+    * report consoleMessages recieved via the HUDConsoleObserver service
+    * @param nsIConsoleMessage aConsoleMessage
+    * @returns void
+    */
+   reportConsoleServiceMessage:
+   function HS_reportConsoleServiceMessage(aConsoleMessage)
+   {
+-    this.logActivity("console-listener", null, aConsoleMessage);
++    this.logConsoleActivity(null, aConsoleMessage);
+   },
+ 
+   /**
+    * report scriptErrors recieved via the HUDConsoleObserver service
+    * @param nsIScriptError aScriptError
+    * @returns void
+    */
+   reportConsoleServiceContentScriptError:
+   function HS_reportConsoleServiceContentScriptError(aScriptError)
+   {
+     try {
+       var uri = Services.io.newURI(aScriptError.sourceName, null, null);
+     }
+     catch(ex) {
+       var uri = { spec: "" };
+     }
+-    this.logActivity("console-listener", uri, aScriptError);
++    this.logConsoleActivity(uri, aScriptError);
+   },
+ 
+   /**
+    * generates an nsIScriptError
+    *
+    * @param object aMessage
+    * @param integer flag
+    * @returns nsIScriptError
+@@ -1011,18 +1011,17 @@ HUD_SERVICE.prototype =
+             extraStringData: aExtraStringData,
+             stage: transCodes[aActivitySubtype],
+           };
+           if (aActivitySubtype ==
+               activityDistributor.ACTIVITY_SUBTYPE_REQUEST_HEADER ) {
+                 // create a unique ID to track this transaction and be able to
+                 // update the logged node with subsequent http transactions
+                 httpActivity.httpId = self.sequenceId();
+-                let loggedNode =
+-                  self.logActivity("network", aChannel.URI, httpActivity);
++                self.logNetActivity("network", aChannel.URI, httpActivity);
+                 self.httpTransactions[aChannel] =
+                   new Number(httpActivity.httpId);
+           }
+         }
+       },
+ 
+       httpTransactionCodes: {
+         0x5001: "REQUEST_HEADER",
+@@ -1168,39 +1167,16 @@ HUD_SERVICE.prototype =
+ 
+     var messageObject =
+     this.messageFactory(message, message.level, outputNode, aActivityObject);
+ 
+     this.logMessage(messageObject.messageObject, outputNode, messageObject.messageNode);
+   },
+ 
+   /**
+-   * Parse log messages for origin or listener type
+-   * Get the correct outputNode if it exists
+-   * Finally, call logMessage to write this message to
+-   * storage and optionally, a DOM output node
+-   *
+-   * @param string aType
+-   * @param nsIURI aURI
+-   * @param object (or nsIScriptError) aActivityObj
+-   * @returns void
+-   */
+-  logActivity: function HS_logActivity(aType, aURI, aActivityObject)
+-  {
+-    var displayNode, outputNode, hudId;
+-
+-    if (aType == "network") {
+-      var result = this.logNetActivity(aType, aURI, aActivityObject);
+-    }
+-    else if (aType == "console-listener") {
+-      this.logConsoleActivity(aURI, aActivityObject);
+-    }
+-  },
+-
+-  /**
+    * update loadgroup when the window object is re-created
+    *
+    * @param string aId
+    * @param nsILoadGroup aLoadGroup
+    * @returns void
+    */
+   updateLoadGroup: function HS_updateLoadGroup(aId, aLoadGroup)
+   {

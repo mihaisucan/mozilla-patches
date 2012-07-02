@@ -1,0 +1,105 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1317227161 -10800
+# Node ID 1be7126eb2cb83415aaf7d72ba39f714210af9c1
+# Parent  3ba2484767c323b121e2b4993cdb0553f05c09fc
+Bug 689968 - CssLogic is slow at skipping UA rules for the unmatched selectors view
+
+diff --git a/browser/devtools/styleinspector/CssLogic.jsm b/browser/devtools/styleinspector/CssLogic.jsm
+--- a/browser/devtools/styleinspector/CssLogic.jsm
++++ b/browser/devtools/styleinspector/CssLogic.jsm
+@@ -560,16 +560,20 @@ CssLogic.prototype = {
+         this._unmatchedSelectors.forEach(aCallback, aScope);
+       }
+       return;
+     }
+ 
+     this._unmatchedSelectors = [];
+ 
+     this.forEachSheet(function (aSheet) {
++      if (aSheet.systemSheet) {
++        return;
++      }
++
+       aSheet.forEachRule(function (aRule) {
+         aRule.selectors.forEach(function (aSelector) {
+           if (aSelector._matchId != this._matchId) {
+             this._unmatchedSelectors.push(aSelector);
+             if (aCallback) {
+               aCallback.call(aScope, aSelector);
+             }
+           }
+@@ -1436,20 +1440,16 @@ CssPropertyInfo.prototype = {
+    * Process an unmatched CssSelector object.
+    *
+    * @private
+    * @param {CssSelector} aSelector the unmatched CssSelector object.
+    */
+   _processUnmatchedSelector: function CPI_processUnmatchedSelector(aSelector)
+   {
+     let cssRule = aSelector._cssRule;
+-    if (cssRule.systemRule) {
+-      return;
+-    }
+-
+     let value = cssRule.getPropertyValue(this.property);
+     if (value) {
+       let selectorInfo = new CssSelectorInfo(aSelector, this.property, value,
+           CssLogic.STATUS.UNMATCHED);
+       this._unmatchedSelectors.push(selectorInfo);
+       if (this._cssLogic._passId != cssRule._passId) {
+         if (cssRule.sheetAllowed) {
+           this._unmatchedRuleCount++;
+@@ -1464,40 +1464,34 @@ CssPropertyInfo.prototype = {
+    * CssLogic.sourceFilter changes. This allows for quick filter changes.
+    * @private
+    */
+   _refilterSelectors: function CssPropertyInfo_refilterSelectors()
+   {
+     let passId = ++this._cssLogic._passId;
+     let ruleCount = 0;
+ 
++    let iterator = function(aSelectorInfo) {
++      let cssRule = aSelectorInfo.selector._cssRule;
++      if (cssRule._passId != passId) {
++        if (cssRule.sheetAllowed) {
++          ruleCount++;
++        }
++        cssRule._passId = passId;
++      }
++    };
++
+     if (this._matchedSelectors) {
+-      this._matchedSelectors.forEach(function(aSelectorInfo) {
+-        let cssRule = aSelectorInfo.selector._cssRule;
+-        if (cssRule._passId != passId) {
+-          if (cssRule.sheetAllowed) {
+-            ruleCount++;
+-          }
+-          cssRule._passId = passId;
+-        }
+-      });
++      this._matchedSelectors.forEach(iterator);
+       this._matchedRuleCount = ruleCount;
+     }
+ 
+     if (this._unmatchedSelectors) {
+       ruleCount = 0;
+-      this._unmatchedSelectors.forEach(function(aSelectorInfo) {
+-        let cssRule = aSelectorInfo.selector._cssRule;
+-        if (!cssRule.systemRule && cssRule._passId != passId) {
+-          if (cssRule.sheetAllowed) {
+-            ruleCount++;
+-          }
+-          cssRule._passId = passId;
+-        }
+-      });
++      this._unmatchedSelectors.forEach(iterator);
+       this._unmatchedRuleCount = ruleCount;
+     }
+ 
+     this.needRefilter = false;
+   },
+ 
+   toString: function CssPropertyInfo_toString()
+   {

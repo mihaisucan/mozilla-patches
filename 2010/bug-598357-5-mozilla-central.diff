@@ -1,0 +1,726 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -2192,17 +2192,19 @@ HUD_SERVICE.prototype =
+                                                          aLevel,
+                                                          aArguments)
+   {
+     let hud = this.hudReferences[aHudId];
+     let messageNode = hud.makeXULNode("label");
+     let klass = "hud-msg-node hud-" + aLevel;
+     messageNode.setAttribute("class", klass);
+ 
+-    let message = Array.join(aArguments, " ") + "\n";
++    let mappedArguments = Array.prototype.map.call(aArguments,
++        hud.jsterm.formatResult, hud.jsterm);
++    let message = Array.join(mappedArguments, " ") + "\n";
+     let ts = ConsoleUtils.timestamp();
+     let timestampedMessage = ConsoleUtils.timestampString(ts) + ": " + message;
+     messageNode.appendChild(hud.chromeDocument.createTextNode(timestampedMessage));
+ 
+     let messageObject = {
+       logLevel: aLevel,
+       hudId: aHudId,
+       message: message,
+@@ -4016,16 +4018,17 @@ function JSTermHelper(aJSTerm)
+     return nodes;
+   };
+ 
+   /**
+    * Clears the output of the JSTerm.
+    */
+   aJSTerm.sandbox.clear = function JSTH_clear()
+   {
++    aJSTerm.helperEvaluated = true;
+     aJSTerm.clearOutput();
+   };
+ 
+   /**
+    * Returns the result of Object.keys(aObject).
+    *
+    * @param object aObject
+    *        Object to return the property names from.
+@@ -4064,55 +4067,71 @@ function JSTermHelper(aJSTerm)
+     return arrValues;
+   };
+ 
+   /**
+    * Opens a help window in MDC
+    */
+   aJSTerm.sandbox.help = function JSTH_help()
+   {
++    aJSTerm.helperEvaluated = true;
+     aJSTerm._window.open(
+         "https://developer.mozilla.org/AppLinks/WebConsoleHelp?locale=" +
+         aJSTerm._window.navigator.language, "help", "");
+   };
+ 
+   /**
+    * Inspects the passed aObject. This is done by opening the PropertyPanel.
+    *
+    * @param object aObject
+    *        Object to inspect.
+    * @returns void
+    */
+   aJSTerm.sandbox.inspect = function JSTH_inspect(aObject)
+   {
++    aJSTerm.helperEvaluated = true;
+     aJSTerm.openPropertyPanel(null, unwrap(aObject));
+   };
+ 
+   /**
+    * Prints aObject to the output.
+    *
+    * @param object aObject
+    *        Object to print to the output.
+    * @returns void
+    */
+   aJSTerm.sandbox.pprint = function JSTH_pprint(aObject)
+   {
++    aJSTerm.helperEvaluated = true;
+     if (aObject === null || aObject === undefined || aObject === true || aObject === false) {
+       aJSTerm.console.error(HUDService.getStr("helperFuncUnsupportedTypeError"));
+       return;
+     }
+     let output = [];
+     let pairs = namesAndValuesOf(unwrap(aObject));
+ 
+     pairs.forEach(function(pair) {
+       output.push("  " + pair.display);
+     });
+ 
+     aJSTerm.writeOutput(output.join("\n"));
+   };
++
++  /**
++   * Print a string to the output, as-is.
++   *
++   * @param string aString
++   *        A string you want to output.
++   * @returns void
++   */
++  aJSTerm.sandbox.print = function JSTH_print(aString)
++  {
++    aJSTerm.helperEvaluated = true;
++    aJSTerm.writeOutput(aString);
++  };
+ }
+ 
+ /**
+  * JSTerm
+  *
+  * JavaScript Terminal: creates input nodes for console code interpretation
+  * and 'JS Workspaces'
+  */
+@@ -4231,26 +4250,31 @@ JSTerm.prototype = {
+     if (!aExecuteString) {
+       this.writeOutput("no value to execute");
+       return;
+     }
+ 
+     this.writeOutput(aExecuteString, true);
+ 
+     try {
+-      var result = this.evalInSandbox(aExecuteString);
+-
+-      if (result || result === false) {
+-        this.writeOutputJS(aExecuteString, result);
+-      }
+-      else if (result === undefined) {
+-        this.writeOutput("undefined", false);
+-      }
+-      else if (result === null) {
+-        this.writeOutput("null", false);
++      this.helperEvaluated = false;
++      let result = this.evalInSandbox(aExecuteString);
++
++      // Hide undefined results coming from helpers.
++      let shouldShow = !(result === undefined && this.helperEvaluated);
++      if (shouldShow) {
++        let inspectable = this.resultInspectable(result);
++        let resultString = this.formatResult(result);
++
++        if (inspectable) {
++          this.writeOutputJS(aExecuteString, result, resultString);
++        }
++        else {
++          this.writeOutput(resultString);
++        }
+       }
+     }
+     catch (ex) {
+       this.writeOutput(ex);
+     }
+ 
+     this.history.push(aExecuteString);
+     this.historyIndex++;
+@@ -4333,20 +4357,22 @@ JSTerm.prototype = {
+ 
+   /**
+    * Writes a JS object to the JSTerm outputNode. If the user clicks on the
+    * written object, openPropertyPanel is called to open up a panel to inspect
+    * the object.
+    *
+    * @param string aEvalString
+    *        String that was evaluated to get the aOutputObject.
+-   * @param object aOutputObject
+-   *        Object to be written to the outputNode.
++   * @param object aResultObject
++   *        The evaluation result object.
++   * @param object aOutputString
++   *        The output string to be written to the outputNode.
+    */
+-  writeOutputJS: function JST_writeOutputJS(aEvalString, aOutputObject)
++  writeOutputJS: function JST_writeOutputJS(aEvalString, aOutputObject, aOutputString)
+   {
+     let lastGroupNode = HUDService.appendGroupIfNecessary(this.outputNode,
+                                                       Date.now());
+ 
+     var self = this;
+     var node = this.xulElementFactory("label");
+     node.setAttribute("class", "jsterm-output-line hud-clickable");
+     node.setAttribute("aria-haspopup", "true");
+@@ -4365,20 +4391,17 @@ JSTerm.prototype = {
+       }
+ 
+       if (!this._panelOpen) {
+         self.openPropertyPanel(aEvalString, aOutputObject, this);
+         this._panelOpen = true;
+       }
+     }, false);
+ 
+-    // TODO: format the aOutputObject and don't just use the
+-    // aOuputObject.toString() function: [object object] -> Object {prop, ...}
+-    // See bug 586249.
+-    let textNode = this.textFactory(aOutputObject + "\n");
++    let textNode = this.textFactory(aOutputString + "\n");
+     node.appendChild(textNode);
+ 
+     lastGroupNode.appendChild(node);
+     ConsoleUtils.scrollToVisible(node);
+     pruneConsoleOutputIfNecessary(this.outputNode);
+   },
+ 
+   /**
+@@ -4416,16 +4439,142 @@ JSTerm.prototype = {
+     var textNode = this.textFactory(aOutputMessage + "\n");
+     node.appendChild(textNode);
+ 
+     lastGroupNode.appendChild(node);
+     ConsoleUtils.scrollToVisible(node);
+     pruneConsoleOutputIfNecessary(this.outputNode);
+   },
+ 
++  /**
++   * Format the jsterm execution result based on its type.
++   *
++   * @param mixed aResult
++   *        The evaluation result object you want displayed.
++   * @returns string
++   *          The string that can be displayed.
++   */
++  formatResult: function JST_formatResult(aResult)
++  {
++    let output = "";
++    let type = this.resultType(aResult);
++
++    switch (type) {
++      case "string":
++        output = this.formatString(aResult);
++        break;
++      case "boolean":
++      case "date":
++      case "error":
++      case "number":
++      case "regexp":
++        output = aResult.toString();
++        break;
++      case "null":
++      case "undefined":
++        output = type;
++        break;
++      default:
++        if (aResult.toSource) {
++          try {
++            output = aResult.toSource();
++          } catch (ex) { }
++        }
++        if (!output || output == "({})") {
++          output = aResult.toString();
++        }
++        break;
++    }
++
++    return output;
++  },
++  
++  /**
++   * Format a string for output.
++   *
++   * @param string aString
++   *        The string you want to display.
++   * @returns string
++   *          The string that can be displayed.
++   */
++  formatString: function JST_formatString(aString)
++  {
++    let replaceFn = function(aMatch, aType, aHex) {
++      const CHAR_EXCLAMATION = "!".charCodeAt(0);
++      const CHAR_TILDE = "~".charCodeAt(0);
++      const CHAR_EXCLAMATION_INVERTED = "¡".charCodeAt(0);
++
++      let decimal = parseInt(aHex, 16);
++      let result;
++
++      // Show printable characters from the ASCII table, and all of the Unicode
++      // printable characters (considered to start from 
++      // CHAR_EXCLAMATION_INVERTED).
++      if ((decimal >= CHAR_EXCLAMATION && decimal <= CHAR_TILDE) ||
++          decimal >= CHAR_EXCLAMATION_INVERTED) {
++        result = String.fromCharCode(decimal);
++      }
++      else {
++        result = "\\" + aType + aHex;
++      }
++
++      return result;
++    };
++
++    let output = uneval(aString).replace(/\\(x)([0-9a-fA-F]{2})/g, replaceFn)
++                 .replace(/\\(u)([0-9a-fA-F]{4})/g, replaceFn);
++
++    return output;
++  },
++
++  /**
++   * Determine if the jsterm execution result is inspectable or not.
++   *
++   * @param mixed aResult
++   *        The evaluation result object you want to check if it is inspectable.
++   * @returns boolean
++   *          True if the object is inspectable or false otherwise.
++   */
++  resultInspectable: function JST_resultInspectable(aResult)
++  {
++    switch (this.resultType(aResult)) {
++      case "boolean":
++      case "date":
++      case "error":
++      case "function":
++      case "null":
++      case "number":
++      case "regexp":
++      case "string":
++      case "undefined":
++        return false;
++      default:
++        return true;
++    }
++  },
++
++  /**
++   * Determine the type of the jsterm execution result.
++   *
++   * @param mixed aResult
++   *        The evaluation result object you want to check.
++   * @returns string
++   *          Constructor name or type: string, number, boolean, regexp, date,
++   *          function, object, null, undefined...
++   */
++  resultType: function JST_resultType(aResult)
++  {
++    let type = aResult === null ? "null" : typeof aResult;
++    if (type == "object" && aResult.constructor && aResult.constructor.name) {
++      type = aResult.constructor.name;
++    }
++
++    return type.toLowerCase();
++  },
++
+   clearOutput: function JST_clearOutput()
+   {
+     let outputNode = this.outputNode;
+ 
+     while (outputNode.firstChild) {
+       outputNode.removeChild(outputNode.firstChild);
+     }
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -101,16 +101,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_601352_scroll.js \
+ 	browser_webconsole_bug_592442_closing_brackets.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_601909_remember_height.js \
+ 	browser_webconsole_bug_613013_console_api_iframe.js \
+ 	browser_webconsole_bug_597756_reopen_closed_tab.js \
+ 	browser_webconsole_bug_600183_charset.js \
+ 	browser_webconsole_bug_601177_log_levels.js \
++	browser_webconsole_bug_598357_jsterm_output.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_598357_jsterm_output.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_598357_jsterm_output.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_598357_jsterm_output.js
+@@ -0,0 +1,218 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
++
++let testEnded = false;
++let pos = -1;
++
++let dateNow = Date.now();
++
++let inputValues = [
++  // [showsPropertyPanel?, input value, expected output format,
++  //    print() output, optional console API test]
++
++  // 0
++  [false, "'hello \\nfrom \\rthe \\\"string world!'",
++    '"hello \\nfrom \\rthe \\"string world!"',
++    "hello \nfrom \rthe \"string world!"],
++
++  // 1
++  [false, "'\xFA\u1E47\u0129\xE7\xF6d\xEA \u021B\u0115\u0219\u0165'",
++    "\"\xFA\u1E47\u0129\xE7\xF6d\xEA \u021B\u0115\u0219\u0165\"",
++    "\xFA\u1E47\u0129\xE7\xF6d\xEA \u021B\u0115\u0219\u0165"],
++
++  // 2
++  [false, "window.location.href", '"' + TEST_URI + '"', TEST_URI],
++
++  // 3
++  [false, "0", "0"],
++
++  // 4
++  [false, "'0'", '"0"', "0"],
++
++  // 5
++  [false, "42", "42"],
++
++  // 6
++  [false, "'42'", '"42"', "42"],
++
++  // 7
++  [false, "/foobar/", "/foobar/"],
++
++  // 8
++  [false, "null", "null"],
++
++  // 9
++  [false, "undefined", "undefined"],
++
++  // 10
++  [false, "true", "true"],
++
++  // 11
++  [false, "document.getElementById", "function getElementById() {[native code]}",
++    "function getElementById() {\n    [native code]\n}",
++    "document.wrappedJSObject.getElementById"],
++
++  // 12
++  [false, "function() { return 42; }", "function () {return 42;}",
++    "function () {\n    return 42;\n}"],
++
++  // 13
++  [false, "new Date(" + dateNow + ")", (new Date(dateNow)).toString()],
++
++  // 14
++  [true, "document.body", "[object HTMLBodyElement", "[object HTMLBodyElement",
++    "document.wrappedJSObject.body"],
++
++  // 15
++  [true, "window.location", TEST_URI],
++
++  // 16
++  [true, "[1,2,3,'a','b','c','4','5']", '[1, 2, 3, "a", "b", "c", "4", "5"]',
++    '1,2,3,a,b,c,4,5'],
++
++  // 17
++  [true, "({a:'b', c:'d', e:1, f:'2'})", '({a:"b", c:"d", e:1, f:"2"})',
++    "[object Object"],
++];
++
++let eventHandlers = [];
++let popupShown = [];
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  waitForFocus(function () {
++    openConsole();
++
++    let hudId = HUDService.getHudIdByWindow(content);
++    HUD = HUDService.hudReferences[hudId];
++
++    executeSoon(testNext);
++  }, content);
++}
++
++function testNext() {
++  let cpos = ++pos;
++  if (cpos == inputValues.length) {
++    if (popupShown.length == inputValues.length) {
++      executeSoon(testEnd);
++    }
++    return;
++  }
++
++  let showsPropertyPanel = inputValues[cpos][0];
++  let inputValue = inputValues[cpos][1];
++  let expectedOutput = inputValues[cpos][2];
++
++  let printOutput = inputValues[cpos].length >= 4 ?
++    inputValues[cpos][3] : expectedOutput;
++
++  let consoleTest = inputValues[cpos][4] || inputValue;
++
++  HUD.jsterm.clearOutput();
++
++  // Ugly but it does the job.
++  with (content) {
++    eval("HUD.console.log(" + consoleTest + ")");
++  }
++
++  let outputItem = HUD.outputNode.
++    querySelector(".hud-log:last-child");
++  ok(outputItem,
++    "found the window.console output line for inputValues[" + cpos + "]");
++  ok(outputItem.textContent.indexOf(expectedOutput) > -1,
++    "console API output is correct for inputValues[" + cpos + "]");
++
++  HUD.jsterm.clearOutput();
++
++  HUD.jsterm.setInputValue("print(" + inputValue + ")");
++  HUD.jsterm.execute();
++
++  outputItem = HUD.outputNode.querySelector(".jsterm-output-line:last-child");
++  ok(outputItem,
++    "found the jsterm print() output line for inputValues[" + cpos + "]");
++  ok(outputItem.textContent.indexOf(printOutput) > -1,
++    "jsterm print() output is correct for inputValues[" + cpos + "]");
++
++  let eventHandlerID = eventHandlers.length + 1;
++
++  let propertyPanelShown = function(aEvent) {
++    let label = aEvent.target.getAttribute("label");
++    if (!label || label.indexOf(inputValue) == -1) {
++      return;
++    }
++
++    document.removeEventListener(aEvent.type, arguments.callee, false);
++    eventHandlers[eventHandlerID] = null;
++
++    ok(showsPropertyPanel,
++      "the property panel shown for inputValues[" + cpos + "]");
++
++    aEvent.target.hidePopup();
++
++    popupShown[cpos] = true;
++    if (popupShown.length == inputValues.length) {
++      executeSoon(testEnd);
++    }
++  };
++
++  document.addEventListener("popupshown", propertyPanelShown, false);
++
++  eventHandlers.push(propertyPanelShown);
++
++  HUD.jsterm.clearOutput();
++  HUD.jsterm.setInputValue(inputValue);
++  HUD.jsterm.execute();
++
++  outputItem = HUD.outputNode.querySelector(".jsterm-output-line:last-child");
++  ok(outputItem, "found the jsterm output line for inputValues[" + cpos + "]");
++  ok(outputItem.textContent.indexOf(expectedOutput) > -1,
++    "jsterm output is correct for inputValues[" + cpos + "]");
++
++  outputItem.addEventListener("click", function(aEvent) {
++    this.removeEventListener(aEvent.type, arguments.callee, false);
++    executeSoon(testNext);
++  }, false);
++
++  // Send the mousedown, mouseup and click events to check if the property
++  // panel opens.
++  EventUtils.synthesizeMouse(outputItem, 1, 1, {}, window);
++}
++
++function testEnd() {
++  if (testEnded) {
++    return;
++  }
++
++  testEnded = true;
++
++  for (let i = 0; i < eventHandlers.length; i++) {
++    if (eventHandlers[i]) {
++      document.removeEventListener("popupshown", eventHandlers[i], false);
++    }
++  }
++
++  for (let i = 0; i < inputValues.length; i++) {
++    if (inputValues[i][0] && !popupShown[i]) {
++      ok(false, "the property panel failed to show for inputValues[" + i + "]");
++    }
++  }
++
++  eventHandlers = popupshown = null;
++  executeSoon(finishTest);
++}
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoad, true);
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_console_logging_api.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_console_logging_api.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_console_logging_api.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_console_logging_api.js
+@@ -96,18 +96,18 @@ function testConsoleLoggingAPI(aMethod) 
+   is(nodes.length, 1, aMethod + " logging turned on, 1 message shown");
+ 
+   HUDService.clearDisplay(hudId);
+   setStringFilter(hudId, "");
+ 
+   // test for multiple arguments.
+   console[aMethod]("foo", "bar");
+ 
+-  let node = outputNode.querySelectorAll(".hud-msg-node")[0];
+-  ok(/foo bar/.test(node.textContent),
++  let node = outputNode.querySelector(".hud-msg-node");
++  ok(/"foo" "bar"/.test(node.textContent),
+     "Emitted both console arguments");
+ }
+ 
+ function setStringFilter(aId, aValue) {
+   let hudBox = HUDService.getHeadsUpDisplay(aId);
+   hudBox.querySelector(".hud-filter-box").value = aValue;
+   HUDService.adjustVisibilityOnSearchStringChange(aId, aValue);
+ }
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_jsterm.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_jsterm.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_jsterm.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_jsterm.js
+@@ -63,51 +63,53 @@ function testJSTerm()
+   hudId = HUDService.displaysIndex()[0];
+   let hudBox = HUDService.getHeadsUpDisplay(hudId);
+   hud = HUDService.hudReferences[hudId];
+   jsterm = hud.jsterm;
+   let outputNode = hudBox.querySelector(".hud-output-node");
+ 
+   jsterm.clearOutput();
+   jsterm.execute("'id=' + $('header').getAttribute('id')");
+-  checkResult("id=header", "$() worked", 1);
++  checkResult('"id=header"', "$() worked", 1);
+ 
+   jsterm.clearOutput();
+   jsterm.execute("headerQuery = $$('h1')");
+   jsterm.execute("'length=' + headerQuery.length");
+-  checkResult("length=1", "$$() worked", 2);
++  checkResult('"length=1"', "$$() worked", 2);
+ 
+   jsterm.clearOutput();
+   jsterm.execute("xpathQuery = $x('.//*', document.body);");
+   jsterm.execute("'headerFound='  + (xpathQuery[0] == headerQuery[0])");
+-  checkResult("headerFound=true", "$x() worked", 2);
++  checkResult('"headerFound=true"', "$x() worked", 2);
+ 
+   // no jsterm.clearOutput() here as we clear the output using the clear() fn.
+   jsterm.execute("clear()");
+-  checkResult("undefined", "clear() worked", 1);
++  let group = jsterm.outputNode.querySelector(".hud-group");
++  ok(!group, "clear() worked");
+ 
+   jsterm.clearOutput();
+   jsterm.execute("'keysResult=' + (keys({b:1})[0] == 'b')");
+-  checkResult("keysResult=true", "keys() worked", 1);
++  checkResult('"keysResult=true"', "keys() worked", 1);
+ 
+   jsterm.clearOutput();
+   jsterm.execute("'valuesResult=' + (values({b:1})[0] == 1)");
+-  checkResult("valuesResult=true", "values() worked", 1);
++  checkResult('"valuesResult=true"', "values() worked", 1);
+ 
+   jsterm.clearOutput();
+   jsterm.execute("help()");
+-  checkResult("undefined", "help() worked", 1);
++  let output = jsterm.outputNode.querySelector(".jsterm-output-line");
++  ok(!group, "help() worked");
+ 
+-  jsterm.clearOutput();
+   jsterm.execute("help");
+-  checkResult("undefined", "help() worked", 1);
++  output = jsterm.outputNode.querySelector(".jsterm-output-line");
++  ok(!output, "help worked");
+ 
+-  jsterm.clearOutput();
+   jsterm.execute("?");
+-  checkResult("undefined", "help() worked", 1);
++  output = jsterm.outputNode.querySelector(".jsterm-output-line");
++  ok(!output, "? worked");
+ 
+   jsterm.clearOutput();
+   jsterm.execute("pprint({b:2, a:1})");
+   // Doesn't conform to checkResult format
+   let label = jsterm.outputNode.querySelector(".jsterm-output-line");
+   is(label.textContent.trim(), "a: 1\n  b: 2", "pprint() worked");
+ 
+   // check instanceof correctness, bug 599940
+@@ -125,17 +127,17 @@ function testJSTerm()
+   let label = jsterm.outputNode.querySelector(".jsterm-output-line");
+   is(label.textContent.trim().search(/\[object XrayWrapper/), -1,
+     "check for non-existence of [object XrayWrapper ");
+ 
+   // check that pprint(window) and keys(window) don't throw, bug 608358
+   jsterm.clearOutput();
+   jsterm.execute("pprint(window)");
+   let labels = jsterm.outputNode.querySelectorAll(".jsterm-output-line");
+-  ok(labels.length > 1, "more than one line of output for pprint(window)");
++  is(labels.length, 1, "one line of output for pprint(window)");
+ 
+   jsterm.clearOutput();
+   jsterm.execute("keys(window)");
+-  let labels = jsterm.outputNode.querySelectorAll(".jsterm-output-line");
+-  ok(labels.length, "more than 0 lines of output for keys(window)");
++  labels = jsterm.outputNode.querySelectorAll(".jsterm-output-line");
++  is(labels.length, 1, "one line of output for keys(window)");
+ 
+   finishTest();
+ }
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_output_order.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_output_order.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_output_order.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_output_order.js
+@@ -64,17 +64,17 @@ function testOutputOrder() {
+ 
+   let nodes = outputNode.querySelectorAll(".hud-msg-node");
+   is(nodes.length, 3, "3 children in output");
+ 
+   let executedStringFirst =
+     /console\.log\('foo', 'bar'\);/.test(nodes[0].textContent);
+ 
+   let outputSecond =
+-    /foo bar/.test(nodes[1].textContent);
++    /"foo" "bar"/.test(nodes[1].textContent);
+ 
+   ok(executedStringFirst && outputSecond, "executed string comes first");
+ 
+   jsterm.clearOutput();
+   jsterm.history.splice(0);   // workaround for bug 592552
+ 
+   finishTest();
+ }

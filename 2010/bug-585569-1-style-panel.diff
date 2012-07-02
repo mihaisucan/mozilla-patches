@@ -1,0 +1,383 @@
+diff --git a/browser/base/content/csshtmltree.html b/browser/base/content/csshtmltree.html
+--- a/browser/base/content/csshtmltree.html
++++ b/browser/base/content/csshtmltree.html
+@@ -1,14 +1,16 @@
+ <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+   "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+ 
+ <html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
+ <head>
++  <!-- The title is localized when the Style panel is open by inspector.js -->
+   <title>Style</title>
++
+   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
+   <style type="text/css">
+     body {
+       font-family: Lucida Grande, sans-serif;
+       font-size: 11px;
+       background: #EEE;
+     }
+ 
+@@ -70,16 +72,19 @@
+     /* Take away these two :visited rules to get a core dumper */
+     .link { color: #55A;  }
+     .link:visited { color: #55A;  }
+     a.link { text-decoration: none; }
+     a.link:visited { text-decoration: none; }
+     span.property-rule-count {
+       float: right;
+     }
++    .property-rule-count .toggle {
++      margin-left: 6px;
++    }
+     span.property-name {
+       font-size: 12px;
+       font-weight: bold;
+       padding-right: 4px;
+       color: #000;
+     }
+     span.property-value {
+       padding-right: 5px;
+@@ -127,36 +132,36 @@ To visually debug the templates without 
+     path_elements: [ 'div[0]', '#main', '#content', 'p[4]' ],
+     sheets: [ { source: 'foo.css' }, { source: 'bar.css' }, ... ],
+   }
+   -->
+   <div id="templateHeader">
+     <table>
+       <tr>
+         <td class="path_line">
+-          <label>Looking&nbsp;at:</label>
++          <label>${str.lookingAtLabel}</label>
+           <span class="path" foreach="element in ${path_elements}">
+             <a href="javascript:null;" class="path_element">${element}</a>
+             <span class="path_crumb">&#x27EB;</span>
+           </span>
+         </td>
+       </tr>
+       <tr>
+         <td class="sheet_line">
+           <!--
+           <label for="sheets">Display:</label>
+           <select save="${sheets}">
+             <option foreach="sheet in ${sheets}">${sheet.source}</option>
+             <option selected="selected">All sheets</option>
+             <option>Include UA sheets</option>
+           </select>
+           -->
+-          <label for="specificity">Show specificity:</label>
++          <label for="specificity">${str.specificityLabel}</label>
+           <input type="checkbox" save="${specificity}"/>
+-          <a class="link" href="#">Huh?</a>
++          <a class="link" href="#">${str.specificityHelpLink}</a>
+         </td>
+       </tr>
+     </table>
+   </div>
+ 
+   <!--
+   Template for the top level groups of properties
+   templateGroups needs data like this:
+@@ -164,17 +169,17 @@ To visually debug the templates without 
+     styleGroups: [ // A reference to CssHtmlTree.styleGroups
+       ..., // Instances of StyleGroupView from csshtmltree.js
+     ],
+   }
+   -->
+   <div id="templateGroups">
+     <div class="group" foreach="group in ${styleGroups}">
+       <h1 onclick="${group.click}">
+-        ${group.name}
++        ${group.localName}
+         <span class="toggle" save="${group.toggle}">&#x25B6;</span>
+       </h1>
+       <div save="${group.element}"></div>
+     </div>
+   </div>
+ 
+   <!--
+   Inside each group of properties we have the properties themselves
+diff --git a/browser/base/content/csshtmltree.js b/browser/base/content/csshtmltree.js
+--- a/browser/base/content/csshtmltree.js
++++ b/browser/base/content/csshtmltree.js
+@@ -39,23 +39,26 @@
+  * ***** END LICENSE BLOCK ***** */
+ 
+ /**
+  * CssHtmlTree is a panel that manages the display of a table sorted by style.
+  * There should be one instance of CssHtmlTree per style display (of which there will
+  * generally only be one).
+  * @params styleWin The main XUL browser document
+  * @params cssLogic How we dig into the CSS properties. See csslogic.js
++ * @params {nsIStringBundle} strings The string bundle from where we can get 
++ * localized strings for the UI.
+  * @constructor
+  */
+-let CssHtmlTree = function(styleWin, cssLogic)
++let CssHtmlTree = function(styleWin, cssLogic, strings)
+ {
+   // 'window' in that it contains a document
+   this.styleWin = styleWin
+   this.cssLogic = cssLogic;
++  this.strings = strings;
+ 
+   // The document in which we display the results
+   this.styleDocument = XPCNativeWrapper.unwrap(this.styleWin.contentWindow.document);
+ 
+   // Template and destination for the block at the top (see csshtmltree.html)
+   this.header = this.styleDocument.getElementById('header');
+   this.templateHeader = this.styleDocument.getElementById('templateHeader');
+   // The main section of css property groups without nested properties/rules
+@@ -96,16 +99,21 @@ CssHtmlTree.prototype = {
+   /**
+    * Process the main template
+    */
+   _populateMainTemplates: function CssHtmlTree_populateMainTemplate()
+   {
+     let data = {
+       path_elements: CssLogic.getShortNamePath(this.viewedElement),
+       sheets: this.cssLogic.sheets,
++      str: {
++        lookingAtLabel: this.strings.GetStringFromName('style.lookingAtLabel'),
++        specificityLabel: this.strings.GetStringFromName('style.specificityLabel'),
++        specificityHelpLink: this.strings.GetStringFromName('style.specificityHelpLink')
++      }
+     };
+     this._template(this.templateHeader, this.header, data);
+ 
+     data = { styleGroups: this.styleGroups };
+     this._template(this.templateGroups, this.groups, data);
+   },
+ 
+   /**
+@@ -242,16 +250,19 @@ CssHtmlTree.prototype = {
+ 
+ /**
+  * A container to give easy access to style group data from the template engine
+  */
+ let StyleGroupView = function(tree, name, propertyNames)
+ {
+   this.tree = tree;
+   this.name = name;
++  this.localName = tree.strings.GetStringFromName('style.group.' +
++    name.replace(/ /g, '_'));
++
+   this.properties = [];
+   propertyNames.forEach(function(propertyName) {
+     this.properties.push(new PropertyView(tree, this, propertyName));
+   }, this);
+ 
+   this.closed = true;
+   this.element = null; // Assigned by templating process
+   this.populated = false;
+@@ -329,23 +340,20 @@ PropertyView.prototype = {
+   get value() {
+     return this.tree.cssLogic.getCssInfo(this.name).value;
+   },
+ 
+   ruleTitle: function(element) {
+     Scheduler.addJob(function() {
+       let ruleCount = this.tree.cssLogic.getCssInfo(this.name).ruleCount;
+       if (ruleCount > 1) {
+-        let data = '';
+-        if (ruleCount === 1) {
+-          data = '' + ruleCount + ' rule ';
+-        } else {
+-          data = '' + ruleCount + ' rules ';
+-        }
+-        element.textContent = data;
++        let stringName = ruleCount > 1 ? 'numberOfRulesPlural' :
++          'numberOfRulesSingular';
++        element.textContent = this.tree.strings.
++          formatStringFromName('style.property.' + stringName, [ruleCount], 1);
+ 
+         this.toggle = element.ownerDocument.createElement('span');
+         this.toggle.className = 'toggle';
+         this.toggle.innerHTML = '&#x25B6;';
+         element.appendChild(this.toggle);
+       }
+     }, this);
+ 
+diff --git a/browser/base/content/csslogic.js b/browser/base/content/csslogic.js
+--- a/browser/base/content/csslogic.js
++++ b/browser/base/content/csslogic.js
+@@ -83,19 +83,41 @@ CssLogic.STATUS = {
+   UNKNOWN: -1,
+ };
+ 
+ /**
+  * Decode for cssInfo.rule.status
+  * @see CssLogic.STATUS
+  */
+ CssLogic.STATUS_NAMES = [
+-  'Unmatched', 'Parent Match', 'Matched', 'Best Match'
++  //'Unmatched', 'Parent Match', 'Matched', 'Best Match'
+ ];
+ 
++/**
++ * Cache localized status names.
++ *
++ * @param {nsIStringBundle} strings The string bundle from where to get the
++ * localized status names.
++ * @returns {void}
++ */
++CssLogic.cacheStatusNames = function CssLogic_cacheStatusNames(strings) {
++  if (CssLogic.STATUS_NAMES.length) {
++    return;
++  }
++
++  let status, i;
++  for (status in CssLogic.STATUS) {
++    i = CssLogic.STATUS[status];
++    if (i > -1) {
++      CssLogic.STATUS_NAMES[i] = strings.GetStringFromName(
++        'style.rule.status.' + status);
++    }
++  }
++};
++
+ CssLogic.prototype = {
+   /**
+    * Focus on a new element - remove the style caches
+    */
+   highlight: function CssLogic_highlight(viewedElement)
+   {
+     this.viewedElement = viewedElement;
+ 
+diff --git a/browser/base/content/inspector.js b/browser/base/content/inspector.js
+--- a/browser/base/content/inspector.js
++++ b/browser/base/content/inspector.js
+@@ -635,16 +635,21 @@ var InspectorUI = {
+   /**
+    * Open the style panel if not already onscreen.
+    */
+   openStylePanel: function IUI_openStylePanel()
+   {
+     if (!this.stylePanel) {
+       this.stylePanel = document.getElementById("inspector-style-panel");
+       this.stylePanel.hidden = false;
++
++      // Set the localized document title for the Style browser.
++      let styleWin = document.getElementById("inspector-style-browser");
++      let title = styleWin.contentDocument.getElementsByTagName("title")[0];
++      title.textContent = this.stylePanel.getAttribute("label");
+     }
+     if (!this.isStylePanelOpen) {
+       // open at top right of browser panel, offset by 20px from top.
+       this.stylePanel.openPopup(this.browser, "end_before", 0, 20, false, false);
+       // size panel to 200px wide by half browser height - 60.
+       this.stylePanel.sizeTo(200, this.win.outerHeight / 2 - 60);
+     }
+   },
+@@ -674,35 +679,45 @@ var InspectorUI = {
+    * Open inspector UI. tree, style and DOM panels if enabled. Add listeners for
+    * document scrolling, resize and tabContainer.TabSelect.
+    */
+   openInspectorUI: function IUI_openInspectorUI()
+   {
+     // initialization
+     this.browser = gBrowser.selectedBrowser;
+     this.win = this.browser.contentWindow;
++
++    if (!this.inspectorBundle) {
++      this.inspectorBundle = Services.strings.
++        createBundle("chrome://browser/locale/inspector.properties");
++    }
++
+     if (!this.style) {
+       Cu.import("resource:///modules/stylePanel.jsm", this);
+       this.style.initialize();
+     }
+ 
+     // open inspector UI
+     if (this._showTreePanel) {
+       this.openTreePanel();
+     }
+     if (this._showStylePanel) {
++      if (!CssLogic.STATUS_NAMES.length) {
++        CssLogic.cacheStatusNames(this.inspectorBundle);
++      }
++
+       let styleWin = document.getElementById("inspector-style-browser");
+       this.cssLogic = new CssLogic(this.style);
+-      this.cssHtmlTree = new CssHtmlTree(styleWin, this.cssLogic);
++      this.cssHtmlTree = new CssHtmlTree(styleWin, this.cssLogic,
++        this.inspectorBundle);
+       this.openStylePanel();
+     }
+     if (this._showDOMPanel) {
+       this.openDOMPanel();
+     }
+-    this.inspectorBundle = Services.strings.createBundle("chrome://browser/locale/inspector.properties");
+     this.initializeHighlighter();
+     this.startInspecting();
+     this.win.document.addEventListener("scroll", this, false);
+     this.win.addEventListener("resize", this, false);
+     gBrowser.tabContainer.addEventListener("TabSelect", this, false);
+     this.inspectCmd.setAttribute("checked", true);
+   },
+ 
+diff --git a/browser/locales/en-US/chrome/browser/inspector.properties b/browser/locales/en-US/chrome/browser/inspector.properties
+--- a/browser/locales/en-US/chrome/browser/inspector.properties
++++ b/browser/locales/en-US/chrome/browser/inspector.properties
+@@ -4,8 +4,60 @@ style.selectorLabel=Selector
+ 
+ # LOCALIZATION NOTE  (style.inheritedFrom): used in Style panel in
+ #  inspector. Describes which tagname[#id] the properties are inherited from.
+ style.inheritedFrom=Inherited from: #1
+ 
+ # LOCALIZATION NOTE (style.styleItemLabel: used in Style panel in inspector.
+ #  Used for construction of list items, #1 = label, #2 = content.
+ style.styleItemLabel=#1: #2
++
++# LOCALIZATION NOTE (style.lookingAtLabel): This is used inside the Style panel
++# of the Inspector tool. This is the label for the path of the highlighted
++# element in the web page. This path is based on the document tree.
++style.lookingAtLabel=Looking at:
++
++# LOCALIZATION NOTE (style.specificityLabel): This is used inside the Style
++# panel of the Inspector tool. This allows the user to enable the showing of the
++# specificity of the style sheet rules.
++style.specificityLabel=Show specificity:
++
++# LOCALIZATION NOTE (style.specificityHelpLink): This is used inside the Style
++# panel of the Inspector tool. This allows the user to display additional
++# information on the specificity of style sheet rules.
++style.specificityHelpLink=Help!
++
++# LOCALIZATION NOTE (style.group): These strings are used inside the Style
++# panel of the Inspector tool. Style properties are displayed in groups and 
++# these are the group names.
++style.group.Fonts_and_Color=Fonts and Color
++style.group.Text=Text
++style.group.Background=Background
++style.group.Dimensions=Dimensions
++style.group.Positioning_and_Page_Flow=Positioning and Page Flow
++style.group.Borders=Borders
++style.group.Bullets=Bullets
++style.group.Effects_and_Other=Effects and Other
++
++# LOCALIZATION NOTE (style.property.numberOfRulesSingular): This is used inside
++# the Style panel of the Inspector tool. For each style property the panel shows
++# the number of rules which hold that specific property, counted from all of the
++# stylesheet in the web page inspected. This string is used when there is only
++# one rule.
++style.property.numberOfRulesSingular=%1$S rule
++
++# LOCALIZATION NOTE (style.property.numberOfRulesSingular): This is used inside
++# the Style panel of the Inspector tool. For each style property the panel shows
++# the number of rules which hold that specific property, counted from all of the
++# stylesheet in the web page inspected. This string is used when there are
++# multiple rules (more than one).
++style.property.numberOfRulesPlural=%1$S rules
++
++# LOCALIZATION NOTE (style.rule.status): These strings are used inside the Style
++# panel of the Inspector tool. For each style property the panel shows the rules
++# which hold that specific property. For every rule, the rule status is also
++# displayed: a rule can be the best match, a match, a parent match, or a rule 
++# did not match the element the user has highlighted.
++style.rule.status.BEST=Best Match
++style.rule.status.MATCHED=Matched
++style.rule.status.PARENT_MATCH=Parent Match
++style.rule.status.UNMATCHED=Unmatched
++

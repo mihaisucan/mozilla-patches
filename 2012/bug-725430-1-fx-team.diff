@@ -1,0 +1,790 @@
+# HG changeset patch
+# User Pranav Ravichandran <prp.1111@gmail.com>
+# Date 1331903831 -7200
+# Node ID aa08db32952db5410733d5d21629e24facb229a9
+# Parent  0bcbe43a02459819a7976966db253ef7cd7fffbd
+Bug 725430 - Add feature to sourceeditor/scratchpad: comment/uncomment line/block of code; r=msucan
+
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -20,16 +20,17 @@
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Mihai Sucan <mihai.sucan@gmail.com> (original author)
+  *   Kenny Heaton <kennyheaton@gmail.com>
+  *   Spyros Livathinos <livathinos.spyros@gmail.com>
+  *   Allen Eubank <adeubank@gmail.com>
+  *   Girish Sharma <scrapmachines@gmail.com>
++ *   Pranav Ravichandran <prp.1111@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -145,16 +146,27 @@ const DEFAULT_KEYBINDINGS = [
+     alt: true,
+   },
+   {
+     action: "Move Lines Down",
+     code: Ci.nsIDOMKeyEvent.DOM_VK_DOWN,
+     ctrl: Services.appinfo.OS == "Darwin",
+     alt: true,
+   },
++  {
++    action: "Comment",
++    code: Ci.nsIDOMKeyEvent.DOM_VK_SLASH,
++    accel: true,
++  },
++  {
++    action: "Uncomment",
++    code: Ci.nsIDOMKeyEvent.DOM_VK_SLASH,
++    accel: true,
++    shift: true,
++  },
+ ];
+ 
+ var EXPORTED_SYMBOLS = ["SourceEditor"];
+ 
+ /**
+  * The SourceEditor object constructor. The SourceEditor component allows you to
+  * provide users with an editor tailored to the specific needs of editing source
+  * code, aimed primarily at web developers.
+@@ -389,16 +401,18 @@ SourceEditor.prototype = {
+       "tab": [this._doTab, this],
+       "Unindent Lines": [this._doUnindentLines, this],
+       "enter": [this._doEnter, this],
+       "Find...": [this.ui.find, this.ui],
+       "Find Next Occurrence": [this.ui.findNext, this.ui],
+       "Find Previous Occurrence": [this.ui.findPrevious, this.ui],
+       "Goto Line...": [this.ui.gotoLine, this.ui],
+       "Move Lines Down": [this._moveLines, this],
++      "Comment": [this._doComment, this],
++      "Uncomment": [this._doUncomment, this],
+     };
+ 
+     for (let name in actions) {
+       let action = actions[name];
+       this._view.setAction(name, action[0].bind(action[1]));
+     }
+ 
+     this._view.setAction("Move Lines Up", this._moveLines.bind(this, true));
+@@ -481,32 +495,32 @@ SourceEditor.prototype = {
+     if (this.readOnly) {
+       return false;
+     }
+ 
+     let indent = "\t";
+     let selection = this.getSelection();
+     let model = this._model;
+     let firstLine = model.getLineAtOffset(selection.start);
+-    let firstLineStart = model.getLineStart(firstLine);
++    let firstLineStart = this.getLineStart(firstLine);
+     let lastLineOffset = selection.end > selection.start ?
+                          selection.end - 1 : selection.end;
+     let lastLine = model.getLineAtOffset(lastLineOffset);
+ 
+     if (this._expandTab) {
+       let offsetFromLineStart = firstLine == lastLine ?
+                                 selection.start - firstLineStart : 0;
+       let spaces = this._tabSize - (offsetFromLineStart % this._tabSize);
+       indent = (new Array(spaces + 1)).join(" ");
+     }
+ 
+     // Do selection indentation.
+     if (firstLine != lastLine) {
+       let lines = [""];
+-      let lastLineEnd = model.getLineEnd(lastLine, true);
++      let lastLineEnd = this.getLineEnd(lastLine, true);
+       let selectedLines = lastLine - firstLine + 1;
+ 
+       for (let i = firstLine; i <= lastLine; i++) {
+         lines.push(model.getLine(i, true));
+       }
+ 
+       this.startCompoundChange();
+ 
+@@ -553,19 +567,19 @@ SourceEditor.prototype = {
+     for (let line, i = firstLine; i <= lastLine; i++) {
+       line = model.getLine(i, true);
+       if (line.indexOf(indent) != 0) {
+         return true;
+       }
+       lines.push(line.substring(indent.length));
+     }
+ 
+-    let firstLineStart = model.getLineStart(firstLine);
+-    let lastLineStart = model.getLineStart(lastLine);
+-    let lastLineEnd = model.getLineEnd(lastLine, true);
++    let firstLineStart = this.getLineStart(firstLine);
++    let lastLineStart = this.getLineStart(lastLine);
++    let lastLineEnd = this.getLineEnd(lastLine, true);
+ 
+     this.startCompoundChange();
+ 
+     this.setText(lines.join(""), firstLineStart, lastLineEnd);
+ 
+     let selectedLines = lastLine - firstLine + 1;
+     let newSelectionStart = firstLineStart == selection.start ?
+                             selection.start :
+@@ -597,17 +611,17 @@ SourceEditor.prototype = {
+     let selection = this.getSelection();
+     if (selection.start != selection.end) {
+       return false;
+     }
+ 
+     let model = this._model;
+     let lineIndex = model.getLineAtOffset(selection.start);
+     let lineText = model.getLine(lineIndex, true);
+-    let lineStart = model.getLineStart(lineIndex);
++    let lineStart = this.getLineStart(lineIndex);
+     let index = 0;
+     let lineOffset = selection.start - lineStart;
+     while (index < lineOffset && /[ \t]/.test(lineText.charAt(index))) {
+       index++;
+     }
+ 
+     if (!index) {
+       return false;
+@@ -641,53 +655,53 @@ SourceEditor.prototype = {
+     let model = this._model;
+     let selection = this.getSelection();
+     let firstLine = model.getLineAtOffset(selection.start);
+     if (firstLine == 0 && aLineAbove) {
+       return true;
+     }
+ 
+     let lastLine = model.getLineAtOffset(selection.end);
+-    let firstLineStart = model.getLineStart(firstLine);
+-    let lastLineStart = model.getLineStart(lastLine);
++    let firstLineStart = this.getLineStart(firstLine);
++    let lastLineStart = this.getLineStart(lastLine);
+     if (selection.start != selection.end && lastLineStart == selection.end) {
+       lastLine--;
+     }
+     if (!aLineAbove && (lastLine + 1) == this.getLineCount()) {
+       return true;
+     }
+ 
+-    let lastLineEnd = model.getLineEnd(lastLine, true);
++    let lastLineEnd = this.getLineEnd(lastLine, true);
+     let text = this.getText(firstLineStart, lastLineEnd);
+ 
+     if (aLineAbove) {
+       let aboveLine = firstLine - 1;
+-      let aboveLineStart = model.getLineStart(aboveLine);
++      let aboveLineStart = this.getLineStart(aboveLine);
+ 
+       this.startCompoundChange();
+       if (lastLine == (this.getLineCount() - 1)) {
+-        let delimiterStart = model.getLineEnd(aboveLine);
+-        let delimiterEnd = model.getLineEnd(aboveLine, true);
++        let delimiterStart = this.getLineEnd(aboveLine);
++        let delimiterEnd = this.getLineEnd(aboveLine, true);
+         let lineDelimiter = this.getText(delimiterStart, delimiterEnd);
+         text += lineDelimiter;
+         this.setText("", firstLineStart - lineDelimiter.length, lastLineEnd);
+       } else {
+         this.setText("", firstLineStart, lastLineEnd);
+       }
+       this.setText(text, aboveLineStart, aboveLineStart);
+       this.endCompoundChange();
+       this.setSelection(aboveLineStart, aboveLineStart + text.length);
+     } else {
+       let belowLine = lastLine + 1;
+-      let belowLineEnd = model.getLineEnd(belowLine, true);
++      let belowLineEnd = this.getLineEnd(belowLine, true);
+ 
+       let insertAt = belowLineEnd - lastLineEnd + firstLineStart;
+       let lineDelimiter = "";
+       if (belowLine == this.getLineCount() - 1) {
+-        let delimiterStart = model.getLineEnd(lastLine);
++        let delimiterStart = this.getLineEnd(lastLine);
+         lineDelimiter = this.getText(delimiterStart, lastLineEnd);
+         text = lineDelimiter + text.substr(0, text.length -
+                                               lineDelimiter.length);
+       }
+       this.startCompoundChange();
+       this.setText("", firstLineStart, lastLineEnd);
+       this.setText(text, insertAt, insertAt);
+       this.endCompoundChange();
+@@ -798,18 +812,18 @@ SourceEditor.prototype = {
+       if (oldAnnotation) {
+         annotationModel.removeAnnotation(oldAnnotation);
+         this._currentLineAnnotation = null;
+       }
+       return;
+     }
+ 
+     let line = model.getLineAtOffset(newSelection.start);
+-    let lineStart = model.getLineStart(line);
+-    let lineEnd = model.getLineEnd(line);
++    let lineStart = this.getLineStart(line);
++    let lineEnd = this.getLineEnd(line);
+ 
+     let title = oldAnnotation ? oldAnnotation.title :
+                 SourceEditorUI.strings.GetStringFromName("annotation.currentLine");
+ 
+     this._currentLineAnnotation = {
+       start: lineStart,
+       end: lineEnd,
+       type: ORION_ANNOTATION_TYPES.currentLine,
+@@ -841,19 +855,19 @@ SourceEditor.prototype = {
+     }
+ 
+     if (aEvent.shiftKey) {
+       let model = this._model;
+       let selection = this.getSelection();
+       let selectionLineStart = model.getLineAtOffset(selection.start);
+       let selectionLineEnd = model.getLineAtOffset(selection.end);
+       let newStart = aLineIndex <= selectionLineStart ?
+-                     model.getLineStart(aLineIndex) : selection.start;
++                     this.getLineStart(aLineIndex) : selection.start;
+       let newEnd = aLineIndex <= selectionLineStart ?
+-                   selection.end : model.getLineEnd(aLineIndex);
++                   selection.end : this.getLineEnd(aLineIndex);
+       this.setSelection(newStart, newEnd);
+     } else {
+       this.setCaretPosition(aLineIndex);
+     }
+   },
+ 
+   /**
+    * The dblclick event handler for the lines gutter. This function selects the
+@@ -866,18 +880,18 @@ SourceEditor.prototype = {
+    *        The DOM dblclick event object.
+    */
+   _linesRulerDblClick: function SE__linesRulerDblClick(aLineIndex)
+   {
+     if (aLineIndex === undefined) {
+       return;
+     }
+ 
+-    let newStart = this._model.getLineStart(aLineIndex);
+-    let newEnd = this._model.getLineEnd(aLineIndex);
++    let newStart = this.getLineStart(aLineIndex);
++    let newEnd = this.getLineEnd(aLineIndex);
+     this.setSelection(newStart, newEnd);
+   },
+ 
+   /**
+    * Highlight the Orion annotations. This updates the annotation styler as
+    * needed.
+    * @private
+    */
+@@ -941,18 +955,18 @@ SourceEditor.prototype = {
+    *        The DOM click event object.
+    */
+   _annotationRulerClick: function SE__annotationRulerClick(aLineIndex, aEvent)
+   {
+     if (aLineIndex === undefined || aLineIndex == -1) {
+       return;
+     }
+ 
+-    let lineStart = this._model.getLineStart(aLineIndex);
+-    let lineEnd = this._model.getLineEnd(aLineIndex);
++    let lineStart = this.getLineStart(aLineIndex);
++    let lineEnd = this.getLineEnd(aLineIndex);
+     let annotations = this._getAnnotationsByType("breakpoint", lineStart, lineEnd);
+     if (annotations.length > 0) {
+       this.removeBreakpoint(aLineIndex);
+     } else {
+       this.addBreakpoint(aLineIndex);
+     }
+   },
+ 
+@@ -968,18 +982,18 @@ SourceEditor.prototype = {
+    */
+   _overviewRulerClick: function SE__overviewRulerClick(aLineIndex, aEvent)
+   {
+     if (aLineIndex === undefined || aLineIndex == -1) {
+       return;
+     }
+ 
+     let model = this._model;
+-    let lineStart = model.getLineStart(aLineIndex);
+-    let lineEnd = model.getLineEnd(aLineIndex);
++    let lineStart = this.getLineStart(aLineIndex);
++    let lineEnd = this.getLineEnd(aLineIndex);
+     let annotations = this._annotationModel.getAnnotations(lineStart, lineEnd);
+     let annotation = annotations.next();
+ 
+     // Jump to the line where annotation is. If the annotation is specific to
+     // a substring part of the line, then select the substring.
+     if (!annotation || lineStart == annotation.start && lineEnd == annotation.end) {
+       this.setSelection(lineStart, lineStart);
+     } else {
+@@ -993,16 +1007,168 @@ SourceEditor.prototype = {
+    * @return nsIDOMElement
+    *         In this implementation a xul:iframe holds the editor.
+    */
+   get editorElement() {
+     return this._iframe;
+   },
+ 
+   /**
++   * Helper function to retrieve the strings used for comments in the current
++   * editor mode.
++   *
++   * @private
++   * @return object
++   *         An object that holds the following properties:
++   *         - line: the comment string used for the start of a single line
++   *         comment.
++   *         - blockStart: the comment string used for the start of a comment
++   *         block.
++   *         - blockEnd: the comment string used for the end of a block comment.
++   *         Null is returned for unsupported editor modes.
++   */
++  _getCommentStrings: function SE__getCommentStrings()
++  {
++    let line = "";
++    let blockCommentStart = "";
++    let blockCommentEnd = "";
++
++    switch (this.getMode()) {
++      case SourceEditor.MODES.JAVASCRIPT:
++        line = "//";
++        blockCommentStart = "/*";
++        blockCommentEnd = "*/";
++        break;
++      case SourceEditor.MODES.CSS:
++        blockCommentStart = "/*";
++        blockCommentEnd = "*/";
++        break;
++      case SourceEditor.MODES.HTML:
++      case SourceEditor.MODES.XML:
++        blockCommentStart = "<!--";
++        blockCommentEnd = "-->";
++        break;
++      default:
++        return null;
++    }
++    return {line: line, blockStart: blockCommentStart, blockEnd: blockCommentEnd};
++  },
++
++  /**
++   * Wrap the selected text in comments. If nothing is selected the current
++   * caret line is commented out. Single line and block comments depend on the
++   * current editor mode.
++   *
++   * @private
++   */
++  _doComment: function SE__doComment()
++  {
++    if (this.readOnly) {
++      return false;
++    }
++
++    let commentObject = this._getCommentStrings();
++    if (!commentObject) {
++      return false;
++    }
++
++    let selection = this.getSelection();
++
++    if (selection.start == selection.end) {
++      let selectionLine = this._model.getLineAtOffset(selection.start);
++      let lineStartOffset = this.getLineStart(selectionLine);
++      if (commentObject.line) {
++        this.setText(commentObject.line, lineStartOffset, lineStartOffset);
++      } else {
++        let lineEndOffset = this.getLineEnd(selectionLine);
++        this.startCompoundChange();
++        this.setText(commentObject.blockStart, lineStartOffset, lineStartOffset);
++        this.setText(commentObject.blockEnd,
++                     lineEndOffset + commentObject.blockStart.length,
++                     lineEndOffset + commentObject.blockStart.length);
++        this.endCompoundChange();
++      }
++    } else {
++      this.startCompoundChange();
++      this.setText(commentObject.blockStart, selection.start, selection.start);
++      this.setText(commentObject.blockEnd,
++                   selection.end + commentObject.blockStart.length,
++                   selection.end + commentObject.blockStart.length);
++      this.endCompoundChange();
++    }
++
++    return true;
++  },
++
++  /**
++   * Uncomment the selected text. If nothing is selected the current caret line
++   * is umcommented. Single line and block comments depend on the current editor
++   * mode.
++   *
++   * @private
++   */
++  _doUncomment: function SE__doUncomment()
++  {
++    if (this.readOnly) {
++      return false;
++    }
++
++    let commentObject = this._getCommentStrings();
++    if (!commentObject) {
++      return false;
++    }
++
++    let selection = this.getSelection();
++    let firstLine = this._model.getLineAtOffset(selection.start);
++    let lastLine = this._model.getLineAtOffset(selection.end);
++
++    // Uncomment a block of text.
++    let firstLineText = this._model.getLine(firstLine);
++    let lastLineText = this._model.getLine(lastLine);
++    let openIndex = firstLineText.indexOf(commentObject.blockStart);
++    let closeIndex = lastLineText.lastIndexOf(commentObject.blockEnd);
++    if (openIndex != -1 && closeIndex != -1) {
++      let firstLineStartOffset = this.getLineStart(firstLine);
++      let lastLineStartOffset = this.getLineStart(lastLine);
++      let openOffset = firstLineStartOffset + openIndex;
++      let closeOffset = lastLineStartOffset + closeIndex;
++
++      this.startCompoundChange();
++      this.setText("", closeOffset, closeOffset + commentObject.blockEnd.length);
++      this.setText("", openOffset, openOffset + commentObject.blockStart.length);
++      this.endCompoundChange();
++
++      return true;
++    }
++
++    if (!commentObject.line) {
++      return true;
++    }
++
++    // If the selected text is not a block of comment, then uncomment each line.
++    this.startCompoundChange();
++    let lineCaret = firstLine;
++    while (lineCaret <= lastLine) {
++      let currentLine = this._model.getLine(lineCaret);
++      let lineStart = this.getLineStart(lineCaret);
++      let openIndex = currentLine.indexOf(commentObject.line);
++      let openOffset = lineStart + openIndex;
++      let textUntilComment = this.getText(lineStart, openOffset);
++      if (openIndex != -1 &&
++          (!textUntilComment || /^\s+$/.test(textUntilComment))) {
++        this.setText("", openOffset, openOffset + commentObject.line.length);
++      }
++      lineCaret++;
++    }
++    this.endCompoundChange();
++
++    return true;
++  },
++
++  /**
+    * Add an event listener to the editor. You can use one of the known events.
+    *
+    * @see SourceEditor.EVENTS
+    *
+    * @param string aEventType
+    *        The event type you want to listen for.
+    * @param function aCallback
+    *        The function you want executed when the event is triggered.
+@@ -1212,16 +1378,47 @@ SourceEditor.prototype = {
+    *         The text in the given range.
+    */
+   getText: function SE_getText(aStart, aEnd)
+   {
+     return this._view.getText(aStart, aEnd);
+   },
+ 
+   /**
++   * Get the start character offset of the line with index aLineIndex.
++   *
++   * @param number aLineIndex
++   *        Zero based index of the line.
++   * @return number
++   *        Line start offset or -1 if out of range.
++   */
++  getLineStart: function SE_getLineStart(aLineIndex)
++  {
++    return this._model.getLineStart(aLineIndex);
++  },
++
++  /**
++   * Get the end character offset of the line with index aLineIndex,
++   * excluding the end offset. When the line delimiter is present,
++   * the offset is the start offset of the next line or the char count.
++   * Otherwise, it is the offset of the line delimiter.
++   *
++   * @param number aLineIndex
++   *        Zero based index of the line.
++   * @param boolean [aIncludeDelimiter = false]
++   *        Optional, whether or not to include the line delimiter.
++   * @return number
++   *        Line end offset or -1 if out of range.
++   */
++  getLineEnd: function SE_getLineEnd(aLineIndex, aIncludeDelimiter)
++  {
++    return this._model.getLineEnd(aLineIndex, aIncludeDelimiter);
++  },
++
++  /**
+    * Get the number of characters in the editor content.
+    *
+    * @return number
+    *         The number of editor content characters.
+    */
+   getCharCount: function SE_getCharCount()
+   {
+     return this._model.getCharCount();
+@@ -1318,17 +1515,17 @@ SourceEditor.prototype = {
+    *         An object that holds two properties:
+    *         - line: the line number, counting from 0.
+    *         - col: the column number, counting from 0.
+    */
+   getCaretPosition: function SE_getCaretPosition()
+   {
+     let offset = this.getCaretOffset();
+     let line = this._model.getLineAtOffset(offset);
+-    let lineStart = this._model.getLineStart(line);
++    let lineStart = this.getLineStart(line);
+     let column = offset - lineStart;
+     return {line: line, col: column};
+   },
+ 
+   /**
+    * Set the caret position: line and column.
+    *
+    * @param number aLine
+@@ -1345,17 +1542,17 @@ SourceEditor.prototype = {
+   setCaretPosition: function SE_setCaretPosition(aLine, aColumn, aAlign)
+   {
+     let editorHeight = this._view.getClientArea().height;
+     let lineHeight = this._view.getLineHeight();
+     let linesVisible = Math.floor(editorHeight/lineHeight);
+     let halfVisible = Math.round(linesVisible/2);
+     let firstVisible = this.getTopIndex();
+     let lastVisible = this._view.getBottomIndex();
+-    let caretOffset = this._model.getLineStart(aLine) + (aColumn || 0);
++    let caretOffset = this.getLineStart(aLine) + (aColumn || 0);
+ 
+     this._view.setSelection(caretOffset, caretOffset, false);
+ 
+     // If the target line is in view, skip the vertical alignment part.
+     if (aLine <= lastVisible && aLine >= firstVisible) {
+       this._view.showSelection();
+       return;
+     }
+@@ -1500,18 +1697,18 @@ SourceEditor.prototype = {
+    *
+    * @param number aLineIndex
+    *        Line index where to add the breakpoint (starts from 0).
+    * @param string [aCondition]
+    *        Optional breakpoint condition.
+    */
+   addBreakpoint: function SE_addBreakpoint(aLineIndex, aCondition)
+   {
+-    let lineStart = this._model.getLineStart(aLineIndex);
+-    let lineEnd = this._model.getLineEnd(aLineIndex);
++    let lineStart = this.getLineStart(aLineIndex);
++    let lineEnd = this.getLineEnd(aLineIndex);
+ 
+     let annotations = this._getAnnotationsByType("breakpoint", lineStart, lineEnd);
+     if (annotations.length > 0) {
+       return;
+     }
+ 
+     let lineText = this._model.getLine(aLineIndex);
+     let title = SourceEditorUI.strings.
+@@ -1545,18 +1742,18 @@ SourceEditor.prototype = {
+    *
+    * @param number aLineIndex
+    *        Line index from where to remove the breakpoint (starts from 0).
+    * @return boolean
+    *         True if a breakpoint was removed, false otherwise.
+    */
+   removeBreakpoint: function SE_removeBreakpoint(aLineIndex)
+   {
+-    let lineStart = this._model.getLineStart(aLineIndex);
+-    let lineEnd = this._model.getLineEnd(aLineIndex);
++    let lineStart = this.getLineStart(aLineIndex);
++    let lineEnd = this.getLineEnd(aLineIndex);
+ 
+     let event = {
+       type: SourceEditor.EVENTS.BREAKPOINT_CHANGE,
+       added: [],
+       removed: [],
+     };
+ 
+     let annotations = this._getAnnotationsByType("breakpoint", lineStart, lineEnd);
+diff --git a/browser/devtools/sourceeditor/test/Makefile.in b/browser/devtools/sourceeditor/test/Makefile.in
+--- a/browser/devtools/sourceeditor/test/Makefile.in
++++ b/browser/devtools/sourceeditor/test/Makefile.in
+@@ -56,12 +56,13 @@ include $(topsrcdir)/config/rules.mk
+ 		browser_bug650345_find.js \
+ 		browser_bug703692_focus_blur.js \
+ 		browser_bug725388_mouse_events.js \
+ 		browser_bug707987_debugger_breakpoints.js \
+ 		browser_bug712982_line_ruler_click.js \
+ 		browser_bug725618_moveLines_shortcut.js \
+ 		browser_bug700893_dirty_state.js \
+ 		browser_bug729480_line_vertical_align.js \
++		browser_bug725430_comment_uncomment.js \
+ 		head.js \
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/browser/devtools/sourceeditor/test/browser_bug725430_comment_uncomment.js b/browser/devtools/sourceeditor/test/browser_bug725430_comment_uncomment.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/sourceeditor/test/browser_bug725430_comment_uncomment.js
+@@ -0,0 +1,151 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++"use strict";
++
++function test() {
++
++  let temp = {};
++  Cu.import("resource:///modules/source-editor.jsm", temp);
++  let SourceEditor = temp.SourceEditor;
++
++  waitForExplicitFinish();
++
++  let editor;
++
++  const windowUrl = "data:text/xml,<?xml version='1.0'?>" +
++    "<window xmlns='http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul'" +
++    " title='test for bug 725430' width='600' height='500'><hbox flex='1'/></window>";
++  const windowFeatures = "chrome,titlebar,toolbar,centerscreen,resizable,dialog=no";
++
++  let testWin = Services.ww.openWindow(null, windowUrl, "_blank", windowFeatures, null);
++  testWin.addEventListener("load", function onWindowLoad() {
++    testWin.removeEventListener("load", onWindowLoad, false);
++    waitForFocus(initEditor, testWin);
++  }, false);
++
++  function initEditor()
++  {
++    let hbox = testWin.document.querySelector("hbox");
++    editor = new SourceEditor();
++    editor.init(hbox, {showLineNumbers: true}, editorLoaded);
++  }
++
++  function editorLoaded()
++  {
++    editor.focus();
++    let text = "firstline\nsecondline\nthirdline\nfourthline";
++
++    editor.setMode(SourceEditor.MODES.JAVASCRIPT);
++    editor.setText(text)
++
++    editor.setCaretPosition(0);
++    EventUtils.synthesizeKey("/", {accelKey: true}, testWin);
++    is(editor.getText(), "//" + text, "JS Single line Commenting Works");
++    editor.undo();
++    is(editor.getText(), text, "Undo Single Line Commenting action works");
++    editor.redo();
++    is(editor.getText(), "//" + text, "Redo works");
++    editor.setCaretPosition(0);
++    EventUtils.synthesizeKey("/", {accelKey: true, shiftKey: true}, testWin);
++    is(editor.getText(), text, "JS Single Line Uncommenting works");
++
++    editor.setText(text);
++
++    EventUtils.synthesizeKey("VK_A", {accelKey: true}, testWin);
++    EventUtils.synthesizeKey("/", {accelKey: true}, testWin);
++    is(editor.getText(), "/*" + text + "*/", "JS Block Commenting works");
++    editor.undo();
++    is(editor.getText(), text, "Undo Block Commenting action works");
++    editor.redo();
++    is(editor.getText(), "/*" + text + "*/", "Redo works");
++    EventUtils.synthesizeKey("VK_A", {accelKey: true}, testWin);
++    EventUtils.synthesizeKey("/", {accelKey: true, shiftKey: true}, testWin);
++    is(editor.getText(), text, "JS Block Uncommenting works");
++    editor.undo();
++    is(editor.getText(), "/*" + text + "*/", "Undo Block Uncommenting works");
++    editor.redo();
++    is(editor.getText(), text, "Redo works");
++
++    let regText = "//firstline\n    //    secondline\nthird//line\nfourthline//";
++    let expText = "firstline\n        secondline\nthird//line\nfourthline//";
++    editor.setText(regText);
++    EventUtils.synthesizeKey("VK_A", {accelKey: true}, testWin);
++    EventUtils.synthesizeKey("/", {accelKey: true, shiftKey: true}, testWin);
++    is(editor.getText(), expText, "JS Multiple Line Uncommenting works");
++    editor.undo();
++    is(editor.getText(), regText, "Undo Multiple Line Uncommenting works");
++    editor.redo();
++    is(editor.getText(), expText, "Redo works");
++
++    editor.setMode(SourceEditor.MODES.CSS);
++    editor.setText(text);
++
++    expText = "/*firstline*/\nsecondline\nthirdline\nfourthline";
++    editor.setCaretPosition(0);
++    EventUtils.synthesizeKey("/", {accelKey: true}, testWin);
++    is(editor.getText(), expText, "CSS Commenting without selection works");
++    editor.setCaretPosition(0);
++    EventUtils.synthesizeKey("/", {accelKey: true, shiftKey: true}, testWin);
++    is(editor.getText(), text, "CSS Uncommenting without selection works");
++
++    editor.setText(text);
++
++    EventUtils.synthesizeKey("VK_A", {accelKey: true}, testWin);
++    EventUtils.synthesizeKey("/", {accelKey: true}, testWin);
++    is(editor.getText(), "/*" + text + "*/", "CSS Multiple Line Commenting works");
++    EventUtils.synthesizeKey("VK_A", {accelKey: true}, testWin);
++    EventUtils.synthesizeKey("/", {accelKey: true, shiftKey: true}, testWin);
++    is(editor.getText(), text, "CSS Multiple Line Uncommenting works");
++
++    editor.setMode(SourceEditor.MODES.HTML);
++    editor.setText(text);
++
++    expText = "<!--firstline-->\nsecondline\nthirdline\nfourthline";
++    editor.setCaretPosition(0);
++    EventUtils.synthesizeKey("/", {accelKey: true}, testWin);
++    is(editor.getText(), expText, "HTML Commenting without selection works");
++    editor.setCaretPosition(0);
++    EventUtils.synthesizeKey("/", {accelKey: true, shiftKey: true}, testWin);
++    is(editor.getText(), text, "HTML Uncommenting without selection works");
++
++    editor.setText(text);
++
++    EventUtils.synthesizeKey("VK_A", {accelKey: true}, testWin);
++    EventUtils.synthesizeKey("/", {accelKey: true}, testWin);
++    is(editor.getText(), "<!--" + text + "-->", "HTML Multiple Line Commenting works");
++    EventUtils.synthesizeKey("VK_A", {accelKey: true}, testWin);
++    EventUtils.synthesizeKey("/", {accelKey: true, shiftKey: true}, testWin);
++    is(editor.getText(), text, "HTML Multiple Line Uncommenting works");
++
++    editor.setMode(SourceEditor.MODES.TEXT);
++    editor.setText(text);
++
++    editor.setCaretPosition(0);
++    EventUtils.synthesizeKey("/", {accelKey: true}, testWin);
++    is(editor.getText(), text, "Commenting disabled in Text mode");
++    editor.setText("//" + text);
++    EventUtils.synthesizeKey("VK_A", {accelKey: true}, testWin);
++    EventUtils.synthesizeKey("/", {accelKey: true, shiftKey: true}, testWin);
++    is(editor.getText(), "//" + text, "Uncommenting disabled in Text mode");
++
++    editor.setText(text);
++    editor.readOnly = true;
++
++    editor.setCaretPosition(0);
++    EventUtils.synthesizeKey("/", {accelKey: true}, testWin);
++    is(editor.getText(), text, "Commenting disabled in ReadOnly mode");
++    editor.setText("//" + text);
++    EventUtils.synthesizeKey("VK_A", {accelKey: true}, testWin);
++    EventUtils.synthesizeKey("/", {accelKey: true, shiftKey: true}, testWin);
++    is(editor.getText(), "//" + text, "Uncommenting disabled in ReadOnly mode");
++
++    editor.destroy();
++
++    testWin.close();
++    testWin = editor = null;
++
++    waitForFocus(finish, window);
++  }
++}

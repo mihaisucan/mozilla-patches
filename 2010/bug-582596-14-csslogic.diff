@@ -1,0 +1,871 @@
+diff --git a/browser/base/content/browser.js b/browser/base/content/browser.js
+--- a/browser/base/content/browser.js
++++ b/browser/base/content/browser.js
+@@ -47,16 +47,17 @@
+ #   Edward Lee <edward.lee@engineering.uiuc.edu>
+ #   Paul O’Shannessy <paul@oshannessy.com>
+ #   Nils Maier <maierman@web.de>
+ #   Rob Arnold <robarnold@cmu.edu>
+ #   Dietrich Ayala <dietrich@mozilla.com>
+ #   Gavin Sharp <gavin@gavinsharp.com>
+ #   Justin Dolske <dolske@mozilla.com>
+ #   Rob Campbell <rcampbell@mozilla.com>
++#   Joe Walker <jwalker@mozilla.com>
+ #
+ # Alternatively, the contents of this file may be used under the terms of
+ # either the GNU General Public License Version 2 or later (the "GPL"), or
+ # the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+ # in which case the provisions of the GPL or the LGPL are applicable instead
+ # of those above. If you wish to allow use of your version of this file only
+ # under the terms of either the GPL or the LGPL, and not to allow others to
+ # use your version of this file under the terms of the MPL, indicate your
+@@ -171,16 +172,17 @@ XPCOMUtils.defineLazyGetter(this, "Popup
+ let gInitialPages = [
+   "about:blank",
+   "about:privatebrowsing",
+   "about:sessionrestore"
+ ];
+ 
+ #include browser-fullZoom.js
+ #include inspector.js
++#include csslogic.js
+ #include browser-places.js
+ #include browser-tabPreviews.js
+ #include browser-tabview.js
+ 
+ #ifdef MOZ_SERVICES_SYNC
+ #include browser-syncui.js
+ #endif
+ 
+diff --git a/browser/base/content/csslogic.js b/browser/base/content/csslogic.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/csslogic.js
+@@ -0,0 +1,827 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is the Mozilla Inspector Module.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Joe Walker <jwalker@mozilla.com)> (original author)
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++/**
++ * Other bits of CSS display logic work simply by digging into the actually
++ * styles of a selected element and its parents. This method fails to answer
++ * many questions about why the users styles did not work, specifically because
++ * it only looks at the things that did. This approach takes into account all
++ * the available styles, and shows why each rule is not applicable.
++ *
++ * <p>This approach can be considerably more costly while a page's stylesheets
++ * are examined, so this class tries to be smart about the information that it
++ * caches.
++ *
++ * <p>These functions could probably be merged into stylePanel.jsm.
++ *
++ * @constructor
++ * @param {object} aStylePanel a reference to the stylePanel object instance from the
++ * stylePanel.jsm file.
++ * @params {nsIStringBundle} aStrings The string bundle from where we can get
++ * localized strings for the UI.
++ */
++function CssLogic(aStylePanel, aStrings)
++{
++  // Instance of stylePanel.jsm.
++  this.stylePanel = aStylePanel;
++  this.strings = aStrings;
++
++  // Both setup by highlight().
++  this.viewedElement = null;
++  this.viewedDocument = null;
++
++  // The cache of the known sheets.
++  this.sheets = [];
++  // Part of the specificity of a rule is its order in the sheet.
++  this._ruleCount = 0;
++
++  // The cache of examined CSS properties.
++  this._cssInfos = {};
++  // The computed styles for the viewedElement.
++  this._computedStyle = null;
++};
++
++/**
++ * Each rule has a status, the bigger the number, the better placed it is to
++ * provide styling information.
++ */
++CssLogic.STATUS = {
++  BEST: 3,
++  MATCHED: 2,
++  PARENT_MATCH: 1,
++  UNMATCHED: 0,
++  UNKNOWN: -1,
++};
++
++CssLogic.prototype = {
++  /**
++   * Focus on a new element - remove the style caches.
++   *
++   * @param {nsIDOMElement} aViewedElement the element the user has highlighted
++   * in the Inspector.
++   */
++  highlight: function CssLogic_highlight(aViewedElement)
++  {
++    if (!aViewedElement) {
++      this.viewedElement = null;
++      this.viewedDocument = null;
++
++      this.sheets = [];
++      this._ruleCount = 0;
++      this._cssInfos = {};
++
++      this._computedStyle = null;
++      return;
++    }
++
++    this.viewedElement = aViewedElement;
++
++    let doc = this.viewedElement.ownerDocument;
++    if (doc != this.viewedDocument) {
++      // New document: clear/rebuild the cache.
++      this.viewedDocument = doc;
++
++      this.sheets = [];
++      this._ruleCount = 0;
++      this._cssInfos = {};
++
++      // Hunt down top level stylesheets, and cache them.
++      let domSheets = this.viewedDocument.styleSheets;
++      let domSheet;
++      for (let s = 0, n = domSheets.length; s < n; s++) {
++        domSheet = domSheets[s];
++        if (domSheet.disabled) {
++          continue;
++        }
++
++        // Only show stylesheets for media=screen.
++        if (domSheet.media.length > 0) {
++          let foundScreen = false;
++          for (m = 0; m < domSheet.media.length; m++) {
++            if (domSheet.media.item(m).toLowerCase() == "screen") {
++              foundScreen = true;
++              break;
++            }
++          }
++          if (!foundScreen) {
++            continue;
++          }
++        }
++
++        this._cacheSheet(domSheets[s]);
++      }
++    } else {
++      // Same document, new element: clear the match data for this element.
++      for (let property in this._cssInfos) {
++        this._cssInfos[property].unmarkMatches();
++      }
++    }
++
++    try {
++      let win = this.viewedDocument.defaultView;
++      this._computedStyle = win.getComputedStyle(this.viewedElement, "");
++    } catch (ex) {
++      Services.console.logStringMessage("Warning getComputedStyle errored " +
++        "for " + this.viewedElement + ". " + ex);
++    }
++  },
++
++  /**
++   * Dig through the stylesheets and get a data structure like this:
++   * {
++   *   property: 'color',
++   *   value: 'red',
++   *   rules: // Rules ordered by how well they match the chosen element
++   *   [
++   *     { value:'blue', source:'other.css', selector:'p', status:... },
++   *     { value:'#F80', source:'other.css', selector:'*', status:... },
++   *     ...
++   *   ],
++   *   _matched: true|false, // Have we run _markMatches on this property|element
++   * }
++   *
++   * @param {string} aProperty The CSS property to look for.
++   */
++  getCssInfo: function CssLogic_getCssInfo(aProperty)
++  {
++    if (!this.viewedElement) {
++      return {};
++    }
++
++    let cssInfo = this._cssInfos[aProperty];
++    if (!cssInfo) {
++      cssInfo = new CssInfo(this, aProperty);
++      this._cssInfos[aProperty] = cssInfo;
++    }
++
++    return cssInfo;
++  },
++
++  /**
++   * Cache stylesheets, including at-imported ones.
++   *
++   * @param {CSSStyleSheet} aDomSheet reference to a DOM CSSStyleSheet object.
++   */
++  _cacheSheet: function CssLogic_cacheSheet(aDomSheet)
++  {
++    // The rules in a '@import'ed sheet have a document order before the rules
++    // in the sheet itself. It's a bit like function hoisting in JavaScript.
++    // So we first look for @import rules.
++    for (let r = 0, n = aDomSheet.cssRules.length; r < n; r++) {
++      try {
++        let domRule = aDomSheet.cssRules[r];
++
++        // If it is an @import rule, it will have a styleSheet property.
++        if (domRule.styleSheet) {
++          this._cacheSheet(domRule.styleSheet);
++        }
++      } catch (ex) {
++        Services.console.logStringMessage("Error in cacheSheet for domRule " +
++          r + ": " + ex);
++      }
++    }
++
++    this.sheets.push(new CssSheet(this.viewedDocument, aDomSheet));
++  },
++};
++
++/**
++ * If the element has an id, return '#id'. Otherwise return 'tagname[n]' where
++ * n is the index of this element in its siblings.
++ * <p>A technically more 'correct' output from the no-id case might be:
++ * 'tagname:nth-of-type(n)' however this is unlikely to be more understood
++ * and it is longer.
++ *
++ * @param {nsIDOMElement} aElement the element for which you want the short name.
++ * @returns {string} the string to be displayed for aElement.
++ */
++CssLogic.getShortName = function CssLogic_getShortName(aElement)
++{
++  if (!aElement) {
++    return "null";
++  }
++  if (aElement.id) {
++    return "#" + aElement.id;
++  }
++  let priorSiblings = 0;
++  let temp = aElement;
++  while (temp = temp.previousElementSibling) {
++    priorSiblings++;
++  }
++  return aElement.tagName + "[" + priorSiblings + "]";
++};
++
++/**
++ * Get an array of short names from the given element to document.body.
++ *
++ * @param {nsIDOMElement} aElement the element for which you want the array of
++ * short names.
++ * @returns {array} The array of elements.
++ * <p>Each element is an object of the form:
++ * <ul>
++ * <li>{display: "what to display for the given (parent) element",
++ * <li>element: referenceToTheElement}
++ * </ul>
++ */
++CssLogic.getShortNamePath = function CssLogic_getShortNamePath(aElement)
++{
++  let doc = aElement.ownerDocument;
++  let reply = [];
++
++  // Work up to document.body, but don't include it.
++  while (aElement && aElement != doc.body && aElement != doc.documentElement) {
++    reply.unshift({
++      display: CssLogic.getShortName(aElement),
++      element: aElement
++    });
++    aElement = aElement.parentNode;
++  }
++
++  // If we don't have anything then include document.body or whatever element
++  // is.
++  if (aElement && !reply.length) {
++    reply.unshift({
++      display: CssLogic.getShortName(aElement),
++      element: aElement
++    });
++  }
++
++  return reply;
++};
++
++/**
++ * A safe each to access cache of bits of information about a stylesheet.
++ *
++ * @constructor
++ * @param {nsIDOMDocument} aDocument the document we inspect.
++ * @param {CSSStyleSheet} aDomSheet reference to a DOM CSSStyleSheet object.
++ */
++function CssSheet(aDocument, aDomSheet)
++{
++  this._document = aDocument;
++  this._domSheet = aDomSheet;
++};
++
++CssSheet.prototype = {
++  /**
++   * Get a source for a stylesheet, taking into account embedded stylesheets
++   * for which we need to use document.defaultView.location.href rather than
++   * sheet.href
++   *
++   * @returns {string} the address of the stylesheet.
++   */
++  get href()
++  {
++    if (!this._href) {
++      try {
++        this._href = this._domSheet.href;
++        if (!this._href) {
++          this._href = this._document.defaultView.location.href;
++        }
++      } catch (ex) {
++        Services.console.logStringMessage("get href error: " + ex);
++        this._href = "unknown";
++      }
++    }
++
++    return this._href;
++  },
++
++  /**
++   * Create a shorthand version of the href of a stylesheet.
++   *
++   * @returns {string} the shorthand source of the stylesheet.
++   */
++  get shortSource()
++  {
++    if (!this._source) {
++      try {
++        this._source = this._domSheet.href;
++        if (this._source) {
++          this._source = this._source.split("/");
++          this._source = this._source[this._source.length - 1];
++        } else {
++          this._source = InspectorUI.cssLogic.strings.
++            GetStringFromName("style.rule.sourceInline");
++        }
++        // Get rid of any query string. There are times when this might be the
++        // wrong thing to do, but getting rid of it seems like the simplest option
++        // so we should do that until we have a good reason to do otherwise.
++        let queryPos = this._source.indexOf("?");
++        if (queryPos != -1) {
++          this._source = this._source.substr(0, queryPos);
++        }
++      } catch (ex) {
++        Services.console.logStringMessage("get source error: " + ex);
++        this._source = InspectorUI.cssLogic.strings.
++            GetStringFromName("style.rule.sourceUnknown");
++      }
++    }
++
++    return this._source;
++  },
++
++  /**
++   * Safe accessor for the cssRules in this domSheet.
++   *
++   * @private
++   * @returns {CSSRuleList} the cssRules in the CSSStyleSheet of the current
++   * object.
++   */
++  get domRules()
++  {
++    if (!this._domRules) {
++      // Cross domain sheets give NS_ERROR_DOM_SECURITY_ERR
++      try {
++        this._domRules = this._domSheet.cssRules;
++      } catch (ex) {
++        Services.console.logStringMessage("Failed to get the rules from " +
++          this.href + ". " + ex);
++        this._domRules = [];
++      }
++    }
++
++    return this._domRules;
++  },
++
++  toString: function CssSheet_toString()
++  {
++    return "CssSheet[" + this.shortSource + "]";
++  },
++};
++
++/**
++ * A cache of information about the rules and values attached to a CSS property.
++ *
++ * @constructor
++ * @param {CssLogic} aCssLogic reference to the CssLogic instance we are working
++ * with.
++ * @param {string} aProperty the CSS property name we are gathering information
++ * for.
++ */
++function CssInfo(aCssLogic, aProperty)
++{
++  this.property = aProperty;
++  if (aCssLogic._computedStyle) {
++    this.value = aCssLogic._computedStyle.getPropertyValue(aProperty);
++  } else {
++    this.value = "";
++  }
++
++  this._matched = false;
++  this._localRules = false;
++  this._cssLogic = aCssLogic;
++  this._unmatchedRuleCount = 0;
++};
++
++CssInfo.prototype = {
++  /**
++   * ruleCount could be accessed through this.rules.length, however that means
++   * we need to have sorted them into the correct order, which could take time
++   * hence we have a separate accessor for the times when you just want to know
++   * how rules there are without getting access to the rule ordering.
++   *
++   * @returns {number} the number of rules.
++   */
++  get ruleCount()
++  {
++    if (!this._rules) {
++      this._findRules();
++    }
++    if (!this._localRules) {
++      this._findElementRules();
++    }
++
++    return this._rules.length;
++  },
++
++  /**
++   * Retrieve the number of unmatched rules.
++   * @returns {number} the number of unmatched rules.
++   */
++  get unmatchedRuleCount()
++  {
++    if (!this._rules) {
++      this._findRules();
++    }
++    if (!this._localRules) {
++      this._findElementRules();
++    }
++    if (!this._matched) {
++      this._markMatches();
++    }
++
++    return this._unmatchedRuleCount;
++  },
++
++  /**
++   * Accessor for a list of rules sorted by their applicability to the current
++   * element.
++   *
++   * @returns {array}
++   */
++  get rules()
++  {
++    if (!this._rules) {
++      this._findRules();
++    }
++    if (!this._localRules) {
++      this._findElementRules();
++    }
++
++    if (!this._matched) {
++      this._markMatches();
++    }
++
++    return this._rules;
++  },
++
++  /**
++   * Dig through all the sheets looking for matches for <tt>property</tt> and
++   * adding the results to <tt>rules</tt>. This method also finds the properties
++   * that are defined inline (element.style).
++   */
++  _findRules: function CssInfo_findRules()
++  {
++    this._rules = [];
++
++    // Loop over all the stylesheets, rules, and properties
++    for (let s = 0; s < this._cssLogic.sheets.length; s++) {
++      let sheet = this._cssLogic.sheets[s];
++      for (let r = 0; r < sheet.domRules.length; r++) {
++        let domRule = sheet.domRules[r];
++        if (domRule.style) {
++          for (let t = 0; t < domRule.style.length; t++) {
++            if (domRule.style[t] == this.property) {
++              domRule.selectorText.split(",").forEach(function(aSelector) {
++                let rule = new CssRule(this._cssLogic, domRule, this.property,
++                    sheet, aSelector.trim());
++                this._rules.push(rule);
++              }, this);
++            }
++          }
++        }
++      }
++    }
++  },
++
++  /**
++   * Find the element.style rules.
++   */
++  _findElementRules: function CssInfo_findElementRules()
++  {
++    let element = this._cssLogic.viewedElement;
++    if (element.style && element.style.getPropertyValue(this.property) != "") {
++      let rule = new CssRule(this._cssLogic, {style: element.style},
++        this.property, null, "@element.style");
++      this._rules.push(rule);
++    }
++    this._localRules = true;
++  },
++
++  /**
++   * Go through the <tt>rules</tt> member of <tt>cssInfo</tt> and work out
++   * if each rule applies to <tt>viewedElement</tt>.
++   */
++  _markMatches: function CssInfo_markMatches()
++  {
++    let parents = [];
++    let element = this._cssLogic.viewedElement;
++
++    while ((element = element.parentNode) &&
++      element.nodeType == Node.ELEMENT_NODE) {
++      parents.push(element);
++    }
++
++    for (let rule, r = 0, n = this._rules.length; r < n; r++) {
++      rule = this._rules[r];
++
++      // Do we have a selector match?
++      if (rule.selector == "@element.style" ||
++        this._cssLogic.viewedElement.mozMatchesSelector(rule.selector)) {
++        rule.status = CssLogic.STATUS.MATCHED;
++      } else {
++        // Do we have a parent match?
++        for (let p = 0, pn = parents.length; p < pn; p++) {
++          if (parents[p].mozMatchesSelector(rule.selector)) {
++            rule.status = CssLogic.STATUS.PARENT_MATCH;
++            break;
++          }
++        }
++
++        if (rule.status == CssLogic.STATUS.UNKNOWN) {
++          rule.status = CssLogic.STATUS.UNMATCHED;
++          this._unmatchedRuleCount++;
++        }
++      }
++    }
++
++    // Sort the arrays by how well they match the given element.
++    this._rules.sort(function(aRule1, aRule2) {
++      if (aRule1.status > aRule2.status) {
++        return -1;
++      } else if (aRule2.status > aRule1.status) {
++        return 1;
++      } else {
++        return aRule1.specificity.compareTo(aRule2.specificity);
++      }
++    });
++
++    // Now we know which of the matches is best, we can mark it BEST_MATCH.
++    if (this._rules.length > 0 &&
++      this._rules[0].status > CssLogic.STATUS.UNMATCHED) {
++      this._rules[0].status = CssLogic.STATUS.BEST;
++    }
++
++    this._matched = true;
++  },
++
++  /**
++   * Undoes the changes made by _markMatches().
++   * For use when <tt>viewedElement</tt> changes (e.g. in highlight())
++   */
++  unmarkMatches: function CssInfo_unmarkMatches()
++  {
++    if (this._rules) {
++      let removeRules = [];
++
++      this._rules.forEach(function(aRule, aIndex) {
++        aRule.status = CssLogic.STATUS.UNKNOWN;
++        if (aRule.selector == "@element.style") {
++          removeRules.push(aIndex);
++        }
++      }, this);
++
++      removeRules.forEach(function (aIndex) {
++        this._rules.splice(aIndex, 1);
++      }, this);
++
++      this._unmatchedRuleCount = 0;
++    }
++
++    this._matched = false;
++    this._localRules = false;
++  },
++
++  toString: function CssInfo_toString()
++  {
++    return "CssInfo[" + this.property + "]";
++  },
++};
++
++/**
++ * Information about a single CSS rule, with a simple selector (i.e. no commas)
++ * and a single CSS property to which the rule applies.
++ *
++ * @constructor
++ * @param {CssLogic} aCssLogic reference to the CssLogic instance we are working
++ * with.
++ * @param {DOMCSSRule|object} aDomRule the DOM CSSRule from which we have the
++ * selector and the property. If the rule comes from element.style, then provide
++ * an object like this {style: element.style}.
++ * @param {string} aProperty the CSS property name we are gathering information
++ * for.
++ * @param {CSSStyleSheet|null} aSheet reference to the stylesheet where the
++ * property and rule were found. Use null if the rule comes from element.style.
++ * @param {string} aSelector the simple selector rule. If the rule comes from
++ * element.style use "@element.style".
++ */
++function CssRule(aCssLogic, aDomRule, aProperty, aSheet, aSelector)
++{
++  this.property = aProperty;
++  this.selector = aSelector;
++  this.value = aDomRule.style.getPropertyValue(aProperty);
++  let pri = aDomRule.style.getPropertyPriority(aProperty);
++
++  let ruleCount;
++  if (this.selector == "@element.style") {
++    ruleCount = 0;
++  } else {
++    ruleCount = aCssLogic._ruleCount++;
++  }
++
++  this.specificity = new CssSpecificity(this.selector, ruleCount, pri);
++
++  // domUtils.getRuleLine fails for @import rules.
++  this.line = -1;
++  if (aCssLogic.stylePanel && this.selector != "@element.style") {
++    try {
++      this.line = aCssLogic.stylePanel.domUtils.getRuleLine(aDomRule);
++    } catch (ex) {
++      Services.console.logStringMessage("domUtils.getRuleLine failed for " +
++        aDomRule.cssText);
++    }
++  }
++
++  if (this.selector == "@element.style") {
++    this.source = aCssLogic.strings.
++      GetStringFromName("style.rule.sourceElement");
++    this.href = "#";
++  } else {
++    this.source = (this.line == -1) ?
++        aSheet.shortSource :
++        aSheet.shortSource + ":" + this.line;
++    this.href = aSheet.href;
++  }
++
++  this.status = CssLogic.STATUS.UNKNOWN;
++};
++
++CssRule.prototype = {
++  toString: function CssInfo_toString()
++  {
++    return "CssRule[" + this.selector + "->" + this.value + "]";
++  },
++};
++
++/**
++ * The CSS specificity class allows us to document the ranking of various CSS
++ * rules.
++ *
++ * @constructor
++ * @param {string} aSelector The selector that we wish to investigate
++ * @param {number} aIndex The index of the rule in the HTML document. Later
++ * rules have higher precedence (i.e. they are 'more specific')
++ * See http://www.w3.org/TR/CSS2/cascade.html#cascade for details.
++ * @param {string} aPriority CSS allows only one priority: 'important'
++ * @see http://www.w3.org/TR/CSS2/cascade.html#specificity
++ * @see http://www.w3.org/TR/CSS2/selector.html
++ */
++function CssSpecificity(aSelector, aIndex, aPriority)
++{
++  this.ids = 0;
++  this.classes = 0;
++  this.tags = 0;
++  this.index = aIndex;
++  this.important = (aPriority == "important");
++
++  // Split on CSS combinators (section 5.2).
++  if (aSelector != "@element.style") {
++    this.inline = false;
++
++    aSelector.split(/[ >+]/).forEach(function(aSimple) {
++      // The regex leaves empty nodes combinators like ' > '
++      if (!aSimple) {
++        return;
++      }
++      // See section 6.4.3 -> http://www.w3.org/TR/CSS2/cascade.html#specificity
++      // We can count the IDs by counting the '#' marks.
++      this.ids += (aSimple.match(/#/g) || []).length;
++      // Similar with class names and attribute matchers
++      this.classes += (aSimple.match(/\./g) || []).length;
++      this.classes += (aSimple.match(/\[/g) || []).length;
++      // Pseudo elements count as elements.
++      this.tags += (aSimple.match(/:/g) || []).length;
++      // If we have anything of substance before we get into ids/classes/etc
++      // then it must be a tag if it isn't '*'.
++      let tag = aSimple.split(/[#.[:]/)[0];
++      if (tag && tag != "*") {
++        this.tags++;
++      }
++    }, this);
++  } else {
++    this.inline = true;
++  }
++
++  this.score = 0;
++
++  /* Score prefix:
++  0 nothing
++  1 inline
++  2 important
++  3 inline important
++  */
++  let scorePrefix = 0;
++  if (this.inline) {
++    scorePrefix++;
++  }
++  if (this.important) {
++    scorePrefix += 2;
++  }
++
++  this.score = "" + scorePrefix + this.ids + this.classes + this.tags;
++};
++
++CssSpecificity.prototype = {
++  /**
++   * Compare the current CssSpecificity instance to another instance.
++   *
++   * @param {CssSpecificity} aThat The CssSpecificity instance to compare ourselves against.
++   * @returns number -1, 0, 1 depending on how aThat compares with this.
++   */
++  compareTo: function CssSpecificity_compareTo(aThat)
++  {
++    // There are ways to do this that are more compact code-wise, but
++    // this is clear and clear wins over smart and compact.
++
++    if (this.inline && !aThat.inline) {
++      if (!this.important && aThat.important) {
++        return 1;
++      } else {
++        return -1;
++      }
++    }
++
++    if (!this.inline && aThat.inline) {
++      if (this.important && !aThat.important) {
++        return -1;
++      } else {
++        return 1;
++      }
++    }
++
++    if (this.important && !aThat.important) {
++      return -1;
++    }
++    if (aThat.important && !this.important) {
++      return 1;
++    }
++
++    if (this.ids > aThat.ids) {
++      return -1;
++    }
++    if (aThat.ids > this.ids) {
++      return 1;
++    }
++
++    if (this.classes > aThat.classes) {
++      return -1;
++    }
++    if (aThat.classes > this.classes) {
++      return 1;
++    }
++
++    if (this.tags > aThat.tags) {
++      return -1;
++    }
++    if (aThat.tags > this.tags) {
++      return 1;
++    }
++
++    if (this.index > aThat.index) {
++      return -1;
++    }
++    if (aThat.index > this.index) {
++      return 1;
++    }
++
++    return 0;
++  },
++
++  /**
++   * Displayable version of the specificity.
++   * @returns {string}
++   */
++  toString: function CssSpecificity_toString()
++  {
++    let result = "";
++    if (this.score) {
++      result = this.score;
++    } else {
++      if (this.inline) {
++        let prefix = this.important ? "!," : " ,";
++        result = prefix + this.ids + "," + this.classes + "," + this.tags;
++      } else {
++        result = this.important ? "!" : " ";
++      }
++    }
++    return result;
++  },
++};

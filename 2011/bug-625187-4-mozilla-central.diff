@@ -1,0 +1,221 @@
+diff --git a/toolkit/components/prompts/content/tabprompts.css b/toolkit/components/prompts/content/tabprompts.css
+--- a/toolkit/components/prompts/content/tabprompts.css
++++ b/toolkit/components/prompts/content/tabprompts.css
+@@ -6,16 +6,21 @@ tabmodalprompt {
+   -moz-box-orient: vertical;
+ }
+ 
+ .mainContainer {
+   min-width: 20em;
+   min-height: 12em;
+ }
+ 
++.info\.title {
++  margin-bottom: 1em !important;
++  font-weight: bold;
++}
++
+ .info\.body {
+   margin: 0 !important;
+   -moz-user-focus: normal;
+   -moz-user-select: text;
+   cursor: text !important;
+   white-space: pre-wrap;
+ }
+ 
+diff --git a/toolkit/components/prompts/content/tabprompts.xml b/toolkit/components/prompts/content/tabprompts.xml
+--- a/toolkit/components/prompts/content/tabprompts.xml
++++ b/toolkit/components/prompts/content/tabprompts.xml
+@@ -29,17 +29,17 @@
+                 <grid class="topContainer" flex="1">
+                     <columns>
+                         <column/>
+                         <column flex="1"/>
+                     </columns>
+ 
+                     <rows>
+                         <vbox anonid="infoContainer" align="center" pack="center" flex="1">
+-                            <description anonid="info.title" hidden="true"/>
++                            <description anonid="info.title" class="info.title" hidden="true" />
+                             <description anonid="info.body" class="info.body"/>
+                         </vbox>
+ 
+                         <row anonid="loginContainer" hidden="true" align="center">
+                             <label anonid="loginLabel" value="&editfield0.label;" control="loginTextbox"/>
+                             <textbox anonid="loginTextbox"/>
+                         </row>
+ 
+@@ -154,16 +154,23 @@
+                 linkedTab.addEventListener("TabClose", this, false);
+                 this.args.domWindow.addEventListener("pagehide", this, false);
+ 
+                 let tmp = {};
+                 Components.utils.import("resource://gre/modules/CommonDialog.jsm", tmp);
+                 this.Dialog = new tmp.CommonDialog(args, this.ui);
+                 this.Dialog.onLoad(null);
+ 
++                // Display the tabprompt title that shows the prompt origin when
++                // the prompt origin is not the same as that of the top window.
++                let topPrincipal = this.args.domWindow.top.document.nodePrincipal;
++                let promptPrincipal = this.args.domWindow.document.nodePrincipal;
++                if (!topPrincipal.equals(promptPrincipal))
++                  this.ui.infoTitle.removeAttribute("hidden");
++
+                 // TODO: should unhide buttonSpacer on Windows when there are 4 buttons.
+                 //       Better yet, just drop support for 4-button dialogs. (bug 609510)
+ 
+                 this.onResize();
+             ]]>
+             </body>
+         </method>
+ 
+diff --git a/toolkit/components/prompts/test/Makefile.in b/toolkit/components/prompts/test/Makefile.in
+--- a/toolkit/components/prompts/test/Makefile.in
++++ b/toolkit/components/prompts/test/Makefile.in
+@@ -47,19 +47,21 @@ include $(DEPTH)/config/autoconf.mk
+ MODULE = test_prompter
+ 
+ # Mochitest tests
+ MOCHI_TESTS = \
+     test_modal_select.html \
+     test_modal_prompts.html \
+     test_bug619644.html \
+     test_bug620145.html \
++    test_bug625187.html \
+     $(NULL)
+ 
+ MOCHI_CONTENT = \
+     prompt_common.js \
+     bug619644_inner.html \
++    bug625187_iframe.html \
+     $(NULL)
+ 
+ include $(topsrcdir)/config/rules.mk
+ 
+ libs:: $(MOCHI_TESTS) $(MOCHI_CONTENT)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/tests/$(relativesrcdir)
+diff --git a/toolkit/components/prompts/test/bug625187_iframe.html b/toolkit/components/prompts/test/bug625187_iframe.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/prompts/test/bug625187_iframe.html
+@@ -0,0 +1,16 @@
++<html>
++<head>
++  <title>Test for Bug 625187 - the iframe</title>
++<!--
++   - Any copyright is dedicated to the Public Domain.
++   - http://creativecommons.org/publicdomain/zero/1.0/
++   -
++   - Contributor(s):
++   -   Mihai Sucan <mihai.sucan@gmail.com>
++   -->
++</head>
++<body>
++<p><button id="btn1" onclick="alert('hello world 2')">Button 2</button></p>
++<p><button id="btn2" onclick="window.parent.alert('hello world 3')">Button 3</button></p>
++</body>
++</html>
+diff --git a/toolkit/components/prompts/test/test_bug625187.html b/toolkit/components/prompts/test/test_bug625187.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/prompts/test/test_bug625187.html
+@@ -0,0 +1,99 @@
++<html>
++<head>
++  <title>Test for Bug 625187</title>
++  <script type="text/javascript" src="/MochiKit/MochiKit.js"></script>
++  <script type="text/javascript" src="/tests/SimpleTest/SimpleTest.js"></script>
++  <script type="text/javascript" src="/tests/SimpleTest/EventUtils.js"></script>
++  <script type="text/javascript" src="prompt_common.js"></script>
++  <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css">
++<!--
++   - Any copyright is dedicated to the Public Domain.
++   - http://creativecommons.org/publicdomain/zero/1.0/
++   -
++   - Contributor(s):
++   -   Mihai Sucan <mihai.sucan@gmail.com>
++   -->
++</head>
++<body onload="runtest()">
++<a target="_blank" href="https://bugzilla.mozilla.org/show_bug.cgi?id=625187">Mozilla Bug 625187</a>
++
++<p><button onclick="alert('hello world')">Button</button></p>
++
++<iframe id="iframe_diff_origin" src="http://example.com/tests/toolkit/components/prompts/test/bug625187_iframe.html"></iframe>
++
++<iframe id="iframe_same_origin" src="bug625187_iframe.html"></iframe>
++
++<pre id="test"></pre>
++
++<script class="testbody" type="text/javascript">
++SimpleTest.waitForExplicitFinish();
++
++var testNum = 0;
++var dialogNum = 0;
++var utils = window.QueryInterface(Components.interfaces.nsIInterfaceRequestor).
++              getInterface(Components.interfaces.nsIDOMWindowUtils);
++
++function hasTabModalPrompts() {
++  var prefName = "prompts.tab_modal.enabled";
++  netscape.security.PrivilegeManager.enablePrivilege("UniversalXPConnect");
++  Components.utils.import("resource://gre/modules/Services.jsm");
++  return Services.prefs.getPrefType(prefName) == Services.prefs.PREF_BOOL &&
++         Services.prefs.getBoolPref(prefName);
++}
++
++function runtest()
++{
++  netscape.security.PrivilegeManager.enablePrivilege('UniversalXPConnect');
++
++  isTabModal = hasTabModalPrompts();
++  ok(isTabModal, "Test must run with tab modal prompts enabled.");
++
++  startCallbackTimer();
++
++  var button = document.querySelector("button");
++  dispatchMouseEvent(button, "click");
++
++  startCallbackTimer();
++
++  var iframe = document.getElementById("iframe_diff_origin");
++  button = iframe.contentWindow.document.getElementById("btn1");
++  dispatchMouseEvent(button, "click");
++
++  startCallbackTimer();
++
++  iframe = document.getElementById("iframe_same_origin");
++  button = iframe.contentWindow.document.getElementById("btn1");
++  dispatchMouseEvent(button, "click");
++
++  startCallbackTimer();
++
++  button = iframe.contentWindow.document.getElementById("btn2");
++  dispatchMouseEvent(button, "click");
++
++  SimpleTest.finish();
++}
++
++function handleDialog(ui)
++{
++  dialogNum++;
++  if (dialogNum == 1 || dialogNum == 3 || dialogNum == 4)
++    is(ui.infoTitle.getAttribute("hidden"), "true",
++       "dialog #" + dialogNum + ": the tabprompt infoTitle element is hidden");
++  else if (dialogNum == 2)
++    ok(!ui.infoTitle.hasAttribute("hidden"),
++       "dialog #" + dialogNum + ": the tabprompt infoTitle element is not hidden");
++
++  synthesizeMouse(ui.button0, 2, 2, {}, ui.button0.ownerDocument.defaultView);
++}
++
++function dispatchMouseEvent(target, type)
++{
++  var win = target.ownerDocument.defaultView;
++  var e = document.createEvent("MouseEvent");
++  e.initEvent(type, false, false, win, 0, 1, 1, 1, 1,
++              false, false, false, false, 0, null);
++  utils.dispatchDOMEventViaPresShell(target, e, true);
++}
++</script>
++</body>
++</html>

@@ -1,0 +1,876 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1331742219 -7200
+# Node ID ff3b5c59d3958a749d6bbde543d98d5663da1764
+# Parent  480959fcc0d725500d0ada0a94a5448dc1622efd
+Bug 731721 - Source Editor stepping support
+
+diff --git a/browser/devtools/debugger/DebuggerUI.jsm b/browser/devtools/debugger/DebuggerUI.jsm
+--- a/browser/devtools/debugger/DebuggerUI.jsm
++++ b/browser/devtools/debugger/DebuggerUI.jsm
+@@ -573,16 +573,17 @@ DebuggerUI.prototype = {
+     let scripts = doc.getElementById("scripts");
+     let elt = scripts.getElementsByAttribute("value", aSourceUrl)[0];
+     let script = elt.getUserData("sourceScript");
+     script.loaded = true;
+     script.text = aSourceText;
+     script.contentType = aContentType;
+     elt.setUserData("sourceScript", script, null);
+     dbg._updateEditorBreakpoints();
++    dbg.debuggerWindow.StackFrames.updateEditor();
+   }
+ };
+ 
+ /**
+  * Various debugger UI preferences (currently just the pane height).
+  */
+ let DebuggerUIPreferences = {
+ 
+diff --git a/browser/devtools/debugger/debugger.js b/browser/devtools/debugger/debugger.js
+--- a/browser/devtools/debugger/debugger.js
++++ b/browser/devtools/debugger/debugger.js
+@@ -19,16 +19,17 @@
+  *   Mozilla Foundation
+  * Portions created by the Initial Developer are Copyright (C) 2011
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Dave Camp <dcamp@mozilla.com>
+  *   Panos Astithas <past@mozilla.com>
+  *   Victor Porof <vporof@mozilla.com>
++ *   Mihai Sucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -170,39 +171,48 @@ var StackFrames = {
+    * @param function aCallback
+    *        The next function in the initialization sequence.
+    */
+   connect: function SF_connect(aThreadClient, aCallback) {
+     DebuggerView.Stackframes.addClickListener(this.onClick);
+ 
+     this.activeThread = aThreadClient;
+     aThreadClient.addListener("paused", this.onPaused);
++    aThreadClient.addListener("resumed", this.onResume);
+     aThreadClient.addListener("framesadded", this.onFrames);
+     aThreadClient.addListener("framescleared", this.onFramesCleared);
+     this.onFramesCleared();
+     aCallback && aCallback();
+   },
+ 
+   /**
+    * Disconnect from the client.
+    */
+   disconnect: function TS_disconnect() {
+     this.activeThread.removeListener("paused", this.onPaused);
++    this.activeThread.removeListener("resumed", this.onResume);
+     this.activeThread.removeListener("framesadded", this.onFrames);
+     this.activeThread.removeListener("framescleared", this.onFramesCleared);
+   },
+ 
+   /**
+    * Handler for the thread client's paused notification.
+    */
+   onPaused: function SF_onPaused() {
+     this.activeThread.fillFrames(this.pageSize);
+   },
+ 
+   /**
++   * Handler for the thread client's resumed notification.
++   */
++  onResume: function SF_onResume() {
++    window.editor.setDebugLocation(-1);
++  },
++
++  /**
+    * Handler for the thread client's framesadded notification.
+    */
+   onFrames: function SF_onFrames() {
+     DebuggerView.Stackframes.empty();
+ 
+     for each (let frame in this.activeThread.cachedFrames) {
+       this._addFramePanel(frame);
+     }
+@@ -260,21 +270,25 @@ var StackFrames = {
+ 
+     let frame = this.activeThread.cachedFrames[aDepth];
+     if (!frame) {
+       return;
+     }
+     // Move the editor's caret to the proper line.
+     if (DebuggerView.Scripts.isSelected(frame.where.url) && frame.where.line) {
+       window.editor.setCaretPosition(frame.where.line - 1);
++      window.editor.setDebugLocation(frame.where.line - 1);
+     } else if (DebuggerView.Scripts.contains(frame.where.url)) {
+       DebuggerView.Scripts.selectScript(frame.where.url);
+       SourceScripts.onChange({ target: DebuggerView.Scripts._scripts });
+       window.editor.setCaretPosition(frame.where.line - 1);
++    } else {
++      window.editor.setDebugLocation(-1);
+     }
++
+     // Display the local variables.
+     let localScope = DebuggerView.Properties.localScope;
+     localScope.empty();
+     // Add "this".
+     if (frame["this"]) {
+       let thisVar = localScope.addVar("this");
+       thisVar.setGrip({ "type": frame["this"].type,
+                         "class": frame["this"].class });
+@@ -296,16 +310,38 @@ var StackFrames = {
+           let paramVal = frame.arguments[i];
+           paramVar.setGrip(paramVal);
+           this._addExpander(paramVar, paramVal);
+         }
+       }.bind(this));
+     }
+   },
+ 
++  /**
++   * Update the source editor current debug location based on the selected frame
++   * and script.
++   */
++  updateEditor: function SF_updateEditor() {
++    if (this.selectedFrame === null) {
++      return;
++    }
++
++    let frame = this.activeThread.cachedFrames[this.selectedFrame];
++    if (!frame) {
++      return;
++    }
++
++    // Move the editor's caret to the proper line.
++    if (DebuggerView.Scripts.isSelected(frame.where.url) && frame.where.line) {
++      window.editor.setDebugLocation(frame.where.line - 1);
++    } else {
++      window.editor.setDebugLocation(-1);
++    }
++  },
++
+   _addExpander: function SF_addExpander(aVar, aObject) {
+     // No need for expansion for null and undefined values, but we do need them
+     // for frame.arguments which is a regular array.
+     if (!aObject || typeof aObject != "object" ||
+         (aObject.type != "object" && !Array.isArray(aObject))) {
+       return;
+     }
+     // Add a dummy property to force the twisty to show up.
+@@ -403,16 +439,17 @@ var StackFrames = {
+       return aFrame["calleeName"] ? aFrame["calleeName"] : "(anonymous)";
+     }
+ 
+     return "(" + aFrame.type + ")";
+   }
+ };
+ 
+ StackFrames.onPaused = StackFrames.onPaused.bind(StackFrames);
++StackFrames.onResume = StackFrames.onResume.bind(StackFrames);
+ StackFrames.onFrames = StackFrames.onFrames.bind(StackFrames);
+ StackFrames.onFramesCleared = StackFrames.onFramesCleared.bind(StackFrames);
+ StackFrames.onClick = StackFrames.onClick.bind(StackFrames);
+ 
+ /**
+  * Keeps the source script list up-to-date, using the thread client's
+  * source script cache.
+  */
+@@ -609,16 +646,17 @@ var SourceScripts = {
+       // Notify the chrome code that we need to load a script file.
+       var evt = document.createEvent("CustomEvent");
+       evt.initCustomEvent("Debugger:LoadSource", true, false, aScript.url);
+       document.documentElement.dispatchEvent(evt);
+       window.editor.setText(DebuggerView.getStr("loadingText"));
+     } else {
+       window.editor.setText(aScript.text);
+       window.updateEditorBreakpoints();
++      StackFrames.updateEditor();
+     }
+     window.editor.resetUndo();
+   }
+ };
+ 
+ SourceScripts.onPaused = SourceScripts.onPaused.bind(SourceScripts);
+ SourceScripts.onScripts = SourceScripts.onScripts.bind(SourceScripts);
+ SourceScripts.onNewScript = SourceScripts.onNewScript.bind(SourceScripts);
+diff --git a/browser/devtools/debugger/test/Makefile.in b/browser/devtools/debugger/test/Makefile.in
+--- a/browser/devtools/debugger/test/Makefile.in
++++ b/browser/devtools/debugger/test/Makefile.in
+@@ -62,16 +62,17 @@ include $(topsrcdir)/config/rules.mk
+ 	browser_dbg_propertyview-06.js \
+ 	browser_dbg_propertyview-07.js \
+ 	browser_dbg_propertyview-08.js \
+ 	browser_dbg_panesize.js \
+ 	browser_dbg_stack-01.js \
+ 	browser_dbg_stack-02.js \
+ 	browser_dbg_stack-03.js \
+ 	browser_dbg_stack-04.js \
++	browser_dbg_stack-05.js \
+ 	browser_dbg_location-changes.js \
+ 	browser_dbg_script-switching.js \
+ 	browser_dbg_pause-resume.js \
+ 	browser_dbg_update-editor-mode.js \
+ 	$(warning browser_dbg_select-line.js temporarily disabled due to oranges, see bug 726609) \
+ 	browser_dbg_clean-exit.js \
+ 	browser_dbg_bug723069_editor-breakpoints.js \
+ 	browser_dbg_bug731394_editor-contextmenu.js \
+diff --git a/browser/devtools/debugger/test/browser_dbg_script-switching.js b/browser/devtools/debugger/test/browser_dbg_script-switching.js
+--- a/browser/devtools/debugger/test/browser_dbg_script-switching.js
++++ b/browser/devtools/debugger/test/browser_dbg_script-switching.js
+@@ -56,16 +56,19 @@ function testScriptsDisplay() {
+         label1), "First script label is incorrect.");
+       ok(gDebugger.DebuggerView.Scripts.containsLabel(
+         label2), "Second script label is incorrect.");
+ 
+ 
+       ok(gDebugger.editor.getText().search(/debugger/) != -1,
+         "The correct script was loaded initially.");
+ 
++      is(gDebugger.editor.getDebugLocation(), 5,
++         "editor debugger location is correct.");
++
+       gDebugger.editor.addEventListener(SourceEditor.EVENTS.TEXT_CHANGED,
+                                         function onChange() {
+         gDebugger.editor.removeEventListener(SourceEditor.EVENTS.TEXT_CHANGED,
+                                              onChange);
+         testSwitchPaused();
+       });
+       gScripts.selectedIndex = 0;
+       gDebugger.SourceScripts.onChange({ target: gScripts });
+@@ -78,16 +81,19 @@ function testScriptsDisplay() {
+ function testSwitchPaused()
+ {
+   ok(gDebugger.editor.getText().search(/debugger/) == -1,
+     "The second script is no longer displayed.");
+ 
+   ok(gDebugger.editor.getText().search(/firstCall/) != -1,
+     "The first script is displayed.");
+ 
++  is(gDebugger.editor.getDebugLocation(), -1,
++     "editor debugger location has been cleared.");
++
+   gDebugger.StackFrames.activeThread.resume(function() {
+     gDebugger.editor.addEventListener(SourceEditor.EVENTS.TEXT_CHANGED,
+                                       function onSecondChange() {
+       gDebugger.editor.removeEventListener(SourceEditor.EVENTS.TEXT_CHANGED,
+                                            onSecondChange);
+       testSwitchRunning();
+     });
+     gScripts.selectedIndex = 1;
+@@ -98,16 +104,19 @@ function testSwitchPaused()
+ function testSwitchRunning()
+ {
+   ok(gDebugger.editor.getText().search(/debugger/) != -1,
+     "The second script is displayed again.");
+ 
+   ok(gDebugger.editor.getText().search(/firstCall/) == -1,
+     "The first script is no longer displayed.");
+ 
++  is(gDebugger.editor.getDebugLocation(), -1,
++     "editor debugger location is still -1.");
++
+   closeDebuggerAndFinish(gTab);
+ }
+ 
+ registerCleanupFunction(function() {
+   removeTab(gTab);
+   gPane = null;
+   gTab = null;
+   gDebuggee = null;
+diff --git a/browser/devtools/debugger/test/browser_dbg_stack-05.js b/browser/devtools/debugger/test/browser_dbg_stack-05.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/debugger/test/browser_dbg_stack-05.js
+@@ -0,0 +1,92 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++// Test that switching between stack frames properly sets the current debugger
++// location in the source editor.
++
++const TAB_URL = EXAMPLE_URL + "browser_dbg_script-switching.html";
++
++var gPane = null;
++var gTab = null;
++var gDebuggee = null;
++var gDebugger = null;
++
++function test() {
++  debug_tab_pane(TAB_URL, function(aTab, aDebuggee, aPane) {
++    gTab = aTab;
++    gDebuggee = aDebuggee;
++    gPane = aPane;
++    gDebugger = gPane.debuggerWindow;
++
++    testRecurse();
++  });
++}
++
++function testRecurse() {
++  gPane.activeThread.addOneTimeListener("scriptsadded", function() {
++    Services.tm.currentThread.dispatch({ run: function() {
++      let frames = gDebugger.DebuggerView.Stackframes._frames;
++      let childNodes = frames.childNodes;
++
++      is(frames.querySelectorAll(".dbg-stackframe").length, 4,
++        "Correct number of frames.");
++
++      is(childNodes.length, frames.querySelectorAll(".dbg-stackframe").length,
++        "All children should be frames.");
++
++      ok(frames.querySelector("#stackframe-0").classList.contains("selected"),
++        "First frame should be selected by default.");
++
++      ok(!frames.querySelector("#stackframe-2").classList.contains("selected"),
++        "Third frame should not be selected.");
++
++      is(gDebugger.editor.getDebugLocation(), 5,
++         "editor debugger location is correct.");
++
++      EventUtils.sendMouseEvent({ type: "click" },
++        frames.querySelector("#stackframe-2"),
++        gDebugger);
++
++      ok(!frames.querySelector("#stackframe-0").classList.contains("selected"),
++         "First frame should not be selected after click.");
++
++      ok(frames.querySelector("#stackframe-2").classList.contains("selected"),
++         "Third frame should be selected after click.");
++
++      is(gDebugger.editor.getDebugLocation(), 4,
++         "editor debugger location is correct after click.");
++
++      EventUtils.sendMouseEvent({ type: "click" },
++        frames.querySelector("#stackframe-0 .dbg-stackframe-name"),
++        gDebugger);
++
++      ok(frames.querySelector("#stackframe-0").classList.contains("selected"),
++         "First frame should be selected after click inside the first frame.");
++
++      ok(!frames.querySelector("#stackframe-2").classList.contains("selected"),
++         "Third frame should not be selected after click inside the first frame.");
++
++      is(gDebugger.editor.getDebugLocation(), 5,
++         "editor debugger location is correct (frame 0 again).");
++
++      gDebugger.StackFrames.activeThread.resume(function() {
++        is(gDebugger.editor.getDebugLocation(), -1,
++           "editor debugger location is correct after resume.");
++        closeDebuggerAndFinish(gTab);
++      });
++    }}, 0);
++  });
++
++  gDebuggee.firstCall();
++}
++
++registerCleanupFunction(function() {
++  removeTab(gTab);
++  gPane = null;
++  gTab = null;
++  gDebuggee = null;
++  gDebugger = null;
++});
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -107,16 +107,17 @@ const ORION_EVENTS = {
+  * Known Orion annotation types.
+  */
+ const ORION_ANNOTATION_TYPES = {
+   currentBracket: "orion.annotation.currentBracket",
+   matchingBracket: "orion.annotation.matchingBracket",
+   breakpoint: "orion.annotation.breakpoint",
+   task: "orion.annotation.task",
+   currentLine: "orion.annotation.currentLine",
++  debugLocation: "mozilla.annotation.debugLocation",
+ };
+ 
+ /**
+  * Default key bindings in the Orion editor.
+  */
+ const DEFAULT_KEYBINDINGS = [
+   {
+     action: "enter",
+@@ -337,22 +338,17 @@ SourceEditor.prototype = {
+ 
+     this._annotationModel = new AnnotationModel(this._model);
+ 
+     if (config.showAnnotationRuler) {
+       this._annotationRuler = new AnnotationRuler(this._annotationModel, "left",
+         {styleClass: "ruler annotations"});
+       this._annotationRuler.onClick = this._annotationRulerClick.bind(this);
+       this._annotationRuler.addAnnotationType(ORION_ANNOTATION_TYPES.breakpoint);
+-      this._annotationRuler.setMultiAnnotation({
+-        html: "<div class='annotationHTML multiple'></div>"
+-      });
+-      this._annotationRuler.setMultiAnnotationOverlay({
+-        html: "<div class='annotationHTML overlay'></div>"
+-      });
++      this._annotationRuler.addAnnotationType(ORION_ANNOTATION_TYPES.debugLocation);
+       this._view.addRuler(this._annotationRuler);
+     }
+ 
+     if (config.showLineNumbers) {
+       let rulerClass = this._annotationRuler ?
+                        "ruler lines linesWithAnnotations" :
+                        "ruler lines";
+ 
+@@ -368,16 +364,17 @@ SourceEditor.prototype = {
+     if (config.showOverviewRuler) {
+       this._overviewRuler = new OverviewRuler(this._annotationModel, "right",
+         {styleClass: "ruler overview"});
+       this._overviewRuler.onClick = this._overviewRulerClick.bind(this);
+ 
+       this._overviewRuler.addAnnotationType(ORION_ANNOTATION_TYPES.matchingBracket);
+       this._overviewRuler.addAnnotationType(ORION_ANNOTATION_TYPES.currentBracket);
+       this._overviewRuler.addAnnotationType(ORION_ANNOTATION_TYPES.breakpoint);
++      this._overviewRuler.addAnnotationType(ORION_ANNOTATION_TYPES.debugLocation);
+       this._overviewRuler.addAnnotationType(ORION_ANNOTATION_TYPES.task);
+       this._view.addRuler(this._overviewRuler);
+     }
+ 
+     this.setMode(config.mode);
+ 
+     this._undoStack = new UndoStack(this._view, config.undoLimit);
+ 
+@@ -892,16 +889,17 @@ SourceEditor.prototype = {
+       this._iframeWindow.require("orion/textview/annotations").AnnotationStyler;
+ 
+     let styler = new AnnotationStyler(this._view, this._annotationModel);
+     this._annotationStyler = styler;
+ 
+     styler.addAnnotationType(ORION_ANNOTATION_TYPES.matchingBracket);
+     styler.addAnnotationType(ORION_ANNOTATION_TYPES.currentBracket);
+     styler.addAnnotationType(ORION_ANNOTATION_TYPES.task);
++    styler.addAnnotationType(ORION_ANNOTATION_TYPES.debugLocation);
+ 
+     if (this._config.highlightCurrentLine) {
+       styler.addAnnotationType(ORION_ANNOTATION_TYPES.currentLine);
+     }
+   },
+ 
+   /**
+    * Retrieve the list of Orion Annotations filtered by type for the given text range.
+@@ -1491,16 +1489,75 @@ SourceEditor.prototype = {
+    * @type boolean
+    */
+   get readOnly()
+   {
+     return this._view.getOptions("readonly");
+   },
+ 
+   /**
++   * Set the current debugger location at the given line index. This is useful in
++   * a debugger or in any other context where the user needs to track the
++   * current state, where a debugger-like environment is at.
++   *
++   * @param number aLineIndex
++   *        Line index of the current debugger location, starting from 0.
++   *        Use any negative number to clear the current location.
++   */
++  setDebugLocation: function SE_setDebugLocation(aLineIndex)
++  {
++    let annotations = this._getAnnotationsByType("debugLocation", 0,
++                                                 this.getCharCount());
++    if (annotations.length > 0) {
++      annotations.forEach(this._annotationModel.removeAnnotation,
++                          this._annotationModel);
++    }
++    if (aLineIndex < 0) {
++      return;
++    }
++
++    let lineStart = this._model.getLineStart(aLineIndex);
++    let lineEnd = this._model.getLineEnd(aLineIndex);
++    let lineText = this._model.getLine(aLineIndex);
++    let title = SourceEditorUI.strings.
++                formatStringFromName("annotation.debugLocation.title",
++                                     [lineText], 1);
++
++    let annotation = {
++      type: ORION_ANNOTATION_TYPES.debugLocation,
++      start: lineStart,
++      end: lineEnd,
++      title: title,
++      style: {styleClass: "annotation debugLocation"},
++      html: "<div class='annotationHTML debugLocation'></div>",
++      overviewStyle: {styleClass: "annotationOverview debugLocation"},
++      rangeStyle: {styleClass: "annotationRange debugLocation"},
++      lineStyle: {styleClass: "annotationLine debugLocation"},
++    };
++    this._annotationModel.addAnnotation(annotation);
++  },
++
++  /**
++   * Retrieve the current debugger line index configured for this editor.
++   *
++   * @return number
++   *         The line index starting from 0 where the current debugger is
++   *         paused. If no debugger location has been set -1 is returned.
++   */
++  getDebugLocation: function SE_getDebugLocation()
++  {
++    let annotations = this._getAnnotationsByType("debugLocation", 0,
++                                                 this.getCharCount());
++    if (annotations.length > 0) {
++      return this._model.getLineAtOffset(annotations[0].start);
++    }
++    return -1;
++  },
++
++  /**
+    * Add a breakpoint at the given line index.
+    *
+    * @param number aLineIndex
+    *        Line index where to add the breakpoint (starts from 0).
+    * @param string [aCondition]
+    *        Optional breakpoint condition.
+    */
+   addBreakpoint: function SE_addBreakpoint(aLineIndex, aCondition)
+diff --git a/browser/devtools/sourceeditor/test/Makefile.in b/browser/devtools/sourceeditor/test/Makefile.in
+--- a/browser/devtools/sourceeditor/test/Makefile.in
++++ b/browser/devtools/sourceeditor/test/Makefile.in
+@@ -56,12 +56,13 @@ include $(topsrcdir)/config/rules.mk
+ 		browser_bug650345_find.js \
+ 		browser_bug703692_focus_blur.js \
+ 		browser_bug725388_mouse_events.js \
+ 		browser_bug707987_debugger_breakpoints.js \
+ 		browser_bug712982_line_ruler_click.js \
+ 		browser_bug725618_moveLines_shortcut.js \
+ 		browser_bug700893_dirty_state.js \
+ 		browser_bug729480_line_vertical_align.js \
++		browser_bug731721_debugger_stepping.js \
+ 		head.js \
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/browser/devtools/sourceeditor/test/browser_bug731721_debugger_stepping.js b/browser/devtools/sourceeditor/test/browser_bug731721_debugger_stepping.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/sourceeditor/test/browser_bug731721_debugger_stepping.js
+@@ -0,0 +1,59 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++"use strict";
++
++function test() {
++
++  let temp = {};
++  Cu.import("resource:///modules/source-editor.jsm", temp);
++  let SourceEditor = temp.SourceEditor;
++
++  waitForExplicitFinish();
++
++  let editor;
++
++  const windowUrl = "data:text/xml,<?xml version='1.0'?>" +
++    "<window xmlns='http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul'" +
++    " title='test for bug 731721' width='600' height='500'><hbox flex='1'/></window>";
++  const windowFeatures = "chrome,titlebar,toolbar,centerscreen,resizable,dialog=no";
++
++  let testWin = Services.ww.openWindow(null, windowUrl, "_blank", windowFeatures, null);
++  testWin.addEventListener("load", function onWindowLoad() {
++    testWin.removeEventListener("load", onWindowLoad, false);
++    waitForFocus(initEditor, testWin);
++  }, false);
++
++  function initEditor()
++  {
++    let hbox = testWin.document.querySelector("hbox");
++    editor = new SourceEditor();
++    editor.init(hbox, {showAnnotationRuler: true}, editorLoaded);
++  }
++
++  function editorLoaded()
++  {
++    editor.focus();
++
++    editor.setText("line1\nline2\nline3\nline4");
++
++    is(editor.getDebugLocation(), -1, "no debugger location");
++
++    editor.setDebugLocation(1);
++    is(editor.getDebugLocation(), 1, "set debugger location works");
++
++    editor.setDebugLocation(3);
++    is(editor.getDebugLocation(), 3, "change debugger location works");
++
++    editor.setDebugLocation(-1);
++    is(editor.getDebugLocation(), -1, "clear debugger location works");
++
++    editor.destroy();
++
++    testWin.close();
++    testWin = editor = null;
++
++    waitForFocus(finish, window);
++  }
++}
+diff --git a/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties b/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties
+--- a/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties
++++ b/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties
+@@ -33,8 +33,14 @@ gotoLineCmd.promptMessage=Jump to line n
+ # front of any breakpoint annotation when it is displayed as a tooltip in one of
+ # the editor gutters. This feature is used in the JavaScript Debugger.
+ annotation.breakpoint.title=Breakpoint: %S
+ 
+ # LOCALIZATION NOTE  (annotation.currentLine): This is the text shown in
+ # a tooltip displayed in any of the editor gutters when the user hovers the
+ # current line.
+ annotation.currentLine=Current line
++
++# LOCALIZATION NOTE  (annotation.debugLocation.title): This is the text shown in
++# a tooltip displayed in any of the editor gutters when the user hovers the
++# current debugger location. The debugger can pause the JavaScript execution at
++# user-defined lines.
++annotation.debugLocation.title=Current step: %S
+diff --git a/browser/themes/gnomestripe/devtools/orion-debug-location.png b/browser/themes/gnomestripe/devtools/orion-debug-location.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..ebb8d8d86d8bb78515739c4efaa59d1870c35602
+GIT binary patch
+literal 203
+zc%17D@N?(olHy`uVBq!ia0vp^0wB!61|;P_|4#%`oCO|{#S9F5M?jcysy3fAP_Wk1
+z#WBR9ckARpp#}vG)_7m`&uM$}j-7qASmLZe#;hMjBG*bC9-L1&DECw+&XC(-jsTaM
+zc0QlXfk(G@FeL3&ka1#SZcWG#Vv3r=>dAOzQR^PF7m8UQnKoSAdSx5m^8<Qn8s9g&
+xh|fFvHee@PluzQ_*J?%;O|{upM)O}5%X~Sa7n^T$;1JLu44$rjF6*2UngA#GM>GHc
+
+diff --git a/browser/themes/gnomestripe/devtools/orion.css b/browser/themes/gnomestripe/devtools/orion.css
+--- a/browser/themes/gnomestripe/devtools/orion.css
++++ b/browser/themes/gnomestripe/devtools/orion.css
+@@ -56,32 +56,39 @@
+   background-repeat: no-repeat;
+ }
+ .annotationHTML.task {
+   background-image: url("chrome://browser/skin/devtools/orion-task.png");
+ }
+ .annotationHTML.breakpoint {
+   background-image: url("chrome://browser/skin/devtools/orion-breakpoint.png");
+ }
++.annotationHTML.debugLocation {
++  background-image: url("chrome://browser/skin/devtools/orion-debug-location.png");
++}
+ 
+ /* Styles for the overview ruler  */
+ .annotationOverview {
+   cursor: pointer;
+   border-radius: 2px;
+   left: 2px;
+   width: 8px;
+ }
+ .annotationOverview.task {
+   background-color: lightgreen;
+   border: 1px solid green;
+ }
+ .annotationOverview.breakpoint {
+   background-color: lightblue;
+   border: 1px solid blue;
+ }
++.annotationOverview.debugLocation {
++  background-color: white;
++  border: 1px solid green;
++}
+ .annotationOverview.currentBracket {
+   background-color: lightgray;
+   border: 1px solid red;
+ }
+ .annotationOverview.matchingBracket {
+   background-color: lightgray;
+   border: 1px solid red;
+ }
+diff --git a/browser/themes/gnomestripe/jar.mn b/browser/themes/gnomestripe/jar.mn
+--- a/browser/themes/gnomestripe/jar.mn
++++ b/browser/themes/gnomestripe/jar.mn
+@@ -93,16 +93,17 @@ browser.jar:
+   skin/classic/browser/devtools/webconsole_networkpanel.css     (devtools/webconsole_networkpanel.css)
+   skin/classic/browser/devtools/webconsole.png                  (devtools/webconsole.png)
+   skin/classic/browser/devtools/gcli.css              (devtools/gcli.css)
+   skin/classic/browser/devtools/htmlpanel.css         (devtools/htmlpanel.css)
+   skin/classic/browser/devtools/orion.css             (devtools/orion.css)
+   skin/classic/browser/devtools/orion-container.css   (devtools/orion-container.css)
+   skin/classic/browser/devtools/orion-task.png        (devtools/orion-task.png)
+   skin/classic/browser/devtools/orion-breakpoint.png  (devtools/orion-breakpoint.png)
++  skin/classic/browser/devtools/orion-debug-location.png (devtools/orion-debug-location.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-end-pressed.png              (devtools/breadcrumbs/ltr-end-pressed.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-end-selected-pressed.png     (devtools/breadcrumbs/ltr-end-selected-pressed.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-end-selected.png             (devtools/breadcrumbs/ltr-end-selected.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-end.png                      (devtools/breadcrumbs/ltr-end.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-middle-pressed.png           (devtools/breadcrumbs/ltr-middle-pressed.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-middle-selected-pressed.png  (devtools/breadcrumbs/ltr-middle-selected-pressed.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-middle-selected.png          (devtools/breadcrumbs/ltr-middle-selected.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-middle.png                   (devtools/breadcrumbs/ltr-middle.png)
+diff --git a/browser/themes/pinstripe/devtools/orion-debug-location.png b/browser/themes/pinstripe/devtools/orion-debug-location.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..ebb8d8d86d8bb78515739c4efaa59d1870c35602
+GIT binary patch
+literal 203
+zc%17D@N?(olHy`uVBq!ia0vp^0wB!61|;P_|4#%`oCO|{#S9F5M?jcysy3fAP_Wk1
+z#WBR9ckARpp#}vG)_7m`&uM$}j-7qASmLZe#;hMjBG*bC9-L1&DECw+&XC(-jsTaM
+zc0QlXfk(G@FeL3&ka1#SZcWG#Vv3r=>dAOzQR^PF7m8UQnKoSAdSx5m^8<Qn8s9g&
+xh|fFvHee@PluzQ_*J?%;O|{upM)O}5%X~Sa7n^T$;1JLu44$rjF6*2UngA#GM>GHc
+
+diff --git a/browser/themes/pinstripe/devtools/orion.css b/browser/themes/pinstripe/devtools/orion.css
+--- a/browser/themes/pinstripe/devtools/orion.css
++++ b/browser/themes/pinstripe/devtools/orion.css
+@@ -56,32 +56,39 @@
+   background-repeat: no-repeat;
+ }
+ .annotationHTML.task {
+   background-image: url("chrome://browser/skin/devtools/orion-task.png");
+ }
+ .annotationHTML.breakpoint {
+   background-image: url("chrome://browser/skin/devtools/orion-breakpoint.png");
+ }
++.annotationHTML.debugLocation {
++  background-image: url("chrome://browser/skin/devtools/orion-debug-location.png");
++}
+ 
+ /* Styles for the overview ruler  */
+ .annotationOverview {
+   cursor: pointer;
+   border-radius: 2px;
+   left: 2px;
+   width: 8px;
+ }
+ .annotationOverview.task {
+   background-color: lightgreen;
+   border: 1px solid green;
+ }
+ .annotationOverview.breakpoint {
+   background-color: lightblue;
+   border: 1px solid blue;
+ }
++.annotationOverview.debugLocation {
++  background-color: white;
++  border: 1px solid green;
++}
+ .annotationOverview.currentBracket {
+   background-color: lightgray;
+   border: 1px solid red;
+ }
+ .annotationOverview.matchingBracket {
+   background-color: lightgray;
+   border: 1px solid red;
+ }
+diff --git a/browser/themes/pinstripe/jar.mn b/browser/themes/pinstripe/jar.mn
+--- a/browser/themes/pinstripe/jar.mn
++++ b/browser/themes/pinstripe/jar.mn
+@@ -129,16 +129,17 @@ browser.jar:
+   skin/classic/browser/devtools/goto-mdn.png                (devtools/goto-mdn.png)
+   skin/classic/browser/devtools/csshtmltree.css             (devtools/csshtmltree.css)
+   skin/classic/browser/devtools/gcli.css                    (devtools/gcli.css)
+   skin/classic/browser/devtools/htmlpanel.css               (devtools/htmlpanel.css)
+   skin/classic/browser/devtools/orion.css                   (devtools/orion.css)
+   skin/classic/browser/devtools/orion-container.css         (devtools/orion-container.css)
+   skin/classic/browser/devtools/orion-task.png              (devtools/orion-task.png)
+   skin/classic/browser/devtools/orion-breakpoint.png        (devtools/orion-breakpoint.png)
++  skin/classic/browser/devtools/orion-debug-location.png    (devtools/orion-debug-location.png)
+   skin/classic/browser/devtools/toolbarbutton-close.png     (devtools/toolbarbutton-close.png)
+ * skin/classic/browser/devtools/webconsole.css                  (devtools/webconsole.css)
+   skin/classic/browser/devtools/webconsole_networkpanel.css     (devtools/webconsole_networkpanel.css)
+   skin/classic/browser/devtools/webconsole.png                  (devtools/webconsole.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-end-pressed.png              (devtools/breadcrumbs/ltr-end-pressed.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-end-selected-pressed.png     (devtools/breadcrumbs/ltr-end-selected-pressed.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-end-selected.png             (devtools/breadcrumbs/ltr-end-selected.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-end.png                      (devtools/breadcrumbs/ltr-end.png)
+diff --git a/browser/themes/winstripe/devtools/orion-debug-location.png b/browser/themes/winstripe/devtools/orion-debug-location.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..ebb8d8d86d8bb78515739c4efaa59d1870c35602
+GIT binary patch
+literal 203
+zc%17D@N?(olHy`uVBq!ia0vp^0wB!61|;P_|4#%`oCO|{#S9F5M?jcysy3fAP_Wk1
+z#WBR9ckARpp#}vG)_7m`&uM$}j-7qASmLZe#;hMjBG*bC9-L1&DECw+&XC(-jsTaM
+zc0QlXfk(G@FeL3&ka1#SZcWG#Vv3r=>dAOzQR^PF7m8UQnKoSAdSx5m^8<Qn8s9g&
+xh|fFvHee@PluzQ_*J?%;O|{upM)O}5%X~Sa7n^T$;1JLu44$rjF6*2UngA#GM>GHc
+
+diff --git a/browser/themes/winstripe/devtools/orion.css b/browser/themes/winstripe/devtools/orion.css
+--- a/browser/themes/winstripe/devtools/orion.css
++++ b/browser/themes/winstripe/devtools/orion.css
+@@ -56,32 +56,39 @@
+   background-repeat: no-repeat;
+ }
+ .annotationHTML.task {
+   background-image: url("chrome://browser/skin/devtools/orion-task.png");
+ }
+ .annotationHTML.breakpoint {
+   background-image: url("chrome://browser/skin/devtools/orion-breakpoint.png");
+ }
++.annotationHTML.debugLocation {
++  background-image: url("chrome://browser/skin/devtools/orion-debug-location.png");
++}
+ 
+ /* Styles for the overview ruler  */
+ .annotationOverview {
+   cursor: pointer;
+   border-radius: 2px;
+   left: 2px;
+   width: 8px;
+ }
+ .annotationOverview.task {
+   background-color: lightgreen;
+   border: 1px solid green;
+ }
+ .annotationOverview.breakpoint {
+   background-color: lightblue;
+   border: 1px solid blue;
+ }
++.annotationOverview.debugLocation {
++  background-color: white;
++  border: 1px solid green;
++}
+ .annotationOverview.currentBracket {
+   background-color: lightgray;
+   border: 1px solid red;
+ }
+ .annotationOverview.matchingBracket {
+   background-color: lightgray;
+   border: 1px solid red;
+ }
+diff --git a/browser/themes/winstripe/jar.mn b/browser/themes/winstripe/jar.mn
+--- a/browser/themes/winstripe/jar.mn
++++ b/browser/themes/winstripe/jar.mn
+@@ -116,16 +116,17 @@ browser.jar:
+         skin/classic/browser/devtools/goto-mdn.png                  (devtools/goto-mdn.png)
+         skin/classic/browser/devtools/csshtmltree.css               (devtools/csshtmltree.css)
+         skin/classic/browser/devtools/gcli.css                      (devtools/gcli.css)
+         skin/classic/browser/devtools/htmlpanel.css                 (devtools/htmlpanel.css)
+         skin/classic/browser/devtools/orion.css                     (devtools/orion.css)
+         skin/classic/browser/devtools/orion-container.css           (devtools/orion-container.css)
+         skin/classic/browser/devtools/orion-task.png                (devtools/orion-task.png)
+         skin/classic/browser/devtools/orion-breakpoint.png          (devtools/orion-breakpoint.png)
++        skin/classic/browser/devtools/orion-debug-location.png      (devtools/orion-debug-location.png)
+         skin/classic/browser/devtools/toolbarbutton-close.png       (devtools/toolbarbutton-close.png)
+         skin/classic/browser/devtools/webconsole.css                  (devtools/webconsole.css)
+         skin/classic/browser/devtools/webconsole_networkpanel.css     (devtools/webconsole_networkpanel.css)
+         skin/classic/browser/devtools/webconsole.png                  (devtools/webconsole.png)
+         skin/classic/browser/devtools/breadcrumbs/ltr-end-pressed.png              (devtools/breadcrumbs/ltr-end-pressed.png)
+         skin/classic/browser/devtools/breadcrumbs/ltr-end-selected-pressed.png     (devtools/breadcrumbs/ltr-end-selected-pressed.png)
+         skin/classic/browser/devtools/breadcrumbs/ltr-end-selected.png             (devtools/breadcrumbs/ltr-end-selected.png)
+         skin/classic/browser/devtools/breadcrumbs/ltr-end.png                      (devtools/breadcrumbs/ltr-end.png)
+@@ -288,16 +289,17 @@ browser.jar:
+         skin/classic/aero/browser/devtools/goto-mdn.png              (devtools/goto-mdn.png)
+         skin/classic/aero/browser/devtools/csshtmltree.css           (devtools/csshtmltree.css)
+         skin/classic/aero/browser/devtools/gcli.css                  (devtools/gcli.css)
+         skin/classic/aero/browser/devtools/htmlpanel.css             (devtools/htmlpanel.css)
+         skin/classic/aero/browser/devtools/orion.css                 (devtools/orion.css)
+         skin/classic/aero/browser/devtools/orion-container.css       (devtools/orion-container.css)
+         skin/classic/aero/browser/devtools/orion-task.png            (devtools/orion-task.png)
+         skin/classic/aero/browser/devtools/orion-breakpoint.png      (devtools/orion-breakpoint.png)
++        skin/classic/aero/browser/devtools/orion-debug-location.png  (devtools/orion-debug-location.png)
+         skin/classic/aero/browser/devtools/toolbarbutton-close.png   (devtools/toolbarbutton-close.png)
+         skin/classic/aero/browser/devtools/webconsole.css                  (devtools/webconsole.css)
+         skin/classic/aero/browser/devtools/webconsole_networkpanel.css     (devtools/webconsole_networkpanel.css)
+         skin/classic/aero/browser/devtools/webconsole.png                  (devtools/webconsole.png)
+         skin/classic/aero/browser/devtools/breadcrumbs/ltr-end-pressed.png              (devtools/breadcrumbs/ltr-end-pressed.png)
+         skin/classic/aero/browser/devtools/breadcrumbs/ltr-end-selected-pressed.png     (devtools/breadcrumbs/ltr-end-selected-pressed.png)
+         skin/classic/aero/browser/devtools/breadcrumbs/ltr-end-selected.png             (devtools/breadcrumbs/ltr-end-selected.png)
+         skin/classic/aero/browser/devtools/breadcrumbs/ltr-end.png                      (devtools/breadcrumbs/ltr-end.png)

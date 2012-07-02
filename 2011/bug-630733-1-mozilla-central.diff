@@ -1,0 +1,152 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -372,17 +372,17 @@ ResponseListener.prototype =
+    * @param nsISupports aContext
+    * @param nsresult aStatusCode
+    */
+   onStopRequest: function RL_onStopRequest(aRequest, aContext, aStatusCode)
+   {
+     // Retrieve the response headers, as they are, from the server.
+     let response = null;
+     for each (let item in HUDService.openResponseHeaders) {
+-      if (item.channel === aRequest) {
++      if (item.channel === this.httpActivity.channel) {
+         response = item;
+         break;
+       }
+     }
+ 
+     if (response) {
+       this.httpActivity.response.header = response.headers;
+       delete HUDService.openResponseHeaders[response.id];
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -115,16 +115,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_view_source.js \
+ 	browser_webconsole_bug_602572_log_bodies_checkbox.js \
+ 	browser_webconsole_bug_614793_jsterm_scroll.js \
+ 	browser_webconsole_bug_599725_response_headers.js \
+ 	browser_webconsole_bug_613642_maintain_scroll.js \
+ 	browser_webconsole_bug_613642_prune_scroll.js \
+ 	browser_webconsole_bug_618078_network_exceptions.js \
+ 	browser_webconsole_bug_613280_jsterm_copy.js \
++	browser_webconsole_bug_630733_response_redirect_headers.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+@@ -180,15 +181,16 @@ _BROWSER_TEST_PAGES = \
+ 	test-bug-600183-charset.html^headers^ \
+ 	test-bug-601177-log-levels.html \
+ 	test-bug-601177-log-levels.js \
+ 	test-console-extras.html \
+ 	test-bug-603750-websocket.html \
+ 	test-bug-603750-websocket.js \
+ 	test-bug-599725-response-headers.sjs \
+ 	test-bug-618078-network-exceptions.html \
++	test-bug-630733-response-redirect-headers.sjs \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_630733_response_redirect_headers.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_630733_response_redirect_headers.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_630733_response_redirect_headers.js
+@@ -0,0 +1,66 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *   Mihai Sucan <mihai.sucan@gmail.com>
++ */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-630733-response-redirect-headers.sjs";
++
++let lastFinishedRequests = {};
++
++function requestDoneCallback(aHttpRequest)
++{
++  let status = aHttpRequest.response.status.
++               replace(/^HTTP\/\d\.\d (\d+).+$/, "$1");
++  lastFinishedRequests[status] = aHttpRequest;
++}
++
++function performTest(aEvent)
++{
++  HUDService.lastFinishedRequestCallback = null;
++
++  ok("301" in lastFinishedRequests, "request 1: 301 Moved Permanently");
++  ok("404" in lastFinishedRequests, "request 2: 404 Not found");
++
++  let headers0 = lastFinishedRequests["301"].response.header;
++  is(headers0["Content-Type"], "text/html",
++     "we do have the Content-Type header");
++  is(headers0["Content-Length"], 71, "Content-Length is correct");
++  is(headers0["Location"], "/redirect-from-bug-630733",
++     "Content-Length is correct");
++  is(headers0["x-foobar-bug630733"], "bazbaz",
++     "X-Foobar-bug630733 is correct");
++
++  let headers1 = lastFinishedRequests["404"].response.header;
++  ok(!headers1["Location"], "no Location header");
++  ok(!headers1["x-foobar-bug630733"], "no X-Foobar-bug630733 header");
++
++  lastFinishedRequests = null;
++  finishTest();
++}
++
++function test()
++{
++  addTab("data:text/html,<p>Web Console test for bug 630733");
++
++  browser.addEventListener("load", function(aEvent) {
++    browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++    executeSoon(function() {
++      openConsole();
++
++      HUDService.lastFinishedRequestCallback = requestDoneCallback;
++
++      browser.addEventListener("load", function(aEvent) {
++        browser.removeEventListener(aEvent.type, arguments.callee, true);
++        executeSoon(performTest);
++      }, true);
++
++      content.location = TEST_URI;
++    });
++  }, true);
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-630733-response-redirect-headers.sjs b/toolkit/components/console/hudservice/tests/browser/test-bug-630733-response-redirect-headers.sjs
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-630733-response-redirect-headers.sjs
+@@ -0,0 +1,16 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++function handleRequest(request, response)
++{
++  var page = "<!DOCTYPE html><html><body><p>hello world! bug 630733</p></body></html>";
++
++  response.setStatusLine(request.httpVersion, "301", "Moved Permanently");
++  response.setHeader("Content-Type", "text/html", false);
++  response.setHeader("Content-Length", page.length + "", false);
++  response.setHeader("x-foobar-bug630733", "bazbaz", false);
++  response.setHeader("Location", "/redirect-from-bug-630733", false);
++  response.write(page);
++}

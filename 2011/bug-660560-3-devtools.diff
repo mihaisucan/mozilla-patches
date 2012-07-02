@@ -1,0 +1,218 @@
+# HG changeset patch
+# Date 1307113786 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Parent 6da2c7c5c170e779421c34670d8cc9606f410e22
+Bug 660560 - Scratchpad lacks indentation, pressing TAB key should indent code
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -1028,16 +1028,22 @@ pref("devtools.webconsole.position", "ab
+ 
+ // The number of lines that are displayed in the web console for the Net,
+ // CSS, JS and Web Developer categories.
+ pref("devtools.hud.loglimit.network", 200);
+ pref("devtools.hud.loglimit.cssparser", 200);
+ pref("devtools.hud.loglimit.exception", 200);
+ pref("devtools.hud.loglimit.console", 200);
+ 
++// The developer tools editor configuration:
++// - tabsize: how many spaces to use when a Tab character is displayed.
++// - expandtab: expand Tab characters to spaces.
++pref("devtools.editor.tabsize", 4);
++pref("devtools.editor.expandtab", true);
++
+ // Whether the character encoding menu is under the main Firefox button. This
+ // preference is a string so that localizers can alter it.
+ pref("browser.menu.showCharacterEncoding", "chrome://browser/locale/browser.properties");
+ 
+ // Allow using tab-modal prompts when possible.
+ pref("prompts.tab_modal.enabled", true);
+ // Whether the Panorama should animate going in/out of tabs
+ pref("browser.panorama.animate_zoom", true);
+diff --git a/browser/base/content/scratchpad.js b/browser/base/content/scratchpad.js
+--- a/browser/base/content/scratchpad.js
++++ b/browser/base/content/scratchpad.js
+@@ -623,17 +623,57 @@ var Scratchpad = {
+ 
+     let chrome = Services.prefs.getBoolPref(DEVTOOLS_CHROME_ENABLED);
+     if (chrome) {
+       chromeContextMenu.removeAttribute("hidden");
+       errorConsoleMenu.removeAttribute("hidden");
+       errorConsoleCommand.removeAttribute("disabled");
+       chromeContextCommand.removeAttribute("disabled");
+     }
++
++    let tabsize = Services.prefs.getIntPref("devtools.editor.tabsize");
++    let expandtab = Services.prefs.getBoolPref("devtools.editor.expandtab");
++    this._tabCharacter = expandtab ? (new Array(tabsize + 1)).join(" ") : "\t";
++    this.textbox.style.MozTabSize = tabsize;
++
+     this.insertIntro();
++
++    // Make the Tab key work.
++    this.textbox.addEventListener("keypress", this.onKeypress.bind(this), false);
++
++    this.textbox.focus();
++  },
++
++  /**
++   * The textbox keypress event handler which allows users to indent code using
++   * the Tab key.
++   *
++   * @param nsIDOMEvent aEvent
++   */
++  onKeypress: function SP_onKeypress(aEvent)
++  {
++    if (aEvent.keyCode == aEvent.DOM_VK_TAB) {
++      this.insertTextAtCaret(this._tabCharacter);
++      aEvent.preventDefault();
++    }
++  },
++
++  /**
++   * Insert text at the current caret location.
++   *
++   * @param string aText
++   */
++  insertTextAtCaret: function SP_insertTextAtCaret(aText)
++  {
++    let firstPiece = this.textbox.value.substring(0, this.textbox.selectionStart);
++    let lastPiece = this.textbox.value.substring(this.textbox.selectionEnd);
++    this.textbox.value = firstPiece + aText + lastPiece;
++
++    let newCaretPosition = firstPiece.length + aText.length;
++    this.selectRange(newCaretPosition, newCaretPosition);
+   },
+ };
+ 
+ XPCOMUtils.defineLazyGetter(Scratchpad, "strings", function () {
+   return Services.strings.createBundle(SCRATCHPAD_L10N);
+ });
+ 
+ addEventListener("DOMContentLoaded", Scratchpad.onLoad.bind(Scratchpad), false);
+diff --git a/browser/base/content/test/Makefile.in b/browser/base/content/test/Makefile.in
+--- a/browser/base/content/test/Makefile.in
++++ b/browser/base/content/test/Makefile.in
+@@ -196,16 +196,17 @@ _BROWSER_FILES = \
+                  browser_scratchpad_initialization.js \
+                  browser_scratchpad_contexts.js \
+                  browser_scratchpad_tab_switch.js \
+                  browser_scratchpad_execute_print.js \
+                  browser_scratchpad_inspect.js \
+                  browser_scratchpad_files.js \
+                  browser_scratchpad_ui.js \
+                  browser_scratchpad_bug_646070_chrome_context_pref.js \
++                 browser_scratchpad_bug_660560_tab.js \
+                  browser_overflowScroll.js \
+                  browser_locationBarExternalLoad.js \
+                  browser_pageInfo.js \
+                  browser_page_style_menu.js \
+                  browser_pinnedTabs.js \
+                  browser_plainTextLinks.js \
+                  browser_pluginnotification.js \
+                  browser_relatedTabs.js \
+diff --git a/browser/base/content/test/browser_scratchpad_bug_660560_tab.js b/browser/base/content/test/browser_scratchpad_bug_660560_tab.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_scratchpad_bug_660560_tab.js
+@@ -0,0 +1,99 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++// Reference to the Scratchpad chrome window object.
++let gScratchpadWindow;
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++
++    ok(window.Scratchpad, "Scratchpad variable exists");
++
++    Services.prefs.setIntPref("devtools.editor.tabsize", 5);
++
++    gScratchpadWindow = Scratchpad.openScratchpad();
++    gScratchpadWindow.addEventListener("load", runTests, false);
++  }, true);
++
++  content.location = "data:text/html,Scratchpad test for the Tab key, bug 660560";
++}
++
++function runTests()
++{
++  gScratchpadWindow.removeEventListener("load", arguments.callee, false);
++
++  let sp = gScratchpadWindow.Scratchpad;
++  ok(sp, "Scratchpad object exists in new window");
++
++  is(gScratchpadWindow.document.activeElement, sp.textbox.inputField,
++     "The textbox has focus");
++
++  is(sp.textbox.style.MozTabSize, 5, "-moz-tab-size is correct");
++
++  sp.textbox.value = "window.foo;";
++  sp.selectRange(1, 3);
++
++  EventUtils.synthesizeKey("VK_TAB", {}, gScratchpadWindow);
++
++  is(sp.textbox.value, "w     dow.foo;",
++     "Tab key added 5 spaces");
++
++  is(sp.textbox.selectionStart, 6, "caret location is correct");
++
++  is(sp.textbox.selectionStart, sp.textbox.selectionEnd,
++     "caret location is correct, confirmed");
++
++  // Test the new insertTextAtCaret() method.
++
++  sp.insertTextAtCaret("omg");
++
++  is(sp.textbox.value, "w     omgdow.foo;", "insertTextAtCaret() works");
++
++  is(sp.textbox.selectionStart, 9, "caret location is correct after update");
++
++  is(sp.textbox.selectionStart, sp.textbox.selectionEnd,
++     "caret location is correct, confirmed");
++
++  gScratchpadWindow.close();
++
++  Services.prefs.setIntPref("devtools.editor.tabsize", 6);
++  Services.prefs.setBoolPref("devtools.editor.expandtab", false);
++  gScratchpadWindow = Scratchpad.openScratchpad();
++  gScratchpadWindow.addEventListener("load", runTests2, false);
++}
++
++function runTests2()
++{
++  gScratchpadWindow.removeEventListener("load", arguments.callee, false);
++
++  let sp = gScratchpadWindow.Scratchpad;
++
++  is(sp.textbox.style.MozTabSize, 6, "-moz-tab-size is correct");
++
++  sp.textbox.value = "window.foo;";
++  sp.selectRange(1, 3);
++
++  EventUtils.synthesizeKey("VK_TAB", {}, gScratchpadWindow);
++
++  is(sp.textbox.value, "w\tdow.foo;", "Tab key added the tab character");
++
++  is(sp.textbox.selectionStart, 2, "caret location is correct");
++
++  is(sp.textbox.selectionStart, sp.textbox.selectionEnd,
++     "caret location is correct, confirmed");
++
++  gScratchpadWindow.close();
++  gScratchpadWindow = null;
++
++  Services.prefs.clearUserPref("devtools.editor.tabsize");
++  Services.prefs.clearUserPref("devtools.editor.expandtab");
++
++  gBrowser.removeCurrentTab();
++  finish();
++}

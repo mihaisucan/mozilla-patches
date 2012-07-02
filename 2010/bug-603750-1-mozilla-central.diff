@@ -1,0 +1,165 @@
+diff --git a/content/base/src/nsWebSocket.cpp b/content/base/src/nsWebSocket.cpp
+--- a/content/base/src/nsWebSocket.cpp
++++ b/content/base/src/nsWebSocket.cpp
+@@ -73,16 +73,17 @@
+ #include "nsIDOMDocumentEvent.h"
+ #include "nsIDOMMessageEvent.h"
+ #include "nsIStandardURL.h"
+ #include "nsIPromptFactory.h"
+ #include "nsIWindowWatcher.h"
+ #include "nsIPrompt.h"
+ #include "nsIStringBundle.h"
+ #include "nsIConsoleService.h"
++#include "nsIScriptError.h"
+ #include "nsITimer.h"
+ #include "nsIDNSListener.h"
+ #include "nsIDNSRecord.h"
+ #include "nsIDNSService.h"
+ #include "nsLayoutStatics.h"
+ #include "nsIHttpAuthenticableChannel.h"
+ #include "nsIHttpChannelAuthProvider.h"
+ #include "mozilla/Mutex.h"
+@@ -1948,29 +1949,58 @@ nsWebSocketEstablishedConnection::PrintE
+   nsCOMPtr<nsIStringBundle> strBundle;
+   rv = bundleService->CreateBundle(aBundleURI, getter_AddRefs(strBundle));
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   nsCOMPtr<nsIConsoleService> console(
+     do_GetService(NS_CONSOLESERVICE_CONTRACTID, &rv));
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
++  nsCOMPtr<nsIScriptError2> errorObject(
++    do_CreateInstance(NS_SCRIPTERROR_CONTRACTID, &rv));
++  NS_ENSURE_SUCCESS(rv, rv);
++
+   // Localize the error message
+   nsXPIDLString message;
+   if (aFormatStrings) {
+     rv = strBundle->FormatStringFromName(aError, aFormatStrings,
+                                          aFormatStringsLen,
+                                          getter_Copies(message));
+   } else {
+     rv = strBundle->GetStringFromName(aError, getter_Copies(message));
+   }
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
++  nsCOMPtr<nsIDocument> doc =
++    nsContentUtils::GetDocumentFromScriptContext(mOwner->mScriptContext);
++  PRUint64 windowID = 0;
++  nsCAutoString spec;
++  if (doc) {
++    nsIURI* uri = doc->GetDocumentURI();
++    if (uri) {
++      uri->GetSpec(spec);
++    }
++
++    nsCOMPtr<nsPIDOMWindow> win = doc->GetWindow();
++    if (win) {
++      windowID = win->WindowID();
++    }
++  }
++
++  errorObject->InitWithWindowID
++    (message.get(),
++     NS_ConvertUTF8toUTF16(spec).get(),
++     nsnull,
++     0, 0, nsIScriptError::errorFlag,
++     "Web Socket", windowID
++     );
++  
+   // print the error message directly to the JS console
+-  rv = console->LogStringMessage(message.get());
++  rv = console->LogMessage(
++    (nsCOMPtr<nsIScriptError>)(do_QueryInterface(errorObject)));
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   return NS_OK;
+ }
+ 
+ IMPL_RUNNABLE_ON_MAIN_THREAD_METHOD_BEGIN(Close)
+ {
+   nsresult rv;
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -128,16 +128,18 @@ _BROWSER_TEST_PAGES = \
+ 	test-bug-595934-css-loader.html \
+ 	test-bug-595934-css-loader.css \
+ 	test-bug-595934-css-loader.css^headers^ \
+ 	test-bug-595934-dom-html.html \
+ 	test-bug-595934-imagemap.html \
+ 	test-bug-595934-html.html \
+ 	test-bug-595934-malformedxml.xhtml \
+ 	test-bug-595934-svg.xhtml \
++	test-bug-595934-websocket.html \
++	test-bug-595934-websocket.js \
+ 	test-bug-597136-external-script-errors.html \
+ 	test-bug-597136-external-script-errors.js \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js
+@@ -44,16 +44,21 @@ const TESTS = [
+     category: "malformed-xml",
+     matchString: "malformed-xml",
+   },
+   { // #6
+     file: "test-bug-595934-svg.xhtml",
+     category: "SVG",
+     matchString: "fooBarSVG",
+   },
++  { // #7
++    file: "test-bug-595934-websocket.html",
++    category: "Web Socket",
++    matchString: "ws://0.0.0.0",
++  },
+ ];
+ 
+ let pos = -1;
+ 
+ let TestObserver = {
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
+ 
+   observe: function test_observe(aSubject)
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-websocket.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-websocket.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-websocket.html
+@@ -0,0 +1,13 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: Web Socket</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++    <script type="text/javascript"
++            src="test-bug-595934-websocket.js"></script>
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "Web Socket".</p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-websocket.js b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-websocket.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-websocket.js
+@@ -0,0 +1,14 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++window.addEventListener("load", function() {
++  window.removeEventListener("load", arguments.callee, false);
++
++  var ws = new WebSocket("ws://0.0.0.0");
++  ws.onopen = function() {
++    ws.send("test");
++    ws.close();
++  };
++}, false);

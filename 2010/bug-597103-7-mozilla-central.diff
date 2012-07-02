@@ -1,0 +1,180 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1343,47 +1343,48 @@ HUD_SERVICE.prototype =
+       if (this.activatedContexts[idx] == domId){
+         return true;
+       }
+     }
+     return false;
+   },
+ 
+   /**
+-   * Activate a HeadsUpDisplay for the current window
++   * Activate a HeadsUpDisplay for the given tab context.
+    *
+-   * @param nsIDOMWindow aContext
++   * @param Element aContext the tab element.
+    * @returns void
+    */
+   activateHUDForContext: function HS_activateHUDForContext(aContext)
+   {
+     var window = aContext.linkedBrowser.contentWindow;
+     var id = aContext.linkedBrowser.parentNode.parentNode.getAttribute("id");
+     this.registerActiveContext(id);
+     HUDService.windowInitializer(window);
+   },
+ 
+   /**
+-   * Deactivate a HeadsUpDisplay for the current window
++   * Deactivate a HeadsUpDisplay for the given tab context.
+    *
+    * @param nsIDOMWindow aContext
+    * @returns void
+    */
+   deactivateHUDForContext: function HS_deactivateHUDForContext(aContext)
+   {
+-    var gBrowser = HUDService.currentContext().gBrowser;
+-    var window = aContext.linkedBrowser.contentWindow;
+-    var browser = gBrowser.getBrowserForDocument(window.top.document);
+-    var tabId = gBrowser.getNotificationBox(browser).getAttribute("id");
+-    var hudId = "hud_" + tabId;
+-    var displayNode = this.getHeadsUpDisplay(hudId);
+-
+-    this.unregisterActiveContext(hudId);
+-    this.unregisterDisplay(hudId);
+-    window.focus();
++    let window = aContext.linkedBrowser.contentWindow;
++    let nBox = aContext.ownerDocument.defaultView.
++      getNotificationBox(window);
++    let hudId = "hud_" + nBox.id;
++    let displayNode = nBox.querySelector("#" + hudId);
++
++    if (hudId in this.displayRegistry && displayNode) {
++      this.unregisterActiveContext(hudId);
++      this.unregisterDisplay(displayNode);
++      window.focus();
++    }
+   },
+ 
+   /**
+    * Clear the specified HeadsUpDisplay
+    *
+    * @param string|nsIDOMNode aHUD
+    *        Either the ID of a HUD or the DOM node corresponding to an outer
+    *        HUD box.
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -87,16 +87,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_585237_line_limit.js \
+ 	browser_webconsole_bug_581231_close_button.js \
+ 	browser_webconsole_bug_582201_duplicate_errors.js \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_583816_tab_focus.js \
+ 	browser_webconsole_bug_594477_clickable_output.js \
+ 	browser_webconsole_bug_589162_css_filter.js \
++	browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js
+@@ -0,0 +1,89 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
++
++let tab1, tab2, win1, win2;
++let noErrors = true;
++
++function tab1Loaded(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  win2 = OpenBrowserWindow();
++  win2.addEventListener("load", win2Loaded, true);
++}
++
++function win2Loaded(aEvent) {
++  win2.removeEventListener(aEvent.type, arguments.callee, true);
++
++  tab2 = win2.gBrowser.addTab();
++  win2.gBrowser.selectedTab = tab2;
++  tab2.linkedBrowser.addEventListener("load", tab2Loaded, true);
++  tab2.linkedBrowser.contentWindow.location = TEST_URI;
++}
++
++function tab2Loaded(aEvent) {
++  tab2.linkedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  waitForFocus(function() {
++    try {
++      HUDService.activateHUDForContext(tab1);
++    }
++    catch (ex) {
++      ok(false, "HUDService.activateHUDForContext(tab1) exception: " + ex);
++      noErrors = false;
++    }
++
++    try {
++      HUDService.activateHUDForContext(tab2);
++    }
++    catch (ex) {
++      ok(false, "HUDService.activateHUDForContext(tab2) exception: " + ex);
++      noErrors = false;
++    }
++
++    try {
++      HUDService.deactivateHUDForContext(tab1);
++    }
++    catch (ex) {
++      ok(false, "HUDService.deactivateHUDForContext(tab1) exception: " + ex);
++      noErrors = false;
++    }
++
++    try {
++      HUDService.deactivateHUDForContext(tab2);
++    }
++    catch (ex) {
++      ok(false, "HUDService.deactivateHUDForContext(tab2) exception: " + ex);
++      noErrors = false;
++    }
++
++    if (noErrors) {
++      ok(true, "there were no errors");
++    }
++
++    win2.gBrowser.removeTab(tab2);
++
++    executeSoon(function() {
++      win2.close();
++      tab1 = tab2 = win1 = win2 = null;
++      finishTest();
++    });
++
++  }, tab2.linkedBrowser.contentWindow);
++}
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tab1Loaded, true);
++  tab1 = gBrowser.selectedTab;
++  win1 = window;
++}
++

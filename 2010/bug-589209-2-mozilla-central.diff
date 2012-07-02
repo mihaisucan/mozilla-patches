@@ -1,0 +1,145 @@
+diff --git a/browser/base/content/browser.xul b/browser/base/content/browser.xul
+--- a/browser/base/content/browser.xul
++++ b/browser/base/content/browser.xul
+@@ -258,20 +258,20 @@
+                        label="&inspectNextButton.label;"
+                        accesskey="&inspectNextButton.accesskey;"
+                        class="toolbarbutton-text"
+                        command="Inspector:Next"/>
+         <toolbarbutton id="inspector-style-toolbutton"
+                        label="&inspectStyleButton.label;"
+                        accesskey="&inspectStyleButton.accesskey;"
+                        class="toolbarbutton-text"
+-                       oncommand="InspectorUI.toggleStylePanel();'"/>
++                       oncommand="InspectorUI.toggleStylePanel();"/>
+         <toolbarbutton id="inspector-dom-toolbutton"
+-                       label="&inspectDOMButton.label;"
+-                       accesskey="&inspectDOMButton.accesskey;"
++                       label="&inspectObjectButton.label;"
++                       accesskey="&inspectObjectButton.accesskey;"
+                        class="toolbarbutton-text"
+                        oncommand="InspectorUI.toggleDOMPanel();"/>
+       </toolbar>
+       <tree id="inspector-tree" class="plain"
+             seltype="single"
+             treelines="true"
+             onselect="InspectorUI.onTreeSelected()"
+             flex="1">
+diff --git a/browser/base/content/inspector.js b/browser/base/content/inspector.js
+--- a/browser/base/content/inspector.js
++++ b/browser/base/content/inspector.js
+@@ -542,16 +542,17 @@ var InspectorUI = {
+   /**
+    * Toggle the DOM panel. Invoked from the toolbar's DOM button.
+    */
+   toggleDOMPanel: function IUI_toggleDOMPanel()
+   {
+     if (this.isDOMPanelOpen) {
+       this.domPanel.hidePopup();
+     } else {
++      this.clearDOMPanel();
+       this.openDOMPanel();
+       if (this.treeView.selectedNode) {
+         this.updateDOMPanel(this.treeView.selectedNode);
+       }
+     }
+   },
+ 
+   /**
+@@ -623,16 +624,17 @@ var InspectorUI = {
+   },
+ 
+   /**
+    * Open the DOM panel if not already onscreen.
+    */
+   openDOMPanel: function IUI_openDOMPanel()
+   {
+     if (!this.isDOMPanelOpen) {
++      this.domPanel.hidden = false;
+       // open at middle right of browser panel, offset by 20px from middle.
+       this.domPanel.openPopup(this.browser, "end_before", 0,
+         this.win.outerHeight / 2 - 20, false, false);
+       // size panel to 200px wide by half browser height - 60.
+       this.domPanel.sizeTo(200, this.win.outerHeight / 2 - 60);
+     }
+   },
+ 
+@@ -657,20 +659,22 @@ var InspectorUI = {
+    * document scrolling, resize and tabContainer.TabSelect.
+    */
+   openInspectorUI: function IUI_openInspectorUI()
+   {
+     // initialization
+     this.browser = gBrowser.selectedBrowser;
+     this.win = this.browser.contentWindow;
+ 
+-    // DOM panel initialization and loading (via PropertyPanel.jsm)
+-    let domPanelTitle = this.strings.GetStringFromName("dom.domPanelTitle");
++    // Object panel initialization and loading (via PropertyPanel.jsm)
++    let objectPanelTitle = this.strings.
++      GetStringFromName("object.objectPanelTitle");
+     let parent = document.getElementById("inspector-style-panel").parentNode;
+-    this.propertyPanel = new (this.PropertyPanel)(parent, document, domPanelTitle, {});
++    this.propertyPanel = new (this.PropertyPanel)(parent, document,
++      objectPanelTitle, {});
+ 
+     // additional DOM panel setup needed for unittest identification and use
+     this.domPanel = this.propertyPanel.panel;
+     this.domPanel.setAttribute("id", "inspector-dom-panel");
+     this.domBox = this.propertyPanel.tree;
+     this.domTreeView = this.propertyPanel.treeView;
+ 
+     // open inspector UI
+diff --git a/browser/locales/en-US/chrome/browser/browser.dtd b/browser/locales/en-US/chrome/browser/browser.dtd
+--- a/browser/locales/en-US/chrome/browser/browser.dtd
++++ b/browser/locales/en-US/chrome/browser/browser.dtd
+@@ -186,22 +186,22 @@
+ <!ENTITY inspectButton.accesskey      "I">
+ <!ENTITY inspectNextButton.label      "Next">
+ <!ENTITY inspectNextButton.accesskey  "N">
+ <!ENTITY inspectPreviousButton.label  "Previous">
+ <!ENTITY inspectPreviousButton.accesskey "P">
+ <!ENTITY inspectStyleButton.label     "Style">
+ <!ENTITY inspectStyleButton.accesskey "S">
+ <!ENTITY inspectStylePanelTitle.label  "Style">
+-<!-- LOCALIZATION NOTE (inspectDOMButton.label): This button label
+-  -  stands for Document Object Model and appears on the inspector's toolbar.
+-  -  It is used to open and closed the DOM panel. There is also a DOM label in
+-  -  inspector.properties for the panel titlebar. -->
+-<!ENTITY inspectDOMButton.label       "DOM">
+-<!ENTITY inspectDOMButton.accesskey       "D">
++<!-- LOCALIZATION NOTE (inspectObjectButton.label): This button label
++  -  appears on the Inspector's toolbar. It is used to open and close the Object
++  -  panel. There is also a DOM label in inspector.properties for the panel
++  -  titlebar. -->
++<!ENTITY inspectObjectButton.label       "Object">
++<!ENTITY inspectObjectButton.accesskey   "O">
+ 
+ <!ENTITY fileMenu.label         "File"> 
+ <!ENTITY fileMenu.accesskey       "F">
+ <!ENTITY newNavigatorCmd.label        "New Window">
+ <!ENTITY newNavigatorCmd.key        "N">
+ <!ENTITY newNavigatorCmd.accesskey      "N">
+ 
+ <!ENTITY editMenu.label         "Edit"> 
+diff --git a/browser/locales/en-US/chrome/browser/inspector.properties b/browser/locales/en-US/chrome/browser/inspector.properties
+--- a/browser/locales/en-US/chrome/browser/inspector.properties
++++ b/browser/locales/en-US/chrome/browser/inspector.properties
+@@ -5,13 +5,12 @@ style.selectorLabel=Selector
+ # LOCALIZATION NOTE  (style.inheritedFrom): used in Style panel in
+ #  inspector. Describes which tagname[#id] the properties are inherited from.
+ style.inheritedFrom=Inherited from: #1
+ 
+ # LOCALIZATION NOTE (style.styleItemLabel): used in Style panel in inspector.
+ #  Used for construction of list items, #1 = label, #2 = content.
+ style.styleItemLabel=#1: #2
+ 
+-# LOCALIZATION NOTE (dom.domPanelTitle): used in DOM Panel in inspector.
+-#  Stands for "Document Object Model". Also referenced in in browser.dtd
+-#  and used as a button title.
+-#  Unsure if this localizes well, but including just in case
+-dom.domPanelTitle=DOM
++# LOCALIZATION NOTE (object.objectPanelTitle): used in the Object Panel in the
++#  Inspector tool. There's also inspectObjectButton in browser.dtd for the
++#  toolbar button which allows users to open/close the Object panel.
++object.objectPanelTitle=Object

@@ -1,0 +1,1490 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1327585008 -7200
+# Node ID 7b7de5ec08d0833a2b03b36a82687b1cd1e44308
+# Parent  2926d777c08f4aefcabfdb63f1078b4594ca6842
+Bug 707987 - Ability to set breakpoints in the Source Editor (orion)
+
+diff --git a/browser/devtools/jar.mn b/browser/devtools/jar.mn
+--- a/browser/devtools/jar.mn
++++ b/browser/devtools/jar.mn
+@@ -7,10 +7,11 @@ browser.jar:
+ *   content/browser/styleeditor.xul               (styleeditor/styleeditor.xul)
+     content/browser/styleeditor.css               (styleeditor/styleeditor.css)
+     content/browser/devtools/csshtmltree.xul      (styleinspector/csshtmltree.xul)
+     content/browser/devtools/cssruleview.xul      (styleinspector/cssruleview.xul)
+     content/browser/devtools/styleinspector.css   (styleinspector/styleinspector.css)
+     content/browser/orion.js                      (sourceeditor/orion/orion.js)
+     content/browser/orion.css                     (sourceeditor/orion/orion.css)
+     content/browser/orion-mozilla.css             (sourceeditor/orion/mozilla.css)
++    content/browser/orion-container.css           (sourceeditor/orion/container.css)
+     content/browser/source-editor-overlay.xul     (sourceeditor/source-editor-overlay.xul)
+ 
+diff --git a/browser/devtools/scratchpad/scratchpad.js b/browser/devtools/scratchpad/scratchpad.js
+--- a/browser/devtools/scratchpad/scratchpad.js
++++ b/browser/devtools/scratchpad/scratchpad.js
+@@ -801,17 +801,17 @@ var Scratchpad = {
+       initialText = state.text;
+     }
+ 
+     this.editor = new SourceEditor();
+ 
+     let config = {
+       mode: SourceEditor.MODES.JAVASCRIPT,
+       showLineNumbers: true,
+-      placeholderText: initialText
++      initialText: initialText,
+     };
+ 
+     let editorPlaceholder = document.getElementById("scratchpad-editor");
+     this.editor.init(editorPlaceholder, config, this.onEditorLoad.bind(this));
+   },
+ 
+   /**
+    * The load event handler for the source editor. This method does post-load
+diff --git a/browser/devtools/sourceeditor/orion/container.css b/browser/devtools/sourceeditor/orion/container.css
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/sourceeditor/orion/container.css
+@@ -0,0 +1,47 @@
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++.viewTooltip {
++  font-family: monospace;
++  font-size: 10pt;
++  background-color: InfoBackground;
++  color: InfoText;
++  padding: 2px;
++  border-radius: 4px;
++  border: 1px solid black;
++  z-index: 100;
++  position: fixed;
++  overflow: hidden;
++  white-space: pre;
++}
++
++.viewTooltip em {
++  font-style: normal;
++  font-weight: bold;
++}
++
++.annotationHTML {
++  cursor: pointer;
++  width: 16px;
++  height: 16px;
++  display: inline-block;
++  vertical-align: middle;
++  background-position: center;
++  background-repeat: no-repeat;
++}
++.annotationHTML.task {
++  /* images/task.gif */
++  background-image: url("data:image/gif;base64,R0lGODlhEAAQAMQAAN7s4uTy6ICvY423c2WdP2ugR3mqWYeza2ejOl6VNVqPM1aJMURsJ2GaOnKlT8PbsbPDqGmmO1OCLk98LEhxKGWfOWKaN0t2KkJoJf///////wAAAAAAAAAAAAAAAAAAACH5BAEAABoALAAAAAAQABAAAAVmoCaOZDk+UaquDxkNcCxHJHLceI6QleD/vkCmQrIYjkiDMGAhJRzQ6NKRICkKgYJ2qVWQFktCmEBYkCSNZSbQaDckpAl5TCZMSBdtAaDXX0gUUYJRFCQMSYgGDCQQGI6PkBAmkyUhADs=");
++}
++.annotationHTML.breakpoint {
++  /* images/breakpoint.gif */
++  background-image: url("data:image/gif;base64,R0lGODlhEAAQANUAAFheoFxkoFxnpmt0pmZxpnF7rYyWwmJwpnaFs3aDrWt8rXGBrYycwmZ3mXuNs42cu77F03GIs3aJrYGVu2J5oKCuxeDj6LK/03GLrYieu3aIoIygu6m4zcLN3MTM1m6Rs2aLriRgkSZilXGXtoGcs7LD0QBLhSZikihol3ScubrO2Yaqu5q4xpO0wpm7yabF0ZO9yaXI0r3X3tHj6P///wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACH5BAEAADQALAAAAAAQABAAAAafQJpwSCwWLYZBIDAwWIw0A+FFpW6aRUPCxe1yE4ahhdCCxWSzmSwGgxGeUceKpUqhUCkVa7UK0wgkJCUjJoUmIyWBBEIEGhoeJ4YmJx6OAUIADQ0QIZIhEJoAQgEUFBUgkiAVpZdRCxIPFx8iIh8XDw4FfhYHDhgZHB0dHBkYEwdwUQoTEc3OEwp+QwYHCBMMDBMIB9JESAJLAk5Q5EVBADs=");
++}
++.annotationHTML.currentBracket {
++  /* images/currentBracket.png */
++  background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAAZiS0dEAP8A/wD/oL2nkwAAAAlwSFlzAAALEwAACxMBAJqcGAAAAAd0SU1FB9sLEBULCGQmEKAAAAAZdEVYdENvbW1lbnQAQ3JlYXRlZCB3aXRoIEdJTVBXgQ4XAAAAnklEQVQ4y7VTsRHDIBATJg1HCUzAHEzFBExAzwZsRMkE9gifKhc72ODYibr/+xcnoQdugq0LAujEwmbn0UxQh4OxpjX1XgshwFqLnPM5PQTQGlprWpbl3RhJ/CSQUm7qPYLp7i8cEpRSoJT6ju0lIaVEQgiKMQ4lHHpQayVjzHWCn5jIOcc8z9dMBADvPZxz3SC1tzCI8vgWdvL+VzwB8JSj2GFTyxIAAAAASUVORK5CYII=");
++}
++.annotationHTML.matchingBracket {
++  /* images/matchingBracket.png */
++  background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAAZiS0dEAP8A/wD/oL2nkwAAAAlwSFlzAAALEwAACxMBAJqcGAAAAAd0SU1FB9sLEBUMAsuyb3kAAAAZdEVYdENvbW1lbnQAQ3JlYXRlZCB3aXRoIEdJTVBXgQ4XAAAAoklEQVQ4y61TsQ3EIAw80DcI0USKGIApWIsB2IGGKbJPugxBR3VfvfRRCOSTvw7LPuPzGXgI8f0gwAsFu5rXIYMdDiEOIdnKW5YFzjnEGH+bhwA/KKVwmibu0BhRnpEZY1BrHTaVT7fQJZjnGeu63tOAJFNKVEox53yqQZfAWstt27oidgm01ve3UEqBaBjnspG89wgh3LiFgZXHt3Dh23/FGxKViehm0X85AAAAAElFTkSuQmCC");
++}
+diff --git a/browser/devtools/sourceeditor/orion/mozilla.css b/browser/devtools/sourceeditor/orion/mozilla.css
+--- a/browser/devtools/sourceeditor/orion/mozilla.css
++++ b/browser/devtools/sourceeditor/orion/mozilla.css
+@@ -17,32 +17,111 @@
+   background: #f0f0ff;
+ }
+ 
+ /* One line */
+ .viewContent > div {
+   padding-left: 4px; /* Margin between the ruler and the editor */
+ }
+ 
+-/* Styles for rulers */
+-.ruler.lines {
+-  text-align: right;
+-}
+-
+-/* Styles for the line number ruler */
+-.rulerLines {
+-  border-right: 1px solid #b4c4d3;
++.ruler {
+   background: #cddae5;
+   color: #7a8a99;
++}
++.ruler.annotations {
++  width: 16px;
++  padding-left: 4px;
++}
++.ruler.lines {
++  border-right: 1px solid #b4c4d3;
+   min-width: 1.4em;
+   padding-left: 4px;
+   padding-right: 4px;
+   text-align: end;
+ }
+ 
++.ruler.linesWithAnnotations {
++  min-width: 0;
++  padding-left: 0;
++}
++
++.ruler.overview {
++  border-left: 1px solid #b4c4d3;
++  width: 14px;
++  text-align: start;
++}
++
++/* Styles for the annotation ruler (first line) */
++.annotationHTML {
++  cursor: pointer;
++  width: 16px;
++  height: 16px;
++  display: inline-block;
++  vertical-align: middle;
++  background-position: center;
++  background-repeat: no-repeat;
++}
++.annotationHTML.task {
++  /* images/task.gif */
++  background-image: url("data:image/gif;base64,R0lGODlhEAAQAMQAAN7s4uTy6ICvY423c2WdP2ugR3mqWYeza2ejOl6VNVqPM1aJMURsJ2GaOnKlT8PbsbPDqGmmO1OCLk98LEhxKGWfOWKaN0t2KkJoJf///////wAAAAAAAAAAAAAAAAAAACH5BAEAABoALAAAAAAQABAAAAVmoCaOZDk+UaquDxkNcCxHJHLceI6QleD/vkCmQrIYjkiDMGAhJRzQ6NKRICkKgYJ2qVWQFktCmEBYkCSNZSbQaDckpAl5TCZMSBdtAaDXX0gUUYJRFCQMSYgGDCQQGI6PkBAmkyUhADs=");
++}
++.annotationHTML.breakpoint {
++  /* images/breakpoint.gif */
++  background-image: url("data:image/gif;base64,R0lGODlhEAAQANUAAFheoFxkoFxnpmt0pmZxpnF7rYyWwmJwpnaFs3aDrWt8rXGBrYycwmZ3mXuNs42cu77F03GIs3aJrYGVu2J5oKCuxeDj6LK/03GLrYieu3aIoIygu6m4zcLN3MTM1m6Rs2aLriRgkSZilXGXtoGcs7LD0QBLhSZikihol3ScubrO2Yaqu5q4xpO0wpm7yabF0ZO9yaXI0r3X3tHj6P///wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACH5BAEAADQALAAAAAAQABAAAAafQJpwSCwWLYZBIDAwWIw0A+FFpW6aRUPCxe1yE4ahhdCCxWSzmSwGgxGeUceKpUqhUCkVa7UK0wgkJCUjJoUmIyWBBEIEGhoeJ4YmJx6OAUIADQ0QIZIhEJoAQgEUFBUgkiAVpZdRCxIPFx8iIh8XDw4FfhYHDhgZHB0dHBkYEwdwUQoTEc3OEwp+QwYHCBMMDBMIB9JESAJLAk5Q5EVBADs=");
++}
++.annotationHTML.currentBracket {
++  /* images/currentBracket.png */
++  background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAAZiS0dEAP8A/wD/oL2nkwAAAAlwSFlzAAALEwAACxMBAJqcGAAAAAd0SU1FB9sLEBULCGQmEKAAAAAZdEVYdENvbW1lbnQAQ3JlYXRlZCB3aXRoIEdJTVBXgQ4XAAAAnklEQVQ4y7VTsRHDIBATJg1HCUzAHEzFBExAzwZsRMkE9gifKhc72ODYibr/+xcnoQdugq0LAujEwmbn0UxQh4OxpjX1XgshwFqLnPM5PQTQGlprWpbl3RhJ/CSQUm7qPYLp7i8cEpRSoJT6ju0lIaVEQgiKMQ4lHHpQayVjzHWCn5jIOcc8z9dMBADvPZxz3SC1tzCI8vgWdvL+VzwB8JSj2GFTyxIAAAAASUVORK5CYII=");
++}
++.annotationHTML.matchingBracket {
++  /* images/matchingBracket.png */
++  background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAAZiS0dEAP8A/wD/oL2nkwAAAAlwSFlzAAALEwAACxMBAJqcGAAAAAd0SU1FB9sLEBUMAsuyb3kAAAAZdEVYdENvbW1lbnQAQ3JlYXRlZCB3aXRoIEdJTVBXgQ4XAAAAoklEQVQ4y61TsQ3EIAw80DcI0USKGIApWIsB2IGGKbJPugxBR3VfvfRRCOSTvw7LPuPzGXgI8f0gwAsFu5rXIYMdDiEOIdnKW5YFzjnEGH+bhwA/KKVwmibu0BhRnpEZY1BrHTaVT7fQJZjnGeu63tOAJFNKVEox53yqQZfAWstt27oidgm01ve3UEqBaBjnspG89wgh3LiFgZXHt3Dh23/FGxKViehm0X85AAAAAElFTkSuQmCC");
++}
++
++/* Styles for the overview ruler  */
++.annotationOverview {
++  cursor: pointer;
++  border-radius: 2px;
++  left: 2px;
++  width: 8px;
++}
++.annotationOverview.task {
++  background-color: lightgreen;
++  border: 1px solid green;
++}
++.annotationOverview.breakpoint {
++  background-color: lightblue;
++  border: 1px solid blue;
++}
++.annotationOverview.currentBracket {
++  background-color: lightgray;
++  border: 1px solid red;
++}
++.annotationOverview.matchingBracket {
++  background-color: lightgray;
++  border: 1px solid red;
++}
++
++/* Styles for text range */
++.annotationRange {
++  background-repeat: repeat-x;
++  background-position: left bottom;
++}
++.annotationRange.task {
++  /* images/squiggly_task.png */
++  background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAYAAAC09K7GAAAAAXNSR0IArs4c6QAAAAZiS0dEAP8A/wD/oL2nkwAAAAlwSFlzAAALEwAACxMBAJqcGAAAAAd0SU1FB9sLDhEoIrb7JmcAAAAZdEVYdENvbW1lbnQAQ3JlYXRlZCB3aXRoIEdJTVBXgQ4XAAAAGUlEQVQI12NggIH/DGdhDCM45z/DfyiBAADgdQjGhI/4DAAAAABJRU5ErkJggg==");
++}
++.annotationRange.breakpoint {
++  /* images/squiggly_breakpoint.png */
++  background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAYAAAC09K7GAAAAAXNSR0IArs4c6QAAAAZiS0dEAP8A/wD/oL2nkwAAAAlwSFlzAAALEwAACxMBAJqcGAAAAAd0SU1FB9sLDhEqHTKradgAAAAZdEVYdENvbW1lbnQAQ3JlYXRlZCB3aXRoIEdJTVBXgQ4XAAAAIklEQVQI11XJMQ0AMAzAMGMafwrFlD19+sUKIJTFo9k+B/kQ+Qr2bIVKOgAAAABJRU5ErkJggg==");
++}
++.annotationRange.matchingBracket {
++  outline: 1px solid grey;
++}
++
+ .token_singleline_comment {
+   color: #45a946; /* green */
+ }
+ 
+ .token_multiline_comment {
+   color: #45a946; /* green */
+ }
+ 
+@@ -116,14 +195,8 @@
+   font-style: italic;
+ }
+ 
+ .invalid {
+   color: red;
+   font-weight: bold;
+ }
+ 
+-.annotationRange.currentBracket {
+-}
+-
+-.annotationRange.matchingBracket {
+-  outline: 1px solid grey;
+-}
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -48,46 +48,49 @@ Cu.import("resource:///modules/source-ed
+ 
+ XPCOMUtils.defineLazyServiceGetter(this, "clipboardHelper",
+                                    "@mozilla.org/widget/clipboardhelper;1",
+                                    "nsIClipboardHelper");
+ 
+ const ORION_SCRIPT = "chrome://browser/content/orion.js";
+ const ORION_IFRAME = "data:text/html;charset=utf8,<!DOCTYPE html>" +
+   "<html style='height:100%' dir='ltr'>" +
++  "<head><link rel='stylesheet' href='chrome://browser/content/orion-container.css'>" +
+   "<body style='height:100%;margin:0;overflow:hidden'>" +
+   "<div id='editor' style='height:100%'></div>" +
+   "</body></html>";
+ 
+ const XUL_NS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
+ 
+ /**
+  * Predefined themes for syntax highlighting. This objects maps
+  * SourceEditor.THEMES to Orion CSS files.
+  */
+ const ORION_THEMES = {
+   mozilla: ["chrome://browser/content/orion-mozilla.css"],
+ };
+ 
+ /**
+- * Known editor events you can listen for. This object maps SourceEditor.EVENTS
+- * to Orion events.
++ * Known Orion editor events you can listen for. This object maps several of the
++ * SourceEditor.EVENTS to Orion events.
+  */
+ const ORION_EVENTS = {
+   ContextMenu: "ContextMenu",
+   TextChanged: "ModelChanged",
+   Selection: "Selection",
+ };
+ 
+ /**
+  * Known Orion annotation types.
+  */
+ const ORION_ANNOTATION_TYPES = {
+   currentBracket: "orion.annotation.currentBracket",
+   matchingBracket: "orion.annotation.matchingBracket",
++  breakpoint: "orion.annotation.breakpoint",
++  task: "orion.annotation.task",
+ };
+ 
+ /**
+  * Default key bindings in the Orion editor.
+  */
+ const DEFAULT_KEYBINDINGS = [
+   {
+     action: "undo",
+@@ -116,40 +119,46 @@ var EXPORTED_SYMBOLS = ["SourceEditor"];
+  *
+  * The editor used here is Eclipse Orion (see http://www.eclipse.org/orion).
+  *
+  * @constructor
+  */
+ function SourceEditor() {
+   // Update the SourceEditor defaults from user preferences.
+ 
+-  SourceEditor.DEFAULTS.TAB_SIZE =
++  SourceEditor.DEFAULTS.tabSize =
+     Services.prefs.getIntPref(SourceEditor.PREFS.TAB_SIZE);
+-  SourceEditor.DEFAULTS.EXPAND_TAB =
++  SourceEditor.DEFAULTS.expandTab =
+     Services.prefs.getBoolPref(SourceEditor.PREFS.EXPAND_TAB);
+ 
+   this._onOrionSelection = this._onOrionSelection.bind(this);
+ 
++  this._eventTarget = {};
++  this._eventListenersQueue = [];
+   this.ui = new SourceEditorUI(this);
+ }
+ 
+ SourceEditor.prototype = {
+   _view: null,
+   _iframe: null,
+   _model: null,
+   _undoStack: null,
+   _linesRuler: null,
++  _annotationRuler: null,
++  _overviewRuler: null,
+   _styler: null,
+   _annotationStyler: null,
+   _annotationModel: null,
+   _dragAndDrop: null,
+   _mode: null,
+   _expandTab: null,
+   _tabSize: null,
+   _iframeWindow: null,
++  _eventTarget: null,
++  _eventListenersQueue: null,
+ 
+   /**
+    * The Source Editor user interface manager.
+    * @type object
+    *       An instance of the SourceEditorUI.
+    */
+   ui: null,
+ 
+@@ -160,40 +169,22 @@ SourceEditor.prototype = {
+   parentElement: null,
+ 
+   /**
+    * Initialize the editor.
+    *
+    * @param nsIDOMElement aElement
+    *        The DOM element where you want the editor to show.
+    * @param object aConfig
+-   *        Editor configuration object. Properties:
+-   *          - placeholderText - the text you want to be shown by default.
+-   *          - theme - the syntax highlighting theme you want. You can use one
+-   *          of the predefined themes, or you can point to your CSS file.
+-   *          - mode - the editor mode, based on the file type you want to edit.
+-   *          You can use one of the predefined modes.
+-   *          - tabSize - define how many spaces to use for a tab character.
+-   *          - expandTab - tells if you want tab characters to be expanded to
+-   *          spaces.
+-   *          - readOnly - make the editor read only.
+-   *          - showLineNumbers - display the line numbers gutter.
+-   *          - undoLimit - how many steps should the undo stack hold.
+-   *          - keys - is an array of objects that allows you to define custom
+-   *          editor keyboard bindings. Each object can have:
+-   *              - action - name of the editor action to invoke.
+-   *              - code - keyCode for the shortcut.
+-   *              - accel - boolean for the Accel key (cmd/ctrl).
+-   *              - shift - boolean for the Shift key.
+-   *              - alt - boolean for the Alt key.
+-   *              - callback - optional function to invoke, if the action is not
+-   *              predefined in the editor.
++   *        Editor configuration object. See SourceEditor.DEFAULTS for the
++   *        available configuration options.
+    * @param function [aCallback]
+    *        Function you want to execute once the editor is loaded and
+    *        initialized.
++   * @see SourceEditor.DEFAULTS
+    */
+   init: function SE_init(aElement, aConfig, aCallback)
+   {
+     if (this._iframe) {
+       throw new Error("SourceEditor is already initialized!");
+     }
+ 
+     let doc = aElement.ownerDocument;
+@@ -207,17 +198,24 @@ SourceEditor.prototype = {
+     }).bind(this);
+ 
+     this._iframe.addEventListener("load", onIframeLoad, true);
+ 
+     this._iframe.setAttribute("src", ORION_IFRAME);
+ 
+     aElement.appendChild(this._iframe);
+     this.parentElement = aElement;
+-    this._config = aConfig;
++
++    this._config = {};
++    for (let key in SourceEditor.DEFAULTS) {
++      this._config[key] = key in aConfig ?
++                          aConfig[key] :
++                          SourceEditor.DEFAULTS[key];
++    }
++
+     this._onReadyCallback = aCallback;
+     this.ui.init();
+   },
+ 
+   /**
+    * The editor iframe load event handler.
+    * @private
+    */
+@@ -227,24 +225,23 @@ SourceEditor.prototype = {
+     let window = this._iframeWindow;
+     let config = this._config;
+ 
+     Services.scriptloader.loadSubScript(ORION_SCRIPT, window, "utf8");
+ 
+     let TextModel = window.require("orion/textview/textModel").TextModel;
+     let TextView = window.require("orion/textview/textView").TextView;
+ 
+-    this._expandTab = typeof config.expandTab != "undefined" ?
+-                      config.expandTab : SourceEditor.DEFAULTS.EXPAND_TAB;
+-    this._tabSize = config.tabSize || SourceEditor.DEFAULTS.TAB_SIZE;
++    this._expandTab = config.expandTab;
++    this._tabSize = config.tabSize;
+ 
+-    let theme = config.theme || SourceEditor.DEFAULTS.THEME;
++    let theme = config.theme;
+     let stylesheet = theme in ORION_THEMES ? ORION_THEMES[theme] : theme;
+ 
+-    this._model = new TextModel(config.placeholderText);
++    this._model = new TextModel(config.initialText);
+     this._view = new TextView({
+       model: this._model,
+       parent: "editor",
+       stylesheet: stylesheet,
+       tabSize: this._tabSize,
+       expandTab: this._expandTab,
+       readonly: config.readOnly,
+       themeClass: "mozilla" + (config.readOnly ? " readonly" : ""),
+@@ -257,34 +254,66 @@ SourceEditor.prototype = {
+ 
+     this._view.addEventListener("Load", onOrionLoad);
+     if (Services.appinfo.OS == "Linux") {
+       this._view.addEventListener("Selection", this._onOrionSelection);
+     }
+ 
+     let KeyBinding = window.require("orion/textview/keyBinding").KeyBinding;
+     let TextDND = window.require("orion/textview/textDND").TextDND;
+-    let LineNumberRuler = window.require("orion/textview/rulers").LineNumberRuler;
++    let Rulers = window.require("orion/textview/rulers");
++    let LineNumberRuler = Rulers.LineNumberRuler;
++    let AnnotationRuler = Rulers.AnnotationRuler;
++    let OverviewRuler = Rulers.OverviewRuler;
+     let UndoStack = window.require("orion/textview/undoStack").UndoStack;
+     let AnnotationModel = window.require("orion/textview/annotations").AnnotationModel;
+ 
+     this._annotationModel = new AnnotationModel(this._model);
+ 
++    if (config.showAnnotationRuler) {
++      this._annotationRuler = new AnnotationRuler(this._annotationModel, "left",
++        {styleClass: "ruler annotations"});
++      this._annotationRuler.onClick = this._annotationRulerClick.bind(this);
++      this._annotationRuler.addAnnotationType(ORION_ANNOTATION_TYPES.breakpoint);
++      this._annotationRuler.setMultiAnnotation({
++        html: "<div class='annotationHTML multiple'></div>"
++      });
++      this._annotationRuler.setMultiAnnotationOverlay({
++        html: "<div class='annotationHTML overlay'></div>"
++      });
++      this._view.addRuler(this._annotationRuler);
++    }
++
+     if (config.showLineNumbers) {
++      let rulerClass = this._annotationRuler ?
++                       "ruler lines linesWithAnnotations" :
++                       "ruler lines";
++
+       this._linesRuler = new LineNumberRuler(this._annotationModel, "left",
+-        {styleClass: "rulerLines"}, {styleClass: "rulerLine odd"},
+-        {styleClass: "rulerLine even"});
++        {styleClass: rulerClass}, {styleClass: "rulerLines odd"},
++        {styleClass: "rulerLines even"});
+ 
+       this._view.addRuler(this._linesRuler);
+     }
+ 
+-    this.setMode(config.mode || SourceEditor.DEFAULTS.MODE);
++    if (config.showOverviewRuler) {
++      this._overviewRuler = new OverviewRuler(this._annotationModel, "right",
++        {styleClass: "ruler overview"});
++      this._overviewRuler.onClick = this._overviewRulerClick.bind(this);
+ 
+-    this._undoStack = new UndoStack(this._view,
+-      config.undoLimit || SourceEditor.DEFAULTS.UNDO_LIMIT);
++      this._overviewRuler.addAnnotationType(ORION_ANNOTATION_TYPES.matchingBracket);
++      this._overviewRuler.addAnnotationType(ORION_ANNOTATION_TYPES.currentBracket);
++      this._overviewRuler.addAnnotationType(ORION_ANNOTATION_TYPES.breakpoint);
++      this._overviewRuler.addAnnotationType(ORION_ANNOTATION_TYPES.task);
++      this._view.addRuler(this._overviewRuler);
++    }
++
++    this.setMode(config.mode);
++
++    this._undoStack = new UndoStack(this._view, config.undoLimit);
+ 
+     this._dragAndDrop = new TextDND(this._view, this._undoStack);
+ 
+     let actions = {
+       "undo": [this.undo, this],
+       "redo": [this.redo, this],
+       "tab": [this._doTab, this],
+       "Unindent Lines": [this._doUnindentLines, this],
+@@ -304,16 +333,53 @@ SourceEditor.prototype = {
+     keys.forEach(function(aKey) {
+       let binding = new KeyBinding(aKey.code, aKey.accel, aKey.shift, aKey.alt);
+       this._view.setKeyBinding(binding, aKey.action);
+ 
+       if (aKey.callback) {
+         this._view.setAction(aKey.action, aKey.callback);
+       }
+     }, this);
++
++    this._initEventTarget();
++  },
++
++  /**
++   * Initialize the private Orion EventTarget object. This is used for tracking
++   * our own event listeners for events outside of Orion's scope.
++   * @private
++   */
++  _initEventTarget: function SE__initEventTarget()
++  {
++    let EventTarget =
++      this._iframeWindow.require("orion/textview/eventTarget").EventTarget;
++	  EventTarget.addMixin(this._eventTarget);
++
++	  this._eventListenersQueue.forEach(function(aRequest) {
++	    if (aRequest[0] == "add") {
++	      this.addEventListener(aRequest[1], aRequest[2]);
++	    } else {
++	      this.removeEventListener(aRequest[1], aRequest[2]);
++	    }
++	  }, this);
++
++	  this._eventListenersQueue = [];
++	},
++
++  /**
++   * Dispatch an event to the SourceEditor event listeners. This covers only the
++   * SourceEditor-specific events.
++   *
++   * @private
++   * @param object aEvent
++   *        The event object to dispatch to all listeners.
++   */
++  _dispatchEvent: function SE__dispatchEvent(aEvent)
++  {
++    this._eventTarget.dispatchEvent(aEvent);
+   },
+ 
+   /**
+    * The Orion "Load" event handler. This is called when the Orion editor
+    * completes the initialization.
+    * @private
+    */
+   _onOrionLoad: function SE__onOrionLoad()
+@@ -482,16 +548,118 @@ SourceEditor.prototype = {
+       return;
+     }
+ 
+     clipboardHelper.copyStringToClipboard(text,
+                                           Ci.nsIClipboard.kSelectionClipboard);
+   },
+ 
+   /**
++   * Highlight the Orion annotations. This updates the annotation styler as
++   * needed.
++   * @private
++   */
++  _highlightAnnotations: function SE__highlightAnnotations()
++  {
++    if (this._annotationStyler) {
++      this._annotationStyler.destroy();
++      this._annotationStyler = null;
++    }
++
++    let AnnotationStyler =
++      this._iframeWindow.require("orion/textview/annotations").AnnotationStyler;
++
++    let styler = new AnnotationStyler(this._view, this._annotationModel);
++    this._annotationStyler = styler;
++
++    styler.addAnnotationType(ORION_ANNOTATION_TYPES.matchingBracket);
++    styler.addAnnotationType(ORION_ANNOTATION_TYPES.currentBracket);
++    styler.addAnnotationType(ORION_ANNOTATION_TYPES.task);
++  },
++
++  /**
++   * Retrieve the list of Orion Annotations filtered by type for the given text range.
++   *
++   * @private
++   * @param string aType
++   *        The annotation type to filter annotations for.
++   * @param number aStart
++   *        Offset from where to start finding the annotations.
++   * @param number aEnd
++   *        End offset for retrieving the annotations.
++   * @return array
++   *         The array of annotations, filtered by type, within the given text
++   *         range.
++   */
++  _getAnnotationsByType: function SE__getAnnotationsByType(aType, aStart, aEnd)
++  {
++    let annotations = this._annotationModel.getAnnotations(aStart, aEnd);
++    let annotation, result = [];
++    while (annotation = annotations.next()) {
++      if (annotation.type == ORION_ANNOTATION_TYPES[aType]) {
++        result.push(annotation);
++      }
++    }
++
++    return result;
++  },
++
++  /**
++   * The click event handler for the annotation ruler.
++   *
++   * @private
++   * @param number aLineIndex
++   *        The line index where the click event occurred.
++   * @param object aEvent
++   *        The DOM click event object.
++   */
++  _annotationRulerClick: function SE__annotationRulerClick(aLineIndex, aEvent)
++  {
++    if (aLineIndex === undefined || aLineIndex == -1) {
++      return;
++    }
++
++    let removed = this.removeBreakpoint(aLineIndex);
++    if (!removed) {
++      this.addBreakpoint(aLineIndex);
++    }
++  },
++
++  /**
++   * The click event handler for the overview ruler. When the user clicks on an
++   * annotation the editor jumps to the associated line.
++   *
++   * @private
++   * @param number aLineIndex
++   *        The line index where the click event occurred.
++   * @param object aEvent
++   *        The DOM click event object.
++   */
++  _overviewRulerClick: function SE__overviewRulerClick(aLineIndex, aEvent)
++  {
++    if (aLineIndex === undefined || aLineIndex == -1) {
++      return;
++    }
++
++    let model = this._model;
++    let lineStart = model.getLineStart(aLineIndex);
++    let lineEnd = model.getLineEnd(aLineIndex);
++    let annotations = this._annotationModel.getAnnotations(lineStart, lineEnd);
++    let annotation = annotations.next();
++
++    // Jump to the line where annotation is. If the annotation is specific to
++    // a substring part of the line, then select the substring.
++    if (!annotation || lineStart == annotation.start && lineEnd == annotation.end) {
++      this.setSelection(lineStart, lineStart);
++    } else {
++      this.setSelection(annotation.start, annotation.end);
++    }
++  },
++
++  /**
+    * Get the editor element.
+    *
+    * @return nsIDOMElement
+    *         In this implementation a xul:iframe holds the editor.
+    */
+   get editorElement() {
+     return this._iframe;
+   },
+@@ -501,46 +669,46 @@ SourceEditor.prototype = {
+    *
+    * @see SourceEditor.EVENTS
+    *
+    * @param string aEventType
+    *        The event type you want to listen for.
+    * @param function aCallback
+    *        The function you want executed when the event is triggered.
+    */
+-  addEventListener:
+-  function SE_addEventListener(aEventType, aCallback)
++  addEventListener: function SE_addEventListener(aEventType, aCallback)
+   {
+-    if (aEventType in ORION_EVENTS) {
++    if (this._view && aEventType in ORION_EVENTS) {
+       this._view.addEventListener(ORION_EVENTS[aEventType], aCallback);
++    } else if (this._eventTarget.addEventListener) {
++      this._eventTarget.addEventListener(aEventType, aCallback);
+     } else {
+-      throw new Error("SourceEditor.addEventListener() unknown event " +
+-                      "type " + aEventType);
++      this._eventListenersQueue.push(["add", aEventType, aCallback]);
+     }
+   },
+ 
+   /**
+    * Remove an event listener from the editor. You can use one of the known
+    * events.
+    *
+    * @see SourceEditor.EVENTS
+    *
+    * @param string aEventType
+    *        The event type you have a listener for.
+    * @param function aCallback
+    *        The function you have as the event handler.
+    */
+-  removeEventListener:
+-  function SE_removeEventListener(aEventType, aCallback)
++  removeEventListener: function SE_removeEventListener(aEventType, aCallback)
+   {
+-    if (aEventType in ORION_EVENTS) {
++    if (this._view && aEventType in ORION_EVENTS) {
+       this._view.removeEventListener(ORION_EVENTS[aEventType], aCallback);
++    } else if (this._eventTarget.removeEventListener) {
++      this._eventTarget.removeEventListener(aEventType, aCallback);
+     } else {
+-      throw new Error("SourceEditor.removeEventListener() unknown event " +
+-                      "type " + aEventType);
++      this._eventListenersQueue.push(["remove", aEventType, aCallback]);
+     }
+   },
+ 
+   /**
+    * Undo a change in the editor.
+    */
+   undo: function SE_undo()
+   {
+@@ -816,55 +984,42 @@ SourceEditor.prototype = {
+    *        One of the predefined SourceEditor.MODES.
+    */
+   setMode: function SE_setMode(aMode)
+   {
+     if (this._styler) {
+       this._styler.destroy();
+       this._styler = null;
+     }
+-    if (this._annotationStyler) {
+-      this._annotationStyler.destroy();
+-      this._annotationStyler = null;
+-    }
+ 
+     let window = this._iframeWindow;
+ 
+     switch (aMode) {
+       case SourceEditor.MODES.JAVASCRIPT:
+       case SourceEditor.MODES.CSS:
+         let TextStyler =
+           window.require("examples/textview/textStyler").TextStyler;
+ 
+         this._styler = new TextStyler(this._view, aMode, this._annotationModel);
+         this._styler.setFoldingEnabled(false);
+         this._styler.setHighlightCaretLine(true);
+-
+-        let AnnotationStyler =
+-          window.require("orion/textview/annotations").AnnotationStyler;
+-
+-        this._annotationStyler =
+-          new AnnotationStyler(this._view, this._annotationModel);
+-        this._annotationStyler.
+-          addAnnotationType(ORION_ANNOTATION_TYPES.matchingBracket);
+-        this._annotationStyler.
+-          addAnnotationType(ORION_ANNOTATION_TYPES.currentBracket);
+         break;
+ 
+       case SourceEditor.MODES.HTML:
+       case SourceEditor.MODES.XML:
+         let TextMateStyler =
+           window.require("orion/editor/textMateStyler").TextMateStyler;
+         let HtmlGrammar =
+           window.require("orion/editor/htmlGrammar").HtmlGrammar;
+         this._styler = new TextMateStyler(this._view, new HtmlGrammar().grammar);
+         break;
+     }
+ 
+     this._mode = aMode;
++    this._highlightAnnotations();
+   },
+ 
+   /**
+    * Get the current source editor mode.
+    *
+    * @return string
+    *         Returns one of the predefined SourceEditor.MODES.
+    */
+@@ -891,16 +1046,116 @@ SourceEditor.prototype = {
+    * @type boolean
+    */
+   get readOnly()
+   {
+     return this._view.getOptions("readonly");
+   },
+ 
+   /**
++   * Add a breakpoint at the given line index.
++   *
++   * @param number aLineIndex
++   *        Line index where to add the breakpoint (starts from 0).
++   * @param string [aCondition]
++   *        Optional breakpoint condition.
++   */
++  addBreakpoint: function SE_addBreakpoint(aLineIndex, aCondition)
++  {
++    let lineStart = this._model.getLineStart(aLineIndex);
++    let lineEnd = this._model.getLineEnd(aLineIndex);
++
++    let annotations = this._getAnnotationsByType("breakpoint", lineStart, lineEnd);
++    if (annotations.length > 0) {
++      return;
++    }
++
++    let lineText = this._model.getLine(aLineIndex);
++    let title = SourceEditorUI.strings.
++                formatStringFromName("annotation.breakpoint.title",
++                                     [lineText], 1);
++
++    let annotation = {
++      type: ORION_ANNOTATION_TYPES.breakpoint,
++      start: lineStart,
++      end: lineEnd,
++      breakpointCondition: aCondition,
++      title: title,
++      style: {styleClass: "annotation breakpoint"},
++      html: "<div class='annotationHTML breakpoint'></div>",
++      overviewStyle: {styleClass: "annotationOverview breakpoint"},
++      rangeStyle: {styleClass: "annotationRange breakpoint"}
++    };
++    this._annotationModel.addAnnotation(annotation);
++
++    let event = {
++      type: SourceEditor.EVENTS.BREAKPOINT_CHANGE,
++      added: [{line: aLineIndex, condition: aCondition}],
++      removed: [],
++    };
++
++    this._dispatchEvent(event);
++  },
++
++  /**
++   * Remove the current breakpoint from the given line index.
++   *
++   * @param number aLineIndex
++   *        Line index from where to remove the breakpoint (starts from 0).
++   * @return boolean
++   *         True if a breakpoint was removed, false otherwise.
++   */
++  removeBreakpoint: function SE_removeBreakpoint(aLineIndex)
++  {
++    let lineStart = this._model.getLineStart(aLineIndex);
++    let lineEnd = this._model.getLineEnd(aLineIndex);
++
++    let event = {
++      type: SourceEditor.EVENTS.BREAKPOINT_CHANGE,
++      added: [],
++      removed: [],
++    };
++
++    let annotations = this._getAnnotationsByType("breakpoint", lineStart, lineEnd);
++
++    annotations.forEach(function(annotation) {
++      this._annotationModel.removeAnnotation(annotation);
++      event.removed.push({line: aLineIndex,
++                          condition: annotation.breakpointCondition});
++    }, this);
++
++    if (event.removed.length > 0) {
++      this._dispatchEvent(event);
++    }
++
++    return event.removed.length > 0;
++  },
++
++  /**
++   * Get the list of breakpoints in the Source Editor instance.
++   *
++   * @return array
++   *         The array of breakpoints. Each item is an object with two
++   *         properties: line and condition.
++   */
++  getBreakpoints: function SE_getBreakpoints()
++  {
++    let annotations = this._getAnnotationsByType("breakpoint", 0,
++                                                 this.getCharCount());
++    let breakpoints = [];
++
++    annotations.forEach(function(annotation) {
++      breakpoints.push({line: this._model.getLineAtOffset(annotation.start),
++                        condition: annotation.breakpointCondition});
++    }, this);
++
++    return breakpoints;
++  },
++
++  /**
+    * Destroy/uninitialize the editor.
+    */
+   destroy: function SE_destroy()
+   {
+     if (Services.appinfo.OS == "Linux") {
+       this._view.removeEventListener("Selection", this._onOrionSelection);
+     }
+     this._onOrionSelection = null;
+@@ -911,17 +1166,21 @@ SourceEditor.prototype = {
+ 
+     this.parentElement.removeChild(this._iframe);
+     this.parentElement = null;
+     this._iframeWindow = null;
+     this._iframe = null;
+     this._undoStack = null;
+     this._styler = null;
+     this._linesRuler = null;
++    this._annotationRuler = null;
++    this._overviewRuler = null;
+     this._dragAndDrop = null;
+     this._annotationModel = null;
+     this._annotationStyler = null;
++    this._eventTarget = null;
++    this._eventListenersQueue = null;
+     this._view = null;
+     this._model = null;
+     this._config = null;
+     this._lastFind = null;
+   },
+ };
+diff --git a/browser/devtools/sourceeditor/source-editor-textarea.jsm b/browser/devtools/sourceeditor/source-editor-textarea.jsm
+--- a/browser/devtools/sourceeditor/source-editor-textarea.jsm
++++ b/browser/devtools/sourceeditor/source-editor-textarea.jsm
+@@ -71,19 +71,19 @@ var EXPORTED_SYMBOLS = ["SourceEditor"];
+  * The editor used here is a simple textarea. This is used as a fallback
+  * mechanism for when the user disables the code editor feature.
+  *
+  * @constructor
+  */
+ function SourceEditor() {
+   // Update the SourceEditor defaults from user preferences.
+ 
+-  SourceEditor.DEFAULTS.TAB_SIZE =
++  SourceEditor.DEFAULTS.tabSize =
+     Services.prefs.getIntPref(SourceEditor.PREFS.TAB_SIZE);
+-  SourceEditor.DEFAULTS.EXPAND_TAB =
++  SourceEditor.DEFAULTS.tabSize =
+     Services.prefs.getBoolPref(SourceEditor.PREFS.EXPAND_TAB);
+ 
+   this._listeners = {};
+   this._lastSelection = {};
+ 
+   this.ui = new SourceEditorUI(this);
+ }
+ 
+@@ -110,28 +110,23 @@ SourceEditor.prototype = {
+   parentElement: null,
+ 
+   /**
+    * Initialize the editor.
+    *
+    * @param nsIDOMElement aElement
+    *        The DOM element where you want the editor to show.
+    * @param object aConfig
+-   *        Editor configuration object. Properties:
+-   *          - placeholderText - the text you want to be shown by default.
+-   *          - mode - the editor mode, based on the file type you want to edit.
+-   *          You can use one of the predefined modes.
+-   *          - tabSize - define how many spaces to use for a tab character.
+-   *          - expandTab - tells if you want tab characters to be expanded to
+-   *          spaces.
+-   *          - readOnly - make the editor read only.
+-   *          - undoLimit - how many steps should the undo stack hold.
++   *        Editor configuration object. See SourceEditor.DEFAULTS for the
++   *        available configuration options. Please note that not all of the
++   *        options are implemented by this component.
+    * @param function [aCallback]
+    *        Function you want to execute once the editor is loaded and
+    *        initialized.
++   * @see SourceEditor.DEFAULTS
+    */
+   init: function SE_init(aElement, aConfig, aCallback)
+   {
+     if (this._textbox) {
+       throw new Error("SourceEditor is already initialized!");
+     }
+ 
+     let doc = aElement.ownerDocument;
+@@ -143,51 +138,56 @@ SourceEditor.prototype = {
+     this._textbox.setAttribute("dir", "ltr");
+ 
+     aElement.appendChild(this._textbox);
+ 
+     this.parentElement = aElement;
+     this._editor = this._textbox.editor;
+ 
+     this._expandTab = aConfig.expandTab !== undefined ?
+-                      aConfig.expandTab : SourceEditor.DEFAULTS.EXPAND_TAB;
+-    this._tabSize = aConfig.tabSize || SourceEditor.DEFAULTS.TAB_SIZE;
++                      aConfig.expandTab : SourceEditor.DEFAULTS.expandTab;
++    this._tabSize = aConfig.tabSize || SourceEditor.DEFAULTS.tabSize;
+ 
+     this._textbox.style.MozTabSize = this._tabSize;
+ 
+-    this._textbox.setAttribute("value", aConfig.placeholderText || "");
++    this._textbox.setAttribute("value", aConfig.initialText || "");
+     this._textbox.setAttribute("class", "monospace");
+     this._textbox.style.direction = "ltr";
+     this._textbox.readOnly = aConfig.readOnly;
+ 
+     // Make sure that the SourceEditor Selection events are fired properly.
+     // Also make sure that the configured keyboard bindings work.
+     this._textbox.addEventListener("select", this._onSelect.bind(this), false);
+     this._textbox.addEventListener("keypress", this._onKeyPress.bind(this), false);
+     this._textbox.addEventListener("keyup", this._onSelect.bind(this), false);
+     this._textbox.addEventListener("click", this._onSelect.bind(this), false);
+ 
+     // Mimic the mode change.
+-    this.setMode(aConfig.mode || SourceEditor.DEFAULTS.MODE);
++    this.setMode(aConfig.mode || SourceEditor.DEFAULTS.mode);
+ 
+     this._editor.transactionManager.maxTransactionCount =
+-      aConfig.undoLimit || SourceEditor.DEFAULTS.UNDO_LIMIT;
++      aConfig.undoLimit || SourceEditor.DEFAULTS.undoLimit;
+ 
+     // Make sure that the transactions stack is clean.
+     this.resetUndo();
+ 
+     // Add the edit action listener so we can fire the SourceEditor TextChanged
+     // events.
+     this._editActionListener = new EditActionListener(this);
+     this._editor.addEditActionListener(this._editActionListener);
+ 
+     this._lineDelimiter = win.navigator.platform.indexOf("Win") > -1 ?
+                           "\r\n" : "\n";
+ 
+-    this._config = aConfig;
++    this._config = {};
++    for (let key in SourceEditor.DEFAULTS) {
++      this._config[key] = key in aConfig ?
++                          aConfig[key] :
++                          SourceEditor.DEFAULTS[key];
++    }
+ 
+     for each (let key in DEFAULT_KEYBINDINGS) {
+       for (let prop in key) {
+         if (prop == "accelKey") {
+           let newProp = Services.appinfo.OS == "Darwin" ? "metaKey" : "ctrlKey";
+           key[newProp] = key[prop];
+           delete key[prop];
+           break;
+diff --git a/browser/devtools/sourceeditor/source-editor.jsm b/browser/devtools/sourceeditor/source-editor.jsm
+--- a/browser/devtools/sourceeditor/source-editor.jsm
++++ b/browser/devtools/sourceeditor/source-editor.jsm
+@@ -100,23 +100,103 @@ SourceEditor.MODES = {
+  * Predefined themes for syntax highlighting.
+  */
+ SourceEditor.THEMES = {
+   MOZILLA: "mozilla",
+ };
+ 
+ /**
+  * Source editor configuration defaults.
++ * @see SourceEditor.init
+  */
+ SourceEditor.DEFAULTS = {
+-  MODE: SourceEditor.MODES.TEXT,
+-  THEME: SourceEditor.THEMES.MOZILLA,
+-  UNDO_LIMIT: 200,
+-  TAB_SIZE: 4, // overriden by pref
+-  EXPAND_TAB: true, // overriden by pref
++  /**
++   * The text you want shown when the editor opens up.
++   * @type string
++   */
++  initialText: "",
++
++  /**
++   * The editor mode, based on the file type you want to edit. You can use one of
++   * the predefined modes.
++   *
++   * @see SourceEditor.MODES
++   * @type string
++   */
++  mode: SourceEditor.MODES.TEXT,
++
++  /**
++   * The syntax highlighting theme you want. You can use one of the predefined
++   * themes, or you can point to your CSS file.
++   *
++   * @see SourceEditor.THEMES.
++   * @type string
++   */
++  theme: SourceEditor.THEMES.MOZILLA,
++
++  /**
++   * How many steps should the undo stack hold.
++   * @type number
++   */
++  undoLimit: 200,
++
++  /**
++   * Define how many spaces to use for a tab character. This value is overridden
++   * by a user preference, see SourceEditor.PREFS.TAB_SIZE.
++   *
++   * @type number
++   */
++  tabSize: 4,
++
++  /**
++   * Tells if you want tab characters to be expanded to spaces. This value is
++   * overridden by a user preference, see SourceEditor.PREFS.EXPAND_TAB.
++   * @type boolean
++   */
++  expandTab: true,
++
++  /**
++   * Tells if you want the editor to be read only or not.
++   * @type boolean
++   */
++  readOnly: false,
++
++  /**
++   * Display the line numbers gutter.
++   * @type boolean
++   */
++  showLineNumbers: false,
++
++  /**
++   * Display the annotations gutter/ruler. This gutter currently supports
++   * annotations of breakpoint type.
++   * @type boolean
++   */
++  showAnnotationRuler: false,
++
++  /**
++   * Display the overview gutter/ruler. This gutter presents an overview of the
++   * current annotations in the editor, for example the breakpoints.
++   * @type boolean
++   */
++  showOverviewRuler: false,
++
++  /**
++   * An array of objects that allows you to define custom editor keyboard
++   * bindings. Each object can have:
++   *   - action - name of the editor action to invoke.
++   *   - code - keyCode for the shortcut.
++   *   - accel - boolean for the Accel key (Cmd on Macs, Ctrl on Linux/Windows).
++   *   - shift - boolean for the Shift key.
++   *   - alt - boolean for the Alt key.
++   *   - callback - optional function to invoke, if the action is not predefined
++   *   in the editor.
++   * @type array
++   */
++  keys: null,
+ };
+ 
+ /**
+  * Known editor events you can listen for.
+  */
+ SourceEditor.EVENTS = {
+   /**
+    * The contextmenu event is fired when the editor context menu is invoked. The
+@@ -145,16 +225,27 @@ SourceEditor.EVENTS = {
+   /**
+    * The Selection event is fired when the editor selection changes. The event
+    * object properties:
+    *   - oldValue - the old selection range.
+    *   - newValue - the new selection range.
+    * Both ranges are objects which hold two properties: start and end.
+    */
+   SELECTION: "Selection",
++
++  /**
++   * The BreakpointChange event is fired when a new breakpoint is added or when
++   * a breakpoint is removed - either through API use or through the editor UI.
++   * Event object properties:
++   *   - added - array that holds the new breakpoints.
++   *   - removed - array that holds the breakpoints that have been removed.
++   * Each object in the added/removed arrays holds two properties: line and
++   * condition.
++   */
++  BREAKPOINT_CHANGE: "BreakpointChange",
+ };
+ 
+ /**
+  * Extend a destination object with properties from a source object.
+  *
+  * @param object aDestination
+  * @param object aSource
+  */
+diff --git a/browser/devtools/sourceeditor/test/Makefile.in b/browser/devtools/sourceeditor/test/Makefile.in
+--- a/browser/devtools/sourceeditor/test/Makefile.in
++++ b/browser/devtools/sourceeditor/test/Makefile.in
+@@ -49,12 +49,13 @@ include $(topsrcdir)/config/rules.mk
+ 		browser_bug684862_paste_html.js \
+ 		browser_bug687573_vscroll.js \
+ 		browser_bug687568_pagescroll.js \
+ 		browser_bug687580_drag_and_drop.js \
+ 		browser_bug684546_reset_undo.js \
+ 		browser_bug695035_middle_click_paste.js \
+ 		browser_bug687160_line_api.js \
+ 		browser_bug650345_find.js \
++		browser_bug707987_debugger_breakpoints.js \
+ 		head.js \
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/browser/devtools/sourceeditor/test/browser_bug687573_vscroll.js b/browser/devtools/sourceeditor/test/browser_bug687573_vscroll.js
+--- a/browser/devtools/sourceeditor/test/browser_bug687573_vscroll.js
++++ b/browser/devtools/sourceeditor/test/browser_bug687573_vscroll.js
+@@ -43,17 +43,17 @@ function initEditor()
+              "abbaabbaabbaabbaabbaabbaabbaabbaabbaabba\n" +
+              "abbaabbaabbaabbaabbaabbaabbaabbaabbaabbaabbaabbaabbaabbaabbaabbaabbaabbaabbaabbaabbaabba\n" +
+              "abbaabbaabbaabbaabbaabbaabbaabbaabbaabba\n" +
+              "\n" +
+              "abba\n";
+ 
+   let config = {
+     showLineNumbers: true,
+-    placeholderText: text,
++    initialText: text,
+   };
+ 
+   editor = new SourceEditor();
+   editor.init(box, config, editorLoaded);
+ }
+ 
+ function editorLoaded()
+ {
+diff --git a/browser/devtools/sourceeditor/test/browser_bug707987_debugger_breakpoints.js b/browser/devtools/sourceeditor/test/browser_bug707987_debugger_breakpoints.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/sourceeditor/test/browser_bug707987_debugger_breakpoints.js
+@@ -0,0 +1,170 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++"use strict";
++
++function test() {
++
++  let temp = {};
++  Cu.import("resource:///modules/source-editor.jsm", temp);
++  let SourceEditor = temp.SourceEditor;
++
++  let component = Services.prefs.getCharPref(SourceEditor.PREFS.COMPONENT);
++  if (component == "textarea") {
++    ok(true, "skip test for bug 707987: only applicable for non-textarea components");
++    return;
++  }
++
++  waitForExplicitFinish();
++
++  let editor;
++
++  const windowUrl = "data:text/xml,<?xml version='1.0'?>" +
++    "<window xmlns='http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul'" +
++    " title='test for bug 707987' width='600' height='500'><hbox flex='1'/></window>";
++  const windowFeatures = "chrome,titlebar,toolbar,centerscreen,resizable,dialog=no";
++
++  let testWin = Services.ww.openWindow(null, windowUrl, "_blank", windowFeatures, null);
++  testWin.addEventListener("load", function onWindowLoad() {
++    testWin.removeEventListener("load", onWindowLoad, false);
++    waitForFocus(initEditor, testWin);
++  }, false);
++
++  function initEditor()
++  {
++    let hbox = testWin.document.querySelector("hbox");
++    editor = new SourceEditor();
++    editor.init(hbox, {showAnnotationRuler: true}, editorLoaded);
++  }
++
++  function editorLoaded()
++  {
++    editor.focus();
++
++    editor.setText("line1\nline2\nline3\nline4");
++
++    is(editor.getBreakpoints().length, 0, "no breakpoints");
++
++    let event = null;
++    let eventHandler = function(aEvent) {
++      event = aEvent;
++    };
++    editor.addEventListener(SourceEditor.EVENTS.BREAKPOINT_CHANGE, eventHandler);
++
++    // Add breakpoint at line 0
++
++    editor.addBreakpoint(0);
++
++    let breakpoints = editor.getBreakpoints();
++    is(breakpoints.length, 1, "one breakpoint added");
++    is(breakpoints[0].line, 0, "breakpoint[0].line is correct");
++    ok(!breakpoints[0].condition, "breakpoint[0].condition is correct");
++
++    ok(event, "breakpoint event fired");
++    is(event.added.length, 1, "one breakpoint added (confirmed)");
++    is(event.removed.length, 0, "no breakpoint removed");
++    is(event.added[0].line, 0, "event added[0].line is correct");
++    ok(!event.added[0].condition, "event added[0].condition is correct");
++
++    // Add breakpoint at line 3
++
++    event = null;
++    editor.addBreakpoint(3, "foo == 'bar'");
++
++    breakpoints = editor.getBreakpoints();
++    is(breakpoints.length, 2, "another breakpoint added");
++    is(breakpoints[0].line, 0, "breakpoint[0].line is correct");
++    ok(!breakpoints[0].condition, "breakpoint[0].condition is correct");
++    is(breakpoints[1].line, 3, "breakpoint[1].line is correct");
++    is(breakpoints[1].condition, "foo == 'bar'",
++       "breakpoint[1].condition is correct");
++
++    ok(event, "breakpoint event fired");
++    is(event.added.length, 1, "another breakpoint added (confirmed)");
++    is(event.removed.length, 0, "no breakpoint removed");
++    is(event.added[0].line, 3, "event added[0].line is correct");
++    is(event.added[0].condition, "foo == 'bar'",
++       "event added[0].condition is correct");
++
++    // Try to add another breakpoint at line 0
++
++    event = null;
++    editor.addBreakpoint(0);
++
++    is(editor.getBreakpoints().length, 2, "no breakpoint added");
++    is(event, null, "no breakpoint event fired");
++
++    // Try to remove a breakpoint from line 1
++
++    is(editor.removeBreakpoint(1), false, "removeBreakpoint(1) returns false");
++    is(editor.getBreakpoints().length, 2, "no breakpoint removed");
++    is(event, null, "no breakpoint event fired");
++
++    // Remove the breakpoint from line 0
++
++    is(editor.removeBreakpoint(0), true, "removeBreakpoint(0) returns true");
++
++    breakpoints = editor.getBreakpoints();
++    is(breakpoints[0].line, 3, "breakpoint[0].line is correct");
++    is(breakpoints[0].condition, "foo == 'bar'",
++       "breakpoint[0].condition is correct");
++
++    ok(event, "breakpoint event fired");
++    is(event.added.length, 0, "no breakpoint added");
++    is(event.removed.length, 1, "one breakpoint removed");
++    is(event.removed[0].line, 0, "event removed[0].line is correct");
++    ok(!event.removed[0].condition, "event removed[0].condition is correct");
++
++    // Remove the breakpoint from line 3
++
++    event = null;
++    is(editor.removeBreakpoint(3), true, "removeBreakpoint(3) returns true");
++
++    is(editor.getBreakpoints().length, 0, "no breakpoints");
++    ok(event, "breakpoint event fired");
++    is(event.added.length, 0, "no breakpoint added");
++    is(event.removed.length, 1, "one breakpoint removed");
++    is(event.removed[0].line, 3, "event removed[0].line is correct");
++    is(event.removed[0].condition, "foo == 'bar'",
++       "event removed[0].condition is correct");
++
++    // Test adding a breakpoint with the mouse
++
++    event = null;
++    info('foo lolz');
++    EventUtils.synthesizeMouse(editor.editorElement, 10, 10, {}, testWin);
++
++    breakpoints = editor.getBreakpoints();
++    is(breakpoints.length, 1, "one breakpoint added");
++    is(breakpoints[0].line, 0, "breakpoint[0].line is correct");
++    ok(!breakpoints[0].condition, "breakpoint[0].condition is correct");
++
++    ok(event, "breakpoint event fired");
++    is(event.added.length, 1, "one breakpoint added (confirmed)");
++    is(event.removed.length, 0, "no breakpoint removed");
++    is(event.added[0].line, 0, "event added[0].line is correct");
++    ok(!event.added[0].condition, "event added[0].condition is correct");
++
++    // Remove a breakpoint with the mouse
++
++    event = null;
++    EventUtils.synthesizeMouse(editor.editorElement, 10, 10, {}, testWin);
++
++    breakpoints = editor.getBreakpoints();
++    is(breakpoints.length, 0, "one breakpoint removed");
++
++    ok(event, "breakpoint event fired");
++    is(event.added.length, 0, "no breakpoint added");
++    is(event.removed.length, 1, "one breakpoint removed (confirmed)");
++    is(event.removed[0].line, 0, "event removed[0].line is correct");
++    ok(!event.removed[0].condition, "event removed[0].condition is correct");
++
++    editor.destroy();
++
++    testWin.close();
++    testWin = editor = null;
++
++    waitForFocus(finish, window);
++  }
++}
+diff --git a/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js b/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js
+--- a/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js
++++ b/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js
+@@ -32,34 +32,34 @@ function initEditor()
+ {
+   testDoc = testWin.document;
+ 
+   let hbox = testDoc.querySelector("hbox");
+ 
+   editor = new SourceEditor();
+   let config = {
+     showLineNumbers: true,
+-    placeholderText: "foobarbaz",
++    initialText: "foobarbaz",
+     tabSize: 7,
+     expandTab: true,
+   };
+ 
+   editor.init(hbox, config, editorLoaded);
+ }
+ 
+ function editorLoaded()
+ {
+   ok(editor.editorElement, "editor loaded");
+ 
+   is(editor.parentElement, testDoc.querySelector("hbox"),
+      "parentElement is correct");
+ 
+   editor.focus();
+ 
+-  is(editor.getMode(), SourceEditor.DEFAULTS.MODE, "default editor mode");
++  is(editor.getMode(), SourceEditor.DEFAULTS.mode, "default editor mode");
+ 
+   // Test general editing methods.
+ 
+   ok(!editor.canUndo(), "canUndo() works (nothing to undo), just loaded");
+ 
+   ok(!editor.readOnly, "editor is not read-only");
+ 
+   is(editor.getText(), "foobarbaz", "placeholderText works");
+diff --git a/browser/devtools/styleeditor/StyleEditor.jsm b/browser/devtools/styleeditor/StyleEditor.jsm
+--- a/browser/devtools/styleeditor/StyleEditor.jsm
++++ b/browser/devtools/styleeditor/StyleEditor.jsm
+@@ -216,17 +216,17 @@ StyleEditor.prototype = {
+     // attach to new input element
+     this.window.addEventListener("unload", this._onWindowUnloadBinding, false);
+     this._focusOnSourceEditorReady = false;
+ 
+     this._sourceEditor = null; // set it only when ready (safe to use)
+ 
+     let sourceEditor = new SourceEditor();
+     let config = {
+-      placeholderText: this._state.text, //! this is initialText (bug 680371)
++      initialText: this._state.text,
+       showLineNumbers: true,
+       mode: SourceEditor.MODES.CSS,
+       readOnly: this._state.readOnly,
+       keys: this._getKeyBindings()
+     };
+ 
+     sourceEditor.init(aElement, config, function onSourceEditorReady() {
+       setupBracketCompletion(sourceEditor);
+diff --git a/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties b/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties
+--- a/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties
++++ b/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties
+@@ -23,8 +23,13 @@ findCmd.promptMessage=Search for:
+ # when the user wants to jump to a specific line number in the code. You can
+ # access this feature by pressing Ctrl-J on Windows/Linux or Cmd-J on Mac.
+ gotoLineCmd.promptTitle=Go to line…
+ 
+ # LOCALIZATION NOTE  (gotoLineCmd.promptMessage): This is the message shown when
+ # the user wants to jump to a specific line number in the code. You can
+ # access this feature by pressing Ctrl-J on Windows/Linux or Cmd-J on Mac.
+ gotoLineCmd.promptMessage=Jump to line number:
++
++# LOCALIZATION NOTE  (annotation.breakpoint.title): This is the text shown in
++# front of any breakpoint annotation when it is displayed as a tooltip in one of
++# the editor gutters. This feature is used in the JavaScript Debugger.
++annotation.breakpoint.title=Breakpoint: %S

@@ -1,0 +1,318 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -4131,30 +4131,29 @@ JSTerm.prototype = {
+         switch(aEvent.keyCode) {
+           case 13:
+             // return
+             self.execute();
+             aEvent.preventDefault();
+             break;
+           case 38:
+             // up arrow: history previous
+-            if (self.caretInFirstLine()){
+-              self.historyPeruse(true);
+-              if (aEvent.cancelable) {
+-                let inputEnd = self.inputNode.value.length;
+-                self.inputNode.setSelectionRange(inputEnd, inputEnd);
++            if (self.caretAtStartOfInput()) {
++              let updated = self.historyPeruse(true);
++              if (updated && aEvent.cancelable) {
++                self.inputNode.setSelectionRange(0, 0);
+                 aEvent.preventDefault();
+               }
+             }
+             break;
+           case 40:
+             // down arrow: history next
+-            if (self.caretInLastLine()){
+-              self.historyPeruse(false);
+-              if (aEvent.cancelable) {
++            if (self.caretAtEndOfInput()) {
++              let updated = self.historyPeruse(false);
++              if (updated && aEvent.cancelable) {
+                 let inputEnd = self.inputNode.value.length;
+                 self.inputNode.setSelectionRange(inputEnd, inputEnd);
+                 aEvent.preventDefault();
+               }
+             }
+             break;
+           case 9:
+             // tab key
+@@ -4197,68 +4196,96 @@ JSTerm.prototype = {
+             break;
+         }
+         return;
+       }
+     }
+     return handleKeyDown;
+   },
+ 
+-  historyPeruse: function JST_historyPeruse(aFlag) {
++  /**
++   * Go up/down the history stack of input values.
++   *
++   * @param boolean aUpFlag flag for going up in the stack.
++   * @returns boolean true if the input value changed, false otherwise.
++   */
++  historyPeruse: function JST_historyPeruse(aUpFlag)
++  {
+     if (!this.history.length) {
+-      return;
++      return false;
+     }
+ 
++    let result = true;
++
+     // Up Arrow key
+-    if (aFlag) {
++    if (aUpFlag) {
+       if (this.historyPlaceHolder <= 0) {
+-        return;
++        return false;
+       }
+ 
+       let inputVal = this.history[--this.historyPlaceHolder];
+       if (inputVal){
+         this.setInputValue(inputVal);
+       }
+     }
+     // Down Arrow key
+     else {
+       if (this.historyPlaceHolder == this.history.length - 1) {
+         this.historyPlaceHolder ++;
+         this.setInputValue("");
+-        return;
+       }
+       else if (this.historyPlaceHolder >= (this.history.length)) {
+-        return;
++        result = false;
+       }
+       else {
+         let inputVal = this.history[++this.historyPlaceHolder];
+         if (inputVal){
+           this.setInputValue(inputVal);
+         }
+       }
+     }
++
++    return result;
+   },
+ 
+   refocus: function JSTF_refocus()
+   {
+     this.inputNode.blur();
+     this.inputNode.focus();
+   },
+ 
+-  caretInFirstLine: function JSTF_caretInFirstLine()
++  /**
++   * Check if the caret is at the start of the input.
++   * @returns boolean true if the caret is at the start of the input.
++   */
++  caretAtStartOfInput: function JST_caretAtStartOfInput()
+   {
+-    var firstLineBreak = this.codeInputString.indexOf("\n");
+-    return ((firstLineBreak == -1) ||
+-            (this.inputNode.selectionStart <= firstLineBreak));
++    let node = this.inputNode;
++    let result = false;
++    if (node.selectionStart == node.selectionEnd &&
++        node.selectionStart == 0) {
++      result = true;
++    }
++    return result;
+   },
+ 
+-  caretInLastLine: function JSTF_caretInLastLine()
++  /**
++   * Check if the caret is at the end of the input.
++   * @returns boolean true if the caret is at the end of the input, or false 
++   * otherwise.
++   */
++  caretAtEndOfInput: function JST_caretAtEndOfInput()
+   {
+-    var lastLineBreak = this.codeInputString.lastIndexOf("\n");
+-    return (this.inputNode.selectionEnd > lastLineBreak);
++    let node = this.inputNode;
++    let result = false;
++    if (node.selectionStart == node.selectionEnd &&
++        node.selectionStart == node.value.length) {
++      result = true;
++    }
++    return result;
+   },
+ 
+   history: [],
+ 
+   // Stores the data for the last completion.
+   lastCompletion: null,
+ 
+   /**
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -49,16 +49,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_HUDServiceTestsAll.js \
+ 	browser_webconsole_bug_585237_line_limit.js \
+ 	browser_webconsole_bug_586388_select_all.js  \
+ 	browser_webconsole_bug_588967_input_expansion.js \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_581231_close_button.js \
++	browser_webconsole_bug_594497_history_arrow_keys.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+ 	testscript.js \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594497_history_arrow_keys.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594497_history_arrow_keys.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594497_history_arrow_keys.js
+@@ -0,0 +1,141 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/HUDService.jsm");
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
++
++let HUD, inputNode, testKey, values, pos;
++
++function tabLoad(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  waitForFocus(function() {
++    HUDService.activateHUDForContext(gBrowser.selectedTab);
++
++    let hudId = HUDService.getHudIdByWindow(content);
++    HUD = HUDService.hudWeakReferences[hudId].get();
++
++    let display = HUDService.getOutputNodeById(hudId);
++    inputNode = display.querySelector(".jsterm-input-node");
++
++    inputNode.focus();
++
++    ok(!inputNode.value, "inputNode.value is empty");
++
++    values = ["document", "window", "document.body"];
++    values.push(values.join(";\n"), "document.location");
++
++    // Execute each of the values;
++    for (let i = 0; i < values.length; i++) {
++      HUD.jsterm.setInputValue(values[i]);
++      HUD.jsterm.execute();
++    }
++
++    inputNode.addEventListener("keyup", onKeyUp, false);
++
++    // Let's navigate the history: go up.
++    testKey = "VK_UP";
++    pos = values.length - 1;
++    testNext();
++  }, content);
++}
++
++function testNext() {
++  EventUtils.synthesizeKey(testKey, {});
++}
++
++function onKeyUp() {
++  is(inputNode.value, values[pos], "inputNode.value = '" + values[pos] + "'");
++
++  if (testKey == "VK_UP") {
++    pos--;
++    if (pos >= 0) {
++      testNext();
++    }
++    else {
++      testMore();
++    }
++  }
++  else {
++    pos++;
++    if (pos < values.length) {
++      testNext();
++    }
++    else {
++      testMore();
++    }
++  }
++}
++
++function testMore() {
++  if (testKey == "VK_UP") {
++    // Let's navigate the history again: go down.
++    testKey = "VK_DOWN";
++    pos = 0;
++    testNext();
++    return;
++  }
++
++  inputNode.removeEventListener("keyup", onKeyUp, false);
++
++  // Test how the Up key works at caret position 2.
++  HUD.jsterm.setInputValue(values[3]);
++
++  inputNode.setSelectionRange(2, 2);
++
++  inputNode.addEventListener("keyup", function(aEvent) {
++    this.removeEventListener(aEvent.type, arguments.callee, false);
++
++    is(this.value, values[3], "inputNode.value = '" + values[3] +
++      "' after VK_UP from caret position 2");
++
++    is(this.selectionStart, 0, "inputNode.selectionStart = 0");
++    is(this.selectionStart, this.selectionEnd, "inputNode.selectionEnd = 0");
++  }, false);
++
++  EventUtils.synthesizeKey("VK_UP", {});
++
++  // Test how the Up key works at caret position (length -2).
++  inputNode.setSelectionRange(values[3].length - 2, values[3].length - 2);
++
++  inputNode.addEventListener("keyup", function(aEvent) {
++    this.removeEventListener(aEvent.type, arguments.callee, false);
++
++    is(this.value, values[3], "inputNode.value = '" + values[3] +
++      "' after VK_UP from caret position 2");
++
++    is(this.selectionStart, this.value.length, "inputNode.selectionStart = " +
++      this.value.length);
++    is(this.selectionStart, this.selectionEnd, "inputNode.selectionEnd = " +
++      this.value.length);
++
++    testEnd();
++  }, false);
++
++  EventUtils.synthesizeKey("VK_DOWN", {});
++}
++
++function testEnd() {
++  HUD = inputNode = testKey = values = pos = null;
++  HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++  executeSoon(finish);
++}
++
++function test() {
++  waitForExplicitFinish();
++
++  gBrowser.selectedBrowser.addEventListener("load", tabLoad, true);
++
++  content.location = TEST_URI;
++}
++

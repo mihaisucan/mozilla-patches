@@ -1,0 +1,153 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -4549,21 +4549,32 @@ JSTermFirefoxMixin.prototype = {
+ 
+     let inputNode = this.xulElementFactory("textbox");
+     inputNode.setAttribute("class", "jsterm-input-node");
+     inputNode.setAttribute("flex", "1");
+     inputNode.setAttribute("multiline", "true");
+     inputNode.setAttribute("rows", "1");
+     inputContainer.appendChild(inputNode);
+ 
++    let self = this;
+     let closeButton = this.xulElementFactory("button");
+     closeButton.setAttribute("class", "jsterm-close-button");
+     inputContainer.appendChild(closeButton);
+-    closeButton.addEventListener("command", HeadsUpDisplayUICommands.toggleHUD,
+-                                 false);
++    closeButton.addEventListener("command", function() {
++      let displayNode = self.parentNode.parentNode.parentNode;
++      let hudId = displayNode.getAttribute("id");
++      let window = self.context.get();
++
++      HUDService.unregisterActiveContext(hudId);
++      HUDService.unregisterDisplay(displayNode);
++
++      if (window) {
++        window.focus();
++      }
++    }, false);
+ 
+     if (this.existingConsoleNode == undefined) {
+       // create elements
+       let term = this.xulElementFactory("vbox");
+       term.setAttribute("class", "jsterm-wrapper-node");
+       term.setAttribute("flex", "1");
+ 
+       let outputNode = this.xulElementFactory("vbox");
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -56,16 +56,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_581231_close_button.js \
+ 	browser_webconsole_bug_595350_multiple_windows_and_tabs.js \
+ 	browser_webconsole_consoleonpage.js \
+ 	browser_webconsole_bug_587617_output_copy.js \
+ 	browser_webconsole_bug_588342_document_focus.js \
++	browser_webconsole_bug_597200_close_button.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+ 	testscript.js \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597200_close_button.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597200_close_button.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597200_close_button.js
+@@ -0,0 +1,89 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/HUDService.jsm");
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
++
++let tab1, tab2, win1, win2;
++
++function tab1Loaded(aEvent) {
++  tab1.linkedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  HUDService.activateHUDForContext(tab1);
++
++  win2 = OpenBrowserWindow();
++  win2.addEventListener("load", win2Loaded, true);
++}
++
++function win2Loaded(aEvent) {
++  win2.removeEventListener(aEvent.type, arguments.callee, true);
++
++  tab2 = win2.gBrowser.addTab();
++  win2.gBrowser.selectedTab = tab2;
++  tab2.linkedBrowser.addEventListener("load", tab2Loaded, true);
++  tab2.linkedBrowser.contentWindow.location = TEST_URI;
++}
++
++function tab2Loaded(aEvent) {
++  tab2.linkedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  waitForFocus(function() {
++    HUDService.activateHUDForContext(tab2);
++
++    let hudId1 = HUDService.getHudIdByWindow(tab1.linkedBrowser.contentWindow);
++    let hudId2 = HUDService.getHudIdByWindow(tab2.linkedBrowser.contentWindow);
++
++    let nBox1 = win1.getNotificationBox(tab1.linkedBrowser.contentWindow);
++    let nBox2 = win2.getNotificationBox(tab2.linkedBrowser.contentWindow);
++
++    let HUD1 = HUDService.hudWeakReferences[hudId1].get();
++    let HUD2 = HUDService.hudWeakReferences[hudId2].get();
++
++    let closeButton1 = HUD1.HUDBox.querySelector(".jsterm-close-button");
++    let closeButton2 = HUD2.HUDBox.querySelector(".jsterm-close-button");
++
++    closeButton1.doCommand();
++
++    ok(!nBox1.querySelector("#" + hudId1),
++      "closed the Web Console from the unfocused window");
++
++    closeButton2.doCommand();
++
++    ok(!nBox2.querySelector("#" + hudId2),
++      "closed the Web Console from the focused window");
++
++    testEnd();
++  }, tab2.linkedBrowser.contentWindow);
++}
++
++function testEnd() {
++  win1.gBrowser.removeTab(tab1);
++  win2.gBrowser.removeTab(tab2);
++
++  executeSoon(function() {
++    win2.close();
++    tab1 = tab2 = win1 = win2 = null;
++    finish();
++  });
++}
++
++function test() {
++  waitForExplicitFinish();
++
++  win1 = window;
++  tab1 = gBrowser.addTab();
++  gBrowser.selectedTab = tab1;
++  tab1.linkedBrowser.addEventListener("load", tab1Loaded, true);
++  tab1.linkedBrowser.contentWindow.location = TEST_URI;
++}
++

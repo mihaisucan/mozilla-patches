@@ -1,0 +1,71 @@
+diff --git a/browser/base/content/browser.js b/browser/base/content/browser.js
+--- a/browser/base/content/browser.js
++++ b/browser/base/content/browser.js
+@@ -1665,16 +1665,18 @@ function delayedStartup(isLoadingBlank, 
+     document.getElementById("appmenu_charsetMenu").hidden = true;
+ #endif
+ 
+   Services.obs.notifyObservers(window, "browser-delayed-startup-finished", "");
+ }
+ 
+ function BrowserShutdown()
+ {
++  window.browserIsShuttingDown = true;
++
+   if (Win7Features)
+     Win7Features.onCloseWindow();
+ 
+   gPrefService.removeObserver(ctrlTab.prefName, ctrlTab);
+   gPrefService.removeObserver(allTabs.prefName, allTabs);
+   ctrlTab.uninit();
+   allTabs.uninit();
+   TabView.uninit();
+diff --git a/browser/base/content/tabbrowser.xml b/browser/base/content/tabbrowser.xml
+--- a/browser/base/content/tabbrowser.xml
++++ b/browser/base/content/tabbrowser.xml
+@@ -343,16 +343,22 @@
+               listPrompts : function(aPrompt) {
+                 let prompts = [];
+                 let els = stack.getElementsByTagNameNS(XUL_NS, "tabmodalprompt");
+                 // NodeList --> real JS array
+                 for (let i = 0; i < els.length; i++)
+                   prompts.push(els[i]);
+                 return prompts;
+               },
++
++              canShowPrompt : function() {
++                let tab = self._getTabForContentWindow(browser.contentWindow);
++                return tab && !self._windowIsClosing &&
++                       !window.browserIsShuttingDown;
++              },
+             };
+ 
+             return promptBox;
+           ]]>
+         </body>
+       </method>
+ 
+       <method name="_callProgressListeners">
+diff --git a/toolkit/components/prompts/src/nsPrompter.js b/toolkit/components/prompts/src/nsPrompter.js
+--- a/toolkit/components/prompts/src/nsPrompter.js
++++ b/toolkit/components/prompts/src/nsPrompter.js
+@@ -412,16 +412,19 @@ function openModalWindow(domWin, uri, ar
+     // Note that we don't need to fire DOMWillOpenModalDialog and
+     // DOMModalDialogClosed events here, wwatcher's OpenWindowJSInternal
+     // will do that. Similarly for enterModalState / leaveModalState.
+ 
+     Services.ww.openWindow(domWin, uri, "_blank", "centerscreen,chrome,modal,titlebar", args);
+ }
+ 
+ function openTabPrompt(domWin, tabPrompt, args) {
++    if (!tabPrompt.canShowPrompt())
++      return;
++
+     PromptUtils.fireDialogEvent(domWin, "DOMWillOpenModalDialog");
+ 
+     let winUtils = domWin.QueryInterface(Ci.nsIInterfaceRequestor)
+                          .getInterface(Ci.nsIDOMWindowUtils_MOZILLA_2_0_BRANCH);
+     let callerWin = winUtils.enterModalStateWithWindow();
+ 
+     // We provide a callback so the prompt can close itself. We don't want to
+     // wait for this event loop to return... Otherwise the presence of other

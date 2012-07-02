@@ -1,0 +1,143 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1347,16 +1347,17 @@ HUD_SERVICE.prototype =
+     var window = aContext.linkedBrowser.contentWindow;
+     var browser = gBrowser.getBrowserForDocument(window.top.document);
+     var tabId = gBrowser.getNotificationBox(browser).getAttribute("id");
+     var hudId = "hud_" + tabId;
+     var displayNode = this.getHeadsUpDisplay(hudId);
+ 
+     this.unregisterActiveContext(hudId);
+     this.unregisterDisplay(hudId);
++    window.focus();
+   },
+ 
+   /**
+    * Clear the specified HeadsUpDisplay
+    *
+    * @param string aId
+    * @returns void
+    */
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -15,16 +15,17 @@
+ #
+ # The Initial Developer of the Original Code is Mozilla Foundation.
+ # Portions created by the Initial Developer are Copyright (C) 2010
+ # the Initial Developer. All Rights Reserved.
+ #
+ # Contributor(s):
+ #  David Dahl <ddahl@mozilla.com>
+ #  Patrick Walton <pcwalton@mozilla.com>
++#  Mihai Șucan <mihai.sucan@gmail.com>
+ #
+ # Alternatively, the contents of this file may be used under the terms of
+ # either of the GNU General Public License Version 2 or later (the "GPL"),
+ # or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+ # in which case the provisions of the GPL or the LGPL are applicable instead
+ # of those above. If you wish to allow use of your version of this file only
+ # under the terms of either the GPL or the LGPL, and not to allow others to
+ # use your version of this file under the terms of the MPL, indicate your
+@@ -53,16 +54,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_586388_select_all.js  \
+ 	browser_webconsole_bug_588967_input_expansion.js \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_581231_close_button.js \
+ 	browser_webconsole_consoleonpage.js \
+ 	browser_webconsole_bug_587617_output_copy.js \
++	browser_webconsole_bug_588342_document_focus.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+ 	testscript.js \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_588342_document_focus.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_588342_document_focus.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_588342_document_focus.js
+@@ -0,0 +1,78 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const Cc = Components.classes;
++const Ci = Components.interfaces;
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/HUDService.jsm");
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
++
++let fm = Cc["@mozilla.org/focus-manager;1"].getService(Ci.nsIFocusManager);
++let notificationBox;
++let input;
++
++function tabLoad(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  notificationBox = gBrowser.getNotificationBox(gBrowser.selectedBrowser);
++  let DOMNodeInserted = false;
++
++  document.addEventListener("DOMNodeInserted", function(aEvent) {
++    input = notificationBox.querySelector(".jsterm-input-node");
++    if (input && !DOMNodeInserted) {
++      DOMNodeInserted = true;
++      document.removeEventListener(aEvent.type, arguments.callee, false);
++      if (!input.getAttribute("focused")) {
++        input.addEventListener("focus", function(aEvent) {
++          input.removeEventListener(aEvent.type, arguments.callee, false);
++          executeSoon(runTest);
++        }, false);
++      }
++      else {
++        executeSoon(runTest);
++      }
++    }
++  }, false);
++
++  waitForFocus(function() {
++    HUDService.activateHUDForContext(gBrowser.selectedTab);
++  }, content);
++}
++
++function runTest() {
++  is(input.getAttribute("focused"), "true", "input node is focused");
++  isnot(fm.focusedWindow, content, "content document has no focus");
++
++  let DOMNodeRemoved = false;
++  document.addEventListener("DOMNodeRemoved", function(aEvent) {
++    executeSoon(function() {
++      if (!DOMNodeRemoved && !notificationBox.querySelector(".hud-box")) {
++        DOMNodeRemoved = true;
++        document.removeEventListener(aEvent.type, arguments.callee, false);
++        is(fm.focusedWindow, content, "content document has focus");
++        input = notificationBox = fm = null;
++        finish();
++      }
++    });
++  }, false);
++
++  HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++}
++
++function test() {
++  waitForExplicitFinish();
++
++  gBrowser.selectedBrowser.addEventListener("load", tabLoad, true);
++
++  content.location = TEST_URI;
++}
++

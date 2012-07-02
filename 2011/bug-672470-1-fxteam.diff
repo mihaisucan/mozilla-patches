@@ -1,0 +1,557 @@
+# HG changeset patch
+# Parent 6d45f8181b55f6cbc34e1c114d1cba3339ac051a
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1311076346 -10800
+Bug 672470 - Fix memory leaks in Web Console code
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -460,17 +460,16 @@ ResponseListener.prototype =
+     // Call update on all panels.
+     this.httpActivity.panels.forEach(function(weakRef) {
+       let panel = weakRef.get();
+       if (panel) {
+         panel.update();
+       }
+     });
+     this.httpActivity.response.isDone = true;
+-    this.httpActivity.response.listener = null;
+     this.httpActivity = null;
+     this.receivedData = "";
+     this.request = null;
+     this.sink = null;
+     this.inputStream = null;
+   },
+ 
+   /**
+@@ -1268,16 +1267,23 @@ function HUD_SERVICE()
+ 
+   // Remembers the last console height, in pixels.
+   this.lastConsoleHeight = Services.prefs.getIntPref("devtools.hud.height");
+ 
+   // Network response bodies are piped through a buffer of the given size (in
+   // bytes).
+   this.responsePipeSegmentSize =
+     Services.prefs.getIntPref("network.buffer.cache.size");
++
++  this.activatedContexts = [];
++  this.windowIds = {};
++  this.filterPrefs = {};
++  this.hudReferences = {};
++  this.openRequests = {};
++  this.openResponseHeaders = {};
+ };
+ 
+ HUD_SERVICE.prototype =
+ {
+   /**
+    * L10N shortcut function
+    *
+    * @param string aName
+@@ -1720,16 +1726,18 @@ HUD_SERVICE.prototype =
+   {
+     let hud = this.getHudReferenceById(aHUDId);
+ 
+     // Remove children from the output. If the output is not cleared, there can
+     // be leaks as some nodes has node.onclick = function; set and GC can't
+     // remove the nodes then.
+     hud.jsterm.clearOutput();
+ 
++    hud.destroy();
++
+     // Make sure that the console panel does not try to call
+     // deactivateHUDForContext() again.
+     hud.consoleWindowUnregisterOnHide = false;
+ 
+     // Remove the HUDBox and the consolePanel if the Web Console is inside a
+     // floating xul:panel.
+     hud.HUDBox.parentNode.removeChild(hud.HUDBox);
+     if (hud.consolePanel) {
+@@ -2217,18 +2225,16 @@ HUD_SERVICE.prototype =
+             if (!loggedNode) {
+               return;
+             }
+ 
+             // Add listener for the response body.
+             let newListener = new ResponseListener(httpActivity);
+             aChannel.QueryInterface(Ci.nsITraceableChannel);
+ 
+-            httpActivity.response.listener = newListener;
+-
+             let tee = Cc["@mozilla.org/network/stream-listener-tee;1"].
+                       createInstance(Ci.nsIStreamListenerTee);
+ 
+             // The response will be written into the outputStream of this pipe.
+             // This allows us to buffer the data we are receiving and read it
+             // asynchronously.
+             // Both ends of the pipe must be blocking.
+             let sink = Cc["@mozilla.org/pipe;1"].createInstance(Ci.nsIPipe);
+@@ -2281,17 +2287,17 @@ HUD_SERVICE.prototype =
+                 this._panelOpen = true;
+               }
+             }, false);
+           }
+           else {
+             // Iterate over all currently ongoing requests. If aChannel can't
+             // be found within them, then exit this function.
+             let httpActivity = null;
+-            for each (var item in self.openRequests) {
++            for each (let item in self.openRequests) {
+               if (item.channel !== aChannel) {
+                 continue;
+               }
+               httpActivity = item;
+               break;
+             }
+ 
+             if (!httpActivity) {
+@@ -2394,17 +2400,18 @@ HUD_SERVICE.prototype =
+                 let fullStatusText = "[" + statusText + " " + timeText + "]";
+                 statusNode.setAttribute("value", fullStatusText);
+ 
+                 let clipboardTextPieces =
+                   [ httpActivity.method, httpActivity.url, fullStatusText ];
+                 msgObject.messageNode.clipboardText =
+                   clipboardTextPieces.join(" ");
+ 
+-                delete self.openRequests[item.id];
++                delete httpActivity.messageObject;
++                delete self.openRequests[httpActivity.id];
+                 updatePanel = true;
+                 break;
+               }
+             }
+ 
+             if (updatePanel) {
+               httpActivity.panels.forEach(function(weakRef) {
+                 let panel = weakRef.get();
+@@ -2631,24 +2638,35 @@ HUD_SERVICE.prototype =
+    * around.
+    *
+    * @param nsIDOMEvent aEvent
+    *        The dispatched event.
+    * @returns void
+    */
+   onWindowUnload: function HS_onWindowUnload(aEvent)
+   {
+-    let gBrowser = aEvent.target.defaultView.gBrowser;
++    let window = aEvent.target.defaultView;
++
++    window.removeEventListener("unload", this.onWindowUnload, false);
++
++    let gBrowser = window.gBrowser;
+     let tabContainer = gBrowser.tabContainer;
+ 
++    tabContainer.removeEventListener("TabClose", this.onTabClose, false);
++
+     let tab = tabContainer.firstChild;
+     while (tab != null) {
+       this.deactivateHUDForContext(tab, false);
+       tab = tab.nextSibling;
+     }
++
++    if (window.webConsoleCommandController) {
++      window.controllers.removeController(window.webConsoleCommandController);
++      window.webConsoleCommandController = null;
++    }
+   },
+ 
+   /**
+    * windowInitializer - checks what Gecko app is running and inits the HUD
+    *
+    * @param nsIDOMWindow aContentWindow
+    * @returns void
+    */
+@@ -2664,22 +2682,18 @@ HUD_SERVICE.prototype =
+     let docElem = xulWindow.document.documentElement;
+     if (!docElem || docElem.getAttribute("windowtype") != "navigator:browser" ||
+         !xulWindow.gBrowser) {
+       // Do not do anything unless we have a browser window.
+       // This may be a view-source window or other type of non-browser window.
+       return;
+     }
+ 
+-    xulWindow.addEventListener("unload", this.onWindowUnload, false);
+-
+     let gBrowser = xulWindow.gBrowser;
+-
+     let container = gBrowser.tabContainer;
+-    container.addEventListener("TabClose", this.onTabClose, false);
+ 
+     let _browser = gBrowser.
+       getBrowserForDocument(aContentWindow.top.document);
+     let nBox = gBrowser.getNotificationBox(_browser);
+     let nBoxId = nBox.getAttribute("id");
+     let hudId = "hud_" + nBoxId;
+     let windowUI = nBox.ownerDocument.getElementById("console_window_" + hudId);
+     if (windowUI) {
+@@ -2690,16 +2704,19 @@ HUD_SERVICE.prototype =
+       }
+       return;
+     }
+ 
+     if (!this.canActivateContext(hudId)) {
+       return;
+     }
+ 
++    xulWindow.addEventListener("unload", this.onWindowUnload, false);
++    container.addEventListener("TabClose", this.onTabClose, false);
++
+     this.registerDisplay(hudId);
+ 
+     let hudNode;
+     let childNodes = nBox.childNodes;
+ 
+     for (let i = 0; i < childNodes.length; i++) {
+       let id = childNodes[i].getAttribute("id");
+       // `id` is a string with the format "hud_<number>".
+@@ -2749,19 +2766,20 @@ HUD_SERVICE.prototype =
+    * Adds the command controller to the XUL window if it's not already present.
+    *
+    * @param nsIDOMWindow aWindow
+    *        The browser XUL window.
+    * @returns void
+    */
+   createController: function HUD_createController(aWindow)
+   {
+-    if (aWindow.commandController == null) {
+-      aWindow.commandController = new CommandController(aWindow);
+-      aWindow.controllers.insertControllerAt(0, aWindow.commandController);
++    if (aWindow.webConsoleCommandController == null) {
++      aWindow.webConsoleCommandController = new CommandController(aWindow);
++      aWindow.controllers.insertControllerAt(0,
++        aWindow.webConsoleCommandController);
+     }
+   },
+ 
+   /**
+    * Animates the Console appropriately.
+    *
+    * @param string aHUDId The ID of the console.
+    * @param string aDirection Whether to animate the console appearing
+@@ -3584,51 +3602,54 @@ HeadsUpDisplay.prototype = {
+    * Creates the UI for re-positioning the console
+    *
+    * @return nsIDOMNode
+    *         The xul:toolbarbutton which holds the menu that allows the user to
+    *         change the console position.
+    */
+   createPositionUI: function HUD_createPositionUI()
+   {
+-    let self = this;
++    this._positionConsoleAbove = (function HUD_positionAbove() {
++      this.positionConsole("above");
++    }).bind(this);
++
++    this._positionConsoleBelow = (function HUD_positionBelow() {
++      this.positionConsole("below");
++    }).bind(this);
++    this._positionConsoleWindow = (function HUD_positionWindow() {
++      this.positionConsole("window");
++    }).bind(this);
+ 
+     let button = this.makeXULNode("toolbarbutton");
+     button.setAttribute("type", "menu");
+     button.setAttribute("label", this.getStr("webConsolePosition"));
+     button.setAttribute("tooltip", this.getStr("webConsolePositionTooltip"));
+ 
+     let menuPopup = this.makeXULNode("menupopup");
+     button.appendChild(menuPopup);
+ 
+     let itemAbove = this.makeXULNode("menuitem");
+     itemAbove.setAttribute("label", this.getStr("webConsolePositionAbove"));
+     itemAbove.setAttribute("type", "checkbox");
+     itemAbove.setAttribute("autocheck", "false");
+-    itemAbove.addEventListener("command", function() {
+-      self.positionConsole("above");
+-    }, false);
++    itemAbove.addEventListener("command", this._positionConsoleAbove, false);
+     menuPopup.appendChild(itemAbove);
+ 
+     let itemBelow = this.makeXULNode("menuitem");
+     itemBelow.setAttribute("label", this.getStr("webConsolePositionBelow"));
+     itemBelow.setAttribute("type", "checkbox");
+     itemBelow.setAttribute("autocheck", "false");
+-    itemBelow.addEventListener("command", function() {
+-      self.positionConsole("below");
+-    }, false);
++    itemBelow.addEventListener("command", this._positionConsoleBelow, false);
+     menuPopup.appendChild(itemBelow);
+ 
+     let itemWindow = this.makeXULNode("menuitem");
+     itemWindow.setAttribute("label", this.getStr("webConsolePositionWindow"));
+     itemWindow.setAttribute("type", "checkbox");
+     itemWindow.setAttribute("autocheck", "false");
+-    itemWindow.addEventListener("command", function() {
+-      self.positionConsole("window");
+-    }, false);
++    itemWindow.addEventListener("command", this._positionConsoleWindow, false);
+     menuPopup.appendChild(itemWindow);
+ 
+     this.positionMenuitems = {
+       last: null,
+       above: itemAbove,
+       below: itemBelow,
+       window: itemWindow,
+     };
+@@ -3744,26 +3765,27 @@ HeadsUpDisplay.prototype = {
+    * Creates the close button on the toolbar.
+    *
+    * @param nsIDOMNode aParent
+    *        The toolbar to attach the close button to.
+    * @return void
+    */
+   makeCloseButton: function HUD_makeCloseButton(aToolbar)
+   {
+-    let onCommand = (function HUD_closeButton_onCommand() {
++    this.closeButtonOnCommand = (function HUD_closeButton_onCommand() {
+       HUDService.animate(this.hudId, ANIMATE_OUT, (function() {
+         HUDService.deactivateHUDForContext(this.tab, true);
+       }).bind(this));
+     }).bind(this);
+ 
+-    let closeButton = this.makeXULNode("toolbarbutton");
+-    closeButton.classList.add("webconsole-close-button");
+-    closeButton.addEventListener("command", onCommand, false);
+-    aToolbar.appendChild(closeButton);
++    this.closeButton = this.makeXULNode("toolbarbutton");
++    this.closeButton.classList.add("webconsole-close-button");
++    this.closeButton.addEventListener("command",
++      this.closeButtonOnCommand, false);
++    aToolbar.appendChild(this.closeButton);
+   },
+ 
+   /**
+    * Creates the "Clear Console" button.
+    *
+    * @param nsIDOMNode aParent
+    *        The toolbar to attach the "Clear Console" button to.
+    * @param string aHUDId
+@@ -3814,17 +3836,36 @@ HeadsUpDisplay.prototype = {
+   {
+     return this.outputNode.childNodes;
+   },
+ 
+   ERRORS: {
+     HUD_BOX_DOES_NOT_EXIST: "Heads Up Display does not exist",
+     TAB_ID_REQUIRED: "Tab DOM ID is required",
+     PARENTNODE_NOT_FOUND: "parentNode element not found"
+-  }
++  },
++
++  /**
++   * Destroy the HUD object. Call this method to avoid memory leaks when the Web
++   * Console is closed.
++   */
++  destroy: function HUD_destroy()
++  {
++    this.jsterm.destroy();
++
++    this.positionMenuitems.above.removeEventListener("command",
++      this._positionConsoleAbove, false);
++    this.positionMenuitems.below.removeEventListener("command",
++      this._positionConsoleBelow, false);
++    this.positionMenuitems.window.removeEventListener("command",
++      this._positionConsoleWindow, false);
++
++    this.closeButton.removeEventListener("command",
++      this.closeButtonOnCommand, false);
++  },
+ };
+ 
+ 
+ //////////////////////////////////////////////////////////////////////////////
+ // ConsoleAPIObserver
+ //////////////////////////////////////////////////////////////////////////////
+ 
+ let ConsoleAPIObserver = {
+@@ -4395,22 +4436,25 @@ JSTerm.prototype = {
+   init: function JST_init()
+   {
+     this.createSandbox();
+ 
+     this.inputNode = this.mixins.inputNode;
+     this.outputNode = this.mixins.outputNode;
+     this.completeNode = this.mixins.completeNode;
+ 
++    this._keyPress = this.keyPress.bind(this);
++    this._inputEventHandler = this.inputEventHandler.bind(this);
++
+     this.inputNode.addEventListener("keypress",
+-      this.keyPress.bind(this), false);
++      this._keyPress, false);
+     this.inputNode.addEventListener("input",
+-      this.inputEventHandler.bind(this), false);
++      this._inputEventHandler, false);
+     this.inputNode.addEventListener("keyup",
+-      this.inputEventHandler.bind(this), false);
++      this._inputEventHandler, false);
+   },
+ 
+   get codeInputString()
+   {
+     return this.inputNode.value;
+   },
+ 
+   generateUI: function JST_generateUI()
+@@ -5174,16 +5218,26 @@ JSTerm.prototype = {
+    *        The proposed suffix for the inputNode value.
+    */
+   updateCompleteNode: function JSTF_updateCompleteNode(aSuffix)
+   {
+     // completion prefix = input, with non-control chars replaced by spaces
+     let prefix = aSuffix ? this.inputNode.value.replace(/[\S]/g, " ") : "";
+     this.completeNode.value = prefix + aSuffix;
+   },
++
++  /**
++   * Destroy the JSTerm object. Call this method to avoid memory leaks.
++   */
++  destroy: function JST_destroy()
++  {
++    this.inputNode.removeEventListener("keypress", this._keyPress, false);
++    this.inputNode.removeEventListener("input", this._inputEventHandler, false);
++    this.inputNode.removeEventListener("keyup", this._inputEventHandler, false);
++  },
+ };
+ 
+ /**
+  * Generates and attaches the JS Terminal part of the Web Console, which
+  * essentially consists of the interactive JavaScript input facility.
+  *
+  * @param nsWeakPtr<nsIDOMWindow> aContext
+  *        A weak pointer to the DOM window that contains the Web Console.
+@@ -6284,18 +6338,17 @@ CommandController.prototype = {
+    */
+   selectAll: function CommandController_selectAll(aOutputNode)
+   {
+     aOutputNode.selectAll();
+   },
+ 
+   supportsCommand: function CommandController_supportsCommand(aCommand)
+   {
+-    return this.isCommandEnabled(aCommand) &&
+-           this._getFocusedOutputNode() != null;
++    return this.isCommandEnabled(aCommand);
+   },
+ 
+   isCommandEnabled: function CommandController_isCommandEnabled(aCommand)
+   {
+     let outputNode = this._getFocusedOutputNode();
+     if (!outputNode) {
+       return false;
+     }
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580030_errors_after_page_reload.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580030_errors_after_page_reload.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580030_errors_after_page_reload.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580030_errors_after_page_reload.js
+@@ -92,13 +92,15 @@ var consoleObserver = {
+ 
+     Services.console.unregisterListener(this);
+ 
+     let outputNode = HUDService.getHudByWindow(content).outputNode;
+ 
+     executeSoon(function() {
+       let msg = "Found the error message after page reload";
+       testLogEntry(outputNode, "fooBazBaz", msg);
++
++      consoleObserver = msg = outputNode = null;
+       finishTest();
+     });
+   }
+ };
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586388_select_all.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586388_select_all.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586388_select_all.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586388_select_all.js
+@@ -31,17 +31,17 @@ function testSelectionWhenMovingBetweenB
+ 
+   outputNode = jsterm.outputNode;
+ 
+   ok(outputNode.childNodes.length >= 3, "the output node has children after " +
+      "executing some JavaScript");
+ 
+   // Test that the global Firefox "Select All" functionality (e.g. Edit >
+   // Select All) works properly in the Web Console.
+-  let commandController = window.commandController;
++  let commandController = window.webConsoleCommandController;
+   ok(commandController != null, "the window has a command controller object");
+ 
+   commandController.selectAll(outputNode);
+   is(outputNode.selectedCount, outputNode.childNodes.length, "all console " +
+      "messages are selected after performing a regular browser select-all " +
+      "operation");
+ 
+   outputNode.selectedIndex = -1;
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_626484_output_copy_order.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_626484_output_copy_order.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_626484_output_copy_order.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_626484_output_copy_order.js
+@@ -1,11 +1,11 @@
+ /* Any copyright is dedicated to the Public Domain.
+    http://creativecommons.org/publicdomain/zero/1.0/ */
+-let itemsSet;
++let itemsSet, HUD;
+ 
+ function test() {
+   addTab("data:text/html,Web Console test for bug 626484");
+   browser.addEventListener("load", tabLoaded, true);
+ }
+ 
+ function tabLoaded(aEvent) {
+   browser.removeEventListener(aEvent.type, arguments.callee, true);
+@@ -25,17 +25,20 @@ function tabLoaded(aEvent) {
+ 
+   nextTest();
+ }
+ 
+ function nextTest() {
+   if (itemsSet.length === 0) {
+     outputNode.clearSelection();
+     HUD.jsterm.clearOutput();
+-    finish();
++    outputNode = null;
++    HUD = null;
++    itemsSet = null;
++    executeSoon(finish);
+   }
+   else {
+     outputNode.clearSelection();
+     let items = itemsSet.shift();
+     items.forEach(function (index) {
+       outputNode.addItemToSelection(outputNode.getItemAtIndex(index));
+     });
+     outputNode.focus();
+diff --git a/toolkit/components/console/hudservice/tests/browser/head.js b/toolkit/components/console/hudservice/tests/browser/head.js
+--- a/toolkit/components/console/hudservice/tests/browser/head.js
++++ b/toolkit/components/console/hudservice/tests/browser/head.js
+@@ -52,18 +52,16 @@ function pprint(aObj)
+     else {
+       log(prop + ": " + aObj[prop]);
+     }
+   }
+ }
+ 
+ let tab, browser, hudId, hud, hudBox, filterBox, outputNode, cs;
+ 
+-let win = gBrowser.selectedBrowser;
+-
+ function addTab(aURL)
+ {
+   gBrowser.selectedTab = gBrowser.addTab();
+   content.location = aURL;
+   tab = gBrowser.selectedTab;
+   browser = gBrowser.getBrowserForTab(tab);
+ }
+ 
+@@ -180,11 +178,8 @@ function tearDown()
+   }
+   tab = browser = hudId = hud = filterBox = outputNode = cs = null;
+ }
+ 
+ registerCleanupFunction(tearDown);
+ 
+ waitForExplicitFinish();
+ 
+-// removed tests:
+-// browser_webconsole_bug_580030_errors_after_page_reload.js \
+-// browser_webconsole_bug_595350_multiple_windows_and_tabs.js \

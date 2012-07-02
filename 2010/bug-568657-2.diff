@@ -1,0 +1,196 @@
+diff -r 9d2e478fd35b toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm	Tue Jul 13 23:15:43 2010 +0300
++++ b/toolkit/components/console/hudservice/HUDService.jsm	Thu Jul 15 19:26:37 2010 +0300
+@@ -1,9 +1,10 @@
+ /* -*- Mode: js2; js2-basic-offset: 2; indent-tabs-mode: nil; -*- */
++/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
+ /* ***** BEGIN LICENSE BLOCK *****
+  * Version: MPL 1.1/GPL 2.0/LGPL 2.1
+  *
+  * The contents of this file are subject to the Mozilla Public License Version
+  * 1.1 (the "License"); you may not use this file except in compliance with
+  * the License. You may obtain a copy of the License at
+  * http://www.mozilla.org/MPL/
+  *
+@@ -2108,49 +2109,44 @@ HUDConsole.prototype = {
+   },
+ 
+   exception: function console_exception(aMessage)
+   {
+     this.message = aMessage;
+     this.sendToHUDService("exception");
+   },
+ 
+-  timeStamp: function Console_timeStamp()
+-  {
+-    return ConsoleUtils.timeStamp(new Date());
+-  },
+-
+   sendToHUDService: function console_send(aLevel)
+   {
+     // check to see if logging is on for this level before logging!
+     var filterState = HUDService.getFilterState(this.hudId, aLevel);
+ 
+     if (!filterState) {
+       // Ignoring log message
+       return;
+     }
+ 
+-    let ts = this.timeStamp();
++    let ts = ConsoleUtils.timestamp();
+     let messageNode =
+       this.hud.makeHTMLNode("div");
+ 
+     let klass = "hud-msg-node hud-" + aLevel;
+ 
+     messageNode.setAttribute("class", klass);
+ 
+-    let timestampedMessage =
+-      this.chromeDocument.createTextNode(ts + ": " + this.message);
++    let timestampedMessage = this.chromeDocument.createTextNode(
++      ConsoleUtils.timestampString(ts) + ": " + this.message);
+ 
+     messageNode.appendChild(timestampedMessage);
+     // need a constructor here to properly set all attrs
+     let messageObject = {
+       logLevel: aLevel,
+       hudId: this.hud.hudId,
+       message: this.hud.message,
+-      timeStamp: ts,
++      timestamp: ts,
+       origin: "HUDConsole",
+     };
+ 
+     HUDService.logMessage(messageObject, this.hud.outputNode, messageNode);
+   }
+ };
+ 
+ 
+@@ -2985,18 +2981,19 @@ LogMessage.prototype = {
+    * create a console log div node
+    *
+    * @returns nsIDOMNode
+    */
+   createLogNode: function LM_createLogNode()
+   {
+     this.messageNode = this.elementFactory("div");
+ 
+-    var ts = this.timestamp();
+-    var timestampedMessage = ts + ": "  + this.message.message;
++    var ts = ConsoleUtils.timestamp();
++    var timestampedMessage = ConsoleUtils.timestampString(ts) + ": " +
++      this.message.message;
+     var messageTxtNode = this.textFactory(timestampedMessage);
+ 
+     this.messageNode.appendChild(messageTxtNode);
+ 
+     var klass = "hud-msg-node hud-" + this.level;
+     this.messageNode.setAttribute("class", klass);
+ 
+     var self = this;
+@@ -3006,38 +3003,16 @@ LogMessage.prototype = {
+       message: self.message,
+       timestamp: ts,
+       activity: self.activityObject,
+       origin: self.origin,
+       hudId: self.message.hudId,
+     };
+ 
+     this.messageObject = messageObject;
+-  },
+-
+-  timestamp: function LM_timestamp()
+-  {
+-    // TODO: L10N see bug 568656
+-    // TODO: DUPLICATED CODE to be consolidated with the utils timestamping
+-    // see bug 568657
+-    function logDateString(d)
+-    {
+-      function pad(n, mil)
+-      {
+-        if (mil) {
+-          return n < 100 ? '0' + n : n;
+-        }
+-        return n < 10 ? '0' + n : n;
+-      }
+-      return pad(d.getHours())+':'
+-        + pad(d.getMinutes())+':'
+-        + pad(d.getSeconds()) + ":"
+-        + pad(d.getMilliseconds(), true);
+-      }
+-    return logDateString(new Date());
+   }
+ };
+ 
+ 
+ /**
+  * Firefox-specific Application Hooks.
+  * Each Gecko-based application will need an object like this in
+  * order to use the Heads Up Display
+@@ -3231,36 +3206,51 @@ ConsoleDOMListeners.prototype = {
+ /**
+  * ConsoleUtils: a collection of globally used functions
+  *
+  */
+ 
+ ConsoleUtils = {
+ 
+   /**
+-   * Generates a millisecond resolution timestamp for console messages
++   * Generates a millisecond resolution timestamp.
+    *
+-   * @returns string
++   * @returns integer
+    */
+-  timeStamp: function ConsoleUtils_timeStamp()
++  timestamp: function ConsoleUtils_timestamp()
+   {
+-    function logDateString(d){
+-      function pad(n, mil){
+-        if (mil) {
+-          return n < 100 ? '0'+n : n;
+-        }
+-        return n < 10 ? '0'+n : n;
++    return Date.now();
++  },
++
++  /**
++   * Generates a formatted timestamp string for displaying in console messages.
++   *
++   * @param integer [ms] Optional, allows you to specify the timestamp in 
++   * milliseconds since the UNIX epoch.
++   * @returns string The timestamp formatted for display.
++   */
++  timestampString: function ConsoleUtils_timestampString(ms)
++  {
++    // TODO: L10N see bug 568656
++    var d = new Date(ms ? ms : null);
++
++    function pad(n, mil)
++    {
++      if (mil) {
++        return n < 100 ? "0" + n : n;
+       }
+-      return pad(d.getHours())+':'
+-        + pad(d.getMinutes())+':'
+-        + pad(d.getSeconds()) + ":"
+-        + pad(d.getMilliseconds(), true);
++      else {
++        return n < 10 ? "0" + n : n;
++      }
+     }
+-    return logDateString(new Date());
+-
++
++    return pad(d.getHours()) + ":"
++      + pad(d.getMinutes()) + ":"
++      + pad(d.getSeconds()) + ":"
++      + pad(d.getMilliseconds(), true);
+   },
+ 
+   /**
+    * Hides a log message by changing its class
+    *
+    * @param nsIDOMNode aMessageNode
+    * @returns nsIDOMNode
+    */

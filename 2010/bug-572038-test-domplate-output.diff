@@ -1,0 +1,270 @@
+diff --git a/browser/base/content/domplate.jsm b/browser/base/content/domplate.jsm
+--- a/browser/base/content/domplate.jsm
++++ b/browser/base/content/domplate.jsm
+@@ -1782,17 +1782,17 @@ HTMLTemplates.Element = domplate(BaseTem
+ });
+ 
+ HTMLTemplates.HTMLHtmlElement = domplate(BaseTemplates.Element,
+ {
+   tag:
+     domplate.DIV({"class":
+         "nodeBox htmlNodeBox containerNodeBox $object|getHidden repIgnore",
+         _repObject: "$object", role: "presentation"},
+-      domplate.DIV({"class": "docType $object"},
++      domplate.DIV({"class": "docType"},
+         "$object|getDocType"),
+       domplate.DIV({"class": "nodeLabel", role: "presentation"},
+         domplate.IMG({"class": "twisty", role: "presentation"}),
+         domplate.SPAN({"class": "nodeLabelBox repTarget",
+             role: 'treeitem', 'aria-expanded' : 'false'},
+           "&lt;",
+           domplate.SPAN({"class": "nodeTag"},
+             "$object.nodeName|toLowerCase"),
+diff --git a/browser/base/content/inspector.js b/browser/base/content/inspector.js
+--- a/browser/base/content/inspector.js
++++ b/browser/base/content/inspector.js
+@@ -1308,30 +1308,30 @@ var InspectorUI = {
+ 
+     // open inspector UI
+     this.openTreePanel();
+     if (this._showStylePanel) {
+       this.styleBox = document.getElementById("inspector-style-listbox");
+       this.clearStylePanel();
+       this.openStylePanel();
+     }
++
++    // If there is no domPanel yet, then create a new one.
++    if (!this.PropertyTreeView) {
++      Cu.import("chrome://global/content/PropertyPanel.jsm", this);
++
++      let parent = document.getElementById("inspector-style-panel").parentNode;
++      let propPanel = new (this.PropertyPanel)(parent, document, "DOM", {});
++
++      this.domPanel = propPanel.panel;
++      this.domBox = propPanel.tree;
++      this.domTreeView = propPanel.treeView;
++    }
++
+     if (this._showDOMPanel) {
+-      if (!this.PropertyTreeView) {
+-        Cu.import("chrome://global/content/PropertyPanel.jsm", this);
+-      }
+-
+-      // If there is no domPanel yet, then create a new one.
+-      if (!this.domPanel) {
+-        let parent = document.getElementById("inspector-style-panel").parentNode;
+-        let propPanel = new (this.PropertyPanel)(parent, document, "DOM", {});
+-
+-        this.domPanel = propPanel.panel;
+-        this.domBox = propPanel.tree;
+-        this.domTreeView = propPanel.treeView;
+-      }
+       this.clearDOMPanel();
+       this.openDOMPanel();
+     }
+ 
+     this.inspectorBundle = Services.strings.createBundle("chrome://browser/locale/inspector.properties");
+     this.initializeHighlighter();
+     this.startInspecting();
+     this.win.document.addEventListener("scroll", this, false);
+diff --git a/browser/base/content/test/Makefile.in b/browser/base/content/test/Makefile.in
+--- a/browser/base/content/test/Makefile.in
++++ b/browser/base/content/test/Makefile.in
+@@ -144,16 +144,19 @@ _BROWSER_FILES = \
+                  browser_drag.js \
+                  browser_gestureSupport.js \
+                  browser_getshortcutoruri.js \
+                  browser_inspector_initialization.js \
+                  browser_inspector_treeSelection.js \
+                  browser_inspector_highlighter.js \
+                  browser_inspector_stylePanel.js \
+                  browser_inspector_domPanel.js \
++                 browser_inspector_treePanel_output.js \
++                 browser_inspector_treePanel_input.html \
++                 browser_inspector_treePanel_result.html \
+                  browser_inspector_iframeTest.js \
+                  browser_pageInfo.js \
+                  browser_page_style_menu.js \
+                  browser_pinnedTabs.js \
+                  browser_plainTextLinks.js \
+                  browser_pluginnotification.js \
+                  browser_popupUI.js \
+                  browser_relatedTabs.js \
+diff --git a/browser/base/content/test/browser_inspector_treePanel_input.html b/browser/base/content/test/browser_inspector_treePanel_input.html
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_inspector_treePanel_input.html
+@@ -0,0 +1,31 @@
++<!DOCTYPE html>
++<html xml:lang="en">
++  <head>
++    <meta charset="utf-8">
++    <title>Inspector tree panel test</title>
++    <style type="text/css"><!--
++      #duplicate { color: green }
++    --></style>
++    <script type="text/javascript"><!--
++      function fooBarBaz(arg1) {
++        return true; // do nothing
++      }
++    // --></script>
++  </head>
++  <body arbitrary:attribute="value">
++    <p>Inspector tree panel test.</p>
++
++    <div id="foo" class="foo bar baz" style="border:1px solid red; 
++      unknownProperty: unknownValue; color: withUnkownValue">
++      <unknownTag unknownAttribute="fooBar">
++        <p unknownAttribute="fooBar" data-test1="value">hello world!</p>
++      </unknownTag>
++    </div>
++
++    <div id="duplicate" id="duplicate" id="different" class="test" class="foo" 
++      fooBar="baz" fooBar="bazbaz">test</div>
++
++    <iframe src="data:text/html,&lt;div&gt;hello from an iframe!&lt;/div&gt;">no 
++      frames!</iframe>
++  </body>
++</html>
+diff --git a/browser/base/content/test/browser_inspector_treePanel_output.js b/browser/base/content/test/browser_inspector_treePanel_output.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_inspector_treePanel_output.js
+@@ -0,0 +1,125 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Inspector iframe Tests.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++let doc = null;
++let xhr = null;
++let expectedResult = "";
++
++const TEST_URI = "http://mochi.test:8888/browser/browser/base/content/test/browser_inspector_treePanel_input.html";
++const RESULT_URI = "http://mochi.test:8888/browser/browser/base/content/test/browser_inspector_treePanel_result.html";
++
++function tabFocused()
++{
++  xhr = new XMLHttpRequest();
++  xhr.onreadystatechange = xhr_onReadyStateChange;
++  xhr.open("GET", RESULT_URI, true);
++  xhr.send(null);
++}
++
++function xhr_onReadyStateChange() {
++  if (xhr.readyState != 4) {
++    return;
++  }
++
++  is(xhr.status, 200, "xhr.status is 200");
++  ok(!!xhr.responseText, "xhr.responseText is available");
++  expectedResult = xhr.responseText.replace(/^\s+|\s+$/, '');
++  xhr = null;
++
++  Services.obs.addObserver(inspectorOpened, "inspector-opened", false);
++  InspectorUI.toggleInspectorUI();
++}
++
++let inspectorOpened = {
++  observe: function inspectorOpened_observe() {
++    Services.obs.removeObserver(inspectorOpened, "inspector-opened", false);
++
++    ok(InspectorUI.inspecting, "Inspector is highlighting");
++    ok(InspectorUI.isTreePanelOpen, "Inspector Tree Panel is open");
++
++    let meta = doc.querySelector("meta");
++    ok(meta, "Found the meta tag");
++    InspectorUI.inspectNode(meta);
++
++    let para = doc.querySelector("p[unknownAttribute]");
++    ok(para, "Found the paragraph tag");
++    InspectorUI.inspectNode(para);
++
++    let iframe = doc.querySelector("iframe");
++    ok(iframe, "Found the iframe tag");
++    ok(iframe.contentDocument, "Found the iframe.contentDocument");
++
++    let iframeDiv = iframe.contentDocument.querySelector("div");
++    ok(iframeDiv, "Found the div element inside the iframe");
++    InspectorUI.inspectNode(iframeDiv);
++
++    ok(InspectorUI.treePanelDiv, "InspectorUI.treePanelDiv is available");
++    is(InspectorUI.treePanelDiv.innerHTML, expectedResult, "treePanelDiv.innerHTML is correct");
++    expectedResult = null;
++
++    Services.obs.addObserver(inspectorClosed, "inspector-closed", false);
++    InspectorUI.toggleInspectorUI();
++  }
++};
++
++
++let inspectorClosed = {
++  observe: function inspectorClosed_observe() {
++    Services.obs.removeObserver(inspectorClosed, "inspector-closed", false);
++
++    ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++    ok(!InspectorUI.isTreePanelOpen, "Inspector Tree Panel is not open");
++
++    gBrowser.removeCurrentTab();
++    finish();
++  }
++};
++
++function test()
++{
++  waitForExplicitFinish();
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++    doc = content.document;
++    waitForFocus(tabFocused, content);
++  }, true);
++  
++  content.location = TEST_URI;
++}
+diff --git a/browser/base/content/test/browser_inspector_treePanel_result.html b/browser/base/content/test/browser_inspector_treePanel_result.html
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_inspector_treePanel_result.html
+@@ -0,0 +1,7 @@
++<div role="presentation" class="nodeBox htmlNodeBox containerNodeBox  repIgnore open"><div class="docType ">&lt;!DOCTYPE html&gt;</div><div role="presentation" class="nodeLabel "><img role="presentation" class="twisty "><span role="treeitem" aria-expanded="true" class="nodeLabelBox repTarget ">&lt;<span class="nodeTag ">html</span><span class="nodeAttr editGroup ">&nbsp;<span class="nodeName editable ">xml:lang</span>="<span class="nodeValue editable ">en</span>"</span><span class="nodeBracket editable insertBefore ">&gt;</span></span></div><div role="group" class="nodeChildBox "><div role="presentation" class="nodeBox containerNodeBox  repIgnore open"><div role="presentation" class="nodeLabel "><img role="presentation" class="twisty "><span role="treeitem" aria-expanded="true" class="nodeLabelBox repTarget ">&lt;<span class="nodeTag ">head</span><span class="nodeBracket editable insertBefore ">&gt;</span></span></div><div role="group" class="nodeChildBox "><div role="presentation" class="nodeBox emptyNodeBox  repIgnore "><div role="presentation" class="nodeLabel "><span role="treeitem" class="nodeLabelBox repTarget ">&lt;<span class="nodeTag ">meta</span><span class="nodeAttr editGroup ">&nbsp;<span class="nodeName editable ">charset</span>="<span class="nodeValue editable ">utf-8</span>"</span><span class="nodeBracket editable insertBefore ">&gt;</span></span></div></div><div role="presentation" class="nodeBox textNodeBox  repIgnore "><div role="presentation" class="nodeLabel "><span role="treeitem" class="nodeLabelBox repTarget ">&lt;<span class="nodeTag ">title</span><span class="nodeBracket editable insertBefore ">&gt;</span><span class="nodeText editable "><span class="  ">Inspector tree panel test</span></span>&lt;/<span class="nodeTag ">title</span>&gt;</span></div></div><div role="presentation" class="nodeBox open  repIgnore "><div role="presentation" class="nodeLabel "><span role="treeitem" aria-expanded="false" class="nodeLabelBox repTarget repTarget ">&lt;<span class="nodeTag ">style</span><span class="nodeAttr editGroup ">&nbsp;<span class="nodeName editable ">type</span>="<span class="nodeValue editable ">text/css</span>"</span><span class="nodeBracket ">&gt;</span></span></div><div role="group" class="nodeChildBox "><div role="presentation" class="nodeBox "><span class="nodeText editable "><span class="  ">&lt;!--
++      #duplicate { color: green }
++    --&gt;</span></span></div></div><div role="presentation" class="nodeCloseLabel ">&lt;/<span class="nodeTag ">style</span>&gt;</div></div><div role="presentation" class="nodeBox open  repIgnore "><div role="presentation" class="nodeLabel "><span role="treeitem" aria-expanded="false" class="nodeLabelBox repTarget repTarget ">&lt;<span class="nodeTag ">script</span><span class="nodeAttr editGroup ">&nbsp;<span class="nodeName editable ">type</span>="<span class="nodeValue editable ">text/javascript</span>"</span><span class="nodeBracket ">&gt;</span></span></div><div role="group" class="nodeChildBox "><div role="presentation" class="nodeBox "><span class="nodeText editable "><span class="  ">&lt;!--
++      function fooBarBaz(arg1) {
++        return true; // do nothing
++      }
++    // --&gt;</span></span></div></div><div role="presentation" class="nodeCloseLabel ">&lt;/<span class="nodeTag ">script</span>&gt;</div></div></div><div role="presentation" class="nodeCloseLabel "><span class="nodeCloseLabelBox repTarget ">&lt;/<span class="nodeTag ">head</span>&gt;</span></div></div><div role="presentation" class="nodeBox containerNodeBox  repIgnore open"><div role="presentation" class="nodeLabel "><img role="presentation" class="twisty "><span role="treeitem" aria-expanded="true" class="nodeLabelBox repTarget ">&lt;<span class="nodeTag ">body</span><span class="nodeAttr editGroup ">&nbsp;<span class="nodeName editable ">arbitrary:attribute</span>="<span class="nodeValue editable ">value</span>"</span><span class="nodeBracket editable insertBefore ">&gt;</span></span></div><div role="group" class="nodeChildBox "><div role="presentation" class="nodeBox textNodeBox  repIgnore "><div role="presentation" class="nodeLabel "><span role="treeitem" class="nodeLabelBox repTarget ">&lt;<span class="nodeTag ">p</span><span class="nodeBracket editable insertBefore ">&gt;</span><span class="nodeText editable "><span class="  ">Inspector tree panel test.</span></span>&lt;/<span class="nodeTag ">p</span>&gt;</span></div></div><div role="presentation" class="nodeBox containerNodeBox  repIgnore open"><div role="presentation" class="nodeLabel "><img role="presentation" class="twisty "><span role="treeitem" aria-expanded="true" class="nodeLabelBox repTarget ">&lt;<span class="nodeTag ">div</span><span class="nodeAttr editGroup ">&nbsp;<span class="nodeName editable ">id</span>="<span class="nodeValue editable ">foo</span>"</span><span class="nodeAttr editGroup ">&nbsp;<span class="nodeName editable ">class</span>="<span class="nodeValue editable ">foo bar baz</span>"</span><span class="nodeAttr editGroup ">&nbsp;<span class="nodeName editable ">style</span>="<span class="nodeValue editable ">border: 1px solid red;</span>"</span><span class="nodeBracket editable insertBefore ">&gt;</span></span></div><div role="group" class="nodeChildBox "><div role="presentation" class="nodeBox containerNodeBox  repIgnore open"><div role="presentation" class="nodeLabel "><img role="presentation" class="twisty "><span role="treeitem" aria-expanded="true" class="nodeLabelBox repTarget ">&lt;<span class="nodeTag ">unknowntag</span><span class="nodeAttr editGroup ">&nbsp;<span class="nodeName editable ">unknownattribute</span>="<span class="nodeValue editable ">fooBar</span>"</span><span class="nodeBracket editable insertBefore ">&gt;</span></span></div><div role="group" class="nodeChildBox "><div role="presentation" class="nodeBox textNodeBox  repIgnore "><div role="presentation" class="nodeLabel "><span role="treeitem" class="nodeLabelBox repTarget ">&lt;<span class="nodeTag ">p</span><span class="nodeAttr editGroup ">&nbsp;<span class="nodeName editable ">data-test1</span>="<span class="nodeValue editable ">value</span>"</span><span class="nodeAttr editGroup ">&nbsp;<span class="nodeName editable ">unknownattribute</span>="<span class="nodeValue editable ">fooBar</span>"</span><span class="nodeBracket editable insertBefore ">&gt;</span><span class="nodeText editable "><span class="  ">hello world!</span></span>&lt;/<span class="nodeTag ">p</span>&gt;</span></div></div></div><div role="presentation" class="nodeCloseLabel "><span class="nodeCloseLabelBox repTarget ">&lt;/<span class="nodeTag ">unknowntag</span>&gt;</span></div></div></div><div role="presentation" class="nodeCloseLabel "><span class="nodeCloseLabelBox repTarget ">&lt;/<span class="nodeTag ">div</span>&gt;</span></div></div><div role="presentation" class="nodeBox textNodeBox  repIgnore "><div role="presentation" class="nodeLabel "><span role="treeitem" class="nodeLabelBox repTarget ">&lt;<span class="nodeTag ">div</span><span class="nodeAttr editGroup ">&nbsp;<span class="nodeName editable ">id</span>="<span class="nodeValue editable ">duplicate</span>"</span><span class="nodeAttr editGroup ">&nbsp;<span class="nodeName editable ">class</span>="<span class="nodeValue editable ">test</span>"</span><span class="nodeAttr editGroup ">&nbsp;<span class="nodeName editable ">foobar</span>="<span class="nodeValue editable ">baz</span>"</span><span class="nodeBracket editable insertBefore ">&gt;</span><span class="nodeText editable "><span class="  ">test</span></span>&lt;/<span class="nodeTag ">div</span>&gt;</span></div></div><div role="presentation" class="nodeBox open  repIgnore "><div role="presentation" class="nodeLabel "><span role="treeitem" aria-expanded="true" class="nodeLabelBox repTarget repTarget ">&lt;<span class="nodeTag ">iframe</span><span class="nodeAttr editGroup ">&nbsp;<span class="nodeName editable ">src</span>="<span class="nodeValue editable ">data:text/html,&lt;div&gt;hello from an iframe!&lt;/div&gt;</span>"</span><span class="nodeBracket ">&gt;</span></span></div><div role="group" class="nodeChildBox "><div role="presentation" class="nodeBox containerNodeBox  repIgnore open"><div role="presentation" class="nodeLabel "><img role="presentation" class="twisty "><span role="treeitem" aria-expanded="true" class="nodeLabelBox repTarget ">&lt;<span class="nodeTag ">html</span><span class="nodeBracket editable insertBefore ">&gt;</span></span></div><div role="group" class="nodeChildBox "><div role="presentation" class="nodeBox textNodeBox  repIgnore "><div role="presentation" class="nodeLabel "><span role="treeitem" class="nodeLabelBox repTarget ">&lt;<span class="nodeTag ">head</span><span class="nodeBracket editable insertBefore ">&gt;</span><span class="nodeText editable "><span class="  "></span></span>&lt;/<span class="nodeTag ">head</span>&gt;</span></div></div><div role="presentation" class="nodeBox containerNodeBox  repIgnore open"><div role="presentation" class="nodeLabel "><img role="presentation" class="twisty "><span role="treeitem" aria-expanded="true" class="nodeLabelBox repTarget ">&lt;<span class="nodeTag ">body</span><span class="nodeBracket editable insertBefore ">&gt;</span></span></div><div role="group" class="nodeChildBox "><div role="presentation" class="nodeBox textNodeBox  repIgnore selected"><div role="presentation" class="nodeLabel "><span role="treeitem" class="nodeLabelBox repTarget ">&lt;<span class="nodeTag ">div</span><span class="nodeBracket editable insertBefore ">&gt;</span><span class="nodeText editable "><span class="  ">hello from an iframe!</span></span>&lt;/<span class="nodeTag ">div</span>&gt;</span></div></div></div><div role="presentation" class="nodeCloseLabel "><span class="nodeCloseLabelBox repTarget ">&lt;/<span class="nodeTag ">body</span>&gt;</span></div></div></div><div role="presentation" class="nodeCloseLabel "><span class="nodeCloseLabelBox repTarget ">&lt;/<span class="nodeTag ">html</span>&gt;</span></div></div></div><div role="presentation" class="nodeCloseLabel ">&lt;/<span class="nodeTag ">iframe</span>&gt;</div></div></div><div role="presentation" class="nodeCloseLabel "><span class="nodeCloseLabelBox repTarget ">&lt;/<span class="nodeTag ">body</span>&gt;</span></div></div></div><div role="presentation" class="nodeCloseLabel "><span class="nodeCloseLabelBox repTarget ">&lt;/<span class="nodeTag ">html</span>&gt;</span></div></div>

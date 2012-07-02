@@ -1,0 +1,226 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1318867654 -10800
+# Node ID 8690f605a78f1bc073ae9ef6bacec118f0cb95ff
+# Parent  1f328a8b91fbfd7c93bca7957ab47aaabc933126
+Bug 692400 - Style inspector appears to ignore inline styles
+
+diff --git a/browser/devtools/styleinspector/CssLogic.jsm b/browser/devtools/styleinspector/CssLogic.jsm
+--- a/browser/devtools/styleinspector/CssLogic.jsm
++++ b/browser/devtools/styleinspector/CssLogic.jsm
+@@ -493,54 +493,56 @@ CssLogic.prototype = {
+     if (!this._matchedRules) {
+       this._buildMatchedRules();
+     }
+ 
+     this._matchedSelectors = [];
+     this._unmatchedSelectors = null;
+     this._passId++;
+ 
++    for (let i = 0; i < this._matchedRules.length; i++) {
++      let rule = this._matchedRules[i][0];
++      let status = this._matchedRules[i][1];
++
++      rule.selectors.forEach(function (aSelector) {
++        if (aSelector._matchId !== this._matchId &&
++            (aSelector.elementStyle ||
++             this._selectorMatchesElement(aSelector))) {
++          aSelector._matchId = this._matchId;
++          this._matchedSelectors.push([ aSelector, status ]);
++          if (aCallback) {
++            aCallback.call(aScope, aSelector, status);
++          }
++        }
++      }, this);
++
++      rule._passId = this._passId;
++    }
++  },
++
++  /**
++   * Check if the given selector matches the highlighted element or any of its
++   * parents.
++   *
++   * @private
++   * @param {string} aSelector the selector string you want to check.
++   * @return {boolean} true if the given selector matches the highlighted
++   * element or any of its parents, otherwise false is returned.
++   */
++  _selectorMatchesElement: function CL__selectorMatchesElement(aSelector)
++  {
+     let element = this.viewedElement;
+     do {
+-      let status = (this.viewedElement === element) ?
+-          CssLogic.STATUS.MATCHED : CssLogic.STATUS.PARENT_MATCH;
+-
+-      for (let i = 0; i < this._matchedRules.length; i++) {
+-        let rule = this._matchedRules[i];
+-
+-        rule.selectors.forEach(function (aSelector) {
+-          if (aSelector._matchId !== this._matchId &&
+-              element.mozMatchesSelector(aSelector)) {
+-            aSelector._matchId = this._matchId;
+-            this._matchedSelectors.push([ aSelector, status ]);
+-            if (aCallback) {
+-              aCallback.call(aScope, aSelector, status);
+-            }
+-          }
+-        }, this);
+-
+-        if (rule._passId !== this._passId) {
+-          rule._passId = this._passId;
+-        }
+-      }
+-
+-      // Add element.style information.
+-      if (element.style.length > 0) {
+-        let rule = new CssRule(null, { style: element.style }, element);
+-        let selector = rule.selectors[0];
+-        selector._matchId = this._matchId;
+-
+-        this._matchedSelectors.push([ selector, status ]);
+-        if (aCallback) {
+-          aCallback.call(aScope, selector, status);
+-        }
+-        rule._passId = this._passId;
++      if (element.mozMatchesSelector(aSelector)) {
++        return true;
+       }
+     } while ((element = element.parentNode) &&
+-        element.nodeType === Ci.nsIDOMNode.ELEMENT_NODE);
++             element.nodeType === Ci.nsIDOMNode.ELEMENT_NODE);
++
++    return false;
+   },
+ 
+   /**
+    * Process the CssSelector object that do not match the highlighted elements,
+    * nor its parents. Your callback function is invoked for every such
+    * CssSelector object. You receive one argument: the CssSelector object.
+    *
+    * The list of unmatched selectors is cached.
+@@ -595,19 +597,20 @@ CssLogic.prototype = {
+   hasMatchedSelectors: function CL_hasMatchedSelectors(aProperties)
+   {
+     if (!this._matchedRules) {
+       this._buildMatchedRules();
+     }
+ 
+     let result = {};
+ 
+-    this._matchedRules.some(function(aRule) {
++    this._matchedRules.some(function(aValue) {
++      let rule = aValue[0];
+       aProperties = aProperties.filter(function(aProperty) {
+-        if (aRule.getPropertyValue(aProperty)) {
++        if (rule.getPropertyValue(aProperty)) {
+           // We just need to find if a rule has this property while it matches
+           // the viewedElement (or its parents).
+           result[aProperty] = true;
+           return false;
+         }
+         return true; // Keep the property for the next rule.
+       });
+       return aProperties.length == 0;
+@@ -629,21 +632,24 @@ CssLogic.prototype = {
+     let filter = this.sourceFilter;
+     let sheetIndex = 0;
+ 
+     this._matchId++;
+     this._passId++;
+     this._matchedRules = [];
+ 
+     do {
++      let status = this.viewedElement === element ?
++                   CssLogic.STATUS.MATCHED : CssLogic.STATUS.PARENT_MATCH;
++
+       try {
+         domRules = this.domUtils.getCSSStyleRules(element);
+       } catch (ex) {
+         Services.console.
+-          logStringMessage("CssLogic_hasMatchedSelectors error: " + ex);
++          logStringMessage("CssLogic__buildMatchedRules error: " + ex);
+         continue;
+       }
+ 
+       for (let i = 0, n = domRules.Count(); i < n; i++) {
+         let domRule = domRules.GetElementAt(i);
+         if (domRule.type !== Ci.nsIDOMCSSRule.STYLE_RULE) {
+           continue;
+         }
+@@ -654,20 +660,31 @@ CssLogic.prototype = {
+           sheet._passId = this._passId;
+         }
+ 
+         if (filter !== CssLogic.FILTER.UA && sheet.systemSheet) {
+           continue;
+         }
+ 
+         let rule = sheet.getRule(domRule);
++        if (rule._passId === this._passId) {
++          continue;
++        }
++
+         rule._matchId = this._matchId;
+         rule._passId = this._passId;
++        this._matchedRules.push([rule, status]);
++      }
+ 
+-        this._matchedRules.push(rule);
++      // Add element.style information.
++      if (element.style.length > 0) {
++        let rule = new CssRule(null, { style: element.style }, element);
++        rule._matchId = this._matchId;
++        rule._passId = this._passId;
++        this._matchedRules.push([rule, status]);
+       }
+     } while ((element = element.parentNode) &&
+              element.nodeType === Ci.nsIDOMNode.ELEMENT_NODE);
+   },
+ 
+   /**
+    * Check if the highlighted element or it's parents have unmatched selectors.
+    *
+@@ -730,16 +747,21 @@ CssLogic.prototype = {
+    * @private
+    * @param {CssRule} aRule The rule you want to check if it has an unmatched
+    * selector.
+    * @return {boolean} True if the rule has an unmatched selector, false
+    * otherwise.
+    */
+   _ruleHasUnmatchedSelector: function CL__ruleHasUnmatchedSelector(aRule)
+   {
++    if (!aRule._cssSheet && aRule.sourceElement) {
++      // CssRule wraps element.style, which never has unmatched selectors.
++      return false;
++    }
++
+     let element = this.viewedElement;
+     let selectors = aRule.selectors;
+ 
+     do {
+       selectors = selectors.filter(function(aSelector) {
+         return !element.mozMatchesSelector(aSelector);
+       });
+ 
+diff --git a/browser/devtools/styleinspector/test/browser/browser_bug_691736_inline_selector.js b/browser/devtools/styleinspector/test/browser/browser_bug_691736_inline_selector.js
+--- a/browser/devtools/styleinspector/test/browser/browser_bug_691736_inline_selector.js
++++ b/browser/devtools/styleinspector/test/browser/browser_bug_691736_inline_selector.js
+@@ -39,16 +39,17 @@ function runStyleInspectorTests()
+ }
+ 
+ function SI_check()
+ {
+   Services.obs.removeObserver(SI_check, "StyleInspector-populated", false);
+   let propertyViews = stylePanel.cssHtmlTree.propertyViews;
+   propertyViews.some(function(propView) {
+     if (propView.name == "color") {
++      ok(propView.hasMatchedSelectors, "color property view hasMatchedSelectors");
+       let element = doc.querySelector(".test");
+       try {
+         let text = propView.matchedSelectorViews[0].text(element);
+         info("successfully obtained selector text")
+       } catch (ex) {
+         info("EXCEPTION: " + ex);
+         ok(false, "getting the selector text should not raise an exception");
+       }

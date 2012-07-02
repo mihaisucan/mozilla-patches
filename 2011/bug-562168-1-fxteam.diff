@@ -1,0 +1,1215 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1315253287 -10800
+# Node ID bc124f1e3ebcafc7ece0b9afaf6e108076db183d
+# Parent  76712d2ce6b9b773a0df3f6c0cbf9f81a12ad06e
+Bug 562168 - Move inspector.js into a jsm
+
+diff --git a/browser/base/Makefile.in b/browser/base/Makefile.in
+--- a/browser/base/Makefile.in
++++ b/browser/base/Makefile.in
+@@ -51,16 +51,17 @@ CHROME_DEPS += $(abs_srcdir)/content/ove
+ 
+ ifdef ENABLE_TESTS
+ DIRS += content/test
+ endif
+ 
+ EXTRA_JS_MODULES = \
+ 	content/openLocationLastURL.jsm \
+ 	content/NetworkPrioritizer.jsm \
++	content/inspector.jsm \
+ 	content/domplate.jsm \
+ 	content/InsideOutBox.jsm \
+ 	content/TreePanel.jsm \
+ 	$(NULL)
+ 
+ include $(topsrcdir)/config/rules.mk
+ 
+ PRE_RELEASE_SUFFIX := ""
+diff --git a/browser/base/content/browser.js b/browser/base/content/browser.js
+--- a/browser/base/content/browser.js
++++ b/browser/base/content/browser.js
+@@ -168,24 +168,35 @@ XPCOMUtils.defineLazyGetter(this, "Popup
+     return new tmp.PopupNotifications(gBrowser,
+                                       document.getElementById("notification-popup"),
+                                       document.getElementById("notification-popup-box"));
+   } catch (ex) {
+     Cu.reportError(ex);
+   }
+ });
+ 
++XPCOMUtils.defineLazyGetter(this, "InspectorUI", function() {
++  let tmp = {};
++  Cu.import("resource:///modules/inspector.jsm", tmp);
++  return new tmp.InspectorUI(window);
++});
++
++XPCOMUtils.defineLazyGetter(this, "INSPECTOR_NOTIFICATIONS", function() {
++  let tmp = {};
++  Cu.import("resource:///modules/inspector.jsm", tmp);
++  return tmp.INSPECTOR_NOTIFICATIONS;
++});
++
+ let gInitialPages = [
+   "about:blank",
+   "about:privatebrowsing",
+   "about:sessionrestore"
+ ];
+ 
+ #include browser-fullZoom.js
+-#include inspector.js
+ #include browser-places.js
+ #include browser-tabPreviews.js
+ #include browser-tabview.js
+ 
+ #ifdef MOZ_SERVICES_SYNC
+ #include browser-syncui.js
+ #endif
+ 
+@@ -1671,17 +1682,17 @@ function delayedStartup(isLoadingBlank, 
+ #ifdef MOZ_SERVICES_SYNC
+   // initialize the sync UI
+   gSyncUI.init();
+ #endif
+ 
+   TabView.init();
+ 
+   // Enable Inspector?
+-  let enabled = gPrefService.getBoolPref(InspectorUI.prefEnabledName);
++  let enabled = gPrefService.getBoolPref("devtools.inspector.enabled");
+   if (enabled) {
+     document.getElementById("menu_pageinspect").hidden = false;
+     document.getElementById("Tools:Inspect").removeAttribute("disabled");
+ #ifdef MENUBAR_CAN_AUTOHIDE
+     document.getElementById("appmenu_pageInspect").hidden = false;
+ #endif
+   }
+ 
+@@ -1720,16 +1731,19 @@ function delayedStartup(isLoadingBlank, 
+ 
+ function BrowserShutdown() {
+   // In certain scenarios it's possible for unload to be fired before onload,
+   // (e.g. if the window is being closed after browser.js loads but before the
+   // load completes). In that case, there's nothing to do here.
+   if (!gStartupRan)
+     return;
+ 
++  if (!__lookupGetter__("InspectorUI"))
++    InspectorUI.destroy();
++
+   // First clean up services initialized in BrowserStartup (or those whose
+   // uninit methods don't depend on the services having been initialized).
+   allTabs.uninit();
+ 
+   CombinedStopReload.uninit();
+ 
+   gGestureSupport.init(false);
+ 
+diff --git a/browser/base/content/inspector.js b/browser/base/content/inspector.jsm
+rename from browser/base/content/inspector.js
+rename to browser/base/content/inspector.jsm
+--- a/browser/base/content/inspector.js
++++ b/browser/base/content/inspector.jsm
+@@ -1,11 +1,10 @@
+ /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+ /* vim: set ts=2 et sw=2 tw=80: */
+-#ifdef 0
+ /* ***** BEGIN LICENSE BLOCK *****
+  * Version: MPL 1.1/GPL 2.0/LGPL 2.1
+  *
+  * The contents of this file are subject to the Mozilla Public License Version
+  * 1.1 (the "License"); you may not use this file except in compliance with
+  * the License. You may obtain a copy of the License at
+  * http://www.mozilla.org/MPL/
+  *
+@@ -36,17 +35,26 @@
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+  * decision by deleting the provisions above and replace them with the notice
+  * and other provisions required by the GPL or the LGPL. If you do not delete
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+-#endif
++
++const Cu = Components.utils;
++const Ci = Components.interfaces;
++const Cr = Components.results;
++
++var EXPORTED_SYMBOLS = ["INSPECTOR_NOTIFICATIONS", "InspectorUI",
++                        "InspectorStore"];
++
++Cu.import("resource://gre/modules/Services.jsm");
++Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ 
+ const INSPECTOR_INVISIBLE_ELEMENTS = {
+   "head": true,
+   "base": true,
+   "basefont": true,
+   "isindex": true,
+   "link": true,
+   "meta": true,
+@@ -86,40 +94,42 @@ const INSPECTOR_NOTIFICATIONS = {
+  * A highlighter mechanism.
+  *
+  * The highlighter is built dynamically once the Inspector is invoked:
+  * <stack id="highlighter-container">
+  *   <vbox id="highlighter-veil-container">...</vbox>
+  *   <box id="highlighter-controls>...</vbox>
+  * </stack>
+  *
+- * @param nsIDOMNode aBrowser
+- *        The xul:browser object for the content window being highlighted.
++ * @param object aInspector
++ *        The InspectorUI instance.
+  */
+-function Highlighter(aBrowser)
++function Highlighter(aInspector)
+ {
+-  this._init(aBrowser);
++  this.IUI = aInspector;
++  this._init();
+ }
+ 
+ Highlighter.prototype = {
++  _init: function Highlighter__init()
++  {
++    this.browser = this.IUI.browser;
++    this.chromeDoc = this.IUI.chromeDoc;
+ 
+-  _init: function Highlighter__init(aBrowser)
+-  {
+-    this.browser = aBrowser;
+     let stack = this.browser.parentNode;
+     this.win = this.browser.contentWindow;
+     this._highlighting = false;
+ 
+-    this.highlighterContainer = document.createElement("stack");
++    this.highlighterContainer = this.chromeDoc.createElement("stack");
+     this.highlighterContainer.id = "highlighter-container";
+ 
+-    this.veilContainer = document.createElement("vbox");
++    this.veilContainer = this.chromeDoc.createElement("vbox");
+     this.veilContainer.id = "highlighter-veil-container";
+ 
+-    let controlsBox = document.createElement("box");
++    let controlsBox = this.chromeDoc.createElement("box");
+     controlsBox.id = "highlighter-controls";
+ 
+     // The veil will make the whole page darker except
+     // for the region of the selected box.
+     this.buildVeil(this.veilContainer);
+ 
+     // The controlsBox will host the different interactive
+     // elements of the highlighter (buttons, toolbars, ...).
+@@ -131,17 +141,16 @@ Highlighter.prototype = {
+     stack.appendChild(this.highlighterContainer);
+ 
+     this.browser.addEventListener("resize", this, true);
+     this.browser.addEventListener("scroll", this, true);
+ 
+     this.handleResize();
+   },
+ 
+-
+   /**
+    * Build the veil:
+    *
+    * <vbox id="highlighter-veil-container">
+    *   <box id="highlighter-veil-topbox" class="highlighter-veil"/>
+    *   <hbox id="highlighter-veil-middlebox">
+    *     <box id="highlighter-veil-leftbox" class="highlighter-veil"/>
+    *     <box id="highlighter-veil-transparentbox"/>
+@@ -149,42 +158,41 @@ Highlighter.prototype = {
+    *   </hbox>
+    *   <box id="highlighter-veil-bottombox" class="highlighter-veil"/>
+    * </vbox>
+    *
+    * @param nsIDOMNode aParent
+    */
+   buildVeil: function Highlighter_buildVeil(aParent)
+   {
+-
+     // We will need to resize these boxes to surround a node.
+     // See highlightRectangle().
+ 
+-    this.veilTopBox = document.createElement("box");
++    this.veilTopBox = this.chromeDoc.createElement("box");
+     this.veilTopBox.id = "highlighter-veil-topbox";
+     this.veilTopBox.className = "highlighter-veil";
+ 
+-    this.veilMiddleBox = document.createElement("hbox");
++    this.veilMiddleBox = this.chromeDoc.createElement("hbox");
+     this.veilMiddleBox.id = "highlighter-veil-middlebox";
+ 
+-    this.veilLeftBox = document.createElement("box");
++    this.veilLeftBox = this.chromeDoc.createElement("box");
+     this.veilLeftBox.id = "highlighter-veil-leftbox";
+     this.veilLeftBox.className = "highlighter-veil";
+ 
+-    this.veilTransparentBox = document.createElement("box");
++    this.veilTransparentBox = this.chromeDoc.createElement("box");
+     this.veilTransparentBox.id = "highlighter-veil-transparentbox";
+ 
+     // We don't need any references to veilRightBox and veilBottomBox.
+     // These boxes are automatically resized (flex=1)
+ 
+-    let veilRightBox = document.createElement("box");
++    let veilRightBox = this.chromeDoc.createElement("box");
+     veilRightBox.id = "highlighter-veil-rightbox";
+     veilRightBox.className = "highlighter-veil";
+ 
+-    let veilBottomBox = document.createElement("box");
++    let veilBottomBox = this.chromeDoc.createElement("box");
+     veilBottomBox.id = "highlighter-veil-bottombox";
+     veilBottomBox.className = "highlighter-veil";
+ 
+     this.veilMiddleBox.appendChild(this.veilLeftBox);
+     this.veilMiddleBox.appendChild(this.veilTransparentBox);
+     this.veilMiddleBox.appendChild(veilRightBox);
+ 
+     aParent.appendChild(this.veilTopBox);
+@@ -196,21 +204,22 @@ Highlighter.prototype = {
+    * Build the controls:
+    *
+    * <box id="highlighter-close-button"/>
+    *
+    * @param nsIDOMNode aParent
+    */
+   buildControls: function Highlighter_buildControls(aParent)
+   {
+-    let closeButton = document.createElement("box");
++    let closeButton = this.chromeDoc.createElement("box");
+     closeButton.id = "highlighter-close-button";
+-    closeButton.appendChild(document.createElement("image"));
++    closeButton.appendChild(this.chromeDoc.createElement("image"));
+ 
+-    closeButton.setAttribute("onclick", "InspectorUI.closeInspectorUI(false);");
++    closeButton.addEventListener("click",
++      this.IUI.closeInspectorUI.bind(this.IUI), false);
+ 
+     aParent.appendChild(closeButton);
+   },
+ 
+ 
+   /**
+    * Destroy the nodes.
+    */
+@@ -225,17 +234,18 @@ Highlighter.prototype = {
+     this.veilMiddleBox = null;
+     this.veilTransparentBox = null;
+     this.veilContainer = null;
+     this.node = null;
+     this.highlighterContainer.parentNode.removeChild(this.highlighterContainer);
+     this.highlighterContainer = null;
+     this.win = null
+     this.browser = null;
+-    this.toolbar = null;
++    this.chromeDoc = null;
++    this.IUI = null;
+   },
+ 
+   /**
+    * Is the highlighter highlighting? Public method for querying the state
+    * of the highlighter.
+    */
+   get isHighlighting() {
+     return this._highlighting;
+@@ -411,29 +421,29 @@ Highlighter.prototype = {
+     let b = {
+       x: a.x + this._highlightRect.width,
+       y: a.y + this._highlightRect.height
+     };
+ 
+     // Get midpoint of diagonal line.
+     let midpoint = this.midPoint(a, b);
+ 
+-    return InspectorUI.elementFromPoint(this.win.document, midpoint.x,
++    return this.IUI.elementFromPoint(this.win.document, midpoint.x,
+       midpoint.y);
+   },
+ 
+   /**
+    * Is this.node highlightable?
+    *
+    * @returns boolean
+    *          True if the node is highlightable or false otherwise.
+    */
+   isNodeHighlightable: function Highlighter_isNodeHighlightable()
+   {
+-    if (!this.node || this.node.nodeType != Node.ELEMENT_NODE) {
++    if (!this.node || this.node.nodeType != this.node.ELEMENT_NODE) {
+       return false;
+     }
+     let nodeName = this.node.nodeName.toLowerCase();
+     return !INSPECTOR_INVISIBLE_ELEMENTS[nodeName];
+   },
+ 
+   /////////////////////////////////////////////////////////////////////////
+   //// Event Handling
+@@ -493,35 +503,35 @@ Highlighter.prototype = {
+    * @param nsIDOMEvent aEvent
+    *        The DOM event.
+    */
+   handleClick: function Highlighter_handleClick(aEvent)
+   {
+     // Stop inspection when the user clicks on a node.
+     if (aEvent.button == 0) {
+       let win = aEvent.target.ownerDocument.defaultView;
+-      InspectorUI.stopInspecting();
++      this.IUI.stopInspecting();
+       win.focus();
+     }
+     aEvent.preventDefault();
+     aEvent.stopPropagation();
+   },
+ 
+   /**
+    * Handle mousemoves in panel when InspectorUI.inspecting is true.
+    *
+    * @param nsiDOMEvent aEvent
+    *        The MouseEvent triggering the method.
+    */
+   handleMouseMove: function Highlighter_handleMouseMove(aEvent)
+   {
+-    let element = InspectorUI.elementFromPoint(aEvent.target.ownerDocument,
++    let element = this.IUI.elementFromPoint(aEvent.target.ownerDocument,
+       aEvent.clientX, aEvent.clientY);
+     if (element && element != this.node) {
+-      InspectorUI.inspectNode(element);
++      this.IUI.inspectNode(element);
+     }
+   },
+ 
+   /**
+    * Handle window resize events.
+    */
+   handleResize: function Highlighter_handleResize()
+   {
+@@ -529,25 +539,40 @@ Highlighter.prototype = {
+   },
+ };
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ //// InspectorUI
+ 
+ /**
+  * Main controller class for the Inspector.
++ *
++ * @constructor
++ * @param nsIDOMWindow aWindow
++ *        The chrome window for which the Inspector instance is created.
+  */
+-var InspectorUI = {
++function InspectorUI(aWindow)
++{
++  this.chromeWin = aWindow;
++  this.chromeDoc = aWindow.document;
++  this.gBrowser = aWindow.gBrowser;
++  this.tools = {};
++  this.toolEvents = {};
++  this.store = new InspectorStore();
++}
++
++InspectorUI.prototype = {
+   browser: null,
+-  tools: {},
+-  toolEvents: {},
++  tools: null,
++  toolEvents: null,
+   inspecting: false,
+   treePanelEnabled: true,
+   prefEnabledName: "devtools.inspector.enabled",
+   isDirty: false,
++  store: null,
+ 
+   /**
+    * Toggle the inspector interface elements on or off.
+    *
+    * @param aEvent
+    *        The event that requested the UI change. Toolbar button or menu.
+    */
+   toggleInspectorUI: function IUI_toggleInspectorUI(aEvent)
+@@ -603,68 +628,72 @@ var InspectorUI = {
+ 
+   /**
+    * Open inspector UI. tree. Add listeners for document scrolling,
+    * resize, tabContainer.TabSelect and others.
+    */
+   openInspectorUI: function IUI_openInspectorUI()
+   {
+     // initialization
+-    this.browser = gBrowser.selectedBrowser;
++    this.browser = this.gBrowser.selectedBrowser;
+     this.win = this.browser.contentWindow;
+     this.winID = this.getWindowID(this.win);
+-    this.toolbar = document.getElementById("inspector-toolbar");
++    this.toolbar = this.chromeDoc.getElementById("inspector-toolbar");
++    this.inspectMenuitem = this.chromeDoc.getElementById("Tools:Inspect");
++    this.inspectToolbutton =
++      this.chromeDoc.getElementById("inspector-inspect-toolbutton");
+ 
+     if (!this.TreePanel && this.treePanelEnabled) {
+       Cu.import("resource:///modules/TreePanel.jsm", this);
+-      this.treePanel = new this.TreePanel(window, this);
++      this.treePanel = new this.TreePanel(this.chromeWin, this);
+     }
+ 
+     this.toolbar.hidden = false;
+     this.inspectMenuitem.setAttribute("checked", true);
+ 
+     this.isDirty = false;
+ 
+-    gBrowser.addProgressListener(InspectorProgressListener);
++    this.progressListener = new InspectorProgressListener(this);
+ 
+     // initialize the highlighter
+     this.initializeHighlighter();
+   },
+ 
+   /**
+    * Initialize highlighter.
+    */
+   initializeHighlighter: function IUI_initializeHighlighter()
+   {
+-    this.highlighter = new Highlighter(this.browser);
++    this.highlighter = new Highlighter(this);
+     this.highlighterReady();
+   },
+ 
+   /**
+    * Initialize the InspectorStore.
+    */
+   initializeStore: function IUI_initializeStore()
+   {
+     // First time opened, add the TabSelect listener
+-    if (InspectorStore.isEmpty())
+-      gBrowser.tabContainer.addEventListener("TabSelect", this, false);
++    if (this.store.isEmpty()) {
++      this.gBrowser.tabContainer.addEventListener("TabSelect", this, false);
++    }
+ 
+     // Has this windowID been inspected before?
+-    if (InspectorStore.hasID(this.winID)) {
+-      let selectedNode = InspectorStore.getValue(this.winID, "selectedNode");
++    if (this.store.hasID(this.winID)) {
++      let selectedNode = this.store.getValue(this.winID, "selectedNode");
+       if (selectedNode) {
+         this.inspectNode(selectedNode);
+       }
+-      this.isDirty = InspectorStore.getValue(this.winID, "isDirty");
++      this.isDirty = this.store.getValue(this.winID, "isDirty");
+     } else {
+       // First time inspecting, set state to no selection + live inspection.
+-      InspectorStore.addStore(this.winID);
+-      InspectorStore.setValue(this.winID, "selectedNode", null);
+-      InspectorStore.setValue(this.winID, "inspecting", true);
+-      InspectorStore.setValue(this.winID, "isDirty", this.isDirty);
++      this.store.addStore(this.winID);
++      this.store.setValue(this.winID, "selectedNode", null);
++      this.store.setValue(this.winID, "inspecting", true);
++      this.store.setValue(this.winID, "isDirty", this.isDirty);
+       this.win.addEventListener("pagehide", this, true);
+     }
+   },
+ 
+   /**
+    * Close inspector UI and associated panels. Unhighlight and stop inspecting.
+    * Remove event listeners for document scrolling, resize,
+    * tabContainer.TabSelect and others.
+@@ -683,33 +712,34 @@ var InspectorUI = {
+ 
+     if (this.closing || !this.win || !this.browser) {
+       return;
+     }
+ 
+     this.closing = true;
+     this.toolbar.hidden = true;
+ 
+-    gBrowser.removeProgressListener(InspectorProgressListener);
++    this.progressListener.destroy();
++    delete this.progressListener;
+ 
+     if (!aKeepStore) {
+-      InspectorStore.deleteStore(this.winID);
++      this.store.deleteStore(this.winID);
+       this.win.removeEventListener("pagehide", this, true);
+     } else {
+       // Update the store before closing.
+       if (this.selection) {
+-        InspectorStore.setValue(this.winID, "selectedNode",
++        this.store.setValue(this.winID, "selectedNode",
+           this.selection);
+       }
+-      InspectorStore.setValue(this.winID, "inspecting", this.inspecting);
+-      InspectorStore.setValue(this.winID, "isDirty", this.isDirty);
++      this.store.setValue(this.winID, "inspecting", this.inspecting);
++      this.store.setValue(this.winID, "isDirty", this.isDirty);
+     }
+ 
+-    if (InspectorStore.isEmpty()) {
+-      gBrowser.tabContainer.removeEventListener("TabSelect", this, false);
++    if (this.store.isEmpty()) {
++      this.gBrowser.tabContainer.removeEventListener("TabSelect", this, false);
+     }
+ 
+     this.stopInspecting();
+     if (this.highlighter) {
+       this.highlighter.destroy();
+       this.highlighter = null;
+     }
+ 
+@@ -824,17 +854,17 @@ var InspectorUI = {
+   /////////////////////////////////////////////////////////////////////////
+   //// Event Handling
+ 
+   highlighterReady: function IUI_highlighterReady()
+   {
+     // Setup the InspectorStore or restore state
+     this.initializeStore();
+ 
+-    if (InspectorStore.getValue(this.winID, "inspecting")) {
++    if (this.store.getValue(this.winID, "inspecting")) {
+       this.startInspecting();
+     }
+ 
+     this.win.focus();
+     Services.obs.notifyObservers(null, INSPECTOR_NOTIFICATIONS.OPENED, null);
+   },
+ 
+   /**
+@@ -846,62 +876,62 @@ var InspectorUI = {
+   handleEvent: function IUI_handleEvent(event)
+   {
+     let winID = null;
+     let win = null;
+     let inspectorClosed = false;
+ 
+     switch (event.type) {
+       case "TabSelect":
+-        winID = this.getWindowID(gBrowser.selectedBrowser.contentWindow);
++        winID = this.getWindowID(this.gBrowser.selectedBrowser.contentWindow);
+         if (this.isInspectorOpen && winID != this.winID) {
+           this.closeInspectorUI(true);
+           inspectorClosed = true;
+         }
+ 
+-        if (winID && InspectorStore.hasID(winID)) {
++        if (winID && this.store.hasID(winID)) {
+           if (inspectorClosed && this.closing) {
+             Services.obs.addObserver(function reopenInspectorForTab() {
+               Services.obs.removeObserver(reopenInspectorForTab,
+                 INSPECTOR_NOTIFICATIONS.CLOSED, false);
+ 
+-              InspectorUI.openInspectorUI();
+-            }, INSPECTOR_NOTIFICATIONS.CLOSED, false);
++              this.openInspectorUI();
++            }.bind(this), INSPECTOR_NOTIFICATIONS.CLOSED, false);
+           } else {
+             this.openInspectorUI();
+             this.restoreToolState(winID);
+           }
+         }
+ 
+-        if (InspectorStore.isEmpty()) {
+-          gBrowser.tabContainer.removeEventListener("TabSelect", this, false);
++        if (this.store.isEmpty()) {
++          this.gBrowser.tabContainer.removeEventListener("TabSelect", this, false);
+         }
+         break;
+       case "pagehide":
+         win = event.originalTarget.defaultView;
+         // Skip iframes/frames.
+         if (!win || win.frameElement || win.top != win) {
+           break;
+         }
+ 
+         win.removeEventListener(event.type, this, true);
+ 
+         winID = this.getWindowID(win);
+         if (winID && winID != this.winID) {
+-          InspectorStore.deleteStore(winID);
++          this.store.deleteStore(winID);
+         }
+ 
+-        if (InspectorStore.isEmpty()) {
+-          gBrowser.tabContainer.removeEventListener("TabSelect", this, false);
++        if (this.store.isEmpty()) {
++          this.gBrowser.tabContainer.removeEventListener("TabSelect", this, false);
+         }
+         break;
+       case "keypress":
+         switch (event.keyCode) {
+-          case KeyEvent.DOM_VK_RETURN:
+-          case KeyEvent.DOM_VK_ESCAPE:
++          case this.chromeWin.KeyEvent.DOM_VK_RETURN:
++          case this.chromeWin.KeyEvent.DOM_VK_ESCAPE:
+             if (this.inspecting) {
+               this.stopInspecting();
+               event.preventDefault();
+               event.stopPropagation();
+             }
+             break;
+         }
+         break;
+@@ -1062,50 +1092,49 @@ var InspectorUI = {
+   registerTool: function IUI_registerTool(aRegObj)
+   {
+     if (this.tools[aRegObj.id]) {
+       return;
+     }
+ 
+     this.tools[aRegObj.id] = aRegObj;
+ 
+-    let btn = document.createElement("toolbarbutton");
++    let btn = this.chromeDoc.createElement("toolbarbutton");
+     let buttonId = this.getToolbarButtonId(aRegObj.id);
+     btn.setAttribute("id", buttonId);
+     btn.setAttribute("label", aRegObj.label);
+     btn.setAttribute("tooltiptext", aRegObj.tooltiptext);
+     btn.setAttribute("accesskey", aRegObj.accesskey);
+     btn.setAttribute("class", "toolbarbutton-text");
+     btn.setAttribute("image", aRegObj.icon || "");
+     this.toolbar.appendChild(btn);
+-    
++
+     /**
+      * Save the registered tool's toolbar button's click handler so we can remove
+      * it at deregistration time.
+      * @param aButton XUL:toolbarbutton
+      * @param aCallback Function the click event handler for the button
+      */
+-    function bindToolEvent(aWidget, aEvent, aCallback)
+-    {
++    let bindToolEvent = function(aWidget, aEvent, aCallback) {
+       let toolEvent = aWidget.id + "_" + aEvent;
+-      InspectorUI.toolEvents[toolEvent] = aCallback;
++      this.toolEvents[toolEvent] = aCallback;
+       aWidget.addEventListener(aEvent, aCallback, false);
+-    }
++    }.bind(this);
+ 
+     bindToolEvent(btn, "click",
+       function IUI_toolButtonClick(aEvent) {
+         if (btn.hasAttribute("checked")) {
+           aRegObj.onHide.call(aRegObj.context);
+         } else {
+           if (aRegObj.onShow) {
+-            aRegObj.onShow.call(aRegObj.context, InspectorUI.selection);
++            aRegObj.onShow.call(aRegObj.context, this.selection);
+           }
+-          aRegObj.onSelect.call(aRegObj.context, InspectorUI.selection);
++          aRegObj.onSelect.call(aRegObj.context, this.selection);
+         }
+-      });
++      }.bind(this));
+ 
+     bindToolEvent(aRegObj.panel, "popuphiding",
+       function IUI_toolPanelHiding() {
+         btn.removeAttribute("checked");
+       });
+     bindToolEvent(aRegObj.panel, "popupshowing",
+       function IUI_toolPanelShowing() {
+         btn.setAttribute("checked", "true");
+@@ -1115,32 +1144,31 @@ var InspectorUI = {
+   /**
+    * Unregister the registered tool, unbinding click events for the buttons
+    * and showing and hiding events for the panel.
+    * @param aRegObj Object
+    *        The registration object used to register the tool.
+    */
+   unregisterTool: function IUI_unregisterTool(aRegObj)
+   {
+-    let button = document.getElementById(this.getToolbarButtonId(aRegObj.id));
++    let button = this.chromeDoc.getElementById(this.getToolbarButtonId(aRegObj.id));
+ 
+     /**
+      * Unregister the click handler for the registered tool's button.
+      * @param aButton XUL:toolbarbutton
+      */
+-    function unbindToolEvent(aWidget, aEvent)
+-    {
++    let unbindToolEvent = function(aWidget, aEvent) {
+       let toolEvent = aWidget.id + "_" + aEvent;
+-      if (!InspectorUI.toolEvents[toolEvent]) {
++      if (!this.toolEvents[toolEvent]) {
+         return;
+       }
+ 
+-      aWidget.removeEventListener(aEvent, InspectorUI.toolEvents[toolEvent], false);
+-      delete InspectorUI.toolEvents[toolEvent]
+-    }
++      aWidget.removeEventListener(aEvent, this.toolEvents[toolEvent], false);
++      delete this.toolEvents[toolEvent]
++    }.bind(this);
+ 
+     unbindToolEvent(button, "click");
+     unbindToolEvent(aRegObj.panel, "popuphiding");
+     unbindToolEvent(aRegObj.panel, "popupshowing");
+     this.toolbar.removeChild(button);
+     delete this.tools[aRegObj.id];
+   },
+ 
+@@ -1152,56 +1180,77 @@ var InspectorUI = {
+   saveToolState: function IUI_saveToolState(aWinID)
+   {
+     let openTools = {};
+     this.toolsDo(function IUI_toolsSetId(aTool) {
+       if (aTool.panel.state == "open") {
+         openTools[aTool.id] = true;
+       }
+     });
+-    InspectorStore.setValue(aWinID, "openTools", openTools);
++    this.store.setValue(aWinID, "openTools", openTools);
+   },
+ 
+   /**
+    * Restore tools previously save using saveToolState().
+    *
+    * @param aWinID The ID of the window to which the associated tools are to be
+    *               restored.
+    */
+   restoreToolState: function IUI_restoreToolState(aWinID)
+   {
+-    let openTools = InspectorStore.getValue(aWinID, "openTools");
+-    InspectorUI.selection = InspectorUI.selection;
++    let openTools = this.store.getValue(aWinID, "openTools");
+     if (openTools) {
+       this.toolsDo(function IUI_toolsOnShow(aTool) {
+         if (aTool.id in openTools) {
+-          aTool.onShow.apply(aTool.context, [InspectorUI.selection]);
++          aTool.onShow.call(aTool.context, this.selection);
+         }
+-      });
++      }.bind(this));
+     }
+   },
+ 
+   /**
+    * Loop through all registered tools and pass each into the provided function
+    *
+    * @param aFunction The function to which each tool is to be passed
+    */
+   toolsDo: function IUI_toolsDo(aFunction)
+   {
+     for each (let tool in this.tools) {
+       aFunction(tool);
+     }
+   },
++
++  /**
++   * Destroy the InspectorUI instance. This is called by the InspectorUI API
++   * "user", see BrowserShutdown() in browser.js.
++   */
++  destroy: function IUI_destroy()
++  {
++    if (this.isInspectorOpen && !this.closing) {
++      this.closeInspectorUI();
++    }
++
++    delete this.store;
++    delete this.chromeDoc;
++    delete this.chromeWin;
++    delete this.gBrowser;
++  },
+ };
+ 
+ /**
+  * The Inspector store is used for storing data specific to each tab window.
++ * @constructor
+  */
+-var InspectorStore = {
+-  store: {},
++function InspectorStore()
++{
++  this.store = {};
++}
++
++InspectorStore.prototype = {
++  store: null,
+   length: 0,
+ 
+   /**
+    * Check if there is any data recorded for any tab/window.
+    *
+    * @returns boolean True if there are no stores for any window/tab, or false
+    * otherwise.
+    */
+@@ -1320,58 +1369,68 @@ var InspectorStore = {
+ };
+ 
+ /**
+  * The InspectorProgressListener object is an nsIWebProgressListener which
+  * handles onStateChange events for the inspected browser. If the user makes
+  * changes to the web page and he tries to navigate away, he is prompted to
+  * confirm page navigation, such that he's given the chance to prevent the loss
+  * of edits.
++ *
++ * @constructor
++ * @param object aInspector
++ *        InspectorUI instance object.
+  */
+-var InspectorProgressListener = {
++function InspectorProgressListener(aInspector)
++{
++  this.IUI = aInspector;
++  this.IUI.gBrowser.addProgressListener(this);
++}
++
++InspectorProgressListener.prototype = {
+   onStateChange:
+   function IPL_onStateChange(aProgress, aRequest, aFlag, aStatus)
+   {
+     // Remove myself if the Inspector is no longer open.
+-    if (!InspectorUI.isInspectorOpen) {
+-      gBrowser.removeProgressListener(InspectorProgressListener);
++    if (!this.IUI.isInspectorOpen) {
++      this.destroy();
+       return;
+     }
+ 
+     // Skip non-start states.
+     if (!(aFlag & Ci.nsIWebProgressListener.STATE_START)) {
+       return;
+     }
+ 
+     // If the request is about to happen in a new window, we are not concerned
+     // about the request.
+-    if (aProgress.DOMWindow != InspectorUI.win) {
++    if (aProgress.DOMWindow != this.IUI.win) {
+       return;
+     }
+ 
+-    if (InspectorUI.isDirty) {
++    if (this.IUI.isDirty) {
+       this.showNotification(aRequest);
+     } else {
+-      InspectorUI.closeInspectorUI();
++      this.IUI.closeInspectorUI();
+     }
+   },
+ 
+   /**
+    * Show an asynchronous notification which asks the user to confirm or cancel
+    * the page navigation request.
+    *
+    * @param nsIRequest aRequest
+    *        The request initiated by the user or by the page itself.
+    * @returns void
+    */
+   showNotification: function IPL_showNotification(aRequest)
+   {
+     aRequest.suspend();
+ 
+-    let notificationBox = gBrowser.getNotificationBox(InspectorUI.browser);
++    let notificationBox = this.IUI.gBrowser.getNotificationBox(this.IUI.browser);
+     let notification = notificationBox.
+       getNotificationWithValue("inspector-page-navigation");
+ 
+     if (notification) {
+       notificationBox.removeNotification(notification, true);
+     }
+ 
+     let cancelRequest = function onCancelRequest() {
+@@ -1386,59 +1445,70 @@ var InspectorProgressListener = {
+       if (aEvent == "removed") {
+         cancelRequest();
+       }
+     };
+ 
+     let buttons = [
+       {
+         id: "inspector.confirmNavigationAway.buttonLeave",
+-        label: InspectorUI.strings.
++        label: this.IUI.strings.
+           GetStringFromName("confirmNavigationAway.buttonLeave"),
+-        accessKey: InspectorUI.strings.
++        accessKey: this.IUI.strings.
+           GetStringFromName("confirmNavigationAway.buttonLeaveAccesskey"),
+         callback: function onButtonLeave() {
+           if (aRequest) {
+             aRequest.resume();
+             aRequest = null;
+-            InspectorUI.closeInspectorUI();
++            this.IUI.closeInspectorUI();
+           }
+-        },
++        }.bind(this),
+       },
+       {
+         id: "inspector.confirmNavigationAway.buttonStay",
+-        label: InspectorUI.strings.
++        label: this.IUI.strings.
+           GetStringFromName("confirmNavigationAway.buttonStay"),
+-        accessKey: InspectorUI.strings.
++        accessKey: this.IUI.strings.
+           GetStringFromName("confirmNavigationAway.buttonStayAccesskey"),
+         callback: cancelRequest
+       },
+     ];
+ 
+-    let message = InspectorUI.strings.
++    let message = this.IUI.strings.
+       GetStringFromName("confirmNavigationAway.message");
+ 
+     notification = notificationBox.appendNotification(message,
+       "inspector-page-navigation", "chrome://browser/skin/Info.png",
+       notificationBox.PRIORITY_WARNING_HIGH, buttons, eventCallback);
+ 
+     // Make sure this not a transient notification, to avoid the automatic
+     // transient notification removal.
+     notification.persistence = -1;
+   },
++
++  /**
++   * Destroy the progress listener instance.
++   */
++  destroy: function IPL_destroy()
++  {
++    this.IUI.gBrowser.removeProgressListener(this);
++
++    let notificationBox = this.IUI.gBrowser.getNotificationBox(this.IUI.browser);
++    let notification = notificationBox.
++      getNotificationWithValue("inspector-page-navigation");
++
++    if (notification) {
++      notificationBox.removeNotification(notification, true);
++    }
++
++    delete this.IUI;
++  },
+ };
+ 
+ /////////////////////////////////////////////////////////////////////////
+ //// Initializers
+ 
+-XPCOMUtils.defineLazyGetter(InspectorUI, "inspectMenuitem", function () {
+-  return document.getElementById("Tools:Inspect");
+-});
++XPCOMUtils.defineLazyGetter(InspectorUI.prototype, "strings",
++  function () {
++    return Services.strings.
++           createBundle("chrome://browser/locale/inspector.properties");
++  });
+ 
+-XPCOMUtils.defineLazyGetter(InspectorUI, "inspectToolbutton", function () {
+-  return document.getElementById("inspector-inspect-toolbutton");
+-});
+-
+-XPCOMUtils.defineLazyGetter(InspectorUI, "strings", function () {
+-  return Services.strings.
+-         createBundle("chrome://browser/locale/inspector.properties");
+-});
+-
+diff --git a/browser/base/content/test/inspector/browser_inspector_store.js b/browser/base/content/test/inspector/browser_inspector_store.js
+--- a/browser/base/content/test/inspector/browser_inspector_store.js
++++ b/browser/base/content/test/inspector/browser_inspector_store.js
+@@ -34,18 +34,20 @@
+  * and other provisions required by the GPL or the LGPL. If you do not delete
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ function test()
+ {
+-  ok(window.InspectorUI, "InspectorUI variable exists");
+-  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++  let tmp = {};
++  Cu.import("resource:///modules/inspector.jsm", tmp);
++  let InspectorStore = new tmp.InspectorStore();
++
+   is(InspectorStore.length, 0, "InspectorStore is empty");
+   ok(InspectorStore.isEmpty(), "InspectorStore is empty (confirmed)");
+   is(typeof InspectorStore.store, "object",
+     "InspectorStore.store is an object");
+ 
+   ok(InspectorStore.addStore("foo"), "addStore('foo') returns true");
+ 
+   is(InspectorStore.length, 1, "InspectorStore.length = 1");
+diff --git a/browser/base/content/test/inspector/browser_inspector_tab_switch.js b/browser/base/content/test/inspector/browser_inspector_tab_switch.js
+--- a/browser/base/content/test/inspector/browser_inspector_tab_switch.js
++++ b/browser/base/content/test/inspector/browser_inspector_tab_switch.js
+@@ -42,33 +42,33 @@ let div;
+ let tab1;
+ let tab2;
+ let tab1window;
+ 
+ function inspectorTabOpen1()
+ {
+   ok(window.InspectorUI, "InspectorUI variable exists");
+   ok(!InspectorUI.inspecting, "Inspector is not highlighting");
+-  ok(InspectorStore.isEmpty(), "InspectorStore is empty");
++  ok(InspectorUI.store.isEmpty(), "InspectorStore is empty");
+ 
+   Services.obs.addObserver(inspectorUIOpen1,
+     INSPECTOR_NOTIFICATIONS.OPENED, false);
+   InspectorUI.openInspectorUI();
+ }
+ 
+ function inspectorUIOpen1()
+ {
+   Services.obs.removeObserver(inspectorUIOpen1,
+     INSPECTOR_NOTIFICATIONS.OPENED, false);
+ 
+   // Make sure the inspector is open.
+   ok(InspectorUI.inspecting, "Inspector is highlighting");
+   ok(!InspectorUI.isTreePanelOpen, "Inspector Tree Panel is not open");
+-  ok(!InspectorStore.isEmpty(), "InspectorStore is not empty");
+-  is(InspectorStore.length, 1, "InspectorStore.length = 1");
++  ok(!InspectorUI.store.isEmpty(), "InspectorStore is not empty");
++  is(InspectorUI.store.length, 1, "InspectorStore.length = 1");
+ 
+   // Highlight a node.
+   div = content.document.getElementsByTagName("div")[0];
+   InspectorUI.inspectNode(div);
+   is(InspectorUI.selection, div, "selection matches the div element");
+ 
+   // Open the second tab.
+   tab2 = gBrowser.addTab();
+@@ -83,17 +83,17 @@ function inspectorUIOpen1()
+   content.location = "data:text/html,<p>tab 2: the inspector should close now";
+ }
+ 
+ function inspectorTabOpen2()
+ {
+   // Make sure the inspector is closed.
+   ok(!InspectorUI.inspecting, "Inspector is not highlighting");
+   ok(!InspectorUI.isPanelOpen, "Inspector Tree Panel is closed");
+-  is(InspectorStore.length, 1, "InspectorStore.length = 1");
++  is(InspectorUI.store.length, 1, "InspectorStore.length = 1");
+ 
+   // Activate the inspector again.
+   executeSoon(function() {
+     Services.obs.addObserver(inspectorUIOpen2,
+       INSPECTOR_NOTIFICATIONS.OPENED, false);
+     InspectorUI.openInspectorUI();
+   });
+ }
+@@ -101,17 +101,17 @@ function inspectorTabOpen2()
+ function inspectorUIOpen2()
+ {
+   Services.obs.removeObserver(inspectorUIOpen2,
+     INSPECTOR_NOTIFICATIONS.OPENED, false);
+ 
+   // Make sure the inspector is open.
+   ok(InspectorUI.inspecting, "Inspector is highlighting");
+   ok(!InspectorUI.isTreePanelOpen, "Inspector Tree Panel is not open");
+-  is(InspectorStore.length, 2, "InspectorStore.length = 2");
++  is(InspectorUI.store.length, 2, "InspectorStore.length = 2");
+ 
+   // Disable highlighting.
+   InspectorUI.toggleInspection();
+   ok(!InspectorUI.inspecting, "Inspector is not highlighting");
+ 
+   // Switch back to tab 1.
+   executeSoon(function() {
+     Services.obs.addObserver(inspectorFocusTab1,
+@@ -123,100 +123,100 @@ function inspectorUIOpen2()
+ function inspectorFocusTab1()
+ {
+   Services.obs.removeObserver(inspectorFocusTab1,
+     INSPECTOR_NOTIFICATIONS.OPENED, false);
+ 
+   // Make sure the inspector is still open.
+   ok(InspectorUI.inspecting, "Inspector is highlighting");
+   ok(!InspectorUI.isTreePanelOpen, "Inspector Tree Panel is not open");
+-  is(InspectorStore.length, 2, "InspectorStore.length = 2");
++  is(InspectorUI.store.length, 2, "InspectorStore.length = 2");
+   is(InspectorUI.selection, div, "selection matches the div element");
+ 
+   Services.obs.addObserver(inspectorOpenTreePanelTab1,
+     INSPECTOR_NOTIFICATIONS.TREEPANELREADY, false);
+ 
+   InspectorUI.treePanel.open();
+ }
+ 
+ function inspectorOpenTreePanelTab1()
+ {
+   Services.obs.removeObserver(inspectorOpenTreePanelTab1,
+     INSPECTOR_NOTIFICATIONS.TREEPANELREADY);
+ 
+   ok(InspectorUI.inspecting, "Inspector is highlighting");
+   ok(InspectorUI.isTreePanelOpen, "Inspector Tree Panel is open");
+-  is(InspectorStore.length, 2, "InspectorStore.length = 2");
++  is(InspectorUI.store.length, 2, "InspectorStore.length = 2");
+   is(InspectorUI.selection, div, "selection matches the div element");
+ 
+   // Switch back to tab 2.
+   Services.obs.addObserver(inspectorFocusTab2,
+     INSPECTOR_NOTIFICATIONS.OPENED, false);
+   gBrowser.selectedTab = tab2;
+ }
+ 
+ function inspectorFocusTab2()
+ {
+   Services.obs.removeObserver(inspectorFocusTab2,
+     INSPECTOR_NOTIFICATIONS.OPENED, false);
+ 
+   // Make sure the inspector is still open.
+   ok(!InspectorUI.inspecting, "Inspector is not highlighting");
+   ok(!InspectorUI.isTreePanelOpen, "Inspector Tree Panel is not open");
+-  is(InspectorStore.length, 2, "InspectorStore.length = 2");
++  is(InspectorUI.store.length, 2, "InspectorStore.length = 2");
+   isnot(InspectorUI.selection, div, "selection does not match the div element");
+ 
+   // Switch back to tab 1.
+   Services.obs.addObserver(inspectorSecondFocusTab1,
+     INSPECTOR_NOTIFICATIONS.TREEPANELREADY, false);
+   gBrowser.selectedTab = tab1;
+ }
+ 
+ function inspectorSecondFocusTab1()
+ {
+   Services.obs.removeObserver(inspectorSecondFocusTab1,
+     INSPECTOR_NOTIFICATIONS.TREEPANELREADY);
+ 
+   ok(InspectorUI.inspecting, "Inspector is highlighting");
+   ok(InspectorUI.isTreePanelOpen, "Inspector Tree Panel is open");
+-  is(InspectorStore.length, 2, "InspectorStore.length = 2");
++  is(InspectorUI.store.length, 2, "InspectorStore.length = 2");
+   is(InspectorUI.selection, div, "selection matches the div element");
+ 
+   // Switch back to tab 2.
+   Services.obs.addObserver(inspectorSecondFocusTab2,
+     INSPECTOR_NOTIFICATIONS.OPENED, false);
+   gBrowser.selectedTab = tab2;
+ }
+ 
+ function inspectorSecondFocusTab2()
+ {
+   Services.obs.removeObserver(inspectorSecondFocusTab2,
+     INSPECTOR_NOTIFICATIONS.OPENED);
+ 
+   // Make sure the inspector is still open.
+   ok(!InspectorUI.inspecting, "Inspector is not highlighting");
+   ok(!InspectorUI.isTreePanelOpen, "Inspector Tree Panel is not open");
+-  is(InspectorStore.length, 2, "InspectorStore.length = 2");
++  is(InspectorUI.store.length, 2, "InspectorStore.length = 2");
+   isnot(InspectorUI.selection, div, "selection does not match the div element");
+ 
+   // Remove tab 1.
+   tab1window = gBrowser.getBrowserForTab(tab1).contentWindow;
+   tab1window.addEventListener("pagehide", inspectorTabUnload1, false);
+   gBrowser.removeTab(tab1);
+ }
+ 
+ function inspectorTabUnload1(evt)
+ {
+   tab1window.removeEventListener(evt.type, arguments.callee, false);
+   tab1window = tab1 = tab2 = div = null;
+ 
+   // Make sure the Inspector is still open and that the state is correct.
+   ok(!InspectorUI.inspecting, "Inspector is not highlighting");
+   ok(!InspectorUI.isTreePanelOpen, "Inspector Tree Panel is not open");
+-  is(InspectorStore.length, 1, "InspectorStore.length = 1");
++  is(InspectorUI.store.length, 1, "InspectorStore.length = 1");
+ 
+   InspectorUI.closeInspectorUI();
+   gBrowser.removeCurrentTab();
+   finish();
+ }
+ 
+ function test()
+ {

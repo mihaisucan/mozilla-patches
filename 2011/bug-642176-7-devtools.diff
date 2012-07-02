@@ -1,0 +1,1321 @@
+# HG changeset patch
+# Parent cbd3cdb82da29a6f3ee10701dca5cfdabf6d3952
+# Date 1302893825 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+
+Bug 642176 - Integrate Workspace extension into the browser
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -1042,16 +1042,19 @@ pref("services.sync.prefs.sync.signon.re
+ pref("services.sync.prefs.sync.spellchecker.dictionary", true);
+ pref("services.sync.prefs.sync.xpinstall.whitelist.required", true);
+ #endif
+ 
+ // Disable the error console and inspector
+ pref("devtools.errorconsole.enabled", false);
+ pref("devtools.inspector.enabled", false);
+ 
++// Enable the Workspace tool.
++pref("devtools.workspace.enabled", true);
++
+ // The last Web Console height. This is initially 0 which means that the Web
+ // Console will use the default height next time it shows.
+ // Change to -1 if you do not want the Web Console to remember its last height.
+ pref("devtools.hud.height", 0);
+ 
+ // Whether the character encoding menu is under the main Firefox button. This
+ // preference is a string so that localizers can alter it.
+ pref("browser.menu.showCharacterEncoding", "chrome://browser/locale/browser.properties");
+diff --git a/browser/base/content/browser-appmenu.inc b/browser/base/content/browser-appmenu.inc
+--- a/browser/base/content/browser-appmenu.inc
++++ b/browser/base/content/browser-appmenu.inc
+@@ -182,16 +182,21 @@
+                     oncommand="HUDConsoleUI.toggleHUD();"
+                     key="key_webConsole"/>
+           <menuitem id="appmenu_pageInspect"
+                     hidden="true"
+                     label="&inspectMenu.label;"
+                     type="checkbox"
+                     command="Tools:Inspect"
+                     key="key_inspect"/>
++          <menuitem id="appmenu_workspace"
++                    hidden="true"
++                    label="&workspace.label;"
++                    key="key_workspace"
++                    command="Tools:Workspace"/>
+           <menuitem id="appmenu_pageSource"
+                     label="&viewPageSourceCmd.label;"
+                     command="View:PageSource"
+                     key="key_viewSource"/>
+           <menuitem id="appmenu_errorConsole"
+                     hidden="true"
+                     label="&errorConsoleCmd.label;"
+                     key="key_errorConsole"
+diff --git a/browser/base/content/browser-menubar.inc b/browser/base/content/browser-menubar.inc
+--- a/browser/base/content/browser-menubar.inc
++++ b/browser/base/content/browser-menubar.inc
+@@ -545,16 +545,21 @@
+                         accesskey="&errorConsoleCmd.accesskey;"
+                         key="key_errorConsole"
+                         oncommand="toJavaScriptConsole();"/>
+               <menuitem id="webConsole"
+                         label="&webConsoleCmd.label;"
+                         accesskey="&webConsoleCmd.accesskey;"
+                         key="key_webConsole"
+                         oncommand="HUDConsoleUI.toggleHUD();"/>
++              <menuitem id="menu_workspace"
++                        hidden="true"
++                        label="&workspace.label;"
++                        key="key_workspace"
++                        command="Tools:Workspace"/>
+               <menuitem id="menu_pageInfo"
+                         accesskey="&pageInfoCmd.accesskey;"
+                         label="&pageInfoCmd.label;"
+ #ifndef XP_WIN
+                         key="key_viewInfo"
+ #endif
+                         command="View:PageInfo"/>
+               <menuseparator id="sanitizeSeparator"/>
+diff --git a/browser/base/content/browser-sets.inc b/browser/base/content/browser-sets.inc
+--- a/browser/base/content/browser-sets.inc
++++ b/browser/base/content/browser-sets.inc
+@@ -120,16 +120,17 @@
+     <command id="cmd_fullZoomEnlarge" oncommand="FullZoom.enlarge()"/>
+     <command id="cmd_fullZoomReset"   oncommand="FullZoom.reset()"/>
+     <command id="cmd_fullZoomToggle"  oncommand="ZoomManager.toggleZoom();"/>
+     <command id="Browser:OpenLocation" oncommand="openLocation();"/>
+ 
+     <command id="Tools:Search" oncommand="BrowserSearch.webSearch();"/>
+     <command id="Tools:Downloads" oncommand="BrowserDownloadsUI();"/>
+     <command id="Tools:Inspect" oncommand="InspectorUI.toggleInspectorUI();" disabled="true"/>
++    <command id="Tools:Workspace" oncommand="Workspace.openWorkspace();" disabled="true"/>
+     <command id="Tools:Addons" oncommand="BrowserOpenAddonsMgr();"/>
+     <command id="Tools:Sanitize"
+      oncommand="Cc['@mozilla.org/browser/browserglue;1'].getService(Ci.nsIBrowserGlue).sanitize(window);"/>
+     <command id="Tools:PrivateBrowsing" oncommand="gPrivateBrowsingUI.toggleMode();"/>
+     <command id="History:UndoCloseTab" oncommand="undoCloseTab();"/>
+     <command id="History:UndoCloseWindow" oncommand="undoCloseWindow();"/>
+     <command id="Browser:ToggleAddonBar" oncommand="toggleAddonBar();"/>
+   </commandset>
+@@ -236,16 +237,18 @@
+     <key id="key_openDownloads" key="&downloadsUnix.commandkey;" command="Tools:Downloads" modifiers="accel,shift"/>
+ #else
+     <key id="key_openDownloads" key="&downloads.commandkey;" command="Tools:Downloads" modifiers="accel"/>
+ #endif
+     <key id="key_openAddons" key="&addons.commandkey;" command="Tools:Addons" modifiers="accel,shift"/>
+     <key id="key_errorConsole" key="&errorConsoleCmd.commandkey;" oncommand="toJavaScriptConsole();" modifiers="accel,shift" disabled="true"/>
+     <key id="key_webConsole" key="&webConsoleCmd.commandkey;" oncommand="HUDConsoleUI.toggleHUD();" modifiers="accel,shift"/>
+     <key id="key_inspect" key="&inspectMenu.commandkey;" command="Tools:Inspect" modifiers="accel,shift"/>
++    <key id="key_workspace" keycode="&workspace.keycode;"
++         keytext="&workspace.keytext;" command="Tools:Workspace"/>
+     <key id="openFileKb" key="&openFileCmd.commandkey;" command="Browser:OpenFile"  modifiers="accel"/>
+     <key id="key_savePage" key="&savePageCmd.commandkey;" command="Browser:SavePage" modifiers="accel"/>
+     <key id="printKb" key="&printCmd.commandkey;" command="cmd_print"  modifiers="accel"/>
+     <key id="key_close" key="&closeCmd.key;" command="cmd_close" modifiers="accel"/>
+     <key id="key_closeWindow" key="&closeCmd.key;" command="cmd_closeWindow" modifiers="accel,shift"/>
+     <key id="key_undo"
+          key="&undoCmd.key;"
+          modifiers="accel"/>
+diff --git a/browser/base/content/browser.js b/browser/base/content/browser.js
+--- a/browser/base/content/browser.js
++++ b/browser/base/content/browser.js
+@@ -49,16 +49,17 @@
+ #   Nils Maier <maierman@web.de>
+ #   Rob Arnold <robarnold@cmu.edu>
+ #   Dietrich Ayala <dietrich@mozilla.com>
+ #   Gavin Sharp <gavin@gavinsharp.com>
+ #   Justin Dolske <dolske@mozilla.com>
+ #   Rob Campbell <rcampbell@mozilla.com>
+ #   David Dahl <ddahl@mozilla.com>
+ #   Patrick Walton <pcwalton@mozilla.com>
++#   Mihai Sucan <mihai.sucan@gmail.com>
+ #
+ # Alternatively, the contents of this file may be used under the terms of
+ # either the GNU General Public License Version 2 or later (the "GPL"), or
+ # the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+ # in which case the provisions of the GPL or the LGPL are applicable instead
+ # of those above. If you wish to allow use of your version of this file only
+ # under the terms of either the GPL or the LGPL, and not to allow others to
+ # use your version of this file under the terms of the MPL, indicate your
+@@ -1657,16 +1658,26 @@ function delayedStartup(isLoadingBlank, 
+   if (consoleEnabled) {
+     document.getElementById("javascriptConsole").hidden = false;
+     document.getElementById("key_errorConsole").removeAttribute("disabled");
+ #ifdef MENUBAR_CAN_AUTOHIDE
+     document.getElementById("appmenu_errorConsole").hidden = false;
+ #endif
+   }
+ 
++  // Enable Workspace in the UI, if the preference allows this.
++  let workspaceEnabled = gPrefService.getBoolPref(Workspace.prefEnabledName);
++  if (workspaceEnabled) {
++    document.getElementById("menu_workspace").hidden = false;
++    document.getElementById("Tools:Workspace").removeAttribute("disabled");
++#ifdef MENUBAR_CAN_AUTOHIDE
++    document.getElementById("appmenu_workspace").hidden = false;
++#endif
++  }
++
+ #ifdef MENUBAR_CAN_AUTOHIDE
+   // If the user (or the locale) hasn't enabled the top-level "Character
+   // Encoding" menu via the "browser.menu.showCharacterEncoding" preference,
+   // hide it.
+   if ("true" != gPrefService.getComplexValue("browser.menu.showCharacterEncoding",
+                                              Ci.nsIPrefLocalizedString).data)
+     document.getElementById("appmenu_charsetMenu").hidden = true;
+ #endif
+@@ -8600,16 +8611,29 @@ let AddonsMgrListener = {
+   onDisabled: function(aAddon) this.onUninstalled(),
+ };
+ 
+ function toggleAddonBar() {
+   let addonBar = document.getElementById("addon-bar");
+   setToolbarVisibility(addonBar, addonBar.collapsed);
+ }
+ 
++var Workspace = {
++  prefEnabledName: "devtools.workspace.enabled",
++
++  openWorkspace: function WS_openWorkspace() {
++    const WORKSPACE_WINDOW_URL = "chrome://browser/content/workspace.xul";
++    const WORKSPACE_WINDOW_FEATURES = "chrome,titlebar,toolbar,centerscreen,resizable,dialog=no";
++
++    return Services.ww.openWindow(null, WORKSPACE_WINDOW_URL, "_blank",
++                                  WORKSPACE_WINDOW_FEATURES, null);
++  },
++};
++
++
+ XPCOMUtils.defineLazyGetter(window, "gShowPageResizers", function () {
+ #ifdef XP_WIN
+   // Only show resizers on Windows 2000 and XP
+   let sysInfo = Components.classes["@mozilla.org/system-info;1"]
+                           .getService(Components.interfaces.nsIPropertyBag2);
+   return parseFloat(sysInfo.getProperty("version")) < 6;
+ #else
+   return false;
+diff --git a/browser/base/content/workspace.js b/browser/base/content/workspace.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/workspace.js
+@@ -0,0 +1,554 @@
++/* vim:set ts=2 sw=2 sts=2 et:
++ * ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Workspace.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Rob Campbell <robcee@mozilla.com> (original author)
++ *   Erik Vold <erikvvold@gmail.com>
++ *   David Dahl <ddahl@mozilla.com>
++ *   Mihai Sucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK *****/
++
++const Cc = Components.classes;
++const Ci = Components.interfaces;
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++Cu.import("resource://gre/modules/Services.jsm");
++Cu.import("resource://gre/modules/NetUtil.jsm");
++Cu.import("resource:///modules/PropertyPanel.jsm");
++
++const WORKSPACE_CONTEXT_CONTENT = 1;
++const WORKSPACE_CONTEXT_CHROME = 2;
++const WORKSPACE_WINDOW_URL = "chrome://browser/content/workspace.xul";
++const WORKSPACE_L10N = "chrome://browser/locale/workspace.properties";
++const WORKSPACE_WINDOW_FEATURES = "chrome,titlebar,toolbar,centerscreen,resizable,dialog=no";
++
++/**
++ * The workspace object handles the Workspace window functionality.
++ */
++var Workspace = {
++  /**
++   * The script execution context. This tells Workspace in which context the
++   * script shall execute.
++   *
++   * Possible values:
++   *   - WORKSPACE_CONTEXT_CONTENT to execute code in the context of the current
++   *   tab content window object.
++   *   - WORKSPACE_CONTEXT_CHROME to execute code in the context of the
++   *   currently active chrome window object.
++   */
++  executionContext: WORKSPACE_CONTEXT_CONTENT,
++
++  /**
++   * Retrieve the xul:textbox DOM element. This element holds the source code
++   * the user writes and executes.
++   */
++  get textbox() document.getElementById("workspace-textbox"),
++
++  /**
++   * Retrieve the xul:statusbarpanel DOM element. The status bar tells the
++   * current code execution context.
++   */
++  get statusbarStatus() document.getElementById("workspace-status"),
++
++  /**
++   * Get the selected text from the textbox.
++   */
++  get selectedText()
++  {
++    let text = this.textbox.value;
++    let selectionStart = this.textbox.selectionStart;
++    let selectionEnd = this.textbox.selectionEnd;
++
++    return selectionStart != selectionEnd ?
++           text.substring(selectionStart, selectionEnd) : "";
++  },
++
++  /**
++   * Get the most recent chrome window of type navigator:browser.
++   */
++  get browserWindow() Services.wm.getMostRecentWindow("navigator:browser"),
++
++  /**
++   * Get the gBrowser object of the most recent browser window.
++   */
++  get gBrowser()
++  {
++    let recentWin = this.browserWindow;
++    return recentWin ? recentWin.gBrowser : null;
++  },
++
++  /**
++   * Get the Cu.Sandbox object for the active tab content window object.
++   */
++  get sandbox()
++  {
++    if (!this.browserWindow) {
++      Cu.reportError(this.strings.
++                     GetStringFromName("browserWindow.unavailable"));
++      return;
++    }
++
++    // TODO: bug 646524 - need to cache sandboxes if
++    // currentBrowser == previousBrowser
++    let contentWindow = this.gBrowser.selectedBrowser.contentWindow;
++    return new Cu.Sandbox(contentWindow,
++                          { sandboxPrototype: contentWindow,
++                            wantXrays: false });
++  },
++
++  /**
++   * Get the Cu.Sandbox object for the most recently active navigator:browser
++   * chrome window object.
++   */
++  get chromeSandbox()
++  {
++    if (!this.browserWindow) {
++      Cu.reportError(this.strings.
++                     GetStringFromName("browserWindow.unavailable"));
++      return;
++    }
++
++    return new Cu.Sandbox(this.browserWindow,
++                          { sandboxPrototype: this.browserWindow,
++                            wantXrays: false });
++  },
++
++  /**
++   * Drop the textbox selection.
++   */
++  deselect: function WS_deselect()
++  {
++    this.textbox.selectionEnd = this.textbox.selectionStart;
++  },
++
++  /**
++   * Select a specific range in the Workspace xul:textbox.
++   *
++   * @param number aStart
++   *        Selection range start.
++   * @param number aEnd
++   *        Selection range end.
++   */
++  selectRange: function WS_selectRange(aStart, aEnd)
++  {
++    this.textbox.selectionStart = aStart;
++    this.textbox.selectionEnd = aEnd;
++  },
++
++  /**
++   * Evaluate a string in the active tab content window.
++   *
++   * @param string aString
++   *        The script you want evaluated.
++   * @return mixed
++   *         The script evaluation result.
++   */
++  evalInSandbox: function WS_evalInSandbox(aString)
++  {
++    let result;
++    try {
++      result = Cu.evalInSandbox(aString, this.sandbox, "1.8", "Workspace", 1);
++    }
++    catch (ex) {
++      this.openWebConsole();
++
++      let contentWindow = this.gBrowser.selectedBrowser.contentWindow;
++
++      let scriptError = Cc["@mozilla.org/scripterror;1"].
++                        createInstance(Ci.nsIScriptError2);
++
++      scriptError.initWithWindowID(ex.message + "\n" + ex.stack, ex.fileName,
++                                   "", ex.lineNumber, 0, scriptError.errorFlag,
++                                   "content javascript",
++                                   this.getWindowId(contentWindow));
++
++      Services.console.logMessage(scriptError);
++    }
++
++    return result;
++  },
++
++  /**
++   * Evaluate a string in the most recent navigator:browser chrome window.
++   *
++   * @param string aString
++   *        The script you want evaluated.
++   * @return mixed
++   *         The script evaluation result.
++   */
++  evalInChromeSandbox: function WS_evalInChromeSandbox(aString)
++  {
++    let result;
++    try {
++      result = Cu.evalInSandbox(aString, this.chromeSandbox, "1.8", "Workspace", 1);
++    }
++    catch (ex) {
++      Cu.reportError(ex);
++      Cu.reportError(ex.stack);
++      this.openErrorConsole();
++    }
++
++    return result;
++  },
++
++  /**
++   * Evaluate a string in the currently desired context, that is either the
++   * chrome window or the tab content window object.
++   *
++   * @param string aString
++   *        The script you want to evaluate.
++   * @return mixed
++   *         The script evaluation result.
++   */
++  evalForContext: function WS_evaluateForContext(aString)
++  {
++    return this.executionContext == WORKSPACE_CONTEXT_CONTENT ?
++           this.evalInSandbox(aString) :
++           this.evalInChromeSandbox(aString);
++  },
++
++  /**
++   * Execute the selected text (if any) or the entire textbox content in the
++   * current context.
++   */
++  execute: function WS_execute()
++  {
++    let selection = this.selectedText || this.textbox.value;
++    let result = this.evalForContext(selection);
++    this.deselect();
++    return [selection, result];
++  },
++
++  /**
++   * Execute the selected text (if any) or the entire textbox content in the
++   * current context. The resulting object is opened up in the Property Panel
++   * for inspection.
++   */
++  inspect: function WS_inspect()
++  {
++    let [selection, result] = this.execute();
++
++    if (result) {
++      this.openPropertyPanel(selection, result);
++    }
++
++    this.deselect();
++  },
++
++  /**
++   * Execute the selected text (if any) or the entire textbox content in the
++   * current context. The evaluation result is "printed" in the textbox after
++   * the selected text, or at the end of the textbox value if there is no
++   * selected text.
++   */
++  print: function WS_print()
++  {
++    let selectionStart = this.textbox.selectionStart;
++    let selectionEnd = this.textbox.selectionEnd;
++    if (selectionStart == selectionEnd) {
++      selectionEnd = this.textbox.value.length;
++    }
++
++    let [selection, result] = this.execute();
++    if (!result) {
++      return;
++    }
++
++    let firstPiece = this.textbox.value.slice(0, selectionEnd);
++    let lastPiece = this.textbox.value.
++                    slice(selectionEnd + 1, this.textbox.value.length);
++
++    this.textbox.value = firstPiece + "\n/* " + result.toString() + " */\n" +
++                         lastPiece;
++
++    this.selectRange(selectionEnd + 1,
++                     selectionEnd + 7 + result.toString().length);
++  },
++
++  /**
++   * Open the Property Panel to inspect the given object.
++   *
++   * @param string aEvalString
++   *        The string that was evaluated. This is re-used when the user updates
++   *        the properties list, by clicking the Update button.
++   * @param object aOutputObject
++   *        The object to inspect, which is the aEvalString evaluation result.
++   *
++   * @return object
++   *         The PropertyPanel object instance.
++   */
++  openPropertyPanel: function WS_openPropertyPanel(aEvalString, aOutputObject)
++  {
++    let self = this;
++    let propPanel;
++    // The property panel has a button:
++    // `Update`: reexecutes the string executed on the command line. The
++    // result will be inspected by this panel.
++    let buttons = [];
++
++    // If there is a evalString passed to this function, then add a `Update`
++    // button to the panel so that the evalString can be reexecuted to update
++    // the content of the panel.
++    if (aEvalString !== null) {
++      buttons.push({
++        label: this.strings.
++               GetStringFromName("propertyPanel.updateButton.label"),
++        accesskey: this.strings.
++                   GetStringFromName("propertyPanel.updateButton.accesskey"),
++        oncommand: function () {
++          try {
++            let result = self.evalForContext(aEvalString);
++
++            if (result !== undefined) {
++              propPanel.treeView.data = result;
++            }
++          }
++          catch (ex) { }
++        }
++      });
++    }
++
++    let doc = this.browserWindow.document;
++    let parent = doc.getElementById("mainPopupSet");
++    let title = aOutputObject.toString();
++    propPanel = new PropertyPanel(parent, doc, title, aOutputObject, buttons);
++
++    let panel = propPanel.panel;
++    panel.setAttribute("class", "workspace_propertyPanel");
++    panel.openPopup(null, "after_pointer", 0, 0, false, false);
++    panel.sizeTo(200, 400);
++
++    return propPanel;
++  },
++
++  // Menu Operations
++
++  /**
++   * Open a new Workspace window.
++   */
++  openWorkspace: function WS_openWorkspace()
++  {
++    Services.ww.openWindow(null, WORKSPACE_WINDOW_URL, "_blank",
++                           WORKSPACE_WINDOW_FEATURES, null);
++  },
++
++  /**
++   * Export the textbox content to a file.
++   *
++   * @param nsILocalFile aFile
++   *        The file where you want to save the textbox content.
++   *
++   * @param boolean aNoConfirmation
++   *        If the file already exists, ask for confirmation?
++   *
++   * @param boolean aSilentError
++   *        True if you do not want to display an error when file save fails,
++   *        false otherwise.
++   *
++   * @param function aCallback
++   *        Optional function you want to call when file save completes.
++   */
++  exportToFile: function WS_exportToFile(aFile, aNoConfirmation, aSilentError,
++                                         aCallback)
++  {
++    if (!aNoConfirmation && aFile.exists() &&
++        !window.confirm(this.strings.
++                        GetStringFromName("export.fileOverwriteConfirmation"))) {
++      return;
++    }
++
++    let fs = Cc["@mozilla.org/network/file-output-stream;1"].
++             createInstance(Ci.nsIFileOutputStream);
++    let modeFlags = 0x02 | 0x08 | 0x20;
++    fs.init(aFile, modeFlags, 0644, fs.DEFER_OPEN);
++
++    let converter = Cc["@mozilla.org/intl/scriptableunicodeconverter"].
++                    createInstance(Ci.nsIScriptableUnicodeConverter);
++    converter.charset = "UTF-8";
++    let input = converter.convertToInputStream(this.textbox.value);
++
++    let self = this;
++    NetUtil.asyncCopy(input, fs, function(aStatus) {
++      if (!aSilentError && !Components.isSuccessCode(aStatus)) {
++        window.alert(self.strings.GetStringFromName("saveFile.failed"));
++      }
++
++      if (aCallback) {
++        aCallback.call(self, aStatus);
++      }
++    });
++  },
++
++  /**
++   * Read the content of a file and put it into the textbox.
++   *
++   * @param nsILocalFile aFile
++   *        The file you want to save the textbox content into.
++   *
++   * @param boolean aSilentError
++   *        True if you do not want to display an error when file load fails,
++   *        false otherwise.
++   *
++   * @param function aCallback
++   *        Optional function you want to call when file load completes.
++   */
++  importFromFile: function WS_importFromFile(aFile, aSilentError, aCallback)
++  {
++    // Prevent file type detection.
++    let channel = NetUtil.newChannel(aFile);
++    channel.contentType = "application/javascript";
++
++    let self = this;
++    NetUtil.asyncFetch(channel, function(aInputStream, aStatus) {
++      if (Components.isSuccessCode(aStatus)) {
++        self.textbox.value =
++          NetUtil.readInputStreamToString(aInputStream,
++                                          aInputStream.available());;
++      }
++      else if (!aSilentError) {
++        window.alert(self.strings.GetStringFromName("openFile.failed"));
++      }
++
++      if (aCallback) {
++        aCallback.call(self, aStatus);
++      }
++    });
++  },
++
++  /**
++   * Open a file to edit in the Workspace.
++   */
++  openFile: function WS_openFile()
++  {
++    let fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
++    fp.init(window, this.strings.GetStringFromName("openFile.title"),
++            Ci.nsIFilePicker.modeOpen);
++    fp.defaultString = "";
++    if (fp.show() != Ci.nsIFilePicker.returnCancel) {
++      document.title = this.filename = fp.file.path;
++      this.importFromFile(fp.file);
++    }
++  },
++
++  /**
++   * Save the textbox content to the currently open file.
++   */
++  saveFile: function WS_saveFile()
++  {
++    if (!this.filename) {
++      return this.saveFileAs();
++    }
++
++    let file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsILocalFile);
++    file.initWithPath(this.filename);
++    this.exportToFile(file, true);
++  },
++
++  /**
++   * Save the textbox content to a new file.
++   */
++  saveFileAs: function WS_saveFileAs()
++  {
++    let fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
++    fp.init(window, this.strings.GetStringFromName("saveFileAs"),
++            Ci.nsIFilePicker.modeSave);
++    fp.defaultString = "workspace.js";
++    if (fp.show() != Ci.nsIFilePicker.returnCancel) {
++      document.title = this.filename = fp.file.path;
++      this.exportToFile(fp.file);
++    }
++  },
++
++  /**
++   * Open the Error Console.
++   */
++  openErrorConsole: function WS_openErrorConsole()
++  {
++    this.browserWindow.toJavaScriptConsole();
++  },
++
++  /**
++   * Open the Web Console.
++   */
++  openWebConsole: function WS_openWebConsole()
++  {
++    if (!this.browserWindow.HUDConsoleUI.getOpenHUD()) {
++      this.browserWindow.HUDConsoleUI.toggleHUD();
++    }
++    this.browserWindow.focus();
++  },
++
++  /**
++   * Set the current execution context to be the active tab content window.
++   */
++  setContentContext: function WS_setContentContext()
++  {
++    let content = document.getElementById("ws-menu-content");
++    document.getElementById("ws-menu-chrome").removeAttribute("checked");
++    content.setAttribute("checked", true);
++    this.statusbarStatus.label = content.getAttribute("label");
++    this.executionContext = WORKSPACE_CONTEXT_CONTENT;
++  },
++
++  /**
++   * Set the current execution context to be the most recent chrome window.
++   */
++  setChromeContext: function WS_setChromeContext()
++  {
++    let chrome = document.getElementById("ws-menu-chrome");
++    document.getElementById("ws-menu-content").removeAttribute("checked");
++    chrome.setAttribute("checked", true);
++    this.statusbarStatus.label = chrome.getAttribute("label");
++    this.executionContext = WORKSPACE_CONTEXT_CHROME;
++  },
++
++  /**
++   * Gets the ID of the outer window of the given DOM window object.
++   *
++   * @param nsIDOMWindow aWindow
++   * @return integer
++   *         the outer window ID
++   */
++  getWindowId: function HS_getWindowId(aWindow)
++  {
++    return aWindow.QueryInterface(Ci.nsIInterfaceRequestor).
++           getInterface(Ci.nsIDOMWindowUtils).outerWindowID;
++  },
++};
++
++XPCOMUtils.defineLazyGetter(Workspace, "strings", function () {
++  return Services.strings.createBundle(WORKSPACE_L10N);
++});
++
+diff --git a/browser/base/content/workspace.xul b/browser/base/content/workspace.xul
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/workspace.xul
+@@ -0,0 +1,331 @@
++<?xml version="1.0"?>
++#ifdef 0
++<!-- ***** BEGIN LICENSE BLOCK *****
++   - Version: MPL 1.1/GPL 2.0/LGPL 2.1
++   -
++   - The contents of this file are subject to the Mozilla Public License Version
++   - 1.1 (the "License"); you may not use this file except in compliance with
++   - the License. You may obtain a copy of the License at
++   - http://www.mozilla.org/MPL/
++   -
++   - Software distributed under the License is distributed on an "AS IS" basis,
++   - WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++   - for the specific language governing rights and limitations under the
++   - License.
++   -
++   - The Original Code is Workspace.
++   -
++   - The Initial Developer of the Original Code is
++   - The Mozilla Foundation.
++   - Portions created by the Initial Developer are Copyright (C) 2011
++   - the Initial Developer. All Rights Reserved.
++   -
++   - Contributor(s):
++   -   Rob Campbell <robcee@mozilla.com> (original author)
++   -   Mihai Sucan <mihai.sucan@gmail.com>
++   -
++   - Alternatively, the contents of this file may be used under the terms of
++   - either the GNU General Public License Version 2 or later (the "GPL"), or
++   - the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++   - in which case the provisions of the GPL or the LGPL are applicable instead
++   - of those above. If you wish to allow use of your version of this file only
++   - under the terms of either the GPL or the LGPL, and not to allow others to
++   - use your version of this file under the terms of the MPL, indicate your
++   - decision by deleting the provisions above and replace them with the notice
++   - and other provisions required by the GPL or the LGPL. If you do not delete
++   - the provisions above, a recipient may use your version of this file under
++   - the terms of any one of the MPL, the GPL or the LGPL.
++   -
++   - ***** END LICENSE BLOCK ***** -->
++#endif
++<!DOCTYPE window [
++<!ENTITY % workspaceDTD SYSTEM "chrome://browser/locale/workspace.dtd" >
++ %workspaceDTD;
++]>
++<?xml-stylesheet href="chrome://global/skin/global.css" type="text/css"?>
++<?xul-overlay href="chrome://global/content/editMenuOverlay.xul"?>
++
++<window id="main-window"
++        xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
++        title="&window.title;"
++        windowtype="devtools:workspace"
++        screenX="4" screenY="4"
++        width="640" height="480"
++        persist="screenX screenY width height sizemode">
++
++<script type="application/javascript" src="chrome://global/content/globalOverlay.js"/>
++<script type="application/javascript" src="chrome://browser/content/workspace.js"/>
++
++<commandset id="editMenuCommands"/>
++
++<commandset id="ws-commandset">
++  <command id="ws-cmd-newWindow" oncommand="Workspace.openWorkspace();"/>
++  <command id="ws-cmd-openFile" oncommand="Workspace.openFile();"/>
++  <command id="ws-cmd-save" oncommand="Workspace.saveFile();"/>
++  <command id="ws-cmd-saveas" oncommand="Workspace.saveFileAs();"/>
++
++  <!-- TODO: bug 650340 - implement printFile()
++  <command id="ws-cmd-printFile" oncommand="Workspace.printFile();" disabled="true"/>
++ -->
++
++  <command id="ws-cmd-close" oncommand="window.close();"/>
++  <command id="ws-cmd-execute" oncommand="Workspace.execute();"/>
++  <command id="ws-cmd-inspect" oncommand="Workspace.inspect();"/>
++  <command id="ws-cmd-print" oncommand="Workspace.print();"/>
++  <command id="ws-cmd-contentContext" oncommand="Workspace.setContentContext();"/>
++  <command id="ws-cmd-chromeContext" oncommand="Workspace.setChromeContext();"/>
++  <command id="ws-cmd-errorConsole" oncommand="Workspace.openErrorConsole();"/>
++  <command id="ws-cmd-webConsole" oncommand="Workspace.openWebConsole();"/>
++</commandset>
++
++<keyset id="ws-keyset">
++  <key id="ws-key-window"
++       key="&newWindowCmd.commandkey;"
++       command="ws-cmd-newWindow"
++       modifiers="accel"/>
++  <key id="ws-key-open"
++       key="&openFileCmd.commandkey;"
++       command="ws-cmd-openFile"
++       modifiers="accel"/>
++  <key id="ws-key-save"
++       key="&saveFileCmd.commandkey;"
++       command="ws-cmd-save"
++       modifiers="accel"/>
++  <key id="ws-key-close"
++       key="&closeCmd.key;"
++       command="ws-cmd-close"
++       modifiers="accel"/>
++
++  <!-- TODO: bug 650340 - implement printFile
++  <key id="ws-key-printFile"
++       key="&printCmd.commandkey;"
++       command="ws-cmd-printFile"
++       modifiers="accel"/>
++  -->
++
++  <key id="key_cut"
++       key="&cutCmd.key;"
++       modifiers="accel"/>
++
++  <key id="key_copy"
++       key="&copyCmd.key;"
++       modifiers="accel"/>
++  <key id="key_paste"
++       key="&pasteCmd.key;"
++       modifiers="accel"/>
++  <key id="key_selectAll" key="&selectAllCmd.key;" modifiers="accel"/>
++  <key id="key_undo" key="&undoCmd.key;" modifiers="accel"/>
++  <key id="key_redo" key="&undoCmd.key;" modifiers="accel,shift"/>
++  <key id="ws-key-execute"
++       key="&execute.key;"
++       command="ws-cmd-execute"
++       modifiers="accel"/>
++  <key id="ws-key-inspect"
++       key="&inspect.key;"
++       command="ws-cmd-inspect"
++       modifiers="accel"/>
++  <key id="ws-key-print"
++       key="&print.key;"
++       command="ws-cmd-print"
++       modifiers="accel"/>
++  <key id="ws-key-errorConsole"
++       key="&errorConsoleCmd.commandkey;"
++       command="ws-cmd-errorConsole"
++       modifiers="accel,shift"/>
++  <key id="ws-key-webConsole"
++       key="&webConsoleCmd.commandkey;"
++       command="ws-cmd-webConsole"
++       modifiers="accel,shift"/>
++</keyset>
++
++
++<menubar id="ws-menubar">
++  <menu id="ws-file-menu" label="&fileMenu.label;"
++        accesskey="&fileMenu.accesskey;">
++    <menupopup id="ws-menu-filepopup">
++      <menuitem id="ws-menu-newworkspace"
++                label="&newWindowCmd.label;"
++                accesskey="&newWindowCmd.accesskey;"
++                key="ws-key-window"
++                command="ws-cmd-newWindow"/>
++      <menuseparator/>
++      <menuitem id="ws-menu-open"
++                label="&openFileCmd.label;"
++                command="ws-cmd-openFile"
++                key="ws-key-open"
++                accesskey="&openFileCmd.accesskey;"/>
++      <menuitem id="ws-menu-save"
++                label="&saveFileCmd.label;"
++                accesskey="&saveFileCmd.accesskey;"
++                key="ws-key-save"
++                command="ws-cmd-save"/>
++      <menuitem id="ws-menu-saveas"
++                label="&saveFileAsCmd.label;"
++                accesskey="&saveFileAsCmd.accesskey;"
++                command="ws-cmd-saveas"/>
++      <menuseparator/>
++
++      <!-- TODO: bug 650340 - implement printFile
++      <menuitem id="ws-menu-print"
++                label="&printCmd.label;"
++                accesskey="&printCmd.accesskey;"
++                command="ws-cmd-printFile"/>
++      <menuseparator/>
++      -->
++
++      <menuitem id="ws-menu-close"
++                label="&closeCmd.label;"
++                key="ws-key-close"
++                accesskey="&closeCmd.accesskey;"
++                command="ws-cmd-close"/>
++    </menupopup>
++  </menu>
++
++  <menu id="ws-edit-menu" label="&editMenu.label;"
++        accesskey="&editMenu.accesskey;">
++    <menupopup id="ws-menu_editpopup">
++      <menuitem id="ws-menu_undo"
++                label="&undoCmd.label;"
++                key="key_undo"
++                accesskey="&undoCmd.accesskey;"
++                disabled="true"
++                oncommand="cmd_undo"/>
++      <menuitem id="ws-menu-redo"
++                label="&redoCmd.label;"
++                key="key_redo"
++                disabled="true"
++                accesskey="&redoCmd.accesskey;"
++                command="cmd_redo"/>
++      <menuseparator/>
++      <menuitem id="ws-menu-cut"
++                label="&cutCmd.label;"
++                key="key_cut"
++                accesskey="&cutCmd.accesskey;"
++                command="cmd_cut"/>
++      <menuitem id="ws-menu-copy"
++                label="&copyCmd.label;"
++                key="key_copy"
++                accesskey="&copyCmd.accesskey;"
++                command="cmd_copy"/>
++      <menuitem id="ws-menu-paste"
++                label="&pasteCmd.label;"
++                key="key_paste"
++                accesskey="&pasteCmd.accesskey;"
++                command="cmd_paste"/>
++      <menuseparator/>
++      <menuitem id="ws-menu-selectAll"
++                label="&selectAllCmd.label;"
++                key="key_selectAll"
++                accesskey="&selectAllCmd.accesskey;"
++                command="cmd_selectAll"/>
++      <menuseparator/>
++
++      <!-- TODO: bug 650345 - implement search and replace
++      <menuitem id="ws-menu-find"
++                label="&findOnCmd.label;"
++                accesskey="&findOnCmd.accesskey;"
++                key="key_find"
++                disabled="true"
++                command="cmd_find"/>
++      <menuitem id="ws-menu-findAgain"
++                label="&findAgainCmd.label;"
++                accesskey="&findAgainCmd.accesskey;"
++                key="key_findAgain"
++                disabled="true"
++                command="cmd_findAgain"/>
++      <menuseparator id="ws-execute-separator"/>
++      -->
++
++      <menuitem id="ws-text-execute"
++                label="&execute.label;"
++                accesskey="&execute.accesskey;"
++                key="ws-key-execute"
++                command="ws-cmd-execute"/>
++      <menuitem id="ws-text-inspect"
++                label="&inspect.label;"
++                accesskey="&inspect.accesskey;"
++                key="ws-key-inspect"
++                command="ws-cmd-inspect"/>
++      <menuitem id="ws-text-print"
++                label="&print.label;"
++                accesskey="&print.accesskey;"
++                key="ws-key-print"
++                command="ws-cmd-print"/>
++    </menupopup>
++  </menu>
++
++  <menu id="ws-context-menu"
++        label="&contextMenu.label;"
++        accesskey="&contextMenu.accesskey;">
++    <menupopup id="ws-menu-context">
++      <menuitem id="ws-menu-content"
++                label="&contentContext.label;"
++                accesskey="&contentContext.accesskey;"
++                command="ws-cmd-contentContext"
++                checked="true"
++                type="radio"/>
++      <menuitem id="ws-menu-chrome"
++                command="ws-cmd-chromeContext"
++                label="&chromeContext.label;"
++                accesskey="&chromeContext.accesskey;"
++                type="radio"/>
++    </menupopup>
++  </menu>
++
++  <menu id="ws-tools-menu"
++        label="&toolsMenu.label;"
++        accesskey="&toolsMenu.accesskey;">
++    <menupopup id="ws-menu-tools">
++      <menuitem id="ws-menu-errorConsole"
++                label="&errorConsoleCmd.label;"
++                accesskey="&errorConsoleCmd.accesskey;"
++                key="ws-key-errorConsole"
++                command="ws-cmd-errorConsole"/>
++      <menuitem id="ws-menu-webConsole"
++                label="&webConsoleCmd.label;"
++                accesskey="&webConsoleCmd.accesskey;"
++                key="ws-key-webConsole"
++                command="ws-cmd-webConsole"/>
++    </menupopup>
++  </menu>
++</menubar>
++
++<popupset id="workspace-popups">
++  <menupopup id="workspace-text-popup">
++    <menuitem id="menu_cut"/>
++    <menuitem id="menu_copy"/>
++    <menuitem id="menu_paste"/>
++    <menuitem id="menu_delete"/>
++    <menuseparator/>
++    <menuitem id="menu_selectAll"/>
++    <menuseparator/>
++    <menuitem id="ws-text-execute"
++              label="&execute.label;"
++              accesskey="&execute.accesskey;"
++              key="ws-key-execute"
++              command="ws-cmd-execute"/>
++    <menuitem id="ws-text-inspect"
++              label="&inspect.label;"
++              accesskey="&inspect.accesskey;"
++              key="ws-key-inspect"
++              command="ws-cmd-inspect"/>
++    <menuitem id="ws-text-print"
++              label="&print.label;"
++              accesskey="&print.accesskey;"
++              key="ws-key-print"
++              command="ws-cmd-print"/>
++  </menupopup>
++</popupset>
++
++<textbox id="workspace-textbox"
++         multiline="true"
++         flex="1"
++         context="workspace-text-popup"
++         placeholder="&textbox.placeholder;" />
++<statusbar id="workspace-statusbar" align="end">
++  <statusbarpanel id="workspace-status"
++                  label="&contentContext.label;"
++                  class="statusbarpanel-iconic-text"/>
++  <spacer flex="1"/>
++</statusbar>
++</window>
+diff --git a/browser/base/jar.mn b/browser/base/jar.mn
+--- a/browser/base/jar.mn
++++ b/browser/base/jar.mn
+@@ -25,16 +25,18 @@ browser.jar:
+         content/browser/aboutRobots-icon.png          (content/aboutRobots-icon.png)
+         content/browser/aboutRobots-widget-left.png   (content/aboutRobots-widget-left.png)
+ *       content/browser/browser.css                   (content/browser.css)
+ *       content/browser/browser.js                    (content/browser.js)
+ *       content/browser/browser.xul                   (content/browser.xul)
+ *       content/browser/browser-tabPreviews.xml       (content/browser-tabPreviews.xml)
+ *       content/browser/fullscreen-video.xhtml        (content/fullscreen-video.xhtml)
+ *       content/browser/inspector.html                (content/inspector.html)
++*       content/browser/workspace.xul                 (content/workspace.xul)
++*       content/browser/workspace.js                  (content/workspace.js)
+ *       content/browser/pageinfo/pageInfo.xul         (content/pageinfo/pageInfo.xul)
+ *       content/browser/pageinfo/pageInfo.js          (content/pageinfo/pageInfo.js)
+ *       content/browser/pageinfo/pageInfo.css         (content/pageinfo/pageInfo.css)
+ *       content/browser/pageinfo/pageInfo.xml         (content/pageinfo/pageInfo.xml)
+ *       content/browser/pageinfo/feeds.js             (content/pageinfo/feeds.js)
+ *       content/browser/pageinfo/feeds.xml            (content/pageinfo/feeds.xml)
+ *       content/browser/pageinfo/permissions.js       (content/pageinfo/permissions.js)
+ *       content/browser/pageinfo/security.js          (content/pageinfo/security.js)
+diff --git a/browser/locales/en-US/chrome/browser/browser.dtd b/browser/locales/en-US/chrome/browser/browser.dtd
+--- a/browser/locales/en-US/chrome/browser/browser.dtd
++++ b/browser/locales/en-US/chrome/browser/browser.dtd
+@@ -186,16 +186,20 @@ can reach it easily. -->
+ <!ENTITY webConsoleCmd.label          "Web Console">
+ <!ENTITY webConsoleCmd.accesskey      "W">
+ <!ENTITY webConsoleCmd.commandkey     "k">
+ 
+ <!ENTITY inspectMenu.label            "Inspect">
+ <!ENTITY inspectMenu.accesskey        "T">
+ <!ENTITY inspectMenu.commandkey       "I">
+ 
++<!ENTITY workspace.label               "Workspace">
++<!ENTITY workspace.keycode             "VK_F4">
++<!ENTITY workspace.keytext             "F4">
++
+ <!ENTITY inspectPanelTitle.label      "HTML">
+ <!ENTITY inspectButton.label          "Inspect">
+ <!ENTITY inspectButton.accesskey      "I">
+ <!ENTITY inspectNextButton.label      "Next">
+ <!ENTITY inspectNextButton.accesskey  "N">
+ <!ENTITY inspectPreviousButton.label  "Previous">
+ <!ENTITY inspectPreviousButton.accesskey "P">
+ <!ENTITY inspectStyleButton.label     "Style">
+diff --git a/browser/locales/en-US/chrome/browser/workspace.dtd b/browser/locales/en-US/chrome/browser/workspace.dtd
+new file mode 100644
+--- /dev/null
++++ b/browser/locales/en-US/chrome/browser/workspace.dtd
+@@ -0,0 +1,88 @@
++<!-- LOCALIZATION NOTE : FILE This file contains the Workspace window strings -->
++<!-- LOCALIZATION NOTE : FILE Do not translate commandkeys -->
++
++<!ENTITY window.title                 "Workspace">
++
++<!ENTITY fileMenu.label               "File">
++<!ENTITY fileMenu.accesskey           "F">
++
++<!ENTITY newWindowCmd.label           "New Window">
++<!ENTITY newWindowCmd.accesskey       "N">
++<!ENTITY newWindowCmd.commandkey      "n">
++
++<!ENTITY openFileCmd.label            "Open File…">
++<!ENTITY openFileCmd.accesskey        "O">
++<!ENTITY openFileCmd.commandkey       "o">
++
++<!ENTITY saveFileCmd.label            "Save">
++<!ENTITY saveFileCmd.accesskey        "S">
++<!ENTITY saveFileCmd.commandkey       "s">
++
++<!ENTITY saveFileAsCmd.label          "Save As…">
++<!ENTITY saveFileAsCmd.accesskey      "A">
++
++<!ENTITY closeCmd.label               "Close">
++<!ENTITY closeCmd.key                 "W">
++<!ENTITY closeCmd.accesskey           "C">
++
++<!ENTITY editMenu.label               "Edit">
++<!ENTITY editMenu.accesskey           "E">
++
++<!ENTITY undoCmd.label                "Undo">
++<!ENTITY undoCmd.key                  "Z">
++<!ENTITY undoCmd.accesskey            "U">
++
++<!ENTITY redoCmd.label                "Redo">
++<!ENTITY redoCmd.key                  "Y">
++<!ENTITY redoCmd.accesskey            "R">
++
++<!ENTITY cutCmd.label                 "Cut">
++<!ENTITY cutCmd.key                   "X">
++<!ENTITY cutCmd.accesskey             "t">
++
++<!ENTITY copyCmd.label                "Copy">
++<!ENTITY copyCmd.key                  "C">
++<!ENTITY copyCmd.accesskey            "C">
++
++<!ENTITY pasteCmd.label               "Paste">
++<!ENTITY pasteCmd.key                 "V">
++<!ENTITY pasteCmd.accesskey           "P">
++
++<!ENTITY selectAllCmd.label           "Select All">
++<!ENTITY selectAllCmd.key             "A">
++<!ENTITY selectAllCmd.accesskey       "A">
++
++<!ENTITY execute.label                "Execute">
++<!ENTITY execute.accesskey            "E">
++<!ENTITY execute.key                  "t">
++
++<!ENTITY inspect.label                "Inspect">
++<!ENTITY inspect.accesskey            "I">
++<!ENTITY inspect.key                  "i">
++
++<!ENTITY print.label                  "Print">
++<!ENTITY print.accesskey              "p">
++<!ENTITY print.key                    "r">
++
++<!ENTITY contextMenu.label            "Context">
++<!ENTITY contextMenu.accesskey        "C">
++
++<!ENTITY contentContext.label         "Content">
++<!ENTITY contentContext.accesskey     "C">
++
++<!ENTITY chromeContext.label          "Chrome">
++<!ENTITY chromeContext.accesskey      "H">
++
++<!ENTITY toolsMenu.label              "Tools">
++<!ENTITY toolsMenu.accesskey          "T">
++
++<!ENTITY errorConsoleCmd.label        "Error Console">
++<!ENTITY errorConsoleCmd.accesskey    "C">
++<!ENTITY errorConsoleCmd.commandkey   "j">
++
++<!ENTITY webConsoleCmd.label          "Web Console">
++<!ENTITY webConsoleCmd.accesskey      "W">
++<!ENTITY webConsoleCmd.commandkey     "k">
++
++<!ENTITY textbox.placeholder          "// Enter some JavaScript, select it, right click and select Execute, Inspect or Print.">
++
+diff --git a/browser/locales/en-US/chrome/browser/workspace.properties b/browser/locales/en-US/chrome/browser/workspace.properties
+new file mode 100644
+--- /dev/null
++++ b/browser/locales/en-US/chrome/browser/workspace.properties
+@@ -0,0 +1,30 @@
++# LOCALIZATION NOTE  (propertyPanel.updateButton.label): Used in the Property
++# Panel that is opened by the Workspace window when inspecting an object. This
++# is the Update button label.
++propertyPanel.updateButton.label=Update
++propertyPanel.updateButton.accesskey=U
++
++# LOCALIZATION NOTE  (export.fileOverwriteConfirmation): This is displayed when
++# the user attempts to save to an already existing file.
++export.fileOverwriteConfirmation=File exists. Overwrite?
++
++# LOCALIZATION NOTE  (browserWindow.unavailable): This error message is shown
++# when Workspace does not find any recently active window of navigator:browser
++# type.
++browserWindow.unavailable=Workspace cannot find any browser window where to execute the code.
++
++# LOCALIZATION NOTE  (openFile.title): This is the file picker title, when you
++# open a file from Workspace.
++openFile.title=Open File
++
++# LOCALIZATION NOTE  (openFile.failed): This is the message displayed when file
++# open fails.
++openFile.failed=Failed to read the file.
++
++# LOCALIZATION NOTE  (saveFileAs): This is the file picker title, when you save
++# a file in Workspace.
++saveFileAs=Save File As
++
++# LOCALIZATION NOTE  (saveFile.failed): This is the message displayed when file
++# save fails.
++saveFile.failed=The file save operation failed.
+diff --git a/browser/locales/jar.mn b/browser/locales/jar.mn
+--- a/browser/locales/jar.mn
++++ b/browser/locales/jar.mn
+@@ -10,16 +10,18 @@
+     locale/browser/aboutSessionRestore.dtd         (%chrome/browser/aboutSessionRestore.dtd)
+ #ifdef MOZ_SERVICES_SYNC
+     locale/browser/aboutSyncTabs.dtd               (%chrome/browser/aboutSyncTabs.dtd)
+ #endif
+ *   locale/browser/browser.dtd                     (%chrome/browser/browser.dtd)
+     locale/browser/baseMenuOverlay.dtd             (%chrome/browser/baseMenuOverlay.dtd)
+     locale/browser/browser.properties              (%chrome/browser/browser.properties)
+     locale/browser/inspector.properties            (%chrome/browser/inspector.properties)
++    locale/browser/workspace.properties            (%chrome/browser/workspace.properties)
++    locale/browser/workspace.dtd                   (%chrome/browser/workspace.dtd)
+     locale/browser/openLocation.dtd                (%chrome/browser/openLocation.dtd)
+     locale/browser/openLocation.properties         (%chrome/browser/openLocation.properties)
+ *   locale/browser/pageInfo.dtd                    (%chrome/browser/pageInfo.dtd)
+     locale/browser/pageInfo.properties             (%chrome/browser/pageInfo.properties)
+     locale/browser/quitDialog.properties           (%chrome/browser/quitDialog.properties)
+ *   locale/browser/safeMode.dtd                    (%chrome/browser/safeMode.dtd)
+     locale/browser/sanitize.dtd                    (%chrome/browser/sanitize.dtd)
+     locale/browser/search.properties               (%chrome/browser/search.properties)
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -5508,16 +5508,28 @@ HeadsUpDisplayUICommands = {
+     }
+     else {
+       HUDService.activateHUDForContext(gBrowser.selectedTab, true);
+       HUDService.animate(hudId, ANIMATE_IN);
+     }
+   },
+ 
+   /**
++   * Find the hudId for the active chrome window.
++   * @return string|null
++   *         The hudId or null if the active chrome window has no open Web
++   *         Console.
++   */
++  getOpenHUD: function UIC_getOpenHUD() {
++    let chromeWindow = HUDService.currentContext();
++    let contentWindow = chromeWindow.gBrowser.selectedBrowser.contentWindow;
++    return HUDService.getHudIdByWindow(contentWindow);
++  },
++
++  /**
+    * The event handler that is called whenever a user switches a filter on or
+    * off.
+    *
+    * @param nsIDOMEvent aEvent
+    *        The event that triggered the filter change.
+    * @return boolean
+    */
+   toggleFilter: function UIC_toggleFilter(aEvent) {

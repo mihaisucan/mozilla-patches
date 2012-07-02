@@ -1,0 +1,776 @@
+diff --git a/browser/base/content/csshtmltree.js b/browser/base/content/csshtmltree.js
+--- a/browser/base/content/csshtmltree.js
++++ b/browser/base/content/csshtmltree.js
+@@ -101,29 +101,85 @@ CssHtmlTree.prototype = {
+    * Process the main template.
+    */
+   _populateMainTemplates: function CssHtmlTree_populateMainTemplate()
+   {
+     let self = this;
+     let data = {
+       path_elements: CssLogic.getShortNamePath(this.viewedElement),
+       sheets: this.cssLogic.sheets,
++
++      /**
++       * The onchange event handler for the "Show specificity" checkbox.
++       */
+       toggleSpecificity: function CssHtmlTree_toggleSpecificity()
+       {
+         self.styleDocument.getElementById("groups")
+             .classList.toggle("showSpecificity");
+       },
++
++      /**
++       * The onclick event handler for the sheets drop-down.
++       * @param {Event} aEvent the DOM event.
++       */
++      sheetClick: function CssHtmlTree_sheetClick(aEvent) {
++        let target = aEvent.target;
++        if (target.classList.contains("selected")) {
++          return;
++        }
++
++        let oldSelection = self.styleDocument.querySelector(".sheetFilter .selected");
++        if (oldSelection) {
++          oldSelection.classList.remove("selected");
++        }
++
++        target.classList.add("selected");
++
++        let sheetInput = self.styleDocument.querySelector(".sheetFilter p span");
++        sheetInput.textContent = target.textContent;
++
++        // Update the Style panel.
++        self.cssLogic.sourceFilter = target.getAttribute("value");
++        self.createStyleGroupViews();
++        let data = { styleGroups: self.styleGroups };
++        self._template(self.templateGroups, self.groups, data);
++
++        // Hide the drop-down.
++        let menu = self.styleDocument.querySelector(".sheetFilter ul");
++        menu.style.display = "none";
++        setTimeout(function () { menu.style.display = ""; }, 200);
++      },
++
+       str: {
++        displaySheetLabel: this.strings.GetStringFromName("style.displaySheetLabel"),
++        displayAllSheets: this.strings.GetStringFromName("style.displayAllSheets"),
++        displayBrowserSheets: this.strings.GetStringFromName("style.displayBrowserSheets"),
+         lookingAtLabel: this.strings.GetStringFromName("style.lookingAtLabel"),
+         specificityLabel: this.strings.GetStringFromName("style.specificityLabel"),
+         specificityHelpLink: this.strings.GetStringFromName("style.specificityHelpLink")
+       }
+     };
+     this._template(this.templateHeader, this.header, data);
+ 
++    // Update the web page to display the selected source filter.
++    let sheetElement = null;
++    let sourceFilter = this.cssLogic.sourceFilter;
++    for (let i = 0, n = data.sheetList.children.length; i < n; i++) {
++      sheetElement = data.sheetList.children[i];
++      if (sheetElement && sheetElement.getAttribute("value") == sourceFilter) {
++        sheetElement.classList.add("selected");
++        break;
++      }
++    }
++
++    if (sheetElement) {
++      let sheetInput = data.sheetInput;
++      sheetInput.textContent = sheetElement.textContent;
++    }
++
+     data = { styleGroups: this.styleGroups };
+     this._template(this.templateGroups, this.groups, data);
+   },
+ 
+   /**
+    * Clone the given template node, and process it by resolving ${} references
+    * in the template.
+    *
+@@ -589,42 +645,43 @@ Templater.prototype.processNode = functi
+           // No custom loop variable name. Use the default: 'param'.
+           value = self.stripBraces(value);
+         } else {
+           // Extract the loop variable name from 'NAME in ${ARRAY}'.
+           let nameArr = value.split(" in ");
+           paramName = nameArr[0].trim();
+           value = self.stripBraces(nameArr[1].trim());
+         }
++
+         recurse = false;
++        aNode.removeAttribute("foreach");
++
+         try {
+           let processMember = function(aMember) {
+             let clone = aNode.cloneNode(true);
+-            clone.removeAttribute("foreach");
+             aNode.parentNode.insertBefore(clone, aNode);
+             aData[paramName] = aMember;
+             self.processNode(clone, aData);
+             delete aData[paramName];
+           };
+           let reply = self.envEval(value, aData, attrs[i].value);
+           if (Array.isArray(reply)) {
+             reply.forEach(processMember);
+           } else {
+             for (let param in reply) {
+               if (reply.hasOwnProperty(param)) {
+                 processMember(param);
+               }
+             }
+           }
+           aNode.parentNode.removeChild(aNode);
++          break; // Do not continue any attribute parsing.
+         } catch (ex) {
+           self.error("Error with '" + value + "'" + ex);
+-          recurse = false;
+         }
+-        aNode.removeAttribute("foreach");
+       } else if (name.substring(0, 2) == "on") {
+         // Event registration relies on property doing a bind.
+         value = self.stripBraces(value);
+         let func = self.property(value, aData);
+         if (typeof func != 'function') {
+           self.error("Expected " + value +
+             " to resolve to a function, but got " + typeof func);
+         }
+diff --git a/browser/base/content/csshtmltree.xhtml b/browser/base/content/csshtmltree.xhtml
+--- a/browser/base/content/csshtmltree.xhtml
++++ b/browser/base/content/csshtmltree.xhtml
+@@ -33,19 +33,59 @@
+     }
+     span.path_crumb:last-of-type {
+       color: red;
+     }
+     div#header {
+       width: 95%;
+       padding: 5px;
+     }
+-    td.sheet_line {
+-      text-align: end;
++
++    .sheetFilter {
++      position: relative;
+     }
++    .sheetFilter ul {
++      display: none;
++      list-style: none;
++      margin: 0;
++      padding: 0;
++      position: absolute;
++      left: 0;
++      top: 99%;
++      color: #666;
++      border-bottom: 1px solid #999;
++    }
++    .sheetFilter p {
++      font-weight: bold;
++      cursor: pointer;
++    }
++    .sheetFilter p span {
++      font-weight: normal;
++    }
++    .sheetFilter p span:after {
++      content: ".";
++    }
++    .sheetFilter:hover ul, .sheetFilter:focus ul {
++      display: block;
++    }
++    .sheetFilter li {
++      background: -moz-linear-gradient(top, #F8F8F8, #E8E8E8);
++      padding: 3px 5px;
++      border: 1px solid #999;
++      border-width: 1px 1px 0 1px;
++      cursor: pointer;
++    }
++    .sheetFilter li:hover, .sheetFilter li:focus {
++      background: -moz-linear-gradient(top, #FFF, #F5F5F5);
++      color: #000;
++    }
++    .sheetFilter li.selected {
++      font-weight: bold;
++    }
++
+     td#path_list {
+       text-align: start;
+     }
+     div#header label {
+       font-weight: bold;
+     }
+     #sheets {
+       -moz-margin-end: 10px;
+@@ -134,39 +174,54 @@
+ To visually debug the templates without running firefox, alter the display:none
+ -->
+ <div style="display:none;">
+   <!--
+   The header at the top of the window showing options and what we're looking at
+   templateHeader needs data like this:
+   {
+     path_elements: [ 'div[0]', '#main', '#content', 'p[4]' ],
+-    sheets: [ { source: 'foo.css' }, { source: 'bar.css' }, ... ],
++    sheets: [ { source: 'foo.css', href: ... }, { source: 'bar.css', href: ...
++    }, ...  ],
+     toggleSpecificity: function() {} // toggle the display of specificity data
+   }
+   -->
+   <div id="templateHeader">
+     <table>
+       <tr>
+         <td class="path_line">
+           <!-- TODO: Looking at styling is broken. See bug 585566. -->
+           <label>${str.lookingAtLabel}</label>
+           <span class="path" foreach="element in ${path_elements}">
+             <a href="#" class="path_element">${element}</a>
+             <span class="path_crumb">&#x27EB;</span>
+           </span>
+         </td>
+       </tr>
+       <tr>
+-        <td class="sheet_line">
++        <td>
++          <div class="sheetFilter">
++            <p>${str.displaySheetLabel} <span
++              save="${sheetInput}">...</span></p>
++            <ul save="${sheetList}">
++              <li foreach="sheet in ${sheets}" onclick="${sheetClick}"
++              value="${sheet.href}">${sheet.shortSource}</li>
++              <li value="all"
++              onclick="${sheetClick}">${str.displayAllSheets}</li>
++              <li onclick="${sheetClick}"
++              value="ua">${str.displayBrowserSheets}</li>
++            </ul>
++          </div>
++          <p>
+           <label for="specificity">${str.specificityLabel}</label>
+           <input _id="specificity" type="checkbox" save="${specificity}"
+               onchange="${toggleSpecificity}"/>
+           <a target="_blank" class="link"
+-              href="https://developer.mozilla.org/en/CSS/Specificity">${str.specificityHelpLink}</a>
++            href="https://developer.mozilla.org/en/CSS/Specificity">${str.specificityHelpLink}</a>
++          </p>
+         </td>
+       </tr>
+     </table>
+   </div>
+ 
+   <!--
+   Template for the top level groups of properties
+   templateGroups needs data like this:
+@@ -209,17 +264,17 @@ To visually debug the templates without 
+   templateRules needs data like this:
+   {
+     cssInfo: ..., // from cssLogic.getCssInfo(property)
+     statusText: function(status) {}, // convert rule.status to readable text
+   }
+   The table element is only there do the DOM doesn't muck with the tr
+   -->
+   <table id="templateRules">
+-    <tr foreach="rule in ${cssInfo.rules}">
++    <tr foreach="rule in ${cssInfo.rules}" if="${rule.sheetAllowed}">
+       <td class="rule-text">${selectorText(rule.selector)} &#x2192;
+         ${rule.value}</td>
+       <td class="rule-specificity"
+         title="${specificityTitle(rule)}">${rule.specificity}</td>
+       <td><a target="_blank" href="view-source:${rule.href}"
+           class="link">${rule.source}</a></td>
+       <td class="rule-status">${statusText(rule.status)}</td>
+     </tr>
+diff --git a/browser/base/content/csslogic.js b/browser/base/content/csslogic.js
+--- a/browser/base/content/csslogic.js
++++ b/browser/base/content/csslogic.js
+@@ -71,16 +71,23 @@ function CssLogic(aStylePanel, aStrings)
+   this.sheets = [];
+   // Part of the specificity of a rule is its order in the sheet.
+   this._ruleCount = 0;
+ 
+   // The cache of examined CSS properties.
+   this._cssInfos = {};
+   // The computed styles for the viewedElement.
+   this._computedStyle = null;
++
++  // Source filter. Only display properties coming from the given source (web
++  // address). Special values:
++  // - "all": will show properties from all style sheets.
++  // - "ua": will show properties from all style sheets, including the browser
++  // styles (user agent ones).
++  this._sourceFilter = "all";
+ };
+ 
+ /**
+  * Each rule has a status, the bigger the number, the better placed it is to
+  * provide styling information.
+  */
+ CssLogic.STATUS = {
+   BEST: 3,
+@@ -190,16 +197,50 @@ CssLogic.prototype = {
+       this._computedStyle = win.getComputedStyle(this.viewedElement, "");
+     } catch (ex) {
+       Services.console.logStringMessage("Warning getComputedStyle errored " +
+         "for " + this.viewedElement + ". " + ex);
+     }
+   },
+ 
+   /**
++   * Get the source filter.
++   * @returns {string} The source filter being used.
++   */
++  get sourceFilter() {
++    return this._sourceFilter;
++  },
++
++  /**
++   * Source filter. Only display properties coming from the given source (web
++   * address). Special values:
++   *  - "all": will show properties from all style sheets.
++   *  - "ua": will show properties from all style sheets, including the browser
++   *  styles (user agent ones).
++   */
++  set sourceFilter(aValue) {
++    this._sourceFilter = aValue;
++
++    // Update the CssInfo objects.
++    for (let property in this._cssInfos) {
++      let cssInfo = this._cssInfos[property];
++      if (cssInfo._rules) {
++        cssInfo._findRules();
++        cssInfo._findElementRules();
++        if (!cssInfo._uaRules && this.sourceFilter == "ua") {
++          cssInfo._findUARules();
++        }
++      }
++      if (cssInfo._matched) {
++        cssInfo._markMatches();
++      }
++    }
++  },
++
++  /**
+    * Dig through the stylesheets and get a data structure like this:
+    * {
+    *   property: 'color',
+    *   value: 'red',
+    *   rules: // Rules ordered by how well they match the chosen element
+    *   [
+    *     { value:'blue', source:'other.css', selector:'p', status:... },
+    *     { value:'#F80', source:'other.css', selector:'*', status:... },
+@@ -305,21 +346,23 @@ CssLogic.getShortNamePath = function Css
+ };
+ 
+ /**
+  * A safe each to access cache of bits of information about a stylesheet.
+  *
+  * @constructor
+  * @param {nsIDOMDocument} aDocument the document we inspect.
+  * @param {CSSStyleSheet} aDomSheet reference to a DOM CSSStyleSheet object.
++ * @param {boolean} aSystemSheet tells if the stylesheet is system-provided.
+  */
+-function CssSheet(aDocument, aDomSheet)
++function CssSheet(aDocument, aDomSheet, aSystemSheet)
+ {
+   this._document = aDocument;
+   this._domSheet = aDomSheet;
++  this.systemSheet = aSystemSheet;
+ };
+ 
+ CssSheet.prototype = {
+   /**
+    * Get a source for a stylesheet, taking into account embedded stylesheets
+    * for which we need to use document.defaultView.location.href rather than
+    * sheet.href
+    *
+@@ -421,82 +464,105 @@ function CssInfo(aCssLogic, aProperty)
+     this.value = aCssLogic._computedStyle.getPropertyValue(aProperty);
+   } else {
+     this.value = "";
+   }
+ 
+   this._matched = false;
+   this._localRules = false;
+   this._cssLogic = aCssLogic;
++
++  // Holds the number of filtered rules.
++  this._ruleCount = 0;
+ };
+ 
+ CssInfo.prototype = {
+   /**
++   * Retrieve the number of filtered rules.
++   *
+    * ruleCount could be accessed through this.rules.length, however that means
+    * we need to have sorted them into the correct order, which could take time
+    * hence we have a separate accessor for the times when you just want to know
+    * how rules there are without getting access to the rule ordering.
+    *
+-   * @returns {number} the number of rules.
++   * @returns {number} the number of filtered rules.
+    */
+   get ruleCount()
+   {
+     if (!this._rules) {
+       this._findRules();
+     }
+     if (!this._localRules) {
+       this._findElementRules();
+     }
++    if (!this._uaRules && this._cssLogic.sourceFilter == "ua") {
++      this._findUARules();
++    }
+ 
+-    return this._rules.length;
++    return this._ruleCount;
+   },
+ 
+   /**
+    * Accessor for a list of rules sorted by their applicability to the current
+    * element.
+    *
+    * @returns {array}
+    */
+   get rules()
+   {
+     if (!this._rules) {
+       this._findRules();
+     }
+     if (!this._localRules) {
+       this._findElementRules();
+     }
++    if (!this._uaRules && this._cssLogic.sourceFilter == "ua") {
++      this._findUARules();
++    }
+ 
+     if (!this._matched) {
+       this._markMatches();
+     }
+ 
+     return this._rules;
+   },
+ 
+   /**
+    * Dig through all the sheets looking for matches for <tt>property</tt> and
+    * adding the results to <tt>rules</tt>. This method also finds the properties
+    * that are defined inline (element.style).
+    */
+   _findRules: function CssInfo_findRules()
+   {
+     this._rules = [];
++    this._ruleCount = 0;
+ 
+-    // Loop over all the stylesheets, rules, and properties
++    let filter = this._cssLogic.sourceFilter;
++
++    // Loop over all of the filtered stylesheets, rules, and properties
+     for (let s = 0; s < this._cssLogic.sheets.length; s++) {
+       let sheet = this._cssLogic.sheets[s];
++      let sheetAllowed = false;
++      if (filter == "all" || filter == "ua" || filter == sheet.href) {
++        sheetAllowed = true;
++      }
++
+       for (let r = 0; r < sheet.domRules.length; r++) {
+         let domRule = sheet.domRules[r];
+         if (domRule.style) {
+           for (let t = 0; t < domRule.style.length; t++) {
+             if (domRule.style[t] == this.property) {
+               domRule.selectorText.split(",").forEach(function(aSelector) {
+                 let rule = new CssRule(this._cssLogic, domRule, this.property,
+                     sheet, aSelector.trim());
++                rule.sheetAllowed = sheetAllowed;
+                 this._rules.push(rule);
++                if (sheetAllowed) {
++                  this._ruleCount++;
++                }
+               }, this);
+             }
+           }
+         }
+       }
+     }
+   },
+ 
+@@ -505,21 +571,70 @@ CssInfo.prototype = {
+    */
+   _findElementRules: function CssInfo_findElementRules()
+   {
+     let element = this._cssLogic.viewedElement;
+     if (element.style && element.style.getPropertyValue(this.property) != "") {
+       let rule = new CssRule(this._cssLogic, {style: element.style},
+         this.property, null, "@element.style");
+       this._rules.push(rule);
++      this._ruleCount++;
+     }
++
+     this._localRules = true;
+   },
+ 
+   /**
++   * Find the user-agent rules (Gecko-provided rules).
++   */
++  _findUARules: function CssInfo_findUARules()
++  {
++    let cssLogic = this._cssLogic;
++    let doc = this._cssLogic.viewedDocument;
++    let element = this._cssLogic.viewedElement;
++    let stylePanel = this._cssLogic.stylePanel;
++    let sheets = [];
++
++    // Find the system sheets for the highlighted element.
++    let matchedRules = stylePanel.domUtils.getCSSStyleRules(element);
++    for (let i = 0, n = matchedRules.Count(); i < n; i++) {
++      let domRule = matchedRules.GetElementAt(i);
++      if (stylePanel.isSystemStyleSheet(domRule.parentStyleSheet) &&
++        domRule.style) {
++        sheets.push(new CssSheet(doc, domRule.parentStyleSheet, true));
++      }
++    }
++
++    // Find all the rules in each system sheet.
++    for (let i = 0, n = sheets.length; i < n; i++) {
++      let sheet = sheets[i];
++      for (let r = 0, rn = sheet.domRules.length; r < rn; r++) {
++        let domRule = sheet.domRules[r];
++        if (!domRule.style) {
++          continue;
++        }
++        for (let t = 0, tn = domRule.style.length; t < tn; t++) {
++          if (domRule.style[t] != this.property) {
++            continue;
++          }
++
++          domRule.selectorText.split(",").forEach(function (aSelector) {
++            let rule = new CssRule(this._cssLogic, domRule, this.property,
++              sheet, aSelector.trim(), true);
++            this._rules.push(rule);
++            this._ruleCount++;
++          }, this);
++        }
++      }
++    }
++
++    this._uaRules = true;
++  },
++
++  /**
+    * Go through the <tt>rules</tt> member of <tt>cssInfo</tt> and work out
+    * if each rule applies to <tt>viewedElement</tt>.
+    */
+   _markMatches: function CssInfo_markMatches()
+   {
+     for (let r = 0; r < this._rules.length; r++) {
+       let rule = this._rules[r];
+ 
+@@ -562,28 +677,29 @@ CssInfo.prototype = {
+    */
+   unmarkMatches: function CssInfo_unmarkMatches()
+   {
+     if (this._rules) {
+       let removeRules = [];
+ 
+       this._rules.forEach(function(aRule, aIndex) {
+         aRule.status = CssLogic.STATUS.UNKNOWN;
+-        if (aRule.selector == "@element.style") {
++        if (aRule.selector == "@element.style" || aRule.systemSheet) {
+           removeRules.push(aIndex);
+         }
+       }, this);
+ 
+       removeRules.forEach(function (aIndex) {
+         this._rules.splice(aIndex, 1);
+       }, this);
+     }
+ 
+     this._matched = false;
+     this._localRules = false;
++    this._uaRules = false;
+   },
+ 
+   toString: function CssInfo_toString()
+   {
+     return "CssInfo[" + this.property + "]";
+   },
+ };
+ 
+@@ -598,32 +714,36 @@ CssInfo.prototype = {
+  * selector and the property. If the rule comes from element.style, then provide
+  * an object like this {style: element.style}.
+  * @param {string} aProperty the CSS property name we are gathering information
+  * for.
+  * @param {CSSStyleSheet|null} aSheet reference to the stylesheet where the
+  * property and rule were found. Use null if the rule comes from element.style.
+  * @param {string} aSelector the simple selector rule. If the rule comes from
+  * element.style use "@element.style".
++ * @param {boolean} aSystemSheet tells if the DOMCSSRule comes from a
++ * system-provided stylesheet.
+  */
+-function CssRule(aCssLogic, aDomRule, aProperty, aSheet, aSelector)
++function CssRule(aCssLogic, aDomRule, aProperty, aSheet, aSelector, aSystemSheet)
+ {
+   this.property = aProperty;
+   this.selector = aSelector;
+   this.value = aDomRule.style.getPropertyValue(aProperty);
+   let pri = aDomRule.style.getPropertyPriority(aProperty);
+ 
+   let ruleCount;
+   if (this.selector == "@element.style") {
+     ruleCount = 0;
+   } else {
+     ruleCount = aCssLogic._ruleCount++;
+   }
+ 
+-  this.specificity = new CssSpecificity(this.selector, ruleCount, pri);
++  this.systemSheet = aSystemSheet;
++  this.specificity = new CssSpecificity(this.selector, ruleCount, pri,
++    aSystemSheet);
+ 
+   // domUtils.getRuleLine fails for @import rules.
+   this.line = -1;
+   if (aCssLogic.stylePanel && this.selector != "@element.style") {
+     try {
+       this.line = aCssLogic.stylePanel.domUtils.getRuleLine(aDomRule);
+     } catch (ex) {
+       Services.console.logStringMessage("domUtils.getRuleLine failed for " +
+@@ -638,16 +758,17 @@ function CssRule(aCssLogic, aDomRule, aP
+   } else {
+     this.source = (this.line == -1) ?
+         aSheet.shortSource :
+         aSheet.shortSource + ":" + this.line;
+     this.href = aSheet.href;
+   }
+ 
+   this.status = CssLogic.STATUS.UNKNOWN;
++  this.sheetAllowed = true;
+ };
+ 
+ CssRule.prototype = {
+   toString: function CssInfo_toString()
+   {
+     return "CssRule[" + this.selector + "->" + this.value + "]";
+   },
+ };
+@@ -657,26 +778,29 @@ CssRule.prototype = {
+  * rules.
+  *
+  * @constructor
+  * @param {string} aSelector The selector that we wish to investigate
+  * @param {number} aIndex The index of the rule in the HTML document. Later
+  * rules have higher precedence (i.e. they are 'more specific')
+  * See http://www.w3.org/TR/CSS2/cascade.html#cascade for details.
+  * @param {string} aPriority CSS allows only one priority: 'important'
++ * @param {boolean} aSystemSheet tells if the DOMCSSRule comes from a
++ * system-provided stylesheet.
+  * @see http://www.w3.org/TR/CSS2/cascade.html#specificity
+  * @see http://www.w3.org/TR/CSS2/selector.html
+  */
+-function CssSpecificity(aSelector, aIndex, aPriority)
++function CssSpecificity(aSelector, aIndex, aPriority, aSystemSheet)
+ {
+   this.ids = 0;
+   this.classes = 0;
+   this.tags = 0;
+   this.index = aIndex;
+   this.important = (aPriority == "important");
++  this.system = aSystemSheet;
+ 
+   // Split on CSS combinators (section 5.2).
+   if (aSelector != "@element.style") {
+     this.inline = false;
+ 
+     aSelector.split(/[ >+]/).forEach(function(aSimple) {
+       // The regex leaves empty nodes combinators like ' > '
+       if (!aSimple) {
+@@ -699,27 +823,29 @@ function CssSpecificity(aSelector, aInde
+     }, this);
+   } else {
+     this.inline = true;
+   }
+ 
+   this.score = 0;
+ 
+   /* Score prefix:
+-  0 nothing
+-  1 inline
+-  2 important
+-  3 inline important
++  0 UA normal property
++  1 UA important property
++  2 normal property
++  3 inline
++  4 important
++  5 inline important
+   */
+-  let scorePrefix = 0;
++  let scorePrefix = this.system ? 0 : 2;
+   if (this.inline) {
+     scorePrefix++;
+   }
+   if (this.important) {
+-    scorePrefix += 2;
++    scorePrefix += this.system ? 1 : 2;
+   }
+ 
+   this.score = "" + scorePrefix + this.ids + this.classes + this.tags;
+ };
+ 
+ CssSpecificity.prototype = {
+   /**
+    * Compare the current CssSpecificity instance to another instance.
+@@ -727,16 +853,23 @@ CssSpecificity.prototype = {
+    * @param {CssSpecificity} aThat The CssSpecificity instance to compare ourselves against.
+    * @returns number -1, 0, 1 depending on how aThat compares with this.
+    */
+   compareTo: function CssSpecificity_compareTo(aThat)
+   {
+     // There are ways to do this that are more compact code-wise, but
+     // this is clear and clear wins over smart and compact.
+ 
++    if (this.system && !aThat.system) {
++      return 1;
++    }
++    if (!this.system && aThat.system) {
++      return -1;
++    }
++
+     if (this.inline && !aThat.inline) {
+       if (!this.important && aThat.important) {
+         return 1;
+       } else {
+         return -1;
+       }
+     }
+ 
+diff --git a/browser/locales/en-US/chrome/browser/inspector.properties b/browser/locales/en-US/chrome/browser/inspector.properties
+--- a/browser/locales/en-US/chrome/browser/inspector.properties
++++ b/browser/locales/en-US/chrome/browser/inspector.properties
+@@ -26,16 +26,32 @@ style.lookingAtLabel=Looking at:
+ # specificity of the style sheet rules.
+ style.specificityLabel=Show specificity:
+ 
+ # LOCALIZATION NOTE (style.specificityHelpLink): This is used inside the Style
+ # panel of the Inspector tool. This allows the user to display additional
+ # information on the specificity of style sheet rules.
+ style.specificityHelpLink=Help!
+ 
++# LOCALIZATION NOTE (style.displaySheetLabel): This is used inside the Style
++# panel of the Inspector tool. This allows the user to filter the rules
++# displayed based on their source, based on where the rules come from.
++style.displaySheetLabel=Display:
++
++# LOCALIZATION NOTE (style.displaySheetLabel): This is used inside the Style
++# panel of the Inspector tool. This allows the user to filter the rules
++# displayed based on their source: all sheets will be shown.
++style.displayAllSheets=All sheets
++
++# LOCALIZATION NOTE (style.displaySheetLabel): This is used inside the Style
++# panel of the Inspector tool. This allows the user to filter the rules
++# displayed based on their source: all sheets will be shown, including those
++# native to the browser (default styles).
++style.displayBrowserSheets=Include browser sheets
++
+ # LOCALIZATION NOTE (style.group): These strings are used inside the Style
+ # panel of the Inspector tool. Style properties are displayed in groups and
+ # these are the group names.
+ style.group.Fonts_and_Color=Fonts and Color
+ style.group.Text=Text
+ style.group.Background=Background
+ style.group.Dimensions=Dimensions
+ style.group.Positioning_and_Page_Flow=Positioning and Page Flow

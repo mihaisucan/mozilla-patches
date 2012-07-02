@@ -1,0 +1,598 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1325883106 -7200
+# Node ID fe1654849a7d43764a629bee6a814a14d75eaa6a
+# Parent  166a453fe7c94774777d296e03cd60e57bb17456
+Bug 611032 - Errors from before the Web Console is opened do not show
+
+diff --git a/browser/devtools/webconsole/HUDService.jsm b/browser/devtools/webconsole/HUDService.jsm
+--- a/browser/devtools/webconsole/HUDService.jsm
++++ b/browser/devtools/webconsole/HUDService.jsm
+@@ -2154,17 +2154,18 @@ HUD_SERVICE.prototype =
+     let node = ConsoleUtils.createMessageNode(hud.outputNode.ownerDocument,
+                                               CATEGORY_WEBDEV,
+                                               LEVELS[level],
+                                               body,
+                                               aHUDId,
+                                               sourceURL,
+                                               sourceLine,
+                                               clipboardText,
+-                                              level);
++                                              level,
++                                              aMessage.timeStamp);
+ 
+     // Make the node bring up the property panel, to allow the user to inspect
+     // the stack trace.
+     if (level == "trace") {
+       node._stacktrace = args;
+ 
+       let linkNode = node.querySelector(".webconsole-msg-body");
+       linkNode.classList.add("hud-clickable");
+@@ -2221,28 +2222,49 @@ HUD_SERVICE.prototype =
+                                               SEVERITY_WARNING, message,
+                                               aHUDId);
+     ConsoleUtils.outputMessageNode(node, aHUDId);
+   },
+ 
+   /**
+    * Reports an error in the page source, either JavaScript or CSS.
+    *
+-   * @param number aCategory
+-   *        The category of the message; either CATEGORY_CSS or CATEGORY_JS.
+    * @param nsIScriptError aScriptError
+    *        The error message to report.
+    * @return void
+    */
+-  reportPageError: function HS_reportPageError(aCategory, aScriptError)
+-  {
+-    if (aCategory != CATEGORY_CSS && aCategory != CATEGORY_JS) {
+-      throw Components.Exception("Unsupported category (must be one of CSS " +
+-                                 "or JS)", Cr.NS_ERROR_INVALID_ARG,
+-                                 Components.stack.caller);
++  reportPageError: function HS_reportPageError(aScriptError)
++  {
++    if (!(aScriptError instanceof Ci.nsIScriptError) ||
++        !aScriptError.outerWindowID) {
++      return;
++    }
++
++    let category;
++
++    switch (aScriptError.category) {
++      // We ignore chrome-originating errors as we only care about content.
++      case "XPConnect JavaScript":
++      case "component javascript":
++      case "chrome javascript":
++      case "chrome registration":
++      case "XBL":
++      case "XBL Prototype Handler":
++      case "XBL Content Sink":
++      case "xbl javascript":
++        return;
++
++      case "CSS Parser":
++      case "CSS Loader":
++        category = CATEGORY_CSS;
++        break;
++
++      default:
++        category = CATEGORY_JS;
++        break;
+     }
+ 
+     // Warnings and legacy strict errors become warnings; other types become
+     // errors.
+     let severity = SEVERITY_ERROR;
+     if ((aScriptError.flags & aScriptError.warningFlag) ||
+         (aScriptError.flags & aScriptError.strictFlag)) {
+       severity = SEVERITY_WARNING;
+@@ -2251,22 +2273,24 @@ HUD_SERVICE.prototype =
+     let window = HUDService.getWindowByWindowId(aScriptError.outerWindowID);
+     if (window) {
+       let hudId = HUDService.getHudIdByWindow(window.top);
+       if (hudId) {
+         let outputNode = this.hudReferences[hudId].outputNode;
+         let chromeDocument = outputNode.ownerDocument;
+ 
+         let node = ConsoleUtils.createMessageNode(chromeDocument,
+-                                                  aCategory,
++                                                  category,
+                                                   severity,
+                                                   aScriptError.errorMessage,
+                                                   hudId,
+                                                   aScriptError.sourceName,
+-                                                  aScriptError.lineNumber);
++                                                  aScriptError.lineNumber,
++                                                  null, null,
++                                                  aScriptError.timeStamp);
+ 
+         ConsoleUtils.outputMessageNode(node, hudId);
+       }
+     }
+   },
+ 
+   /**
+    * Register a Gecko app's specialized ApplicationHooks object
+@@ -3595,26 +3619,45 @@ HeadsUpDisplay.prototype = {
+   /**
+    * Display cached messages that may have been collected before the UI is
+    * displayed.
+    *
+    * @returns void
+    */
+   displayCachedConsoleMessages: function HUD_displayCachedConsoleMessages()
+   {
+-    // Get the messages from the ConsoleStorageService.
+-    let windowId = HUDService.getInnerWindowId(this.contentWindow);
+-
+-    let messages = gConsoleStorage.getEvents(windowId);
++    let innerWindowId = HUDService.getInnerWindowId(this.contentWindow);
++
++    let messages = gConsoleStorage.getEvents(innerWindowId);
++
++    let errors = {};
++    Services.console.getMessageArray(errors, {});
++
++    // Filter the errors to find only those we should display.
++    let filteredErrors = (errors.value || []).filter(function(aError) {
++      return aError instanceof Ci.nsIScriptError &&
++             aError.innerWindowID == innerWindowId;
++    }, this);
++
++    messages.push.apply(messages, filteredErrors);
++    messages.sort(function(a, b) { return a.timeStamp - b.timeStamp; });
+ 
+     // Turn off scrolling for the moment.
+     ConsoleUtils.scroll = false;
+ 
++    // Display all messages.
+     messages.forEach(function(aMessage) {
+-      HUDService.logConsoleAPIMessage(this.hudId, aMessage);
++      if (aMessage instanceof Ci.nsIScriptError) {
++        HUDService.reportPageError(aMessage, true);
++      }
++      else {
++        // In this case the cached message is a console message generated
++        // by the ConsoleAPI, not an nsIScriptError
++        HUDService.logConsoleAPIMessage(this.hudId, aMessage, true);
++      }
+     }, this);
+ 
+     ConsoleUtils.scroll = true;
+ 
+     // Scroll to bottom.
+     let numChildren = this.outputNode.childNodes.length;
+     if (numChildren) {
+       this.outputNode.ensureIndexIsVisible(numChildren - 1);
+@@ -4048,17 +4091,17 @@ HeadsUpDisplay.prototype = {
+    * @return void
+    */
+   makeClearConsoleButton: function HUD_makeClearConsoleButton(aToolbar)
+   {
+     let hudId = this.hudId;
+     function HUD_clearButton_onCommand() {
+       let hud = HUDService.getHudReferenceById(hudId);
+       if (hud.jsterm) {
+-        hud.jsterm.clearOutput();
++        hud.jsterm.clearOutput(true);
+       }
+       if (hud.gcliterm) {
+         hud.gcliterm.clearOutput();
+       }
+     }
+ 
+     let clearButton = this.makeXULNode("toolbarbutton");
+     clearButton.setAttribute("label", this.getStr("btnClear"));
+@@ -4566,17 +4609,17 @@ function JSTermHelper(aJSTerm)
+   });
+ 
+   /**
+    * Clears the output of the JSTerm.
+    */
+   aJSTerm.sandbox.clear = function JSTH_clear()
+   {
+     aJSTerm.helperEvaluated = true;
+-    aJSTerm.clearOutput();
++    aJSTerm.clearOutput(true);
+   };
+ 
+   /**
+    * Returns the result of Object.keys(aObject).
+    *
+    * @param object aObject
+    *        Object to return the property names from.
+    * @returns array of string
+@@ -5158,17 +5201,24 @@ JSTerm.prototype = {
+     let type = aResult === null ? "null" : typeof aResult;
+     if (type == "object" && aResult.constructor && aResult.constructor.name) {
+       type = aResult.constructor.name;
+     }
+ 
+     return type.toLowerCase();
+   },
+ 
+-  clearOutput: function JST_clearOutput()
++  /**
++   * Clear the Web Console output.
++   *
++   * @param boolean aClearStorage
++   *        True if you want to clear the console messages storage associated to
++   *        this Web Console.
++   */
++  clearOutput: function JST_clearOutput(aClearStorage)
+   {
+     let hud = HUDService.getHudReferenceById(this.hudId);
+     hud.cssNodes = {};
+ 
+     let node = hud.outputNode;
+     while (node.firstChild) {
+       if (node.firstChild.classList &&
+           node.firstChild.classList.contains("webconsole-msg-inspector")) {
+@@ -5176,16 +5226,21 @@ JSTerm.prototype = {
+       }
+       else {
+         hud.outputNode.removeChild(node.firstChild);
+       }
+     }
+ 
+     hud.HUDBox.lastTimestamp = 0;
+     hud.groupDepth = 0;
++
++    if (aClearStorage) {
++      let windowId = HUDService.getInnerWindowId(hud.contentWindow);
++      gConsoleStorage.clearEvents(windowId);
++    }
+   },
+ 
+   /**
+    * Updates the size of the input field (command line) to fit its contents.
+    *
+    * @returns void
+    */
+   resizeInput: function JST_resizeInput()
+@@ -5795,24 +5850,28 @@ ConsoleUtils = {
+    *        The line number on which the error occurred. If zero or omitted,
+    *        there is no line number associated with this message.
+    * @param string aClipboardText [optional]
+    *        The text that should be copied to the clipboard when this node is
+    *        copied. If omitted, defaults to the body text. If `aBody` is not
+    *        a string, then the clipboard text must be supplied.
+    * @param number aLevel [optional]
+    *        The level of the console API message.
++   * @param number aTimeStamp [optional]
++   *        The timestamp to use for this message node. If omitted, the current
++   *        date and time is used.
+    * @return nsIDOMNode
+    *         The message node: a XUL richlistitem ready to be inserted into
+    *         the Web Console output node.
+    */
+   createMessageNode:
+   function ConsoleUtils_createMessageNode(aDocument, aCategory, aSeverity,
+                                           aBody, aHUDId, aSourceURL,
+-                                          aSourceLine, aClipboardText, aLevel) {
++                                          aSourceLine, aClipboardText, aLevel,
++                                          aTimeStamp) {
+     if (typeof aBody != "string" && aClipboardText == null && aBody.innerText) {
+       aClipboardText = aBody.innerText;
+     }
+ 
+     // Make the icon container, which is a vertical box. Its purpose is to
+     // ensure that the icon stays anchored at the top of the message even for
+     // long multi-line messages.
+     let iconContainer = aDocument.createElementNS(XUL_NS, "vbox");
+@@ -5862,17 +5921,17 @@ ConsoleUtils = {
+     let repeatNode = aDocument.createElementNS(XUL_NS, "label");
+     repeatNode.setAttribute("value", "1");
+     repeatNode.classList.add("webconsole-msg-repeat");
+     repeatContainer.appendChild(repeatNode);
+ 
+     // Create the timestamp.
+     let timestampNode = aDocument.createElementNS(XUL_NS, "label");
+     timestampNode.classList.add("webconsole-timestamp");
+-    let timestamp = ConsoleUtils.timestamp();
++    let timestamp = aTimeStamp || ConsoleUtils.timestamp();
+     let timestampString = ConsoleUtils.timestampString(timestamp);
+     timestampNode.setAttribute("value", timestampString);
+ 
+     // Create the source location (e.g. www.example.com:6) that sits on the
+     // right side of the message, if applicable.
+     let locationNode;
+     if (aSourceURL) {
+       locationNode = this.createLocationNode(aDocument, aSourceURL,
+@@ -6568,58 +6627,32 @@ CommandController.prototype = {
+ HUDConsoleObserver = {
+   QueryInterface: XPCOMUtils.generateQI(
+     [Ci.nsIObserver]
+   ),
+ 
+   init: function HCO_init()
+   {
+     Services.console.registerListener(this);
+-    Services.obs.addObserver(this, "xpcom-shutdown", false);
++    Services.obs.addObserver(this, "quit-application-granted", false);
+   },
+ 
+   uninit: function HCO_uninit()
+   {
+     Services.console.unregisterListener(this);
+-    Services.obs.removeObserver(this, "xpcom-shutdown");
++    Services.obs.removeObserver(this, "quit-application-granted");
+   },
+ 
+   observe: function HCO_observe(aSubject, aTopic, aData)
+   {
+-    if (aTopic == "xpcom-shutdown") {
++    if (aTopic == "quit-application-granted") {
+       this.uninit();
+-      return;
+-    }
+-
+-    if (!(aSubject instanceof Ci.nsIScriptError) ||
+-        !aSubject.outerWindowID) {
+-      return;
+-    }
+-
+-    switch (aSubject.category) {
+-      // We ignore chrome-originating errors as we only
+-      // care about content.
+-      case "XPConnect JavaScript":
+-      case "component javascript":
+-      case "chrome javascript":
+-      case "chrome registration":
+-      case "XBL":
+-      case "XBL Prototype Handler":
+-      case "XBL Content Sink":
+-      case "xbl javascript":
+-        return;
+-
+-      case "CSS Parser":
+-      case "CSS Loader":
+-        HUDService.reportPageError(CATEGORY_CSS, aSubject);
+-        return;
+-
+-      default:
+-        HUDService.reportPageError(CATEGORY_JS, aSubject);
+-        return;
++    }
++    else if (aSubject instanceof Ci.nsIScriptError) {
++      HUDService.reportPageError(aSubject);
+     }
+   }
+ };
+ 
+ /**
+  * A WebProgressListener that listens for location changes, to update HUDService
+  * state information on page navigation.
+  *
+@@ -6724,31 +6757,24 @@ function appName()
+   let name = APP_ID_TABLE[APP_ID];
+ 
+   if (name){
+     return name;
+   }
+   throw new Error("appName: UNSUPPORTED APPLICATION UUID");
+ }
+ 
+-///////////////////////////////////////////////////////////////////////////
+-// HUDService (exported symbol)
+-///////////////////////////////////////////////////////////////////////////
+-
+-try {
+-  // start the HUDService
+-  // This is in a try block because we want to kill everything if
+-  // *any* of this fails
+-  var HUDService = new HUD_SERVICE();
+-}
+-catch (ex) {
+-  Cu.reportError("HUDService failed initialization.\n" + ex);
+-  // TODO: kill anything that may have started up
+-  // see bug 568665
+-}
++XPCOMUtils.defineLazyGetter(this, "HUDService", function () {
++  try {
++    return new HUD_SERVICE();
++  }
++  catch (ex) {
++    Cu.reportError(ex);
++  }
++});
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ // GcliTerm
+ ///////////////////////////////////////////////////////////////////////////
+ 
+ /**
+  * Some commands need customization - this is how we get at them.
+  */
+diff --git a/browser/devtools/webconsole/test/Makefile.in b/browser/devtools/webconsole/test/Makefile.in
+--- a/browser/devtools/webconsole/test/Makefile.in
++++ b/browser/devtools/webconsole/test/Makefile.in
+@@ -146,16 +146,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_gcli_inspect.js \
+ 	browser_gcli_integrate.js \
+ 	browser_gcli_require.js \
+ 	browser_gcli_web.js \
+ 	browser_webconsole_bug_658368_time_methods.js \
+ 	browser_webconsole_bug_622303_persistent_filters.js \
+ 	browser_webconsole_window_zombie.js \
+ 	browser_ConsoleAPICachedMessages.js \
++	browser_WebConsoleErrorObserverTests.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+@@ -218,15 +219,16 @@ _BROWSER_TEST_PAGES = \
+ 	test-bug-585956-console-trace.html \
+ 	test-bug-644419-log-limits.html \
+ 	test-bug-632275-getters.html \
+ 	test-bug-646025-console-file-location.html \
+ 	test-bug-678816-content.js \
+ 	test-file-location.js \
+ 	browser_gcli_inspect.html \
+ 	test-bug-658368-time-methods.html \
++	test-webconsole-error-observer.html \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/browser/devtools/webconsole/test/browser_WebConsoleErrorObserverTests.js b/browser/devtools/webconsole/test/browser_WebConsoleErrorObserverTests.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/webconsole/test/browser_WebConsoleErrorObserverTests.js
+@@ -0,0 +1,60 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is DevTools test code.
++ *
++ * The Initial Developer of the Original Code is Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   David Dahl <ddahl@mozilla.com>
++ *   Mihai Sucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/browser/devtools/webconsole/test/test-webconsole-error-observer.html";
++
++function test()
++{
++  expectUncaughtException();
++  addTab(TEST_URI);
++  browser.addEventListener("load", testWebConsoleErrorObserver, true);
++}
++
++function testWebConsoleErrorObserver()
++{
++  browser.removeEventListener("load", testWebConsoleErrorObserver, true);
++
++  openConsole();
++
++  let outputNode = HUDService.getHudByWindow(content).outputNode;
++
++  testLogEntry(outputNode, "bazBug611032", "Found the JavaScript error");
++  testLogEntry(outputNode, "cssColorBug611032", "Found the CSS error");
++
++  finishTest();
++}
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_611795.js b/browser/devtools/webconsole/test/browser_webconsole_bug_611795.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_611795.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_611795.js
+@@ -38,12 +38,16 @@ function onContentLoaded()
+  */
+ function test()
+ {
+   addTab(TEST_URI);
+   browser.addEventListener("load", function() {
+     browser.removeEventListener("load", arguments.callee, true);
+ 
+     openConsole();
++
++    // Clear cached messages that are shown once the Web Console opens.
++    HUDService.getHudByWindow(content).jsterm.clearOutput(true);
++
+     browser.addEventListener("load", onContentLoaded, true);
+     content.location.reload();
+   }, true);
+ }
+diff --git a/browser/devtools/webconsole/test/test-webconsole-error-observer.html b/browser/devtools/webconsole/test/test-webconsole-error-observer.html
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/webconsole/test/test-webconsole-error-observer.html
+@@ -0,0 +1,19 @@
++<!DOCTYPE HTML>
++<html dir="ltr" xml:lang="en-US" lang="en-US">
++  <head>
++    <title>WebConsoleErrorObserver test - bug 611032</title>
++    <!-- Any copyright is dedicated to the Public Domain.
++         http://creativecommons.org/publicdomain/zero/1.0/ -->
++    <script type="text/javascript">
++      var foo = {};
++      foo.bazBug611032();
++    </script>
++    <style type="text/css">
++      .foo { color: cssColorBug611032; }
++    </style>
++  </head>
++  <body>
++    <h1>WebConsoleErrorObserver test</h1>
++  </body>
++</html>
++
+diff --git a/dom/base/ConsoleAPI.js b/dom/base/ConsoleAPI.js
+--- a/dom/base/ConsoleAPI.js
++++ b/dom/base/ConsoleAPI.js
+@@ -197,17 +197,18 @@ ConsoleAPI.prototype = {
+     let frame = stack[1];
+     let consoleEvent = {
+       ID: aOuterWindowID,
+       innerID: aInnerWindowID,
+       level: aLevel,
+       filename: frame.filename,
+       lineNumber: frame.lineNumber,
+       functionName: frame.functionName,
+-      arguments: aArguments
++      arguments: aArguments,
++      timeStamp: Date.now(),
+     };
+ 
+     consoleEvent.wrappedJSObject = consoleEvent;
+ 
+     ConsoleAPIStorage.recordEvent(aInnerWindowID, consoleEvent);
+ 
+     Services.obs.notifyObservers(consoleEvent,
+                                  "console-api-log-event", aOuterWindowID);
+diff --git a/dom/base/ConsoleAPIStorage.jsm b/dom/base/ConsoleAPIStorage.jsm
+--- a/dom/base/ConsoleAPIStorage.jsm
++++ b/dom/base/ConsoleAPIStorage.jsm
+@@ -116,17 +116,17 @@ var ConsoleAPIStorage = {
+    * @param string aId
+    *        The inner window ID for which you want to get the array of cached
+    *        events.
+    * @returns array
+    *          The array of cached events for the given window.
+    */
+   getEvents: function CS_getEvents(aId)
+   {
+-    return _consoleStorage[aId] || [];
++    return (_consoleStorage[aId] || []).slice(0);
+   },
+ 
+   /**
+    * Record an event associated with the given window ID.
+    *
+    * @param string aWindowID
+    *        The ID of the inner window for which the event occurred.
+    * @param object aEvent

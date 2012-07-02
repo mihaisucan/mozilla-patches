@@ -1,0 +1,242 @@
+diff -r 3067a34c37c3 toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm	Thu Jul 15 10:40:33 2010 -0400
++++ b/toolkit/components/console/hudservice/HUDService.jsm	Thu Jul 15 19:20:41 2010 +0300
+@@ -1603,16 +1603,18 @@ function HeadsUpDisplay(aConfig)
+   }
+   catch(ex) {
+     Cu.reportError(ex);
+   }
+ 
+   this.XULFactory = NodeFactory("xul", "xul", this.chromeDocument);
+   this.textFactory = NodeFactory("text", "xul", this.chromeDocument);
+ 
++  this.chromeWindow = HUDService.getChromeWindowFromContentWindow(this.contentWindow);
++
+   // create a panel dynamically and attach to the parentNode
+   let hudBox = this.createHUD();
+ 
+   let splitter = this.chromeDocument.createElement("splitter");
+   splitter.setAttribute("collapse", "before");
+   splitter.setAttribute("resizeafter", "flex");
+   splitter.setAttribute("class", "hud-splitter");
+ 
+@@ -1786,16 +1788,17 @@ HeadsUpDisplay.prototype = {
+     let consoleWrap = this.makeXULNode("vbox");
+     this.consoleWrap = consoleWrap;
+     consoleWrap.setAttribute("class", "hud-console-wrapper");
+     consoleWrap.setAttribute("flex", "1");
+ 
+     this.outputNode = this.makeXULNode("vbox");
+     this.outputNode.setAttribute("class", "hud-output-node");
+     this.outputNode.setAttribute("flex", "1");
++    this.outputNode.setAttribute("context", this.hudId + "-output-contextmenu");
+ 
+     this.filterBox = this.makeXULNode("textbox");
+     this.filterBox.setAttribute("class", "hud-filter-box");
+     this.filterBox.setAttribute("hudId", this.hudId);
+ 
+     this.filterClearButton = this.makeXULNode("button");
+     this.filterClearButton.setAttribute("class", "hud-filter-clear");
+     this.filterClearButton.setAttribute("label", this.getStr("stringFilterClear"));
+@@ -1806,24 +1809,37 @@ HeadsUpDisplay.prototype = {
+     this.consoleClearButton = this.makeXULNode("button");
+     this.consoleClearButton.setAttribute("class", "hud-console-clear");
+     this.consoleClearButton.setAttribute("label", this.getStr("btnClear"));
+     this.consoleClearButton.setAttribute("buttonType", "clear");
+     this.consoleClearButton.setAttribute("hudId", this.hudId);
+     var command = "HUDConsoleUI.command(this)";
+     this.consoleClearButton.setAttribute("oncommand", command);
+ 
++    this.copyOutputMenuItem = this.makeXULNode("menuitem");
++    this.copyOutputMenuItem.setAttribute("label", this.getStr("copyCmd.label"));
++    this.copyOutputMenuItem.setAttribute("accesskey", this.getStr("copyCmd.accesskey"));
++    this.copyOutputMenuItem.setAttribute("key", "key_copy");
++    this.copyOutputMenuItem.setAttribute("oncommand", "goDoCommand('cmd_copy')");
++
++    this.contextMenu = this.makeXULNode("menupopup");
++    this.contextMenu.setAttribute("id", this.hudId + "-output-contextmenu");
++    this.contextMenu.addEventListener("popupshowing",
++      function () { self.contextMenuShowing() }, false);
++    this.contextMenu.appendChild(this.copyOutputMenuItem);
++
+     this.filterPrefs = HUDService.getDefaultFilterPrefs(this.hudId);
+ 
+     let consoleFilterToolbar = this.makeFilterToolbar();
+     consoleFilterToolbar.setAttribute("id", "viewGroup");
+     this.consoleFilterToolbar = consoleFilterToolbar;
+     consoleWrap.appendChild(consoleFilterToolbar);
+ 
+     consoleWrap.appendChild(this.outputNode);
++    outerWrap.appendChild(this.contextMenu);
+     outerWrap.appendChild(consoleWrap);
+ 
+     this.jsTermParentNode = outerWrap;
+     this.HUDBox.appendChild(outerWrap);
+     return this.HUDBox;
+   },
+ 
+ 
+@@ -1944,16 +1960,35 @@ HeadsUpDisplay.prototype = {
+    *
+    * @returns console
+    */
+   createConsole: function HUD_createConsole()
+   {
+     return new HUDConsole(this);
+   },
+ 
++  /**
++   * The popupshowing event handler for the outputNode context menu.
++   */
++  contextMenuShowing: function HUD_contextMenuShowing()
++  {
++    var disabled = "true", selection = this.chromeWindow.getSelection();
++
++    // make sure the selected range is within the outputNode.
++    if (selection && !selection.isCollapsed && selection.rangeCount) {
++      let ancestor = selection.getRangeAt(0).commonAncestorContainer;
++      if (this.outputNode == ancestor ||
++        this.outputNode.compareDocumentPosition(ancestor) & 16) {
++        disabled = "false";
++      }
++    }
++
++    this.copyOutputMenuItem.setAttribute("disabled", disabled);
++  },
++
+   ERRORS: {
+     HUD_BOX_DOES_NOT_EXIST: "Heads Up Display does not exist",
+     TAB_ID_REQUIRED: "Tab DOM ID is required",
+     PARENTNODE_NOT_FOUND: "parentNode element not found"
+   }
+ };
+ 
+ 
+diff -r 3067a34c37c3 toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Thu Jul 15 10:40:33 2010 -0400
++++ b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Thu Jul 15 19:20:41 2010 +0300
+@@ -336,16 +336,50 @@ function testIteration() {
+     let _entry = it.next();
+     entries2.push(_entry);
+   }
+ 
+   ok(entries[0].id != entries2[0].id,
+      "two distinct pages of log entries");
+ }
+ 
++function testClipboardCopy()
++{
++  var HUD = HUDService.hudWeakReferences[hudId].get();
++  var chromeWindow = HUD.chromeWindow;
++  var chromeDocument = HUD.chromeDocument;
++  var selection = chromeWindow.getSelection();
++  var console = tab.linkedBrowser.contentWindow.wrappedJSObject.console;
++
++  if (selection.rangeCount > 0) {
++    selection.removeAllRanges();
++  }
++
++  // test 1: check that the copyOutputMenuItem is disabled
++  HUD.contextMenuShowing();
++  is(HUD.copyOutputMenuItem.getAttribute("disabled"), "true",
++    "HUD.copyOutputMenuItem is disabled");
++
++  console.log("Hello world!");
++
++  executeSoon(function () {
++    var range = chromeDocument.createRange();
++    range.selectNode(HUD.outputNode.firstChild);
++    selection.addRange(range);
++
++    // test 2: check that the copyOutputMenuItem is enabled, because a node is 
++    // selected.
++    HUD.contextMenuShowing();
++    is(HUD.copyOutputMenuItem.getAttribute("disabled"), "false",
++      "HUD.copyOutputMenuItem is enabled");
++
++    selection.removeAllRanges();
++  });
++}
++
+ let tab, browser, hudId, hud, filterBox, outputNode, cs;
+ 
+ let win = gBrowser.selectedBrowser;
+ tab = gBrowser.selectedTab;
+ browser = gBrowser.getBrowserForTab(tab);
+ 
+ function test() {
+   waitForExplicitFinish();
+@@ -380,16 +414,17 @@ function test() {
+ 
+       testNet();
+ 
+       // ConsoleStorageTests
+       testCreateDisplay();
+       testRecordEntry();
+       testRecordManyEntries();
+       testIteration();
++      testClipboardCopy();
+ 
+       // testUnregister();
+       executeSoon(function () {
+         HUDService.deactivateHUDForContext(tab);
+         HUDService.shutdown();
+       });
+       finish();
+     });
+diff -r 3067a34c37c3 toolkit/locales/en-US/chrome/global/headsUpDisplay.properties
+--- a/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties	Thu Jul 15 10:40:33 2010 -0400
++++ b/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties	Thu Jul 15 19:20:41 2010 +0300
+@@ -30,8 +30,10 @@ tipWarn=Toggle console.warn logging
+ btnLog=Log
+ tipLog=Toggle console.log logging
+ btnGlobal=Global Messages
+ tipGlobal=Toggle Global Message logging
+ localConsole=Local Console
+ btnClear=Clear Console
+ tipClear=Clear the console output
+ stringFilterClear=Clear Filter
++copyCmd.label=Copy
++copyCmd.accesskey=C
+diff -r 3067a34c37c3 toolkit/themes/pinstripe/global/headsUpDisplay.css
+--- a/toolkit/themes/pinstripe/global/headsUpDisplay.css	Thu Jul 15 10:40:33 2010 -0400
++++ b/toolkit/themes/pinstripe/global/headsUpDisplay.css	Thu Jul 15 19:20:41 2010 +0300
+@@ -52,16 +52,17 @@
+ .hud-main-label {
+     font-size: 1em;
+     padding-top: 0.33em;
+     font-weight: bold;
+ }
+ 
+ .hud-output-node div {
+     -moz-user-select: text;
++    -moz-user-focus: normal;
+ }
+ 
+ .hud-output-node .hud-network {
+     color: blue;
+ }
+ 
+ .hud-output-node .hud-error {
+     color: red;
+diff -r 3067a34c37c3 toolkit/themes/winstripe/global/headsUpDisplay.css
+--- a/toolkit/themes/winstripe/global/headsUpDisplay.css	Thu Jul 15 10:40:33 2010 -0400
++++ b/toolkit/themes/winstripe/global/headsUpDisplay.css	Thu Jul 15 19:20:41 2010 +0300
+@@ -52,16 +52,17 @@
+ .hud-main-label {
+     font-size: 1em;
+     padding-top: 0.33em;
+     font-weight: bold;
+ }
+ 
+ .hud-output-node div {
+     -moz-user-select: text;
++    -moz-user-focus: normal;
+ }
+ 
+ .hud-output-node .hud-network {
+     color: blue;
+ }
+ 
+ .hud-output-node .hud-error {
+     color: red;

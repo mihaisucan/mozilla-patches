@@ -1,0 +1,124 @@
+# HG changeset patch
+# Date 1309537945 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Parent fae9a993f933f4507d5f432dea70f790c6d46af2
+Bug 592469 - Web Console cleanup: part 1 - HUDService - remove getHeadsUpDisplay()
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1753,17 +1753,17 @@ HUD_SERVICE.prototype =
+     // Remove children from the output. If the output is not cleared, there can
+     // be leaks as some nodes has node.onclick = function; set and GC can't
+     // remove the nodes then.
+     HUDService.clearDisplay(aHUD);
+ 
+     var id, outputNode, ownerDoc;
+     if (typeof(aHUD) === "string") {
+       id = aHUD;
+-      outputNode = this.getHeadsUpDisplay(aHUD);
++      outputNode = this.getHudReferenceById(aHUD).HUDBox;
+     }
+     else {
+       id = aHUD.getAttribute("id");
+       outputNode = aHUD;
+     }
+ 
+     // remove HUD DOM node and
+     // remove display references from local registries get the outputNode
+@@ -1926,34 +1926,22 @@ HUD_SERVICE.prototype =
+   getHudReferenceById: function HS_getHudReferenceById(aId)
+   {
+     return aId in this.hudReferences ? this.hudReferences[aId] : null;
+   },
+ 
+   /**
+    * Gets the Web Console DOM node, the .hud-box.
+    *
+-   * @param string id
+-   *        The Heads Up Display DOM Id
+-   * @returns nsIDOMNode
+-   */
+-  getHeadsUpDisplay: function HS_getHeadsUpDisplay(aId)
+-  {
+-    return aId in this.hudReferences ? this.hudReferences[aId].HUDBox : null;
+-  },
+-
+-  /**
+-   * Gets the Web Console DOM node, the .hud-box.
+-   *
+    * @param string aId
+    * @returns nsIDOMNode
+    */
+   getOutputNodeById: function HS_getOutputNodeById(aId)
+   {
+-    return this.getHeadsUpDisplay(aId);
++    return this.getHudReferenceById(aId).HUDBox;
+   },
+ 
+   /**
+    * Gets an array that contains all the HUD IDs.
+    * @returns array
+    */
+   displaysIndex: function HS_displaysIndex()
+   {
+@@ -1974,19 +1962,17 @@ HUD_SERVICE.prototype =
+ 
+   /**
+    * Get the current filter string for the HeadsUpDisplay
+    *
+    * @param string aHUDId
+    * @returns string
+    */
+   getFilterStringByHUDId: function HS_getFilterStringbyHUDId(aHUDId) {
+-    var hud = this.getHeadsUpDisplay(aHUDId);
+-    var filterStr = hud.querySelectorAll(".hud-filter-box")[0].value;
+-    return filterStr;
++    return this.getHudReferenceById(aHUDId).filterBox.value;
+   },
+ 
+   /**
+    * Update the filter text in the internal tracking object for all
+    * filter strings
+    *
+    * @param nsIDOMNode aTextBoxNode
+    * @returns void
+@@ -2107,18 +2093,17 @@ HUD_SERVICE.prototype =
+   /**
+    * Get OutputNode by Id
+    *
+    * @param string aId
+    * @returns nsIDOMNode (richlistbox)
+    */
+   getConsoleOutputNode: function HS_getConsoleOutputNode(aId)
+   {
+-    let displayNode = this.getHeadsUpDisplay(aId);
+-    return displayNode.querySelector(".hud-output-node");
++    return this.getHudReferenceById(aId).outputNode;
+   },
+ 
+   /**
+    * Inform user that the Web Console API has been replaced by a script
+    * in a content page.
+    *
+    * @param string aHUDId
+    *        The ID of the Web Console to which to send the message.
+@@ -2692,17 +2677,17 @@ HUD_SERVICE.prototype =
+   /**
+    * Passed a HUDId, the corresponding window is returned
+    *
+    * @param string aHUDId
+    * @returns nsIDOMWindow
+    */
+   getContentWindowFromHUDId: function HS_getContentWindowFromHUDId(aHUDId)
+   {
+-    var hud = this.getHeadsUpDisplay(aHUDId);
++    var hud = this.getHudReferenceById(aHUDId).HUDBox;
+     var nodes = hud.parentNode.childNodes;
+ 
+     for (var i = 0; i < nodes.length; i++) {
+       var node = nodes[i];
+ 
+       if (node.localName == "stack" &&
+           node.firstChild &&
+           node.firstChild.contentWindow) {

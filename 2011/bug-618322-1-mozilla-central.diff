@@ -1,0 +1,22 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -4118,17 +4118,17 @@ JSTerm.prototype = {
+     let parent = doc.getElementById("mainPopupSet");
+     let title = (aEvalString
+         ? HUDService.getFormatStr("jsPropertyInspectTitle", [aEvalString])
+         : HUDService.getStr("jsPropertyTitle"));
+     propPanel = new PropertyPanel(parent, doc, title, aOutputObject, buttons);
+ 
+     let panel = propPanel.panel;
+     panel.openPopup(aAnchor, "after_pointer", 0, 0, false, false);
+-    panel.sizeTo(200, 400);
++    panel.sizeTo(350, 450);
+     return propPanel;
+   },
+ 
+   /**
+    * Writes a JS object to the JSTerm outputNode. If the user clicks on the
+    * written object, openPropertyPanel is called to open up a panel to inspect
+    * the object.
+    *

@@ -1,0 +1,1432 @@
+# HG changeset patch
+# Parent ddd49707a9d92404a39f16351fae90820026bc62
+# Date 1303377315 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+
+bug 585991: show a popup listing possible completions
+
+diff --git a/toolkit/components/console/hudservice/AutocompletePopup.jsm b/toolkit/components/console/hudservice/AutocompletePopup.jsm
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/AutocompletePopup.jsm
+@@ -0,0 +1,432 @@
++/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Autocomplete Popup.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Mihai Sucan <mihai.sucan@gmail.com> (original author)
++ *   Fabian Jakobs <fabian@ajax.org> (the Ajax.org Code Editor - ACE)
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const Cu = Components.utils;
++
++// The XUL and XHTML namespace.
++const XUL_NS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
++const XHTML_NS = "http://www.w3.org/1999/xhtml";
++
++const HUD_STRINGS_URI = "chrome://global/locale/headsUpDisplay.properties";
++
++
++Cu.import("resource://gre/modules/Services.jsm");
++Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++
++XPCOMUtils.defineLazyGetter(this, "stringBundle", function () {
++  return Services.strings.createBundle(HUD_STRINGS_URI);
++});
++
++
++var EXPORTED_SYMBOLS = ["AutocompletePopup"];
++
++/**
++ * Autocomplete popup UI implementation.
++ *
++ * @constructor
++ * @param nsIDOMDocument aDocument
++ *        The document you want the popup attached to.
++ */
++function AutocompletePopup(aDocument)
++{
++  this._document = aDocument;
++
++  // Reuse the existing popup elements.
++  this._panel = this._document.getElementById("webConsole_autocompletePopup");
++  if (!this._panel) {
++    this._panel = this._document.createElementNS(XUL_NS, "panel");
++    this._panel.setAttribute("id", "webConsole_autocompletePopup");
++    this._panel.setAttribute("label",
++      stringBundle.GetStringFromName("Autocomplete.label"));
++    this._panel.setAttribute("noautofocus", "true");
++    this._panel.setAttribute("ignorekeys", "true");
++
++    let mainPopupSet = this._document.getElementById("mainPopupSet");
++    if (mainPopupSet) {
++      mainPopupSet.appendChild(this._panel);
++    }
++    else {
++      this._document.appendChild(this._panel);
++    }
++  }
++
++  this._list = this._document.querySelector(".webConsole_autocompleteList");
++  if (!this._list) {
++    this._list = this._document.createElementNS(XUL_NS, "richlistbox");
++    this._list.setAttribute("class", "webConsole_autocompleteList");
++    this._panel.appendChild(this._list);
++
++    // Open and hide the panel, so we initialize the API of the richlistbox.
++    this._panel.width = 1;
++    this._panel.height = 1;
++    this._panel.openPopup(null, "overlap", 0, 0, false, false);
++    this._panel.hidePopup();
++    this._panel.width = "";
++    this._panel.height = "";
++  }
++}
++
++AutocompletePopup.prototype = {
++  _document: null,
++  _panel: null,
++  _list: null,
++
++  /**
++   * Open the autocomplete popup panel.
++   *
++   * @param nsIDOMNode aAnchor
++   *        Optional node to anchor the panel to.
++   */
++  openPopup: function AP_openPopup(aAnchor)
++  {
++    this._panel.openPopup(aAnchor, "after_start", 0, 0, false, false);
++
++    if (this.onSelect) {
++      this._onSelect = this.onSelect.bind(this);
++      this._list.addEventListener("select", this._onSelect, false);
++    }
++
++    if (this.onClick) {
++      this._onClick = this.onClick.bind(this);
++      this._list.addEventListener("click", this._onClick, false);
++    }
++
++    this._updateSize();
++  },
++
++  /**
++   * Hide the autocomplete popup panel.
++   */
++  hidePopup: function AP_hidePopup()
++  {
++    this._panel.hidePopup();
++
++    if (this._onSelect) {
++      this._list.removeEventListener("select", this._onSelect, false);
++      delete this._onSelect;
++    }
++
++    if (this._onClick) {
++      this._list.removeEventListener("click", this._onClick, false);
++      delete this._onClick;
++    }
++  },
++
++  /**
++   * Check if the autocomplete popup is open.
++   */
++  get isOpen() {
++    return this._panel.state == "open";
++  },
++
++  /**
++   * Destroy the object instance. Please note that the panel DOM elements remain
++   * in the DOM, because they might still be in use by other instances of the
++   * same code. It is the responsability of the client code to perform DOM
++   * cleanup.
++   */
++  destroy: function AP_destroy()
++  {
++    if (this.isOpen) {
++      this.hidePopup();
++    }
++    this.clearItems();
++
++    this._document = null;
++    this._list = null;
++
++    this._panel = null;
++  },
++
++  /**
++   * Get the autocomplete items array.
++   *
++   * @return array
++   *         The array of autocomplete items.
++   */
++  getItems: function AP_getItems()
++  {
++    let items = [];
++
++    Array.forEach(this._list.children, function(aItem) {
++      items.push(aItem._autocompleteItem);
++    });
++
++    return items;
++  },
++
++  /**
++   * Set the autocomplete items list, in one go.
++   *
++   * @param array aItems
++   *        The list of items you want displayed in the popup list.
++   */
++  setItems: function AP_setItems(aItems)
++  {
++    this.clearItems();
++    aItems.forEach(this.appendItem, this);
++
++    // Make sure that the new content is properly fitted by the XUL richlistbox.
++    if (this.isOpen) {
++      // We need the timeout to allow the content to reflow. Attempting to
++      // update the richlistbox size too early does not work.
++      this._document.defaultView.setTimeout(this._updateSize.bind(this), 1);
++    }
++  },
++
++  /**
++   * Update the panel size to fit the content.
++   *
++   * @private
++   */
++  _updateSize: function AP__updateSize()
++  {
++    // Make sure the bottom border of the richlistbox is visible.
++    let diff = this._panel.clientWidth - this._list.clientWidth;
++
++    this._list.width = this._panel.clientWidth +
++                       this._scrollbarWidth;
++
++    this._list.height = this._panel.clientHeight - Math.floor(diff / 2) + 1;
++  },
++
++  /**
++   * Clear all the items from the autocomplete list.
++   */
++  clearItems: function AP_clearItems()
++  {
++    while (this._list.hasChildNodes()) {
++      this._list.removeChild(this._list.firstChild);
++    }
++    this._panel.width = "";
++    this._panel.height = "";
++    this._list.width = "";
++    this._list.height = "";
++  },
++
++  /**
++   * Getter for the index of the selected item.
++   *
++   * @type number
++   */
++  get selectedIndex() {
++    return this._list.selectedIndex;
++  },
++
++  /**
++   * Setter for the selected index.
++   *
++   * @param number aIndex
++   *        The number (index) of the item you want to select in the list.
++   */
++  set selectedIndex(aIndex) {
++    this._list.selectedIndex = aIndex;
++    this._list.ensureIndexIsVisible(this._list.selectedIndex);
++  },
++
++  /**
++   * Getter for the selected item.
++   * @type object
++   */
++  get selectedItem() {
++    return this._list.selectedItem ?
++           this._list.selectedItem._autocompleteItem : null;
++  },
++
++  /**
++   * Setter for the selected item.
++   *
++   * @param object aItem
++   *        The object you want selected in the list.
++   */
++  set selectedItem(aItem) {
++    this._list.selectedItem = this._findListItem(aItem);
++    this._list.ensureIndexIsVisible(this._list.selectedIndex);
++  },
++
++  /**
++   * Append an item into the autocomplete list.
++   *
++   * @param object aItem
++   *        The item you want appended to the list. The object must have a
++   *        "label" property which is used as the displayed value.
++   */
++  appendItem: function AP_appendItem(aItem)
++  {
++    let description = this._document.createElementNS(XUL_NS, "description");
++    let text = this._document.createTextNode(aItem.label);
++    description.appendChild(text);
++
++    let listItem = this._document.createElementNS(XUL_NS, "richlistitem");
++    listItem.appendChild(description);
++    listItem._autocompleteItem = aItem;
++
++    this._list.appendChild(listItem);
++  },
++
++  /**
++   * Find the richlistitem element that belongs to an item.
++   *
++   * @private
++   *
++   * @param object aItem
++   *        The object you want found in the list.
++   *
++   * @return nsIDOMNode|null
++   *         The nsIDOMNode that belongs to the given item object. This node is
++   *         the richlistitem element.
++   */
++  _findListItem: function AP__findListItem(aItem)
++  {
++    for (let i = 0; i < this._list.children.length; i++) {
++      let child = this._list.children[i];
++      if (child._autocompleteItem == aItem) {
++        return child;
++      }
++    }
++    return null;
++  },
++
++  /**
++   * Remove an item from the popup list.
++   *
++   * @param object aItem
++   *        The item you want removed.
++   */
++  removeItem: function AP_removeItem(aItem)
++  {
++    let item = this._findListItem(aItem);
++    if (!item) {
++      throw new Error("Item not found!");
++    }
++    this._list.removeChild(item);
++  },
++
++  /**
++   * Getter for the number of items in the popup.
++   * @type number
++   */
++  get itemCount() {
++    return this._list.children.length;
++  },
++
++  /**
++   * Select the next item in the list.
++   *
++   * @return object
++   *         The newly selected item object.
++   */
++  selectNextItem: function AP_selectNextItem()
++  {
++    if (this.selectedIndex < (this.itemCount - 1)) {
++      this.selectedIndex++;
++    }
++    else if (this.selectedIndex == (this.itemCount - 1)) {
++      this.selectedIndex = -1;
++    }
++
++    return this.selectedItem;
++  },
++
++  /**
++   * Select the previous item in the list.
++   *
++   * @return object
++   *         The newly selected item object.
++   */
++  selectPreviousItem: function AP_selectPreviousItem()
++  {
++    if (this.selectedIndex > -1) {
++      this.selectedIndex--;
++    }
++    else if (this.selectedIndex == -1) {
++      this.selectedIndex = this.itemCount - 1;
++    }
++
++    return this.selectedItem;
++  },
++
++  /**
++   * Determine the scrollbar width in the current document.
++   *
++   * Credits:
++   *    This code comes from Fabian Jakobs, the ACE project.
++   *    https://github.com/ajaxorg/ace
++   *
++   * @private
++   */
++  get _scrollbarWidth()
++  {
++    if (this.__scrollbarWidth) {
++      return this.__scrollbarWidth;
++    }
++
++    let inner = this._document.createElementNS(XHTML_NS, "div");
++    inner.style.width = "100%";
++    inner.style.height = "200px";
++
++    let outer = this._document.createElementNS(XHTML_NS, "div");
++    let style = outer.style;
++
++    style.position = "absolute";
++    style.left = "-10000px";
++    style.overflow = "hidden";
++    style.width = "200px";
++    style.height = "150px";
++
++    outer.appendChild(inner);
++
++    this._document.documentElement.appendChild(outer);
++
++    let noScrollbar = inner.offsetWidth;
++
++    style.overflow = "scroll";
++    let withScrollbar = inner.offsetWidth;
++
++    if (noScrollbar == withScrollbar) {
++      withScrollbar = outer.clientWidth;
++    }
++
++    this._document.documentElement.removeChild(outer);
++
++    this.__scrollbarWidth = noScrollbar - withScrollbar;
++    return this.__scrollbarWidth;
++  },
++};
++
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -81,16 +81,27 @@ XPCOMUtils.defineLazyGetter(this, "Prope
+   try {
+     Cu.import("resource:///modules/PropertyPanel.jsm", obj);
+   } catch (err) {
+     Cu.reportError(err);
+   }
+   return obj.PropertyPanel;
+ });
+ 
++XPCOMUtils.defineLazyGetter(this, "AutocompletePopup", function () {
++  var obj = {};
++  try {
++    Cu.import("resource://gre/modules/AutocompletePopup.jsm", obj);
++  }
++  catch (err) {
++    Cu.reportError(err);
++  }
++  return obj.AutocompletePopup;
++});
++
+ XPCOMUtils.defineLazyGetter(this, "namesAndValuesOf", function () {
+   var obj = {};
+   Cu.import("resource:///modules/PropertyPanel.jsm", obj);
+   return obj.namesAndValuesOf;
+ });
+ 
+ function LogFactory(aMessagePrefix)
+ {
+@@ -519,18 +530,20 @@ ResponseListener.prototype =
+  * @param object aAttributes
+  *        Attributes set on the created DOMNode.
+  *
+  * @returns nsIDOMNode
+  */
+ function createElement(aDocument, aTag, aAttributes)
+ {
+   let node = aDocument.createElement(aTag);
+-  for (var attr in aAttributes) {
+-    node.setAttribute(attr, aAttributes[attr]);
++  if (aAttributes) {
++    for (let attr in aAttributes) {
++      node.setAttribute(attr, aAttributes[attr]);
++    }
+   }
+   return node;
+ }
+ 
+ /**
+  * Creates a new DOMNode and appends it to aParent.
+  *
+  * @param nsIDOMNode aParent
+@@ -1754,16 +1767,18 @@ HUD_SERVICE.prototype =
+       if (splitters[i].getAttribute("class") == "hud-splitter") {
+         splitters[i].parentNode.removeChild(splitters[i]);
+         break;
+       }
+     }
+     // remove the DOM Nodes
+     parent.removeChild(outputNode);
+ 
++    this.hudReferences[id].jsterm.autocompletePopup.destroy();
++
+     // remove the HeadsUpDisplay object from memory
+     if ("cssNodes" in this.hudReferences[id]) {
+       delete this.hudReferences[id].cssNodes;
+     }
+     delete this.hudReferences[id];
+     // remove the related storage object
+     this.storage.removeDisplay(id);
+ 
+@@ -1780,16 +1795,22 @@ HUD_SERVICE.prototype =
+     for (let i = 0; i < panels.length; i++) {
+       panels[i].hidePopup();
+     }
+ 
+     let id = ConsoleUtils.supString(id);
+     Services.obs.notifyObservers(id, "web-console-destroyed", null);
+ 
+     if (Object.keys(this.hudReferences).length == 0) {
++      let autocompletePopup = outputNode.ownerDocument.
++                              getElementById("webConsole_autocompletePopup");
++      if (autocompletePopup) {
++        autocompletePopup.parentNode.removeChild(autocompletePopup);
++      }
++
+       this.suspend();
+     }
+   },
+ 
+   /**
+    * "Wake up" the Web Console activity. This is called when the first Web
+    * Console is open. This method initializes the various observers we have.
+    *
+@@ -3799,34 +3820,33 @@ function JSPropertyProvider(aScope, aInp
+   // Don't complete on just an empty string.
+   if (completionPart.trim() == "") {
+     return null;
+   }
+ 
+   let properties = completionPart.split('.');
+   let matchProp;
+   if (properties.length > 1) {
+-      matchProp = properties[properties.length - 1].trimLeft();
+-      properties.pop();
+-      for each (var prop in properties) {
+-        prop = prop.trim();
+-
+-        // If obj is undefined or null, then there is no change to run
+-        // completion on it. Exit here.
+-        if (typeof obj === "undefined" || obj === null) {
+-          return null;
+-        }
+-
+-        // Check if prop is a getter function on obj. Functions can change other
+-        // stuff so we can't execute them to get the next object. Stop here.
+-        if (obj.__lookupGetter__(prop)) {
+-          return null;
+-        }
+-        obj = obj[prop];
++    matchProp = properties.pop().trimLeft();
++    for (let i = 0; i < properties.length; i++) {
++      let prop = properties[i].trim();
++
++      // If obj is undefined or null, then there is no change to run completion
++      // on it. Exit here.
++      if (typeof obj === "undefined" || obj === null) {
++        return null;
+       }
++
++      // Check if prop is a getter function on obj. Functions can change other
++      // stuff so we can't execute them to get the next object. Stop here.
++      if (obj.__lookupGetter__(prop)) {
++        return null;
++      }
++      obj = obj[prop];
++    }
+   }
+   else {
+     matchProp = properties[0].trimLeft();
+   }
+ 
+   // If obj is undefined or null, then there is no change to run
+   // completion on it. Exit here.
+   if (typeof obj === "undefined" || obj === null) {
+@@ -3834,27 +3854,25 @@ function JSPropertyProvider(aScope, aInp
+   }
+ 
+   // Skip Iterators and Generators.
+   if (isIteratorOrGenerator(obj)) {
+     return null;
+   }
+ 
+   let matches = [];
+-  for (var prop in obj) {
+-    matches.push(prop);
++  for (let prop in obj) {
++    if (prop.indexOf(matchProp) == 0) {
++      matches.push(prop);
++    }
+   }
+ 
+-  matches = matches.filter(function(item) {
+-    return item.indexOf(matchProp) == 0;
+-  }).sort();
+-
+   return {
+     matchProp: matchProp,
+-    matches: matches
++    matches: matches.sort()
+   };
+ }
+ 
+ function isIteratorOrGenerator(aObject)
+ {
+   if (typeof aObject == "object") {
+     if (typeof aObject.__iterator__ == "function" ||
+         aObject.constructor && aObject.constructor.name == "Iterator") {
+@@ -4102,16 +4120,19 @@ function JSTerm(aContext, aParentNode, a
+   while (!node.hasAttribute("id")) {
+     node = node.parentNode;
+   }
+   this.hudId = node.getAttribute("id");
+ 
+   this.historyIndex = 0;
+   this.historyPlaceHolder = 0;  // this.history.length;
+   this.log = LogFactory("*** JSTerm:");
++  this.autocompletePopup = new AutocompletePopup(aParentNode.ownerDocument);
++  this.autocompletePopup.onSelect = this.onAutocompleteSelect.bind(this);
++  this.autocompletePopup.onClick = this.acceptProposedCompletion.bind(this);
+   this.init();
+ }
+ 
+ JSTerm.prototype = {
+ 
+   propertyProvider: JSPropertyProvider,
+ 
+   COMPLETE_FORWARD: 0,
+@@ -4237,16 +4258,17 @@ JSTerm.prototype = {
+     catch (ex) {
+       this.writeOutput("" + ex, CATEGORY_OUTPUT, SEVERITY_ERROR);
+     }
+ 
+     this.history.push(aExecuteString);
+     this.historyIndex++;
+     this.historyPlaceHolder = this.history.length;
+     this.setInputValue("");
++    this.clearCompletion();
+   },
+ 
+   /**
+    * Opens a new PropertyPanel. The panel has two buttons: "Update" reexecutes
+    * the passed aEvalString and places the result inside of the tree. The other
+    * button closes the panel.
+    *
+    * @param string aEvalString
+@@ -4587,63 +4609,69 @@ JSTerm.prototype = {
+       }
+       else if (aEvent.shiftKey &&
+           aEvent.keyCode == Ci.nsIDOMKeyEvent.DOM_VK_RETURN) {
+         // shift return
+         // TODO: expand the inputNode height by one line
+         return;
+       }
+       else {
++        let inputUpdated = false;
++
+         switch(aEvent.keyCode) {
++          case Ci.nsIDOMKeyEvent.DOM_VK_ESCAPE:
++            if (self.autocompletePopup.isOpen) {
++              self.clearCompletion();
++              aEvent.preventDefault();
++            }
++            break;
++
+           case Ci.nsIDOMKeyEvent.DOM_VK_RETURN:
+-            self.execute();
++            if (self.autocompletePopup.isOpen) {
++              self.acceptProposedCompletion();
++            }
++            else {
++              self.execute();
++            }
+             aEvent.preventDefault();
+             break;
+ 
+           case Ci.nsIDOMKeyEvent.DOM_VK_UP:
+-            // history previous
+-            if (self.canCaretGoPrevious()) {
+-              let updated = self.historyPeruse(HISTORY_BACK);
+-              if (updated && aEvent.cancelable) {
+-                aEvent.preventDefault();
+-              }
++            if (self.autocompletePopup.isOpen) {
++              inputUpdated = self.complete(self.COMPLETE_BACKWARD);
++            }
++            else if (self.canCaretGoPrevious()) {
++              // history previous
++              inputUpdated = self.historyPeruse(HISTORY_BACK);
++            }
++            if (inputUpdated) {
++              aEvent.preventDefault();
+             }
+             break;
+ 
+           case Ci.nsIDOMKeyEvent.DOM_VK_DOWN:
+-            // history next
+-            if (self.canCaretGoNext()) {
+-              let updated = self.historyPeruse(HISTORY_FORWARD);
+-              if (updated && aEvent.cancelable) {
+-                aEvent.preventDefault();
+-              }
++            if (self.autocompletePopup.isOpen) {
++              // autocomplete next
++              inputUpdated = self.complete(self.COMPLETE_FORWARD);
++            }
++            else if (self.canCaretGoNext()) {
++              // history next
++              inputUpdated = self.historyPeruse(HISTORY_FORWARD);
++            }
++            if (inputUpdated) {
++              aEvent.preventDefault();
+             }
+             break;
+ 
+-          case Ci.nsIDOMKeyEvent.DOM_VK_RIGHT:
+-            // accept proposed completion
+-            self.acceptProposedCompletion();
+-            break;
+-
+           case Ci.nsIDOMKeyEvent.DOM_VK_TAB:
+-            // If there are more than one possible completion, pressing tab
+-            // means taking the next completion, shift_tab means taking
+-            // the previous completion.
+-            var completionResult;
+-            if (aEvent.shiftKey) {
+-              completionResult = self.complete(self.COMPLETE_BACKWARD);
+-            }
+-            else {
+-              completionResult = self.complete(self.COMPLETE_FORWARD);
+-            }
+-            if (completionResult) {
+-              if (aEvent.cancelable) {
+-                aEvent.preventDefault();
+-              }
+-              aEvent.target.focus();
++            // Generate a completion and accept the first proposed value.
++            if (self.complete(self.COMPLETE_HINT_ONLY) &&
++                self.lastCompletion &&
++                self.acceptProposedCompletion()) {
++              aEvent.preventDefault();
+             }
+             break;
+ 
+           default:
+             break;
+         }
+         return;
+       }
+@@ -4781,106 +4809,137 @@ JSTerm.prototype = {
+    *          or false otherwise.
+    */
+   complete: function JSTF_complete(type)
+   {
+     let inputNode = this.inputNode;
+     let inputValue = inputNode.value;
+     // If the inputNode has no value, then don't try to complete on it.
+     if (!inputValue) {
+-      this.lastCompletion = null;
+-      this.updateCompleteNode("");
++      this.clearCompletion();
+       return false;
+     }
+ 
+     // Only complete if the selection is empty and at the end of the input.
+     if (inputNode.selectionStart == inputNode.selectionEnd &&
+         inputNode.selectionEnd != inputValue.length) {
+-      // TODO: shouldnt we do this in the other 'bail' cases?
+-      this.lastCompletion = null;
+-      this.updateCompleteNode("");
++      this.clearCompletion();
+       return false;
+     }
+ 
+-    let matches;
+-    let matchIndexToUse;
+-    let matchOffset;
+-
+-    // If there is a saved completion from last time and the used value for
+-    // completion stayed the same, then use the stored completion.
+-    if (this.lastCompletion && inputValue == this.lastCompletion.value) {
+-      matches = this.lastCompletion.matches;
+-      matchOffset = this.lastCompletion.matchOffset;
+-      if (type === this.COMPLETE_BACKWARD) {
+-        this.lastCompletion.index --;
+-      }
+-      else if (type === this.COMPLETE_FORWARD) {
+-        this.lastCompletion.index ++;
+-      }
+-      matchIndexToUse = this.lastCompletion.index;
+-    }
+-    else {
+-      // Look up possible completion values.
+-      let completion = this.propertyProvider(this.sandbox.window, inputValue);
+-      if (!completion) {
+-        this.updateCompleteNode("");
++    let popup = this.autocompletePopup;
++
++    if (!this.lastCompletion || this.lastCompletion.value != inputValue) {
++      let properties = this.propertyProvider(this.sandbox.window, inputValue);
++      if (!properties || !properties.matches.length) {
++        this.clearCompletion();
+         return false;
+       }
+-      matches = completion.matches;
+-      matchIndexToUse = 0;
+-      matchOffset = completion.matchProp.length;
+-      // Store this match;
+-      this.lastCompletion = {
+-        index: 0,
+-        value: inputValue,
+-        matches: matches,
+-        matchOffset: matchOffset
+-      };
+-    }
+-
+-    if (type != this.COMPLETE_HINT_ONLY && matches.length == 1) {
+-      this.acceptProposedCompletion();
+-      return true;
+-    }
+-    else if (matches.length != 0) {
+-      // Ensure that the matchIndexToUse is always a valid array index.
+-      if (matchIndexToUse < 0) {
+-        matchIndexToUse = matches.length + (matchIndexToUse % matches.length);
+-        if (matchIndexToUse == matches.length) {
+-          matchIndexToUse = 0;
++
++      let items = properties.matches.map(function(aMatch) {
++        return {label: aMatch};
++      });
++      popup.setItems(items);
++      this.lastCompletion = {value: inputValue,
++                             matchProp: properties.matchProp};
++
++      if (items.length > 1 && !popup.isOpen) {
++        popup.openPopup(this.inputNode);
++      }
++      else if (items.length < 2 && popup.isOpen) {
++        popup.hidePopup();
++      }
++
++      if (items.length > 0) {
++        popup.selectedIndex = 0;
++        if (items.length == 1) {
++          // onSelect is not fired when the popup is not open.
++          this.onAutocompleteSelect();
+         }
+       }
+-      else {
+-        matchIndexToUse = matchIndexToUse % matches.length;
+-      }
+-
+-      let completionStr = matches[matchIndexToUse].substring(matchOffset);
+-      this.updateCompleteNode(completionStr);
+-      return completionStr ? true : false;
++    }
++
++    let accepted = false;
++
++    if (type != this.COMPLETE_HINT_ONLY && popup.itemCount == 1) {
++      this.acceptProposedCompletion();
++      accepted = true;
++    }
++    else if (type == this.COMPLETE_BACKWARD) {
++      this.autocompletePopup.selectPreviousItem();
++    }
++    else if (type == this.COMPLETE_FORWARD) {
++      this.autocompletePopup.selectNextItem();
++    }
++
++    return accepted || popup.itemCount > 0;
++  },
++
++  onAutocompleteSelect: function JSTF_onAutocompleteSelect()
++  {
++    let currentItem = this.autocompletePopup.selectedItem;
++    if (currentItem && this.lastCompletion) {
++      let suffix = currentItem.label.substring(this.lastCompletion.
++                                               matchProp.length);
++      this.updateCompleteNode(suffix);
+     }
+     else {
+       this.updateCompleteNode("");
+     }
+-
+-    return false;
+-  },
+-
++  },
++
++  /**
++   * Clear the current completion information and close the autocomplete popup,
++   * if needed.
++   */
++  clearCompletion: function JSTF_clearCompletion()
++  {
++    this.autocompletePopup.clearItems();
++    this.lastCompletion = null;
++    this.updateCompleteNode("");
++    if (this.autocompletePopup.isOpen) {
++      this.autocompletePopup.hidePopup();
++    }
++  },
++
++  /**
++   * Accept the proposed input completion.
++   *
++   * @return boolean
++   *         True if there was a selected completion item and the input value
++   *         was updated, false otherwise.
++   */
+   acceptProposedCompletion: function JSTF_acceptProposedCompletion()
+   {
+-    this.setInputValue(this.inputNode.value + this.completionValue);
+-    this.updateCompleteNode("");
+-  },
+-
+-  updateCompleteNode: function JSTF_updateCompleteNode(suffix)
+-  {
+-    this.completionValue = suffix;
+-
++    let updated = false;
++
++    let currentItem = this.autocompletePopup.selectedItem;
++    if (currentItem && this.lastCompletion) {
++      let suffix = currentItem.label.substring(this.lastCompletion.
++                                               matchProp.length);
++      this.setInputValue(this.inputNode.value + suffix);
++      updated = true;
++    }
++
++    this.clearCompletion();
++
++    return updated;
++  },
++
++  /**
++   * Update the node that displays the currently selected autocomplete proposal.
++   *
++   * @param string aSuffix
++   *        The proposed suffix for the inputNode value.
++   */
++  updateCompleteNode: function JSTF_updateCompleteNode(aSuffix)
++  {
+     // completion prefix = input, with non-control chars replaced by spaces
+-    let prefix = this.inputNode.value.replace(/[\S]/g, " ");
+-    this.completeNode.value = prefix + this.completionValue;
++    let prefix = aSuffix ? this.inputNode.value.replace(/[\S]/g, " ") : "";
++    this.completeNode.value = prefix + aSuffix;
+   },
+ };
+ 
+ /**
+  * Generates and attaches the JS Terminal part of the Web Console, which
+  * essentially consists of the interactive JavaScript input facility.
+  *
+  * @param nsWeakPtr<nsIDOMWindow> aContext
+diff --git a/toolkit/components/console/hudservice/Makefile.in b/toolkit/components/console/hudservice/Makefile.in
+--- a/toolkit/components/console/hudservice/Makefile.in
++++ b/toolkit/components/console/hudservice/Makefile.in
+@@ -41,16 +41,17 @@ topsrcdir	= @top_srcdir@
+ srcdir		= @srcdir@
+ VPATH		= @srcdir@
+ 
+ include $(DEPTH)/config/autoconf.mk
+ 
+ EXTRA_JS_MODULES = HUDService.jsm \
+ 		PropertyPanel.jsm \
+ 		NetworkHelper.jsm \
++		AutocompletePopup.jsm \
+ 		$(NULL)
+ 
+ ifdef ENABLE_TESTS
+ ifneq (mobile,$(MOZ_BUILD_APP))
+ 	DIRS += tests
+ endif
+ endif
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -130,16 +130,18 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_618311_private_browsing.js \
+ 	browser_webconsole_bug_632347_iterators_generators.js \
+ 	browser_webconsole_bug_642108_refForOutputNode.js \
+ 	browser_webconsole_bug_642108_pruneTest.js \
+ 	browser_webconsole_bug_585956_console_trace.js \
+ 	browser_webconsole_bug_595223_file_uri.js \
+ 	browser_webconsole_bug_632275_getters_document_width.js \
+ 	browser_webconsole_bug_642615_autocomplete.js \
++	browser_webconsole_bug_585991_autocomplete_popup.js \
++	browser_webconsole_bug_585991_autocomplete_keys.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_585991_autocomplete_keys.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_585991_autocomplete_keys.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_585991_autocomplete_keys.js
+@@ -0,0 +1,204 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Web Console test suite.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Mihai Sucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "data:text/html,<p>bug 585991 - autocomplete popup keyboard usage test";
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoaded, true);
++}
++
++function tabLoaded() {
++  browser.removeEventListener("load", tabLoaded, true);
++  openConsole();
++
++  content.wrappedJSObject.foobarBug585991 = {
++    "item0": "value0",
++    "item1": "value1",
++    "item2": "value2",
++    "item3": "value3",
++  };
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  HUD = HUDService.hudReferences[hudId];
++  let jsterm = HUD.jsterm;
++  let popup = jsterm.autocompletePopup;
++  let completeNode = jsterm.completeNode;
++
++  ok(!popup.isOpen, "popup is not open");
++
++  popup._panel.addEventListener("popupshown", function() {
++    popup._panel.removeEventListener("popupshown", arguments.callee, false);
++
++    ok(popup.isOpen, "popup is open");
++
++    is(popup.itemCount, 4, "popup.itemCount is correct");
++
++    let sameItems = popup.getItems();
++    is(sameItems.every(function(aItem, aIndex) {
++      return aItem.label == "item" + aIndex;
++    }), true, "getItems returns back the same items");
++
++    let prefix = jsterm.inputNode.value.replace(/[\S]/g, " ");
++
++    is(popup.selectedIndex, 0, "index 0 is selected");
++    is(popup.selectedItem.label, "item0", "item0 is selected");
++    is(completeNode.value, prefix + "item0", "completeNode.value holds item0");
++
++    EventUtils.synthesizeKey("VK_DOWN", {});
++
++    is(popup.selectedIndex, 1, "index 1 is selected");
++    is(popup.selectedItem.label, "item1", "item1 is selected");
++    is(completeNode.value, prefix + "item1", "completeNode.value holds item1");
++
++    EventUtils.synthesizeKey("VK_UP", {});
++
++    is(popup.selectedIndex, 0, "index 0 is selected");
++    is(popup.selectedItem.label, "item0", "item0 is selected");
++    is(completeNode.value, prefix + "item0", "completeNode.value holds item0");
++
++    popup._panel.addEventListener("popuphidden", autocompletePopupHidden, false);
++
++    EventUtils.synthesizeKey("VK_TAB", {});
++  }, false);
++
++  jsterm.setInputValue("window.foobarBug585991");
++  EventUtils.synthesizeKey(".", {});
++}
++
++function autocompletePopupHidden()
++{
++  let jsterm = HUD.jsterm;
++  let popup = jsterm.autocompletePopup;
++  let completeNode = jsterm.completeNode;
++  let inputNode = jsterm.inputNode;
++
++  popup._panel.removeEventListener("popuphidden", arguments.callee, false);
++
++  ok(!popup.isOpen, "popup is not open");
++
++  is(inputNode.value, "window.foobarBug585991.item0",
++     "completion was successful after VK_TAB");
++
++  ok(!completeNode.value, "completeNode is empty");
++
++  popup._panel.addEventListener("popupshown", function() {
++    popup._panel.removeEventListener("popupshown", arguments.callee, false);
++
++    ok(popup.isOpen, "popup is open");
++
++    is(popup.itemCount, 4, "popup.itemCount is correct");
++
++    let prefix = jsterm.inputNode.value.replace(/[\S]/g, " ");
++
++    is(popup.selectedIndex, 0, "index 0 is selected");
++    is(popup.selectedItem.label, "item0", "item0 is selected");
++    is(completeNode.value, prefix + "item0", "completeNode.value holds item0");
++
++    popup._panel.addEventListener("popuphidden", function() {
++      popup._panel.removeEventListener("popuphidden", arguments.callee, false);
++
++      ok(!popup.isOpen, "popup is not open after VK_ESCAPE");
++
++      is(inputNode.value, "window.foobarBug585991.",
++         "completion was cancelled");
++
++      ok(!completeNode.value, "completeNode is empty");
++
++      executeSoon(testReturnKey);
++    }, false);
++
++    executeSoon(function() {
++      EventUtils.synthesizeKey("VK_ESCAPE", {});
++    });
++  }, false);
++
++  executeSoon(function() {
++    jsterm.setInputValue("window.foobarBug585991");
++    EventUtils.synthesizeKey(".", {});
++  });
++}
++
++function testReturnKey()
++{
++  let jsterm = HUD.jsterm;
++  let popup = jsterm.autocompletePopup;
++  let completeNode = jsterm.completeNode;
++  let inputNode = jsterm.inputNode;
++
++  popup._panel.addEventListener("popupshown", function() {
++    popup._panel.removeEventListener("popupshown", arguments.callee, false);
++
++    ok(popup.isOpen, "popup is open");
++
++    is(popup.itemCount, 4, "popup.itemCount is correct");
++
++    let prefix = jsterm.inputNode.value.replace(/[\S]/g, " ");
++
++    is(popup.selectedIndex, 0, "index 0 is selected");
++    is(popup.selectedItem.label, "item0", "item0 is selected");
++    is(completeNode.value, prefix + "item0", "completeNode.value holds item0");
++
++    EventUtils.synthesizeKey("VK_DOWN", {});
++
++    is(popup.selectedIndex, 1, "index 1 is selected");
++    is(popup.selectedItem.label, "item1", "item1 is selected");
++    is(completeNode.value, prefix + "item1", "completeNode.value holds item1");
++
++    popup._panel.addEventListener("popuphidden", function() {
++      popup._panel.removeEventListener("popuphidden", arguments.callee, false);
++
++      ok(!popup.isOpen, "popup is not open after VK_RETURN");
++
++      is(inputNode.value, "window.foobarBug585991.item1",
++         "completion was successful after VK_RETURN");
++
++      ok(!completeNode.value, "completeNode is empty");
++
++      executeSoon(finishTest);
++    }, false);
++
++    EventUtils.synthesizeKey("VK_RETURN", {});
++  }, false);
++
++  executeSoon(function() {
++    jsterm.setInputValue("window.foobarBug58599");
++    EventUtils.synthesizeKey("1", {});
++    EventUtils.synthesizeKey(".", {});
++  });
++}
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_585991_autocomplete_popup.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_585991_autocomplete_popup.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_585991_autocomplete_popup.js
+@@ -0,0 +1,129 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Web Console test suite.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Mihai Sucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "data:text/html,<p>bug 585991 - autocomplete popup test";
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoaded, true);
++}
++
++function tabLoaded() {
++  browser.removeEventListener("load", tabLoaded, true);
++  openConsole();
++
++  let items = [
++    {label: "item0", value: "value0"},
++    {label: "item1", value: "value1"},
++    {label: "item2", value: "value2"},
++  ];
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let HUD = HUDService.hudReferences[hudId];
++  let popup = HUD.jsterm.autocompletePopup;
++
++  ok(!popup.isOpen, "popup is not open");
++
++  popup._panel.addEventListener("popupshown", function() {
++    popup._panel.removeEventListener("popupshown", arguments.callee, false);
++
++    ok(popup.isOpen, "popup is open");
++
++    is(popup.itemCount, 0, "no items");
++
++    popup.setItems(items);
++
++    is(popup.itemCount, items.length, "items added");
++
++    let sameItems = popup.getItems();
++    is(sameItems.every(function(aItem, aIndex) {
++      return aItem === items[aIndex];
++    }), true, "getItems returns back the same items");
++
++    is(popup.selectedIndex, -1, "no index is selected");
++    ok(!popup.selectedItem, "no item is selected");
++
++    popup.selectedIndex = 1;
++
++    is(popup.selectedIndex, 1, "index 1 is selected");
++    is(popup.selectedItem, items[1], "item1 is selected");
++
++    popup.selectedItem = items[2];
++
++    is(popup.selectedIndex, 2, "index 2 is selected");
++    is(popup.selectedItem, items[2], "item2 is selected");
++
++    is(popup.selectPreviousItem(), items[1], "selectPreviousItem() works");
++
++    is(popup.selectedIndex, 1, "index 1 is selected");
++    is(popup.selectedItem, items[1], "item1 is selected");
++
++    is(popup.selectNextItem(), items[2], "selectPreviousItem() works");
++
++    is(popup.selectedIndex, 2, "index 2 is selected");
++    is(popup.selectedItem, items[2], "item2 is selected");
++
++    ok(!popup.selectNextItem(), "selectPreviousItem() works");
++
++    is(popup.selectedIndex, -1, "no index is selected");
++    ok(!popup.selectedItem, "no item is selected");
++
++    items.push({label: "label3", value: "value3"});
++    popup.appendItem(items[3]);
++
++    is(popup.itemCount, items.length, "item3 appended");
++
++    popup.selectedIndex = 3;
++    is(popup.selectedItem, items[3], "item3 is selected");
++
++    popup.removeItem(items[2]);
++
++    is(popup.selectedIndex, 2, "index2 is selected");
++    is(popup.selectedItem, items[3], "item3 is still selected");
++    is(popup.itemCount, items.length - 1, "item2 removed");
++
++    popup.clearItems();
++    is(popup.itemCount, 0, "items cleared");
++
++    popup.hidePopup();
++    finishTest();
++  }, false);
++
++  popup.openPopup();
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_642615_autocomplete.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_642615_autocomplete.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_642615_autocomplete.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_642615_autocomplete.js
+@@ -49,39 +49,39 @@ function tabLoad(aEvent) {
+ 
+   let hudId = HUDService.getHudIdByWindow(content);
+   let HUD = HUDService.hudReferences[hudId];
+   let jsterm = HUD.jsterm;
+   let stringToCopy = "foobazbarBug642615";
+ 
+   jsterm.clearOutput();
+ 
+-  ok(!jsterm.completionValue, "no completionValue");
++  ok(!jsterm.completeNode.value, "no completeNode.value");
+ 
+   jsterm.setInputValue("doc");
+ 
+   // wait for key "u"
+   jsterm.inputNode.addEventListener("keyup", function() {
+     jsterm.inputNode.removeEventListener("keyup", arguments.callee, false);
+ 
+-    let completionValue = jsterm.completionValue;
+-    ok(completionValue, "we have a completionValue");
++    let completionValue = jsterm.completeNode.value;
++    ok(completionValue, "we have a completeNode.value");
+ 
+     // wait for paste
+     jsterm.inputNode.addEventListener("input", function() {
+       jsterm.inputNode.removeEventListener("input", arguments.callee, false);
+ 
+-      ok(!jsterm.completionValue, "no completionValue after clipboard paste");
++      ok(!jsterm.completeNode.value, "no completeNode.value after clipboard paste");
+ 
+       // wait for undo
+       jsterm.inputNode.addEventListener("input", function() {
+         jsterm.inputNode.removeEventListener("input", arguments.callee, false);
+ 
+-        is(jsterm.completionValue, completionValue,
+-           "same completionValue after undo");
++        is(jsterm.completeNode.value, completionValue,
++           "same completeNode.value after undo");
+ 
+         executeSoon(finishTest);
+       }, false);
+ 
+       goDoCommand("cmd_undo");
+     }, false);
+ 
+     // Arguments: expected, setup, success, failure.
+diff --git a/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties b/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties
+--- a/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties
++++ b/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties
+@@ -110,16 +110,20 @@ NetworkPanel.imageSizeDeltaDurationMS=%S
+ # flash data received from the server can't be displayed.
+ #
+ # The %S is replaced by the content type, that can't be displayed, examples are
+ #  o application/x-shockwave-flash
+ #  o music/crescendo
+ NetworkPanel.responseBodyUnableToDisplay.content=Unable to display responses of type "%S"
+ ConsoleAPIDisabled=The Web Console logging API (console.log, console.info, console.warn, console.error) has been disabled by a script on this page.
+ 
++# LOCALIZATION NOTE (Autocomplete.label):
++# The autocomplete popup panel label/title.
++Autocomplete.label=Autocomplete popup
++
+ # LOCALIZATION NOTE (stacktrace.anonymousFunction):
+ # This string is used to display JavaScript functions that have no given name -
+ # they are said to be anonymous. See stacktrace.outputMessage.
+ stacktrace.anonymousFunction=<anonymous>
+ 
+ # LOCALIZATION NOTE (stacktrace.outputMessage):
+ # This string is used in the Web Console output to identify a web developer call
+ # to console.trace(). The stack trace of JavaScript function calls is displayed.

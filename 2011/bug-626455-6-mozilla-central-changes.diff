@@ -1,0 +1,236 @@
+diff --git a/browser/base/content/tabview/ui.js b/browser/base/content/tabview/ui.js
+--- a/browser/base/content/tabview/ui.js
++++ b/browser/base/content/tabview/ui.js
+@@ -429,19 +429,21 @@ let UI = {
+   },
+ 
+   // ----------
+   // Function: showTabView
+   // Shows TabView and hides the main browser UI.
+   // Parameters:
+   //   zoomOut - true for zoom out animation, false for nothing.
+   showTabView: function UI_showTabView(zoomOut) {
+-    if (this.isTabViewVisible())
++    if (this.isTabViewVisible() || this._isChangingVisibility)
+       return;
+ 
++    this._isChangingVisibility = true;
++
+     // initialize the direction of the page
+     this._initPageDirection();
+ 
+     var self = this;
+     var currentTab = this._currentTab;
+     var item = null;
+ 
+     this._reorderTabItemsOnShow.forEach(function(groupItem) {
+@@ -505,25 +507,29 @@ let UI = {
+       self.setActiveTab(null);
+       dispatchEvent(event);
+ 
+       // Flush pending updates
+       GroupItems.flushAppTabUpdates();
+ 
+       TabItems.resumePainting();
+     }
++
++    this._isChangingVisibility = false;
+   },
+ 
+   // ----------
+   // Function: hideTabView
+   // Hides TabView and shows the main browser UI.
+   hideTabView: function UI_hideTabView() {
+-    if (!this.isTabViewVisible())
++    if (!this.isTabViewVisible() || this._isChangingVisibility)
+       return;
+ 
++    this._isChangingVisibility = true;
++
+     // another tab might be select if user decides to stay on a page when
+     // a onclose confirmation prompts.
+     GroupItems.removeHiddenGroups();
+     TabItems.pausePainting();
+ 
+     this._reorderTabsOnHide.forEach(function(groupItem) {
+       groupItem.reorderTabsBasedOnTabItemOrder();
+     });
+@@ -540,16 +546,18 @@ let UI = {
+     gBrowser.contentWindow.focus();
+ 
+     gBrowser.updateTitlebar();
+ #ifdef XP_MACOSX
+     this.setTitlebarColors(false);
+ #endif
+     Storage.saveVisibilityData(gWindow, "false");
+ 
++    this._isChangingVisibility = false;
++
+     let event = document.createEvent("Events");
+     event.initEvent("tabviewhidden", true, false);
+     dispatchEvent(event);
+   },
+ 
+ #ifdef XP_MACOSX
+   // ----------
+   // Function: setTitlebarColors
+diff --git a/browser/base/content/test/tabview/browser_tabview_bug599626.js b/browser/base/content/test/tabview/browser_tabview_bug599626.js
+--- a/browser/base/content/test/tabview/browser_tabview_bug599626.js
++++ b/browser/base/content/test/tabview/browser_tabview_bug599626.js
+@@ -66,43 +66,63 @@ function onTabViewWindowLoaded() {
+     testStayOnPage(contentWindow, groupItemOne, groupItemTwo);
+   }
+   browser.addEventListener("load", onLoad, true);
+ }
+ 
+ function testStayOnPage(contentWindow, groupItemOne, groupItemTwo) {
+   groupItemTwo.addSubscriber(groupItemTwo, "groupShown", function() {
+     groupItemTwo.removeSubscriber(groupItemTwo, "groupShown");
++    groupItemTwo.removeSubscriber(groupItemTwo, "close");
+ 
+-    is(gBrowser.tabs.length, 2,
+-       "The total number of tab is 2 when staying on the page");
+-    is(contentWindow.TabItems.getItems().length, 2,
+-       "The total number of tab items is 2 when staying on the page");
++    ok(true, "groupItemTwo shown");
+   });
+ 
+-  setupAndRun(contentWindow, groupItemOne, groupItemTwo, function(doc) {
+-    // stay on page
+-    doc.documentElement.getButton("cancel").click();
++  groupItemTwo.addSubscriber(groupItemTwo, "close", function() {
++    groupItemTwo.removeSubscriber(groupItemTwo, "groupShown");
++    groupItemTwo.removeSubscriber(groupItemTwo, "close");
+ 
+-    let onTabViewShown = function() {
+-      window.removeEventListener("tabviewshown", onTabViewShown, false);
++    ok(false, "groupItemTwo closed");
++  });
+ 
+-      // start the next test
+-      testLeavePage(contentWindow, groupItemOne, groupItemTwo);
+-    };
++  let onTabViewHidden = function() {
++    window.removeEventListener("tabviewhidden", onTabViewHidden, false);
+ 
+     window.addEventListener("tabviewshown", onTabViewShown, false);
+ 
+     executeSoon(function() {
+       TabView.toggle();
+     });
++  };
++
++  window.addEventListener("tabviewhidden", onTabViewHidden, false);
++
++  let onTabViewShown = function() {
++    window.removeEventListener("tabviewshown", onTabViewShown, false);
++
++    // start the next test
++    executeSoon(function() {
++      testLeavePage(contentWindow, groupItemOne, groupItemTwo);
++    });
++  };
++
++  setupAndRun(contentWindow, groupItemOne, groupItemTwo, function(doc) {
++    // stay on page
++    executeSoon(function() {
++      doc.documentElement.getButton("cancel").click();
++    });
+   });
+ }
+ 
+ function testLeavePage(contentWindow, groupItemOne, groupItemTwo) {
++  is(gBrowser.tabs.length, 2,
++     "The total number of tab is 2 when staying on the page");
++  is(contentWindow.TabItems.getItems().length, 2,
++     "The total number of tab items is 2 when staying on the page");
++
+   let groupClosed = false;
+ 
+   let endGame = function() {
+     window.removeEventListener("tabviewhidden", endGame, false);
+     if (groupClosed)
+       finish();
+   };
+   window.addEventListener("tabviewhidden", endGame, false);
+@@ -125,29 +145,25 @@ function testLeavePage(contentWindow, gr
+     // Leave page
+     doc.documentElement.getButton("accept").click();
+   });
+ }
+ 
+ function setupAndRun(contentWindow, groupItemOne, groupItemTwo, callback) {
+   let closeButton = groupItemTwo.container.getElementsByClassName("close");
+   ok(closeButton[0], "Group close button exists");
++
++  handleDialog = function(doc) {
++    callback(doc);
++  };
++  startCallbackTimer();
++
+   // click the close button
+   EventUtils.sendMouseEvent({ type: "click" }, closeButton[0], contentWindow);
+ 
+-  let onTabViewHidden = function() {
+-    window.removeEventListener("tabviewhidden", onTabViewHidden, false);
+-
+-    handleDialog = function(doc) {
+-      callback(doc);
+-    };
+-    startCallbackTimer();
+-  };
+-  window.addEventListener("tabviewhidden", onTabViewHidden, false);
+-
+   let tabItem = groupItemOne.getChild(0);
+   tabItem.zoomIn();
+ }
+ 
+ // Copied from http://mxr.mozilla.org/mozilla-central/source/toolkit/components/places/tests/mochitest/prompt_common.js
+ let observer = {
+   QueryInterface : function (iid) {
+     const interfaces = [Ci.nsIObserver, Ci.nsISupports, Ci.nsISupportsWeakReference];
+diff --git a/browser/base/content/test/tabview/browser_tabview_bug612470.js b/browser/base/content/test/tabview/browser_tabview_bug612470.js
+--- a/browser/base/content/test/tabview/browser_tabview_bug612470.js
++++ b/browser/base/content/test/tabview/browser_tabview_bug612470.js
+@@ -61,17 +61,19 @@ function createGroup() {
+ 
+   // Create a new group.
+   let box = new contentWindow.Rect(20, 400, 300, 300);
+   newGroup = new contentWindow.GroupItem([], { bounds: box });
+ 
+   contentWindow.GroupItems.setActiveGroupItem(newGroup);
+ 
+   addEventListener("tabviewhidden", addTab, false);
+-  TabView.toggle();
++  executeSoon(function() {
++    TabView.toggle();
++  });
+ }
+ 
+ function addTab() {
+   removeEventListener("tabviewhidden", addTab, false);
+ 
+   newGroupTab = gBrowser.addTab();
+   is(newGroup.getChildren().length, 1, "One tab is in the new group");
+   executeSoon(removeTab);
+@@ -92,17 +94,19 @@ function removeTab() {
+ 
+ function checkForRemovedGroup() {
+   removeEventListener("tabviewshown", checkForRemovedGroup, false);
+ 
+   is(contentWindow.GroupItems.groupItems.length, 1,
+      "There is now only one group");
+ 
+   addEventListener("tabviewhidden", finishTest, false);
+-  TabView.toggle();
++  executeSoon(function() {
++    TabView.toggle();
++  });
+ }
+ 
+ function finishTest() {
+   removeEventListener("tabviewhidden", finishTest, false);
+ 
+   gBrowser.removeTab(originalGroupTab);
+   gBrowser.unpinTab(appTab);
+   finish();

@@ -1,0 +1,312 @@
+diff -r d8ed974064b2 toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm	Thu Jul 22 16:28:50 2010 +0300
++++ b/toolkit/components/console/hudservice/HUDService.jsm	Thu Jul 22 17:49:58 2010 +0300
+@@ -595,28 +595,16 @@ HUD_SERVICE.prototype =
+     var props = [];
+     for (var prop in this._headsUpDisplays) {
+       props.push(prop);
+     }
+     return props;
+   },
+ 
+   /**
+-   * get the current filter string for the HeadsUpDisplay
+-   *
+-   * @param string aHUDId
+-   * @returns string
+-   */
+-  getFilterStringByHUDId: function HS_getFilterStringbyHUDId(aHUDId) {
+-    var hud = this.getHeadsUpDisplay(aHUDId);
+-    var filterStr = hud.querySelectorAll(".hud-filter-box")[0].value;
+-    return filterStr || null;
+-  },
+-
+-  /**
+    * The filter strings per HeadsUpDisplay
+    *
+    */
+   hudFilterStrings: {},
+ 
+   /**
+    * Update the filter text in the internal tracking object for all
+    * filter strings
+@@ -626,72 +614,16 @@ HUD_SERVICE.prototype =
+    */
+   updateFilterText: function HS_updateFiltertext(aTextBoxNode)
+   {
+     var hudId = aTextBoxNode.getAttribute(hudId);
+     this.hudFilterStrings[hudId] = aTextBoxNode.value || null;
+   },
+ 
+   /**
+-   * Filter each message being logged into the console
+-   *
+-   * @param string aFilterString
+-   * @param nsIDOMNode aMessageNode
+-   * @returns JS Object
+-   */
+-  filterLogMessage:
+-  function HS_filterLogMessage(aFilterString, aMessageNode)
+-  {
+-    aFilterString = aFilterString.toLowerCase();
+-    var messageText = aMessageNode.innerHTML.toLowerCase();
+-    var idx = messageText.indexOf(aFilterString);
+-    if (idx > -1) {
+-      return { strLength: aFilterString.length, strIndex: idx };
+-    }
+-    else {
+-      return null;
+-    }
+-  },
+-
+-  /**
+-   * Get the filter textbox from a HeadsUpDisplay
+-   *
+-   * @param string aHUDId
+-   * @returns nsIDOMNode
+-   */
+-  getFilterTextBox: function HS_getFilterTextBox(aHUDId)
+-  {
+-    var hud = this.getHeadsUpDisplay(aHUDId);
+-    return hud.querySelectorAll(".hud-filter-box")[0];
+-  },
+-
+-  /**
+-   * logs a message to the Heads Up Display that originates
+-   * in the nsIConsoleService
+-   *
+-   * @param nsIConsoleMessage aMessage
+-   * @param nsIDOMNode aConsoleNode
+-   * @param nsIDOMNode aMessageNode
+-   * @returns void
+-   */
+-  logConsoleMessage: function HS_logConsoleMessage(aMessage,
+-                                                   aConsoleNode,
+-                                                   aMessageNode,
+-                                                   aFilterState,
+-                                                   aFilterString)
+-  {
+-    if (aFilterState){
+-      aConsoleNode.appendChild(aMessageNode);
+-      aMessageNode.scrollIntoView(false);
+-    }
+-    // store this message in the storage module:
+-    this.storage.recordEntry(aMessage.hudId, aMessage);
+-  },
+-
+-  /**
+    * Logs a Message.
+    * @param HUDMessage aMessage
+    *        The message to log, which is a HUDMessage object, this is the
+    *        "raw" log message
+    * @returns void
+    */
+   logMessage: function HS_logMessage(aMessage)
+   {
+@@ -1178,49 +1110,16 @@ HUD_SERVICE.prototype =
+       return this.getOutputNodeById(display);
+     }
+     else {
+       throw new Error("Cannot get outputNode by hudId");
+     }
+   },
+ 
+   /**
+-   * Wrapper method that generates a LogMessage object
+-   *
+-   * @param object aMessage
+-   * @param string aLevel
+-   * @param nsIDOMNode aOutputNode
+-   * @param object aActivityObject
+-   * @returns
+-   */
+-  messageFactory:
+-  function messageFactory(aMessage, aLevel, aOutputNode, aActivityObject)
+-  {
+-    // generate a LogMessage object
+-    return new LogMessage(aMessage, aLevel, aOutputNode,  aActivityObject);
+-  },
+-
+-  /**
+-   * Initialize the JSTerm object to create a JS Workspace
+-   *
+-   * @param nsIDOMWindow aContext
+-   * @param nsIDOMNode aParentNode
+-   * @returns void
+-   */
+-  initializeJSTerm: function HS_initializeJSTerm(aContext, aParentNode)
+-  {
+-    // create Initial JS Workspace:
+-    var context = Cu.getWeakReference(aContext);
+-    var firefoxMixin = new JSTermFirefoxMixin(context, aParentNode);
+-    var jsTerm = new JSTerm(context, aParentNode, firefoxMixin);
+-    // TODO: injection of additional functionality needs re-thinking/api
+-    // see bug 559748
+-  },
+-
+-  /**
+    * Passed a HUDId, the corresponding window is returned
+    *
+    * @param string aHUDId
+    * @returns nsIDOMWindow
+    */
+   getContentWindowFromHUDId: function HS_getContentWindowFromHUDId(aHUDId)
+   {
+     var hud = this.getHeadsUpDisplay(aHUDId);
+@@ -2429,40 +2328,16 @@ JSTerm.prototype = {
+     }
+ 
+     this.history.push(str);
+     this.historyIndex++;
+     this.historyPlaceHolder = this.history.length;
+     this.inputNode.value = "";
+   },
+ 
+-  writeOutput: function JST_writeOutput(aOutputMessage)
+-  {
+-    var node = this.elementFactory("div");
+-    if (this.cssClassOverride) {
+-      node.setAttribute("class", this.cssClassOverride);
+-    }
+-    else {
+-      node.setAttribute("class", "jsterm-output-line");
+-    }
+-    var textNode = this.textFactory(aOutputMessage);
+-    node.appendChild(textNode);
+-    this.outputNode.appendChild(node);
+-    node.scrollIntoView(false);
+-  },
+-
+-  clearOutput: function JST_clearOutput()
+-  {
+-    let outputNode = this.outputNode;
+-
+-    while (outputNode.firstChild) {
+-      outputNode.removeChild(outputNode.firstChild);
+-    }
+-  },
+-
+   keyDown: function JSTF_keyDown(aEvent)
+   {
+     var self = this;
+     function handleKeyDown(aEvent) {
+       // ctrl-a
+       var setTimeout = aEvent.target.ownerDocument.defaultView.setTimeout;
+       var target = aEvent.target;
+       var tmp;
+@@ -2828,85 +2703,16 @@ JSTermFirefoxMixin.prototype = {
+ 
+   attachUI: function JSTF_attachUI()
+   {
+     this.parentNode.appendChild(this.term);
+   }
+ };
+ 
+ /**
+- * LogMessage represents a single message logged to the "outputNode" console
+- */
+-function LogMessage(aMessage, aLevel, aOutputNode, aActivityObject)
+-{
+-  if (!aOutputNode || !aOutputNode.ownerDocument) {
+-    throw new Error("aOutputNode is required and should be type nsIDOMNode");
+-  }
+-  if (!aMessage.origin) {
+-    throw new Error("Cannot create and log a message without an origin");
+-  }
+-  this.message = aMessage;
+-  if (aMessage.domId) {
+-    // domId is optional - we only need it if the logmessage is
+-    // being asynchronously updated
+-    this.domId = aMessage.domId;
+-  }
+-  this.activityObject = aActivityObject;
+-  this.outputNode = aOutputNode;
+-  this.level = aLevel;
+-  this.origin = aMessage.origin;
+-
+-  this.elementFactory =
+-  NodeFactory("html", "html", aOutputNode.ownerDocument);
+-
+-  this.xulElementFactory =
+-  NodeFactory("xul", "xul", aOutputNode.ownerDocument);
+-
+-  this.textFactory = NodeFactory("text", "xul", aOutputNode.ownerDocument);
+-
+-  this.createLogNode();
+-}
+-
+-LogMessage.prototype = {
+-
+-  /**
+-   * create a console log div node
+-   *
+-   * @returns nsIDOMNode
+-   */
+-  createLogNode: function LM_createLogNode()
+-  {
+-    this.messageNode = this.elementFactory("div");
+-
+-    var ts = ConsoleUtils.timestamp();
+-    var timestampedMessage = ConsoleUtils.timestampString(ts) + ": " +
+-      this.message.message;
+-    var messageTxtNode = this.textFactory(timestampedMessage);
+-
+-    this.messageNode.appendChild(messageTxtNode);
+-
+-    var klass = "hud-msg-node hud-" + this.level;
+-    this.messageNode.setAttribute("class", klass);
+-
+-    var self = this;
+-
+-    var messageObject = {
+-      logLevel: self.level,
+-      message: self.message,
+-      timestamp: ts,
+-      activity: self.activityObject,
+-      origin: self.origin,
+-      hudId: self.message.hudId,
+-    };
+-
+-    this.messageObject = messageObject;
+-  }
+-};
+-
+-/**
+  * HUDMessage represents a single message logged in the HUD console.
+  *
+  * @param string aHudId the ID of the HUD this message belongs to
+  * @param string aLevel message level: info, notice, warning, error, etc.
+  * @param string aOrigin message origin: network, console-listener, etc.
+  * @param string [aActivity] the activity object associated to this message.
+  * @param string [aMessage] the message this object holds.
+  */
+@@ -3024,29 +2830,16 @@ ConsoleUtils = {
+         return n < 10 ? "0" + n : n;
+       }
+     }
+ 
+     return pad(d.getHours()) + ":"
+       + pad(d.getMinutes()) + ":"
+       + pad(d.getSeconds()) + ":"
+       + pad(d.getMilliseconds(), true);
+-  },
+-
+-  /**
+-   * Hides a log message by changing its class
+-   *
+-   * @param nsIDOMNode aMessageNode
+-   * @returns nsIDOMNode
+-   */
+-  hideLogMessage: function ConsoleUtils_hideLogMessage(aMessageNode) {
+-    var klass = aMessageNode.getAttribute("class");
+-    klass += " hud-hidden";
+-    aMessageNode.setAttribute("class", klass);
+-    return aMessageNode;
+   }
+ };
+ 
+ /**
+  * Creates a DOM Node factory for either XUL nodes or HTML nodes - as
+  * well as textNodes
+  * @param   aFactoryType
+  *          "xul", "html" or "text"

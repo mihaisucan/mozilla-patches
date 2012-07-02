@@ -1,0 +1,267 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1345,27 +1345,21 @@ function HUD_SERVICE()
+   if (appName() == "FIREFOX") {
+     var mixins = new FirefoxApplicationHooks();
+   }
+   else {
+     throw new Error("Unsupported Application");
+   }
+ 
+   this.mixins = mixins;
+-  this.storage = new ConsoleStorage();
+-  this.defaultFilterPrefs = this.storage.defaultDisplayPrefs;
+-  this.defaultGlobalConsolePrefs = this.storage.defaultGlobalConsolePrefs;
+ 
+   // These methods access the "this" object, but they're registered as
+   // event listeners. So we hammer in the "this" binding.
+   this.onTabClose = this.onTabClose.bind(this);
+   this.onWindowUnload = this.onWindowUnload.bind(this);
+-
+-  // begin observing HTTP traffic
+-  this.startHTTPObservation();
+ };
+ 
+ HUD_SERVICE.prototype =
+ {
+   /**
+    * L10N shortcut function
+    *
+    * @param string aName
+@@ -1520,16 +1514,18 @@ HUD_SERVICE.prototype =
+   /**
+    * Activate a HeadsUpDisplay for the given tab context.
+    *
+    * @param Element aContext the tab element.
+    * @returns void
+    */
+   activateHUDForContext: function HS_activateHUDForContext(aContext)
+   {
++    this.wakeup();
++
+     var window = aContext.linkedBrowser.contentWindow;
+     var id = aContext.linkedBrowser.parentNode.parentNode.getAttribute("id");
+     this.registerActiveContext(id);
+     HUDService.windowInitializer(window);
+   },
+ 
+   /**
+    * Deactivate a HeadsUpDisplay for the given tab context.
+@@ -1929,40 +1925,85 @@ HUD_SERVICE.prototype =
+     // remove the related storage object
+     this.storage.removeDisplay(id);
+     // remove the related window objects
+     delete this.windowRegistry[id];
+ 
+     let displays = this.displays();
+ 
+     var uri  = this.displayRegistry[id];
+-    var specHudArr = this.uriRegistry[uri];
+-
+-    for (var i = 0; i < specHudArr.length; i++) {
+-      if (specHudArr[i] == id) {
+-        specHudArr.splice(i, 1);
+-      }
++
++    if (this.uriRegistry[uri]) {
++      this.uriRegistry[uri] = this.uriRegistry[uri].filter(function(e) e != id);
+     }
++
+     delete displays[id];
+     delete this.displayRegistry[id];
+     delete this.uriRegistry[uri];
++
++    if (Object.keys(this._headsUpDisplays).length == 0) {
++      this.suspend();
++    }
++  },
++
++  /**
++   * "Wake up" the Web Console activity. This is called when the first Web
++   * Console is open. This method initializes the various observers we have.
++   *
++   * @returns void
++   */
++  wakeup: function HS_wakeup()
++  {
++    if (Object.keys(this._headsUpDisplays).length > 0) {
++      return;
++    }
++
++    this.storage = new ConsoleStorage();
++    this.defaultFilterPrefs = this.storage.defaultDisplayPrefs;
++    this.defaultGlobalConsolePrefs = this.storage.defaultGlobalConsolePrefs;
++
++    // begin observing HTTP traffic
++    this.startHTTPObservation();
++
++    HUDWindowObserver.init();
++    HUDConsoleObserver.init();
++    ConsoleAPIObserver.init();
++  },
++
++  /**
++   * Suspend Web Console activity. This is called when all Web Consoles are
++   * closed.
++   *
++   * @returns void
++   */
++  suspend: function HS_suspend()
++  {
++    activityDistributor.removeObserver(this.httpObserver);
++    delete this.httpObserver;
++
++    // delete the storage as it holds onto channels
++    delete this.storage;
++    delete this.defaultFilterPrefs;
++    delete this.defaultGlobalConsolePrefs;
++
++    HUDWindowObserver.uninit();
++    HUDConsoleObserver.uninit();
++    ConsoleAPIObserver.shutdown();
+   },
+ 
+   /**
+    * Shutdown all HeadsUpDisplays on xpcom-shutdown
+    *
+    * @returns void
+    */
+   shutdown: function HS_shutdown()
+   {
+     for (var displayId in this._headsUpDisplays) {
+       this.unregisterDisplay(displayId);
+     }
+-    // delete the storage as it holds onto channels
+-    delete this.storage;
+   },
+ 
+   /**
+    * Returns the hudId that is corresponding to the hud activated for the
+    * passed aContentWindow. If there is no matching hudId null is returned.
+    *
+    * @param nsIDOMWindow aContentWindow
+    * @returns string or null
+@@ -2515,16 +2556,18 @@ HUD_SERVICE.prototype =
+         0x804b0007: "STATUS_CONNECTING_TO",
+         0x804b0004: "STATUS_CONNECTED_TO",
+         0x804b0005: "STATUS_SENDING_TO",
+         0x804b000a: "STATUS_WAITING_FOR",
+         0x804b0006: "STATUS_RECEIVING_FROM"
+       }
+     };
+ 
++    this.httpObserver = httpObserver;
++
+     activityDistributor.addObserver(httpObserver);
+   },
+ 
+   /**
+    * Logs network activity.
+    *
+    * @param string aType
+    *        The severity of the message.
+@@ -3535,16 +3578,17 @@ let ConsoleAPIObserver = {
+     }
+     else if (aTopic == "quit-application-granted") {
+       this.shutdown();
+     }
+   },
+ 
+   shutdown: function CAO_shutdown()
+   {
++    Services.obs.removeObserver(this, "quit-application-granted");
+     Services.obs.removeObserver(this, "console-api-log-event");
+   },
+ 
+   sendToWebConsole:
+   function CAO_sendToWebConsole(aWebConsole, aLevel, aArguments)
+   {
+     let ts = ConsoleUtils.timestamp();
+     let messageNode = aWebConsole.makeXULNode("label");
+@@ -5356,16 +5400,17 @@ HUDWindowObserver = {
+       this.uninit();
+     }
+   },
+ 
+   uninit: function HWO_uninit()
+   {
+     Services.obs.removeObserver(this, "content-document-global-created");
+     HUDService.shutdown();
++    this.initialConsoleCreated = false;
+   },
+ 
+ };
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+ // CommandController
+ ///////////////////////////////////////////////////////////////////////////////
+ 
+@@ -5442,20 +5487,26 @@ HUDConsoleObserver = {
+   ),
+ 
+   init: function HCO_init()
+   {
+     Services.console.registerListener(this);
+     Services.obs.addObserver(this, "xpcom-shutdown", false);
+   },
+ 
++  uninit: function HCO_uninit()
++  {
++    Services.console.unregisterListener(this);
++    Services.obs.removeObserver(this, "xpcom-shutdown");
++  },
++
+   observe: function HCO_observe(aSubject, aTopic, aData)
+   {
+     if (aTopic == "xpcom-shutdown") {
+-      Services.console.unregisterListener(this);
++      this.uninit();
+     }
+ 
+     if (aSubject instanceof Ci.nsIScriptError) {
+       let hudIds = ConsoleUtils.getHUDIdsForScriptError(aSubject);
+ 
+       switch (aSubject.category) {
+         // We ignore chrome-originating errors as we only
+         // care about content.
+@@ -5512,17 +5563,14 @@ function appName()
+ // HUDService (exported symbol)
+ ///////////////////////////////////////////////////////////////////////////
+ 
+ try {
+   // start the HUDService
+   // This is in a try block because we want to kill everything if
+   // *any* of this fails
+   var HUDService = new HUD_SERVICE();
+-  HUDWindowObserver.init();
+-  HUDConsoleObserver.init();
+-  ConsoleAPIObserver.init();
+ }
+ catch (ex) {
+   Cu.reportError("HUDService failed initialization.\n" + ex);
+   // TODO: kill anything that may have started up
+   // see bug 568665
+ }
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595350_multiple_windows_and_tabs.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595350_multiple_windows_and_tabs.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595350_multiple_windows_and_tabs.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595350_multiple_windows_and_tabs.js
+@@ -69,16 +69,18 @@ function performTest() {
+ 
+   executeSoon(function() {
+     win1.gBrowser.removeTab(openTabs[0]);
+     win1.gBrowser.removeTab(openTabs[1]);
+ 
+     executeSoon(function() {
+       displays = HUDService.displaysIndex();
+       is(displays.length, 0, "no displays found");
++      ok(!HUDService.storage, "no storage found");
++      ok(!HUDService.httpObserver, "no httpObserver found");
+ 
+       displays = openTabs = win1 = win2 = null;
+ 
+       finishTest();
+     });
+   });
+ }
+ 

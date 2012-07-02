@@ -1,0 +1,426 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -5612,17 +5612,16 @@ HUDConsoleObserver = {
+       case "XPConnect JavaScript":
+       case "component javascript":
+       case "chrome javascript":
+       case "chrome registration":
+       case "XBL":
+       case "XBL Prototype Handler":
+       case "XBL Content Sink":
+       case "xbl javascript":
+-      case "FrameConstructor":
+         return;
+ 
+       default:
+         let hudIds = ConsoleUtils.getHUDIdsForScriptError(aSubject);
+         for (let i = 0; i < hudIds.length; i++) {
+           HUDService.logActivity("console-listener", hudIds[i], aSubject);
+         }
+         return;
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -131,16 +131,32 @@ _BROWSER_TEST_PAGES = \
+ 	test-bug-595934-css-loader.html \
+ 	test-bug-595934-css-loader.css \
+ 	test-bug-595934-css-loader.css^headers^ \
+ 	test-bug-595934-dom-html.html \
+ 	test-bug-595934-imagemap.html \
+ 	test-bug-595934-html.html \
+ 	test-bug-595934-malformedxml.xhtml \
+ 	test-bug-595934-svg.xhtml \
++	test-bug-595934-workers.html \
++	test-bug-595934-workers.js \
++	test-bug-595934-dom-html-external.html \
++	test-bug-595934-dom-html-external.js \
++	test-bug-595934-dom-events-external.html \
++	test-bug-595934-dom-events-external.js \
++	test-bug-595934-dom-events-external2.html \
++	test-bug-595934-dom-events-external2.js \
++	test-bug-595934-canvas.html \
++	test-bug-595934-canvas.js \
++	test-bug-595934-css-parser.html \
++	test-bug-595934-css-parser.css \
++	test-bug-595934-malformedxml-external.html \
++	test-bug-595934-malformedxml-external.xml \
++	test-bug-595934-empty-getelementbyid.html \
++	test-bug-595934-empty-getelementbyid.js \
+ 	test-bug-597136-external-script-errors.html \
+ 	test-bug-597136-external-script-errors.js \
+ 	test-bug-613013-console-api-iframe.html \
+ 	test-bug-597756-reopen-closed-tab.html \
+ 	test-bug-600183-charset.html \
+ 	test-bug-600183-charset.html^headers^ \
+ 	test-bug-601177-log-levels.html \
+ 	test-bug-601177-log-levels.js \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js
+@@ -44,31 +44,71 @@ const TESTS = [
+     category: "malformed-xml",
+     matchString: "malformed-xml",
+   },
+   { // #6
+     file: "test-bug-595934-svg.xhtml",
+     category: "SVG",
+     matchString: "fooBarSVG",
+   },
++  { // #7
++    file: "test-bug-595934-workers.html",
++    category: "DOM Worker javascript",
++    matchString: "fooBarWorker",
++  },
++  { // #8
++    file: "test-bug-595934-dom-html-external.html",
++    category: "DOM:HTML",
++    matchString: "document.all",
++  },
++  { // #9
++    file: "test-bug-595934-dom-events-external.html",
++    category: "DOM Events",
++    matchString: "clientWidth",
++  },
++  { // #10
++    file: "test-bug-595934-dom-events-external2.html",
++    category: "DOM Events",
++    matchString: "preventBubble()",
++  },
++  { // #11
++    file: "test-bug-595934-canvas.html",
++    category: "Canvas",
++    matchString: "strokeStyle",
++  },
++  { // #12
++    file: "test-bug-595934-css-parser.html",
++    category: "CSS Parser",
++    matchString: "foobarCssParser",
++  },
++  { // #13
++    file: "test-bug-595934-malformedxml-external.html",
++    category: "malformed-xml",
++    matchString: "malformed-xml",
++  },
++  { // #14
++    file: "test-bug-595934-empty-getelementbyid.html",
++    category: "DOM",
++    matchString: "getElementById",
++  },
+ ];
+ 
+ let pos = -1;
+ 
+ let TestObserver = {
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
+ 
+   observe: function test_observe(aSubject)
+   {
+     if (!(aSubject instanceof Ci.nsIScriptError)) {
+       return;
+     }
+ 
+     is(aSubject.category, TESTS[pos].category,
+-      "test #" + pos + ": error category");
++      "test #" + pos + ": error category " + TESTS[pos].category);
+ 
+     if (aSubject.category == TESTS[pos].category) {
+       executeSoon(performTest);
+     }
+     else {
+       testEnd();
+     }
+   }
+@@ -109,17 +149,17 @@ function testNext() {
+ function testEnd() {
+   Services.console.unregisterListener(TestObserver);
+   finishTest();
+ }
+ 
+ function performTest() {
+   let textContent = hud.outputNode.textContent;
+   isnot(textContent.indexOf(TESTS[pos].matchString), -1,
+-    "test #" + pos + ": message found");
++    "test #" + pos + ": message found " + TESTS[pos].matchString);
+ 
+   testNext();
+ }
+ 
+ function test() {
+   addTab("data:text/html,Web Console test for bug 595934.");
+   browser.addEventListener("load", tabLoad, true);
+ }
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-canvas.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-canvas.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-canvas.html
+@@ -0,0 +1,14 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: Canvas</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++    <script type="text/javascript"
++      src="test-bug-595934-canvas.js"></script>
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "Canvas".</p>
++    <p><canvas width="200" height="200">Canvas support is required!</canvas></p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-canvas.js b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-canvas.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-canvas.js
+@@ -0,0 +1,11 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++window.addEventListener("DOMContentLoaded", function() {
++  var canvas = document.querySelector("canvas");
++  var context = canvas.getContext("2d");
++  context.strokeStyle = document;
++}, false);
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-parser.css b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-parser.css
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-parser.css
+@@ -0,0 +1,10 @@
++/*
++ * Any copyright is dedicated to the Public Domain.     
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++p {
++  color: #0f0;
++  foobarCssParser: failure;
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-parser.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-parser.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-parser.html
+@@ -0,0 +1,13 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: CSS Parser</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++     <link rel="stylesheet" type="text/css"
++     href="test-bug-595934-css-parser.css">
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "CSS Parser".</p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external.html
+@@ -0,0 +1,15 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: DOM Events.
++      (external script)</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++    <script type="text/javascript"
++      src="test-bug-595934-dom-events-external.js"></script>
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "DOM Events" (external
++    script).</p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external.js b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external.js
+@@ -0,0 +1,9 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++window.addEventListener("DOMContentLoaded", function() {
++  document.width;
++}, false);
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external2.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external2.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external2.html
+@@ -0,0 +1,15 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: DOM Events.
++      (external script 2)</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++    <script type="text/javascript"
++      src="test-bug-595934-dom-events-external2.js"></script>
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "DOM Events" (external
++    script 2).</p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external2.js b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external2.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external2.js
+@@ -0,0 +1,10 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++window.addEventListener("DOMContentLoaded", function(aEvent) {
++  aEvent.preventBubble();
++}, false);
++
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-html-external.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-html-external.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-html-external.html
+@@ -0,0 +1,13 @@
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: DOM:HTML
++      (external script)</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++    <script type="text/javascript" src="test-bug-595934-dom-html-external.js"></script>
++  </head>
++  <body>
++    <p id="foobar">Web Console test for bug 595934 - category "DOM:HTML" 
++    (external script).</p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-html-external.js b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-html-external.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-html-external.js
+@@ -0,0 +1,9 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++window.addEventListener("load", function() {
++  document.all.foobar.style.color = "#00f";
++}, false);
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-empty-getelementbyid.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-empty-getelementbyid.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-empty-getelementbyid.html
+@@ -0,0 +1,15 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: DOM.
++    (empty getElementById())</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++    <script type="text/javascript"
++      src="test-bug-595934-empty-getelementbyid.js"></script>
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "DOM"
++    (empty getElementById()).</p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-empty-getelementbyid.js b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-empty-getelementbyid.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-empty-getelementbyid.js
+@@ -0,0 +1,8 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++window.addEventListener("load", function() {
++  document.getElementById("");
++}, false);
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-malformedxml-external.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-malformedxml-external.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-malformedxml-external.html
+@@ -0,0 +1,18 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: malformed-xml.
++      (external file)</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++     <script type="text/javascript"><!--
++       var req = new XMLHttpRequest();
++       req.open("GET", "test-bug-595934-malformedxml-external.xml", true);
++       req.send(null);
++     // --></script>
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "malformed-xml"
++    (external file).</p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-malformedxml-external.xml b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-malformedxml-external.xml
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-malformedxml-external.xml
+@@ -0,0 +1,8 @@
++<!DOCTYPE html>
++<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "malformed-xml".</p>
++  </body>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-workers.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-workers.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-workers.html
+@@ -0,0 +1,17 @@
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: DOM Worker
++      javascript</title>
++    <!-- Any copyright is dedicated to the Public Domain.
++         http://creativecommons.org/publicdomain/zero/1.0/ -->
++  </head>
++  <body>
++    <p id="foobar">Web Console test for bug 595934 - category "DOM Worker
++    javascript".</p>
++    <script type="text/javascript">
++      var myWorker = new Worker("test-bug-595934-workers.js");
++      myWorker.postMessage("hello world");
++    </script>
++  </body>
++</html>
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-workers.js b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-workers.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-workers.js
+@@ -0,0 +1,9 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++onmessage = function() {
++  fooBarWorker();
++}
++

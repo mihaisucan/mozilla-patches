@@ -1,0 +1,147 @@
+diff --git a/browser/base/content/test/Makefile.in b/browser/base/content/test/Makefile.in
+--- a/browser/base/content/test/Makefile.in
++++ b/browser/base/content/test/Makefile.in
+@@ -160,16 +160,17 @@ _BROWSER_FILES = \
+                  browser_bug594131.js \
+                  browser_bug595507.js \
+                  browser_bug596687.js \
+                  browser_bug597218.js \
+                  browser_bug598923.js \
+                  browser_bug599325.js \
+                  browser_bug609700.js \
+                  browser_bug616836.js \
++                 browser_bug615805.js \
+                  browser_contextSearchTabPosition.js \
+                  browser_ctrlTab.js \
+                  browser_disablechrome.js \
+                  browser_discovery.js \
+                  browser_duplicateIDs.js \
+                  browser_gestureSupport.js \
+                  browser_getshortcutoruri.js \
+                  browser_hide_removing.js \
+diff --git a/browser/base/content/test/browser_bug615805.js b/browser/base/content/test/browser_bug615805.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_bug615805.js
+@@ -0,0 +1,74 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++function createElement(aDocument, aTag, aAttributes)
++{
++  let node = aDocument.createElement(aTag);
++  for (let attr in aAttributes) {
++    node.setAttribute(attr, aAttributes[attr]);
++  }
++  return node;
++}
++
++let panel;
++
++function test()
++{
++  waitForExplicitFinish();
++
++  let anchor = document.getElementById("urlbar");
++  let popupset = document.getElementById("mainPopupSet");
++
++  panel = createElement(document, "panel", {
++    label: "Test for bug 615805",
++    titlebar: "normal",
++    noautofocus: "true",
++    noautohide: "true",
++    close: "true",
++  });
++  popupset.appendChild(panel);
++
++  panel.addEventListener("popupshown", onPopupShown, false);
++  panel.openPopup(null, "overlay", 5, 5, false, false);
++  panel.sizeTo(250, 200);
++}
++
++function onPopupShown()
++{
++  panel.removeEventListener("popupshown", arguments.callee, false);
++
++  let x = panel.popupBoxObject.x;
++  let y = panel.popupBoxObject.y;
++
++  is(panel.width, 250, "panel width");
++  is(panel.height, 200, "panel height");
++
++  panel.sizeTo(255, 205);
++
++  setTimeout(function() {
++    is(panel.width, 255, "updated panel width");
++    is(panel.height, 205, "updated panel height");
++    is(panel.popupBoxObject.x, x, "panel x");
++    is(panel.popupBoxObject.y, y, "panel y");
++
++    testEnd();
++  }, 300);
++}
++
++function testEnd()
++{
++  let popupset = panel.parentNode;
++  panel.hidePopup();
++  popupset.removeChild(panel);
++  panel = null;
++  finish();
++}
++
+diff --git a/layout/xul/base/src/nsXULPopupManager.cpp b/layout/xul/base/src/nsXULPopupManager.cpp
+--- a/layout/xul/base/src/nsXULPopupManager.cpp
++++ b/layout/xul/base/src/nsXULPopupManager.cpp
+@@ -344,17 +344,17 @@ nsXULPopupManager::PopupResized(nsIView*
+   nsSize currentSize = menuPopupFrame->GetSize();
+   if (aSize.width != presContext->AppUnitsToDevPixels(currentSize.width) ||
+       aSize.height != presContext->AppUnitsToDevPixels(currentSize.height)) {
+     // for resizes, we just set the width and height attributes
+     nsIContent* popup = menuPopupFrame->GetContent();
+     nsAutoString width, height;
+     width.AppendInt(aSize.width);
+     height.AppendInt(aSize.height);
+-    popup->SetAttr(kNameSpaceID_None, nsGkAtoms::width, width, PR_FALSE);
++    popup->SetAttr(kNameSpaceID_None, nsGkAtoms::width, width, PR_TRUE);
+     popup->SetAttr(kNameSpaceID_None, nsGkAtoms::height, height, PR_TRUE);
+   }
+ }
+ 
+ nsIFrame*
+ nsXULPopupManager::GetFrameOfTypeForContent(nsIContent* aContent,
+                                             nsIAtom* aFrameType,
+                                             PRBool aShouldFlush)
+diff --git a/widget/src/gtk2/nsWindow.cpp b/widget/src/gtk2/nsWindow.cpp
+--- a/widget/src/gtk2/nsWindow.cpp
++++ b/widget/src/gtk2/nsWindow.cpp
+@@ -1875,17 +1875,20 @@ nsWindow::SetIcon(const nsAString& aIcon
+     return SetWindowIconList(iconList);
+ }
+ 
+ nsIntPoint
+ nsWindow::WidgetToScreenOffset()
+ {
+     gint x = 0, y = 0;
+ 
+-    if (mGdkWindow) {
++    if (GTK_IS_WINDOW(mShell)) {
++        gtk_window_get_position(GTK_WINDOW(mShell), &x, &y);
++    }
++    else if (mGdkWindow) {
+         gdk_window_get_origin(mGdkWindow, &x, &y);
+     }
+ 
+     return nsIntPoint(x, y);
+ }
+ 
+ NS_IMETHODIMP
+ nsWindow::EnableDragDrop(PRBool aEnable)

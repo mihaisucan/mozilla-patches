@@ -1,0 +1,154 @@
+diff --git a/browser/base/content/test/browser_inspector_domPanel.js b/browser/base/content/test/browser_inspector_domPanel.js
+--- a/browser/base/content/test/browser_inspector_domPanel.js
++++ b/browser/base/content/test/browser_inspector_domPanel.js
+@@ -101,17 +101,17 @@ function performTestComparisons(evt)
+     testGen.next();
+   } catch(StopIteration) {
+     document.removeEventListener("popupshown", performTestComparisons, false);
+     finishUp();
+   }
+ }
+ 
+ function finishUp() {
+-  InspectorUI.closeInspectorUI();
++  InspectorUI.closeInspectorUI(true);
+   gBrowser.removeCurrentTab();
+   finish();
+ }
+ 
+ function test()
+ {
+   waitForExplicitFinish();
+   gBrowser.selectedTab = gBrowser.addTab();
+diff --git a/browser/base/content/test/browser_inspector_highlighter.js b/browser/base/content/test/browser_inspector_highlighter.js
+--- a/browser/base/content/test/browser_inspector_highlighter.js
++++ b/browser/base/content/test/browser_inspector_highlighter.js
+@@ -96,17 +96,17 @@ function performTestComparisons(evt)
+   document.removeEventListener("popupshown", performTestComparisons, false);
+   is(h1, InspectorUI.selection, "selection matches node");
+   ok(InspectorUI.highlighter.isHighlighting, "panel is highlighting");
+   is(InspectorUI.highlighter.highlitNode, h1, "highlighter matches selection");
+   executeSoon(finishUp);
+ }
+ 
+ function finishUp() {
+-  InspectorUI.closeInspectorUI();
++  InspectorUI.closeInspectorUI(true);
+   gBrowser.removeCurrentTab();
+   finish();
+ }
+ 
+ function test()
+ {
+   waitForExplicitFinish();
+   gBrowser.selectedTab = gBrowser.addTab();
+diff --git a/browser/base/content/test/browser_inspector_iframeTest.js b/browser/base/content/test/browser_inspector_iframeTest.js
+--- a/browser/base/content/test/browser_inspector_iframeTest.js
++++ b/browser/base/content/test/browser_inspector_iframeTest.js
+@@ -118,17 +118,17 @@ function performTestComparisons2(evt)
+ 
+   is(InspectorUI.selection, div2, "selection matches div2 node");
+   is(InspectorUI.highlighter.highlitNode, div2, "highlighter matches selection");
+ 
+   executeSoon(finishUp);
+ }
+ 
+ function finishUp() {
+-  InspectorUI.closeInspectorUI();
++  InspectorUI.closeInspectorUI(true);
+   gBrowser.removeCurrentTab();
+   finish();
+ }
+ 
+ function test()
+ {
+   waitForExplicitFinish();
+   gBrowser.selectedTab = gBrowser.addTab();
+diff --git a/browser/base/content/test/browser_inspector_scrolling.js b/browser/base/content/test/browser_inspector_scrolling.js
+--- a/browser/base/content/test/browser_inspector_scrolling.js
++++ b/browser/base/content/test/browser_inspector_scrolling.js
+@@ -85,17 +85,17 @@ function performScrollingTest(aEvent)
+ 
+   document.removeEventListener("popupshown", performScrollingTest, false);
+ 
+   EventUtils.synthesizeMouseScroll(aEvent.target, 10, 10,
+     {axis:"vertical", delta:50, type:"MozMousePixelScroll"}, window);
+ 
+   is(iframe.contentDocument.body.scrollTop, 50, "inspected iframe scrolled");
+ 
+-  InspectorUI.closeInspectorUI();
++  InspectorUI.closeInspectorUI(true);
+   gBrowser.removeCurrentTab();
+   finish();
+ }
+ 
+ function test()
+ {
+   waitForExplicitFinish();
+   gBrowser.selectedTab = gBrowser.addTab();
+diff --git a/browser/base/content/test/browser_inspector_stylePanel.js b/browser/base/content/test/browser_inspector_stylePanel.js
+--- a/browser/base/content/test/browser_inspector_stylePanel.js
++++ b/browser/base/content/test/browser_inspector_stylePanel.js
+@@ -99,17 +99,17 @@ function performTestComparisons(evt)
+     testGen.next();
+   } catch(StopIteration) {
+     document.removeEventListener("popupshown", performTestComparisons, false);
+     finishUp();
+   }
+ }
+ 
+ function finishUp() {
+-  InspectorUI.closeInspectorUI();
++  InspectorUI.closeInspectorUI(true);
+   gBrowser.removeCurrentTab();
+   finish();
+ }
+ 
+ function test()
+ {
+   waitForExplicitFinish();
+   gBrowser.selectedTab = gBrowser.addTab();
+diff --git a/browser/base/content/test/browser_inspector_treePanel_output.js b/browser/base/content/test/browser_inspector_treePanel_output.js
+--- a/browser/base/content/test/browser_inspector_treePanel_output.js
++++ b/browser/base/content/test/browser_inspector_treePanel_output.js
+@@ -90,17 +90,17 @@ function inspectorOpened()
+   InspectorUI.inspectNode(iframeDiv);
+ 
+   ok(InspectorUI.treePanelDiv, "InspectorUI.treePanelDiv is available");
+   is(InspectorUI.treePanelDiv.innerHTML.replace(/^\s+|\s+$/mg, ''),
+     expectedResult, "treePanelDiv.innerHTML is correct");
+   expectedResult = null;
+ 
+   Services.obs.addObserver(inspectorClosed, "inspector-closed", false);
+-  InspectorUI.closeInspectorUI();
++  InspectorUI.closeInspectorUI(true);
+ }
+ 
+ function inspectorClosed()
+ {
+   Services.obs.removeObserver(inspectorClosed, "inspector-closed", false);
+ 
+   ok(!InspectorUI.inspecting, "Inspector is not highlighting");
+   ok(!InspectorUI.isTreePanelOpen, "Inspector Tree Panel is not open");
+diff --git a/browser/base/content/test/browser_inspector_treeSelection.js b/browser/base/content/test/browser_inspector_treeSelection.js
+--- a/browser/base/content/test/browser_inspector_treeSelection.js
++++ b/browser/base/content/test/browser_inspector_treeSelection.js
+@@ -87,17 +87,17 @@ function performTestComparisons(evt)
+   document.removeEventListener("popupshown", performTestComparisons, false);
+   is(h1, InspectorUI.selection, "selection matches node");
+   ok(InspectorUI.highlighter.isHighlighting, "panel is highlighting");
+   is(h1, InspectorUI.highlighter.highlitNode, "highlighter highlighting correct node");
+   finishUp();
+ }
+ 
+ function finishUp() {
+-  InspectorUI.closeInspectorUI();
++  InspectorUI.closeInspectorUI(true);
+   gBrowser.removeCurrentTab();
+   finish();
+ }
+ 
+ function test()
+ {
+   waitForExplicitFinish();
+   gBrowser.selectedTab = gBrowser.addTab();

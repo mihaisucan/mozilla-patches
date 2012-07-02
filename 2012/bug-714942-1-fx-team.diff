@@ -1,0 +1,253 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1325626927 -7200
+# Node ID f516e3cb2f4d945fc71f7f1417d02c21d43d9d86
+# Parent  7c30c0cdb592d793878bf0dae63509da00449c1b
+Bug 714942 - Implement minimal UI for Jump to line in the Source Editor
+
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -114,16 +114,21 @@ var DEFAULT_KEYBINDINGS = [
+     action: "Find Next Occurrence",
+     localeKey: "findNextCmd.keycode",
+   },
+   {
+     action: "Find Previous Occurrence",
+     localeKey: "findPreviousCmd.keycode",
+     shift: true,
+   },
++  {
++    action: "Goto Line...",
++    localeKey: "gotoLineCmd.keycode",
++    accel: true,
++  },
+ ];
+ 
+ var EXPORTED_SYMBOLS = ["SourceEditor"];
+ 
+ /**
+  * The SourceEditor object constructor. The SourceEditor component allows you to
+  * provide users with an editor tailored to the specific needs of editing source
+  * code, aimed primarily at web developers.
+@@ -301,16 +306,17 @@ SourceEditor.prototype = {
+       "undo": [this.undo, this],
+       "redo": [this.redo, this],
+       "tab": [this._doTab, this],
+       "Unindent Lines": [this._doUnindentLines, this],
+       "enter": [this._doEnter, this],
+       "Find...": [this.ui.find, this.ui],
+       "Find Next Occurrence": [this.ui.findNext, this.ui],
+       "Find Previous Occurrence": [this.ui.findPrevious, this.ui],
++      "Goto Line...": [this.ui.gotoLine, this.ui],
+     };
+ 
+     for (let name in actions) {
+       let action = actions[name];
+       this._view.setAction(name, action[0].bind(action[1]));
+     }
+ 
+     let keys = (config.keys || []).concat(DEFAULT_KEYBINDINGS);
+diff --git a/browser/devtools/sourceeditor/source-editor-textarea.jsm b/browser/devtools/sourceeditor/source-editor-textarea.jsm
+--- a/browser/devtools/sourceeditor/source-editor-textarea.jsm
++++ b/browser/devtools/sourceeditor/source-editor-textarea.jsm
+@@ -78,16 +78,24 @@ const DEFAULT_KEYBINDINGS = [
+   {
+     _action: "findPrevious",
+     _context: "ui",
+     _localeKey: "findPreviousCmd.keycode",
+     shiftKey: true,
+     accelKey: false,
+     altKey: false,
+   },
++  {
++    _action: "gotoLine",
++    _context: "ui",
++    _localeKey: "gotoLineCmd.keycode",
++    shiftKey: false,
++    accelKey: true,
++    altKey: false,
++  },
+ ];
+ 
+ var EXPORTED_SYMBOLS = ["SourceEditor"];
+ 
+ /**
+  * The SourceEditor object constructor. The SourceEditor component allows you to
+  * provide users with an editor tailored to the specific needs of editing source
+  * code, aimed primarily at web developers.
+diff --git a/browser/devtools/sourceeditor/source-editor-ui.jsm b/browser/devtools/sourceeditor/source-editor-ui.jsm
+--- a/browser/devtools/sourceeditor/source-editor-ui.jsm
++++ b/browser/devtools/sourceeditor/source-editor-ui.jsm
+@@ -58,16 +58,44 @@ SourceEditorUI.prototype = {
+    * method.
+    */
+   init: function SEU_init()
+   {
+     this._ownerWindow = this.editor.parentElement.ownerDocument.defaultView;
+   },
+ 
+   /**
++   * The "go to line" command UI. This displays a prompt that allows the user to
++   * input the line number to jump to.
++   */
++  gotoLine: function SEU_gotoLine()
++  {
++    let oldLine = this.editor.getCaretPosition ?
++                  this.editor.getCaretPosition().line : null;
++    let newLine = {value: oldLine !== null ? oldLine + 1 : ""};
++
++    let result = Services.prompt.prompt(this._ownerWindow,
++      SourceEditorUI.strings.GetStringFromName("gotoLineCmd.promptTitle"),
++      SourceEditorUI.strings.GetStringFromName("gotoLineCmd.promptMessage"),
++      newLine, null, {});
++
++    newLine.value = parseInt(newLine.value);
++    if (result && !isNaN(newLine.value) && --newLine.value != oldLine) {
++      if (this.editor.getLineCount) {
++        let lines = this.editor.getLineCount() - 1;
++        this.editor.setCaretPosition(Math.max(0, Math.min(lines, newLine.value)));
++      } else {
++        this.editor.setCaretPosition(Math.max(0, newLine.value));
++      }
++    }
++
++    return true;
++  },
++
++  /**
+    * The "find" command UI. This displays a prompt that allows the user to input
+    * the string to search for in the code. By default the current selection is
+    * used as a search string, or the last search string.
+    */
+   find: function SEU_find()
+   {
+     let str = {value: this.editor.getSelectedText()};
+     if (!str.value && this.editor.lastFind) {
+diff --git a/browser/devtools/sourceeditor/test/Makefile.in b/browser/devtools/sourceeditor/test/Makefile.in
+--- a/browser/devtools/sourceeditor/test/Makefile.in
++++ b/browser/devtools/sourceeditor/test/Makefile.in
+@@ -49,12 +49,13 @@ _BROWSER_TEST_FILES = \
+ 		browser_bug684862_paste_html.js \
+ 		browser_bug687573_vscroll.js \
+ 		browser_bug687568_pagescroll.js \
+ 		browser_bug687580_drag_and_drop.js \
+ 		browser_bug684546_reset_undo.js \
+ 		browser_bug695035_middle_click_paste.js \
+ 		browser_bug687160_line_api.js \
+ 		browser_bug650345_find.js \
++		browser_bug714942_ui_goto_line.js \
+ 		head.js \
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/browser/devtools/sourceeditor/test/browser_bug714942_ui_goto_line.js b/browser/devtools/sourceeditor/test/browser_bug714942_ui_goto_line.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/sourceeditor/test/browser_bug714942_ui_goto_line.js
+@@ -0,0 +1,70 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++"use strict";
++
++Cu.import("resource:///modules/source-editor.jsm");
++
++let testWin;
++let editor;
++
++function test()
++{
++  waitForExplicitFinish();
++
++  const windowUrl = "data:text/xml,<?xml version='1.0'?>" +
++    "<window xmlns='http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul'" +
++    " title='test for bug 714942' width='600' height='500'><hbox flex='1'/></window>";
++  const windowFeatures = "chrome,titlebar,toolbar,centerscreen,resizable,dialog=no";
++
++  testWin = Services.ww.openWindow(null, windowUrl, "_blank", windowFeatures, null);
++  testWin.addEventListener("load", function onWindowLoad() {
++    testWin.removeEventListener("load", onWindowLoad, false);
++    waitForFocus(initEditor, testWin);
++  }, false);
++}
++
++function initEditor()
++{
++  let hbox = testWin.document.querySelector("hbox");
++  editor = new SourceEditor();
++  editor.init(hbox, {}, editorLoaded);
++}
++
++function editorLoaded()
++{
++  editor.focus();
++
++  let text = "foobar bug650345\nBug650345 bazbaz\nfoobar omg\ntest";
++  editor.setText(text);
++
++  editor.setCaretOffset(0);
++
++  let oldPrompt = Services.prompt;
++  let desiredValue = null;
++  Services.prompt = {
++    prompt: function(aWindow, aTitle, aMessage, aValue) {
++      aValue.value = desiredValue;
++      return true;
++    },
++  };
++
++  desiredValue = 3;
++  EventUtils.synthesizeKey("VK_L", {accelKey: true}, testWin);
++  is(editor.getCaretOffset(), 34, "caret offset is correct");
++
++  desiredValue = 2;
++  EventUtils.synthesizeKey("VK_L", {accelKey: true}, testWin);
++  is(editor.getCaretOffset(), 17, "caret offset is correct (again)");
++
++  Services.prompt = oldPrompt;
++
++  editor.destroy();
++
++  testWin.close();
++  testWin = editor = null;
++
++  waitForFocus(finish, window);
++}
++
+diff --git a/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties b/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties
+--- a/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties
++++ b/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties
+@@ -12,16 +12,31 @@
+ # LOCALIZATION NOTE (undoCmd.keycode): This is the key code for the command
+ # that allows the user to undo changes in the source code.
+ undoCmd.keycode=VK_Z
+ 
+ # LOCALIZATION NOTE (redoCmd.keycode): This is the key code for the command
+ # that allows the user to redo changes in the source code.
+ redoCmd.keycode=VK_Z
+ 
++# LOCALIZATION NOTE (gotoLineCmd.keycode): This is the key code for the command
++# that allows the user to jump to a specific line in the source code he/she is
++# editing.
++gotoLineCmd.keycode=VK_L
++
++# LOCALIZATION NOTE  (gotoLineCmd.promptTitle): This is the dialog title used
++# when the user wants to jump to a specific line number in the code. You can
++# access this feature by pressing Ctrl-L on Windows/Linux or Cmd-L on Mac.
++gotoLineCmd.promptTitle=Go to line…
++
++# LOCALIZATION NOTE  (gotoLineCmd.promptMessage): This is the message shown when
++# the user wants to jump to a specific line number in the code. You can
++# access this feature by pressing Ctrl-L on Windows/Linux or Cmd-L on Mac.
++gotoLineCmd.promptMessage=Jump to line number:
++
+ # LOCALIZATION NOTE (findCmd.keycode): This is the key code for the command
+ # that allows the user to search for a string in the code.
+ findCmd.keycode=VK_F
+ 
+ # LOCALIZATION NOTE  (findCmd.promptTitle): This is the dialog title used
+ # when the user wants to search for a string in the code. You can
+ # access this feature by pressing Ctrl-F on Windows/Linux or Cmd-F on Mac.
+ findCmd.promptTitle=Find…

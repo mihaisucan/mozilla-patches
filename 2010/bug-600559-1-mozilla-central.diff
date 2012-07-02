@@ -1,0 +1,84 @@
+diff --git a/browser/base/content/test/Makefile.in b/browser/base/content/test/Makefile.in
+--- a/browser/base/content/test/Makefile.in
++++ b/browser/base/content/test/Makefile.in
+@@ -169,16 +169,17 @@ _BROWSER_FILES = \
+                  browser_inspector_domPanel.js \
+                  browser_inspector_iframeTest.js \
+                  browser_inspector_scrolling.js \
+                  browser_inspector_store.js \
+                  browser_inspector_tab_switch.js \
+                  browser_inspector_treePanel_output.js \
+                  browser_inspector_treePanel_input.html \
+                  browser_inspector_treePanel_result.html \
++                 browser_bug600559_synthesizeMouse.js \
+                  browser_pageInfo.js \
+                  browser_page_style_menu.js \
+                  browser_pinnedTabs.js \
+                  browser_plainTextLinks.js \
+                  browser_pluginnotification.js \
+                  browser_popupUI.js \
+                  browser_relatedTabs.js \
+                  browser_sanitize-passwordDisabledHosts.js \
+diff --git a/browser/base/content/test/browser_bug600559_synthesizeMouse.js b/browser/base/content/test/browser_bug600559_synthesizeMouse.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_bug600559_synthesizeMouse.js
+@@ -0,0 +1,58 @@
++/* vim:set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++let onClickFired = false;
++let eventTimeout = null;
++
++function performTest() {
++  let p = content.document.querySelector("p");
++  ok(p, "we have the paragraph element");
++
++  p.addEventListener("click", function(aEvent) {
++    this.removeEventListener(aEvent.type, arguments.callee, false);
++
++    onClickFired = true;
++    testEnd();
++  }, false);
++
++  try {
++    EventUtils.synthesizeMouse(p, 1, 1, {type: "click"}, content);
++    eventTimeout = setTimeout(testEnd, 1000);
++  } catch (ex) {
++    ok(false, "synthesizeMouse() exception: " + ex);
++    testEnd();
++  }
++}
++
++function testEnd() {
++  if (eventTimeout) {
++    clearTimeout(eventTimeout);
++    eventTimeout = null;
++  }
++
++  ok(onClickFired, "the onClickFired event fired");
++
++  gBrowser.removeCurrentTab();
++  executeSoon(finish);
++}
++
++function test() {
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function(aEvent) {
++    gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee,
++      true);
++    waitForFocus(performTest, content);
++  }, true);
++
++  content.location = "data:text/html,<p>synthesizeMouse test</p>";
++}
++

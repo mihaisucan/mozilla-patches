@@ -1,0 +1,90 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -111,16 +111,19 @@ const NEW_GROUP_DELAY = 5000;
+ // search.
+ const SEARCH_DELAY = 200;
+ 
+ // The number of lines that are displayed in the console output by default.
+ // The user can change this number by adjusting the hidden
+ // "devtools.hud.loglimit" preference.
+ const DEFAULT_LOG_LIMIT = 200;
+ 
++// The maximum number of bytes a Network ResponseListener can hold.
++const RESPONSE_BODY_LIMIT = 1048576; // 1 MB
++
+ const ERRORS = { LOG_MESSAGE_MISSING_ARGS:
+                  "Missing arguments: aMessage, aConsoleNode and aMessageNode are required.",
+                  CANNOT_GET_HUD: "Cannot getHeads Up Display with provided ID",
+                  MISSING_ARGS: "Missing arguments",
+                  LOG_OUTPUT_FAILED: "Log Failure: Could not append messageNode to outputNode",
+ };
+ 
+ /**
+@@ -213,17 +216,22 @@ ResponseListener.prototype =
+     let BinaryOutputStream = Components.Constructor("@mozilla.org/binaryoutputstream;1",
+                                                       "nsIBinaryOutputStream",
+                                                       "setOutputStream");
+ 
+     storageStream = new StorageStream(8192, aCount, null);
+     binaryOutputStream = new BinaryOutputStream(storageStream.getOutputStream(0));
+ 
+     let data = NetUtil.readInputStreamToString(aInputStream, aCount);
+-    this.receivedData += data;
++
++    if (HUDService.saveRequestAndResponseBodies &&
++        this.receivedData.length < RESPONSE_BODY_LIMIT) {
++      this.receivedData += data;
++    }
++
+     binaryOutputStream.writeBytes(data, aCount);
+ 
+     let newInputStream = storageStream.newInputStream(0);
+     try {
+     this.originalListener.onDataAvailable(aRequest, aContext,
+         newInputStream, aOffset, aCount);
+     }
+     catch(ex) {
+@@ -283,18 +291,21 @@ ResponseListener.prototype =
+ 
+     // Call update on all panels.
+     this.httpActivity.panels.forEach(function(weakRef) {
+       let panel = weakRef.get();
+       if (panel) {
+         panel.update();
+       }
+     });
++
+     this.httpActivity.response.isDone = true;
++    this.httpActivity.response.listener = null;
+     this.httpActivity = null;
++    this.receivedData = "";
+   },
+ 
+   QueryInterface: XPCOMUtils.generateQI([
+     Ci.nsIStreamListener,
+     Ci.nsISupports
+   ])
+ }
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_netlogging.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_netlogging.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_netlogging.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_netlogging.js
+@@ -71,16 +71,17 @@ function testNetworkLogging()
+     // Check if page load was logged correctly.
+     let httpActivity = lastFinishedRequest;
+     isnot(httpActivity, null, "Page load was logged");
+     is(httpActivity.url, TEST_NETWORK_REQUEST_URI,
+       "Logged network entry is page load");
+     is(httpActivity.method, "GET", "Method is correct");
+     ok(!("body" in httpActivity.request), "No request body was stored");
+     ok(!("body" in httpActivity.response), "No response body was stored");
++    ok(!httpActivity.response.listener, "No response listener is stored");
+ 
+     // Turn on logging of request bodies and check again.
+     HUDService.saveRequestAndResponseBodies = true;
+     browser.addEventListener("load", function onLoad () {
+       browser.removeEventListener("load", onLoad, true);
+       loggingGen.next();
+     }, true);
+     content.location.reload();

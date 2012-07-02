@@ -1,0 +1,192 @@
+diff -r f73e5032cfad toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm	Sat Jul 31 16:02:52 2010 +0900
++++ b/toolkit/components/console/hudservice/HUDService.jsm	Sat Jul 31 20:06:44 2010 +0300
+@@ -20,16 +20,17 @@
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   David Dahl <ddahl@mozilla.com> (original author)
+  *   Rob Campbell <rcampbell@mozilla.com>
+  *   Johnathan Nightingale <jnightingale@mozilla.com>
+  *   Patrick Walton <pcwalton@mozilla.com>
++ *   Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -1445,57 +1446,54 @@ HUD_SERVICE.prototype =
+     let hudId = "hud_" + nBoxId;
+ 
+     if (!this.canActivateContext(hudId)) {
+       return;
+     }
+ 
+     this.registerDisplay(hudId, aContentWindow.document.location.href);
+ 
+-    // check if aContentWindow has a console Object
+-    let _console = aContentWindow.wrappedJSObject.console;
+-    if (!_console) {
+-      // no console exists. does the HUD exist?
+-      let hudNode;
+-      let childNodes = nBox.childNodes;
+-
+-      for (var i = 0; i < childNodes.length; i++) {
+-        let id = childNodes[i].getAttribute("id");
+-        if (id.split("_")[0] == "hud") {
+-          hudNode = childNodes[i];
+-          break;
+-        }
+-      }
+-
+-      if (!hudNode) {
+-        // get nBox object and call new HUD
+-        let config = { parentNode: nBox,
+-                       contentWindow: aContentWindow
+-                     };
+-
+-        let _hud = new HeadsUpDisplay(config);
+-
+-        let hudWeakRef = Cu.getWeakReference(_hud);
+-        HUDService.registerHUDWeakReference(hudWeakRef, hudId);
+-      }
+-      else {
+-        // only need to attach a console object to the window object
+-        let config = { hudNode: hudNode,
+-                       consoleOnly: true,
+-                       contentWindow: aContentWindow
+-                     };
+-
+-        let _hud = new HeadsUpDisplay(config);
+-
+-        let hudWeakRef = Cu.getWeakReference(_hud);
+-        HUDService.registerHUDWeakReference(hudWeakRef, hudId);
+-
+-        aContentWindow.wrappedJSObject.console = _hud.console;
++    // does the HUD exist?
++    let hudNode;
++    let childNodes = nBox.childNodes;
++
++    for (var i = 0; i < childNodes.length; i++) {
++      let id = childNodes[i].getAttribute("id");
++      if (id.split("_")[0] == "hud") {
++        hudNode = childNodes[i];
++        break;
+       }
+     }
++
++    if (!hudNode) {
++      // get nBox object and call new HUD
++      let config = { parentNode: nBox,
++                     contentWindow: aContentWindow
++                   };
++
++      let _hud = new HeadsUpDisplay(config);
++
++      let hudWeakRef = Cu.getWeakReference(_hud);
++      HUDService.registerHUDWeakReference(hudWeakRef, hudId);
++    }
++    else {
++      // only need to attach a console object to the window object
++      let config = { hudNode: hudNode,
++                     consoleOnly: true,
++                     contentWindow: aContentWindow
++                   };
++
++      let _hud = new HeadsUpDisplay(config);
++
++      let hudWeakRef = Cu.getWeakReference(_hud);
++      HUDService.registerHUDWeakReference(hudWeakRef, hudId);
++
++      aContentWindow.wrappedJSObject.console = _hud.console;
++    }
++
+     // capture JS Errors
+     this.setOnErrorHandler(aContentWindow);
+   }
+ };
+ 
+ //////////////////////////////////////////////////////////////////////////
+ // HeadsUpDisplay
+ //////////////////////////////////////////////////////////////////////////
+diff -r f73e5032cfad toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Sat Jul 31 16:02:52 2010 +0900
++++ b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Sat Jul 31 20:06:44 2010 +0300
+@@ -16,16 +16,17 @@
+  *
+  * The Initial Developer of the Original Code is Mozilla Foundation.
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *  David Dahl <ddahl@mozilla.com>
+  *  Patrick Walton <pcwalton@mozilla.com>
++ *  Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -648,25 +649,54 @@ function testErrorOnPageReload() {
+     var outputNode = display.querySelectorAll(".hud-output-node")[0];
+ 
+     button.addEventListener("click", function onClickHandler() {
+       button.removeEventListener("click", onClickHandler, false);
+ 
+       testLogEntry(outputNode, "fooBazBaz",
+         { success: successMsg, err: errMsg });
+ 
+-      testEnd();
++      testActivationWithConsole();
+     }, false);
+ 
+     button.dispatchEvent(clickEvent);
+   }, false);
+ 
+   content.location.href = TEST_ERROR_URI;
+ }
+ 
++function testActivationWithConsole() {
++  // see bug 583476: WebConsole fails to activate when window.console is already 
++  // defined.
++  // https://bugzilla.mozilla.org/show_bug.cgi?id=583476
++
++  HUDService.deactivateHUDForContext(tab);
++
++  var displayNode = null;
++
++  try {
++    displayNode = HUDService.getDisplayByURISpec(content.location.href);
++  } catch (ex) { }
++
++  ok(!displayNode,
++    "we do not have the displayNode after WebConsole deactivation");
++
++  content.wrappedJSObject.console = "foo";
++  is(content.wrappedJSObject.console, "foo", "window.console = 'foo'");
++
++  HUDService.activateHUDForContext(tab);
++  is(typeof content.wrappedJSObject.console, "object",
++    "window.console object is overwritten");
++
++  displayNode = HUDService.getDisplayByURISpec(content.location.href);
++  ok(displayNode, "we have the displayNode after WebConsole activation");
++
++  testEnd();
++}
++
+ function testEnd() {
+   // testUnregister();
+   executeSoon(function () {
+     HUDService.deactivateHUDForContext(tab);
+     HUDService.shutdown();
+   });
+   finish();
+ }

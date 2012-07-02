@@ -1,0 +1,422 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -605,28 +605,16 @@ HUD_SERVICE.prototype =
+     var props = [];
+     for (var prop in this._headsUpDisplays) {
+       props.push(prop);
+     }
+     return props;
+   },
+ 
+   /**
+-   * get the current filter string for the HeadsUpDisplay
+-   *
+-   * @param string aHUDId
+-   * @returns string
+-   */
+-  getFilterStringByHUDId: function HS_getFilterStringbyHUDId(aHUDId) {
+-    var hud = this.getHeadsUpDisplay(aHUDId);
+-    var filterStr = hud.querySelectorAll(".hud-filter-box")[0].value;
+-    return filterStr || null;
+-  },
+-
+-  /**
+    * The filter strings per HeadsUpDisplay
+    *
+    */
+   hudFilterStrings: {},
+ 
+   /**
+    * Update the filter text in the internal tracking object for all
+    * filter strings
+@@ -636,72 +624,16 @@ HUD_SERVICE.prototype =
+    */
+   updateFilterText: function HS_updateFiltertext(aTextBoxNode)
+   {
+     var hudId = aTextBoxNode.getAttribute(hudId);
+     this.hudFilterStrings[hudId] = aTextBoxNode.value || null;
+   },
+ 
+   /**
+-   * Filter each message being logged into the console
+-   *
+-   * @param string aFilterString
+-   * @param nsIDOMNode aMessageNode
+-   * @returns JS Object
+-   */
+-  filterLogMessage:
+-  function HS_filterLogMessage(aFilterString, aMessageNode)
+-  {
+-    aFilterString = aFilterString.toLowerCase();
+-    var messageText = aMessageNode.textContent.toLowerCase();
+-    var idx = messageText.indexOf(aFilterString);
+-    if (idx > -1) {
+-      return { strLength: aFilterString.length, strIndex: idx };
+-    }
+-    else {
+-      return null;
+-    }
+-  },
+-
+-  /**
+-   * Get the filter textbox from a HeadsUpDisplay
+-   *
+-   * @param string aHUDId
+-   * @returns nsIDOMNode
+-   */
+-  getFilterTextBox: function HS_getFilterTextBox(aHUDId)
+-  {
+-    var hud = this.getHeadsUpDisplay(aHUDId);
+-    return hud.querySelectorAll(".hud-filter-box")[0];
+-  },
+-
+-  /**
+-   * logs a message to the Heads Up Display that originates
+-   * in the nsIConsoleService
+-   *
+-   * @param nsIConsoleMessage aMessage
+-   * @param nsIDOMNode aConsoleNode
+-   * @param nsIDOMNode aMessageNode
+-   * @returns void
+-   */
+-  logConsoleMessage: function HS_logConsoleMessage(aMessage,
+-                                                   aConsoleNode,
+-                                                   aMessageNode,
+-                                                   aFilterState,
+-                                                   aFilterString)
+-  {
+-    if (aFilterState){
+-      aConsoleNode.appendChild(aMessageNode);
+-      ConsoleUtils.scrollToVisible(aMessageNode);
+-    }
+-    // store this message in the storage module:
+-    this.storage.recordEntry(aMessage.hudId, aMessage);
+-  },
+-
+-  /**
+    * Logs a Message.
+    * @param WebConsoleMessage aMessage
+    *        The "raw" message to log.
+    * @returns void
+    */
+   logMessage: function HS_logMessage(aMessage)
+   {
+     if (!aMessage) {
+@@ -749,32 +681,16 @@ HUD_SERVICE.prototype =
+     }
+     catch(ex) {
+       var uri = { spec: "" };
+     }
+     this.logConsoleActivity(uri, aScriptError);
+   },
+ 
+   /**
+-   * generates an nsIScriptError
+-   *
+-   * @param object aMessage
+-   * @param integer flag
+-   * @returns nsIScriptError
+-   */
+-  generateConsoleMessage:
+-  function HS_generateConsoleMessage(aMessage, flag)
+-  {
+-    let message = scriptError; // nsIScriptError
+-    message.init(aMessage.message, null, null, 0, 0, flag,
+-                 "HUDConsole");
+-    return message;
+-  },
+-
+-  /**
+    * Register a Gecko app's specialized ApplicationHooks object
+    *
+    * @returns void or throws "UNSUPPORTED APPLICATION" error
+    */
+   registerApplicationHooks:
+   function HS_registerApplications(aAppName, aHooksObject)
+   {
+     switch(aAppName) {
+@@ -1231,49 +1147,16 @@ HUD_SERVICE.prototype =
+       return this.getOutputNodeById(display);
+     }
+     else {
+       throw new Error("Cannot get outputNode by hudId");
+     }
+   },
+ 
+   /**
+-   * Wrapper method that generates a LogMessage object
+-   *
+-   * @param object aMessage
+-   * @param string aLevel
+-   * @param nsIDOMNode aOutputNode
+-   * @param object aActivityObject
+-   * @returns
+-   */
+-  messageFactory:
+-  function messageFactory(aMessage, aLevel, aOutputNode, aActivityObject)
+-  {
+-    // generate a LogMessage object
+-    return new LogMessage(aMessage, aLevel, aOutputNode,  aActivityObject);
+-  },
+-
+-  /**
+-   * Initialize the JSTerm object to create a JS Workspace
+-   *
+-   * @param nsIDOMWindow aContext
+-   * @param nsIDOMNode aParentNode
+-   * @returns void
+-   */
+-  initializeJSTerm: function HS_initializeJSTerm(aContext, aParentNode)
+-  {
+-    // create Initial JS Workspace:
+-    var context = Cu.getWeakReference(aContext);
+-    var firefoxMixin = new JSTermFirefoxMixin(context, aParentNode);
+-    var jsTerm = new JSTerm(context, aParentNode, firefoxMixin);
+-    // TODO: injection of additional functionality needs re-thinking/api
+-    // see bug 559748
+-  },
+-
+-  /**
+    * Passed a HUDId, the corresponding window is returned
+    *
+    * @param string aHUDId
+    * @returns nsIDOMWindow
+    */
+   getContentWindowFromHUDId: function HS_getContentWindowFromHUDId(aHUDId)
+   {
+     var hud = this.getHeadsUpDisplay(aHUDId);
+@@ -1584,18 +1467,17 @@ HeadsUpDisplay.prototype = {
+    * @returns void
+    */
+   createConsoleInput:
+   function HUD_createConsoleInput(aWindow, aParentNode, aExistingConsole)
+   {
+     var context = Cu.getWeakReference(aWindow);
+ 
+     if (appName() == "FIREFOX") {
+-      let outputCSSClassOverride = "hud-msg-node hud-console";
+-      let mixin = new JSTermFirefoxMixin(context, aParentNode, aExistingConsole, outputCSSClassOverride);
++      let mixin = new JSTermFirefoxMixin(context, aParentNode, aExistingConsole);
+       this.jsterm = new JSTerm(context, aParentNode, mixin, this.hudId);
+     }
+     else {
+       throw new Error("Unsupported Gecko Application");
+     }
+   },
+ 
+   /**
+@@ -2456,19 +2338,16 @@ JSTerm.prototype = {
+   {
+     this.createSandbox();
+     this.inputNode = this.mixins.inputNode;
+     let eventHandlerKeyDown = this.keyDown();
+     this.inputNode.addEventListener('keypress', eventHandlerKeyDown, false);
+     let eventHandlerInput = this.inputEventHandler();
+     this.inputNode.addEventListener('input', eventHandlerInput, false);
+     this.outputNode = this.mixins.outputNode;
+-    if (this.mixins.cssClassOverride) {
+-      this.cssClassOverride = this.mixins.cssClassOverride;
+-    }
+   },
+ 
+   get codeInputString()
+   {
+     // TODO: filter the input for windows line breaks, conver to unix
+     // see bug 572812
+     return this.inputNode.value;
+   },
+@@ -2535,55 +2414,16 @@ JSTerm.prototype = {
+     }
+ 
+     this.history.push(str);
+     this.historyIndex++;
+     this.historyPlaceHolder = this.history.length;
+     this.inputNode.value = "";
+   },
+ 
+-  /**
+-   * Writes a message to the HUD that originates from the interactive
+-   * JavaScript console.
+-   *
+-   * @param string aOutputMessage
+-   *        The message to display.
+-   * @param boolean aIsInput
+-   *        True if the message is the user's input, false if the message is
+-   *        the result of the expression the user typed.
+-   * @returns void
+-   */
+-  writeOutput: function JST_writeOutput(aOutputMessage, aIsInput)
+-  {
+-    let lastGroupNode = HUDService.appendGroupIfNecessary(this.outputNode,
+-                                                          Date.now());
+-
+-    var node = this.xulElementFactory("label");
+-    if (aIsInput) {
+-      node.setAttribute("class", "jsterm-input-line");
+-      aOutputMessage = "> " + aOutputMessage;
+-    }
+-    else {
+-      node.setAttribute("class", "jsterm-output-line");
+-    }
+-
+-    if (this.cssClassOverride) {
+-      let classes = this.cssClassOverride.split(" ");
+-      for (let i = 0; i < classes.length; i++) {
+-        node.classList.add(classes[i]);
+-      }
+-    }
+-
+-    var textNode = this.textFactory(aOutputMessage);
+-    node.appendChild(textNode);
+-
+-    lastGroupNode.appendChild(node);
+-    ConsoleUtils.scrollToVisible(node);
+-  },
+-
+   clearOutput: function JST_clearOutput()
+   {
+     let outputNode = this.outputNode;
+ 
+     while (outputNode.firstChild) {
+       outputNode.removeChild(outputNode.firstChild);
+     }
+ 
+@@ -2894,23 +2734,21 @@ JSTerm.prototype = {
+  * JSTermFirefoxMixin
+  *
+  * JavaScript Terminal Firefox Mixin
+  *
+  */
+ function
+ JSTermFirefoxMixin(aContext,
+                    aParentNode,
+-                   aExistingConsole,
+-                   aCSSClassOverride)
++                   aExistingConsole)
+ {
+   // aExisting Console is the existing outputNode to use in favor of
+   // creating a new outputNode - this is so we can just attach the inputNode to
+   // a normal HeadsUpDisplay console output, and re-use code.
+-  this.cssClassOverride = aCSSClassOverride;
+   this.context = aContext;
+   this.parentNode = aParentNode;
+   this.existingConsoleNode = aExistingConsole;
+   this.setTimeout = aParentNode.ownerDocument.defaultView.setTimeout;
+ 
+   if (aParentNode.ownerDocument) {
+     this.xulElementFactory =
+       NodeFactory("xul", "xul", aParentNode.ownerDocument);
+@@ -2969,82 +2807,16 @@ JSTermFirefoxMixin.prototype = {
+ 
+   attachUI: function JSTF_attachUI()
+   {
+     this.parentNode.appendChild(this.term);
+   }
+ };
+ 
+ /**
+- * LogMessage represents a single message logged to the "outputNode" console
+- */
+-function LogMessage(aMessage, aLevel, aOutputNode, aActivityObject)
+-{
+-  if (!aOutputNode || !aOutputNode.ownerDocument) {
+-    throw new Error("aOutputNode is required and should be type nsIDOMNode");
+-  }
+-  if (!aMessage.origin) {
+-    throw new Error("Cannot create and log a message without an origin");
+-  }
+-  this.message = aMessage;
+-  if (aMessage.domId) {
+-    // domId is optional - we only need it if the logmessage is
+-    // being asynchronously updated
+-    this.domId = aMessage.domId;
+-  }
+-  this.activityObject = aActivityObject;
+-  this.outputNode = aOutputNode;
+-  this.level = aLevel;
+-  this.origin = aMessage.origin;
+-
+-  this.xulElementFactory =
+-  NodeFactory("xul", "xul", aOutputNode.ownerDocument);
+-
+-  this.textFactory = NodeFactory("text", "xul", aOutputNode.ownerDocument);
+-
+-  this.createLogNode();
+-}
+-
+-LogMessage.prototype = {
+-
+-  /**
+-   * create a console log div node
+-   *
+-   * @returns nsIDOMNode
+-   */
+-  createLogNode: function LM_createLogNode()
+-  {
+-    this.messageNode = this.xulElementFactory("label");
+-
+-    var ts = ConsoleUtils.timestamp();
+-    var timestampedMessage = ConsoleUtils.timestampString(ts) + ": " +
+-      this.message.message;
+-    var messageTxtNode = this.textFactory(timestampedMessage);
+-
+-    this.messageNode.appendChild(messageTxtNode);
+-
+-    var klass = "hud-msg-node hud-" + this.level;
+-    this.messageNode.setAttribute("class", klass);
+-
+-    var self = this;
+-
+-    var messageObject = {
+-      logLevel: self.level,
+-      message: self.message,
+-      timestamp: ts,
+-      activity: self.activityObject,
+-      origin: self.origin,
+-      hudId: self.message.hudId,
+-    };
+-
+-    this.messageObject = messageObject;
+-  }
+-};
+-
+-/**
+  * WebConsoleMessage represents a single message logged in the WebConsole.
+  *
+  * @param string aWebConsoleId the ID of the HeadsUpDisplay object that this 
+  * message belongs to.
+  * @param string aLevel message level: info, notice, warning, error, etc.
+  * @param string aOrigin message origin: network, console-listener, etc.
+  * @param string [aActivity] the activity object associated to this message.
+  * @param string [aMessage] the message this object holds.
+@@ -3165,29 +2937,16 @@ ConsoleUtils = {
+ 
+     return pad(d.getHours()) + ":"
+       + pad(d.getMinutes()) + ":"
+       + pad(d.getSeconds()) + ":"
+       + pad(d.getMilliseconds(), true);
+   },
+ 
+   /**
+-   * Hides a log message by changing its class
+-   *
+-   * @param nsIDOMNode aMessageNode
+-   * @returns nsIDOMNode
+-   */
+-  hideLogMessage: function ConsoleUtils_hideLogMessage(aMessageNode) {
+-    var klass = aMessageNode.getAttribute("class");
+-    klass += " hud-hidden";
+-    aMessageNode.setAttribute("class", klass);
+-    return aMessageNode;
+-  },
+-
+-  /**
+    * Scrolls a node so that it's visible in its containing XUL "scrollbox"
+    * element.
+    *
+    * @param nsIDOMNode aNode
+    *        The node to make visible.
+    * @returns void
+    */
+   scrollToVisible: function ConsoleUtils_scrollToVisible(aNode) {

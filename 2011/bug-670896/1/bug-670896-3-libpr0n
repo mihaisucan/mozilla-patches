@@ -1,0 +1,208 @@
+# HG changeset patch
+# Parent 02dbdde38f91d3f86af29b2516c3b13579dc8637
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1311186423 -10800
+Bug 670896 - Part 3 - libpr0n changes
+
+diff --git a/modules/libpr0n/src/Decoder.cpp b/modules/libpr0n/src/Decoder.cpp
+--- a/modules/libpr0n/src/Decoder.cpp
++++ b/modules/libpr0n/src/Decoder.cpp
+@@ -128,17 +128,17 @@ Decoder::Finish()
+       nsAutoString msg(NS_LITERAL_STRING("Image corrupt or truncated: ") +
+                        NS_ConvertASCIItoUTF16(mImage->GetURIString()));
+ 
+       errorObject->InitWithWindowID
+         (msg.get(),
+          NS_ConvertUTF8toUTF16(mImage->GetURIString()).get(),
+          nsnull,
+          0, 0, nsIScriptError::errorFlag,
+-         "Image", mImage->WindowID()
++         "Image", mImage->WindowID(), mImage->InnerWindowID()
+          );
+   
+       nsCOMPtr<nsIScriptError> error = do_QueryInterface(errorObject);
+       consoleService->LogMessage(error);
+     }
+ 
+     // If we only have a data error, see if things are worth salvaging
+     bool salvage = !HasDecoderError() && mImage->GetNumFrames();
+diff --git a/modules/libpr0n/src/Image.cpp b/modules/libpr0n/src/Image.cpp
+--- a/modules/libpr0n/src/Image.cpp
++++ b/modules/libpr0n/src/Image.cpp
+@@ -38,16 +38,17 @@
+ #include "Image.h"
+ 
+ namespace mozilla {
+ namespace imagelib {
+ 
+ // Constructor
+ Image::Image(imgStatusTracker* aStatusTracker) :
+   mWindowId(0),
++  mInnerWindowId(0),
+   mAnimationConsumers(0),
+   mAnimationMode(kNormalAnimMode),
+   mInitialized(PR_FALSE),
+   mAnimating(PR_FALSE),
+   mError(PR_FALSE)
+ {
+   if (aStatusTracker) {
+     mStatusTracker = aStatusTracker;
+diff --git a/modules/libpr0n/src/Image.h b/modules/libpr0n/src/Image.h
+--- a/modules/libpr0n/src/Image.h
++++ b/modules/libpr0n/src/Image.h
+@@ -122,32 +122,37 @@ public:
+ #ifdef DEBUG
+   PRUint32 GetAnimationConsumers() { return mAnimationConsumers; }
+ #endif
+ 
+   void SetWindowID(PRUint64 aWindowId) {
+     mWindowId = aWindowId;
+   }
+   PRUint64 WindowID() const { return mWindowId; }
++  void SetInnerWindowID(PRUint64 aInnerWindowId) {
++    mInnerWindowId = aInnerWindowId;
++  }
++  PRUint64 InnerWindowID() const { return mInnerWindowId; }
+ 
+   PRBool HasError() { return mError; }
+ 
+ protected:
+   Image(imgStatusTracker* aStatusTracker);
+ 
+   /**
+    * Decides whether animation should or should not be happening,
+    * and makes sure the right thing is being done.
+    */
+   virtual void EvaluateAnimation();
+ 
+   virtual nsresult StartAnimation() = 0;
+   virtual nsresult StopAnimation() = 0;
+ 
+   PRUint64 mWindowId;
++  PRUint64 mInnerWindowId;
+ 
+   // Member data shared by all implementations of this abstract class
+   nsAutoPtr<imgStatusTracker> mStatusTracker;
+   PRUint32                    mAnimationConsumers;
+   PRUint16                    mAnimationMode;   // Enum values in imgIContainer
+   PRPackedBool                mInitialized:1;   // Have we been initalized?
+   PRPackedBool                mAnimating:1;     // Are we currently animating?
+   PRPackedBool                mError:1;         // Error handling
+diff --git a/modules/libpr0n/src/imgLoader.cpp b/modules/libpr0n/src/imgLoader.cpp
+--- a/modules/libpr0n/src/imgLoader.cpp
++++ b/modules/libpr0n/src/imgLoader.cpp
+@@ -1668,20 +1668,21 @@ NS_IMETHODIMP imgLoader::LoadImage(nsIUR
+     nsCOMPtr<nsILoadGroup> loadGroup =
+         do_CreateInstance(NS_LOADGROUP_CONTRACTID);
+     newChannel->SetLoadGroup(loadGroup);
+ 
+     void *cacheId = NS_GetCurrentThread();
+     request->Init(aURI, aURI, loadGroup, newChannel, entry, cacheId, aCX,
+                   aLoadingPrincipal, corsmode);
+ 
+-    // Pass the windowID of the loading document, if possible.
++    // Pass the outer and inner window IDs of the loading document, if possible.
+     nsCOMPtr<nsIDocument> doc = do_QueryInterface(aCX);
+     if (doc) {
+       request->SetWindowID(doc->OuterWindowID());
++      request->SetInnerWindowID(doc->InnerWindowID());
+     }
+ 
+     // create the proxy listener
+     nsCOMPtr<nsIStreamListener> pl = new ProxyListener(request.get());
+ 
+     // See if we need to insert a CORS proxy between the proxy listener and the
+     // request.
+     nsCOMPtr<nsIStreamListener> listener = pl;
+diff --git a/modules/libpr0n/src/imgRequest.cpp b/modules/libpr0n/src/imgRequest.cpp
+--- a/modules/libpr0n/src/imgRequest.cpp
++++ b/modules/libpr0n/src/imgRequest.cpp
+@@ -180,18 +180,19 @@ NS_IMPL_ISUPPORTS8(imgRequest,
+                    nsIStreamListener, nsIRequestObserver,
+                    nsISupportsWeakReference,
+                    nsIChannelEventSink,
+                    nsIInterfaceRequestor,
+                    nsIAsyncVerifyRedirectCallback)
+ 
+ imgRequest::imgRequest() : 
+   mCacheId(0), mValidator(nsnull), mImageSniffers("image-sniffing-services"),
+-  mWindowId(0), mCORSMode(imgIRequest::CORS_NONE), mDecodeRequested(PR_FALSE),
+-  mIsMultiPartChannel(PR_FALSE), mGotData(PR_FALSE), mIsInCache(PR_FALSE)
++  mWindowId(0), mInnerWindowId(0), mCORSMode(imgIRequest::CORS_NONE),
++  mDecodeRequested(PR_FALSE), mIsMultiPartChannel(PR_FALSE), mGotData(PR_FALSE),
++  mIsInCache(PR_FALSE)
+ {}
+ 
+ imgRequest::~imgRequest()
+ {
+   if (mURI) {
+     nsCAutoString spec;
+     mURI->GetSpec(spec);
+     LOG_FUNC_WITH_PARAM(gImgLog, "imgRequest::~imgRequest()", "keyuri", spec.get());
+@@ -1032,16 +1033,17 @@ NS_IMETHODIMP imgRequest::OnDataAvailabl
+ 
+     /* now we have mimetype, so we can infer the image type that we want */
+     if (mContentType.EqualsLiteral(SVG_MIMETYPE)) {
+       mImage = new VectorImage(mStatusTracker.forget());
+     } else {
+       mImage = new RasterImage(mStatusTracker.forget());
+     }
+     mImage->SetWindowID(mWindowId);
++    mImage->SetInnerWindowID(mInnerWindowId);
+     imageType = mImage->GetType();
+ 
+     // Notify any imgRequestProxys that are observing us that we have an Image.
+     nsTObserverArray<imgRequestProxy*>::ForwardIterator iter(mObservers);
+     while (iter.HasMore()) {
+       iter.GetNext()->SetImage(mImage);
+     }
+ 
+diff --git a/modules/libpr0n/src/imgRequest.h b/modules/libpr0n/src/imgRequest.h
+--- a/modules/libpr0n/src/imgRequest.h
++++ b/modules/libpr0n/src/imgRequest.h
+@@ -126,16 +126,24 @@ public:
+   inline void SetWindowID(PRUint64 aWindowId) {
+     mWindowId = aWindowId;
+   }
+ 
+   inline PRUint64 WindowID() const {
+     return mWindowId;
+   }
+ 
++  inline void SetInnerWindowID(PRUint64 aInnerWindowId) {
++    mInnerWindowId = aInnerWindowId;
++  }
++
++  inline PRUint64 InnerWindowID() const {
++    return mInnerWindowId;
++  }
++
+   // Set the cache validation information (expiry time, whether we must
+   // validate, etc) on the cache entry based on the request information.
+   // If this function is called multiple times, the information set earliest
+   // wins.
+   static void SetCacheValidation(imgCacheEntry* aEntry, nsIRequest* aRequest);
+ 
+   // The CORS mode for which we loaded this image.
+   PRInt32 GetCORSMode() const { return mCORSMode; }
+@@ -254,18 +262,19 @@ private:
+   void *mLoadId;
+   PRTime mLoadTime;
+ 
+   imgCacheValidator *mValidator;
+   nsCategoryCache<nsIContentSniffer> mImageSniffers;
+   nsCOMPtr<nsIAsyncVerifyRedirectCallback> mRedirectCallback;
+   nsCOMPtr<nsIChannel> mNewRedirectChannel;
+ 
+-  // Originating outer window ID. Used for error reporting.
++  // Originating outer and inner window IDs. Both are used for error reporting.
+   PRUint64 mWindowId;
++  PRUint64 mInnerWindowId;
+ 
+   // The CORS mode (defined in imgIRequest) this image was loaded with. By
+   // default, imgIRequest::CORS_NONE.
+   PRInt32 mCORSMode;
+ 
+   // Sometimes consumers want to do things before the image is ready. Let them,
+   // and apply the action when the image becomes available.
+   PRPackedBool mDecodeRequested : 1;

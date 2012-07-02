@@ -1,0 +1,98 @@
+diff -r 3f3bfcd28d69 toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm	Mon Jul 19 15:45:18 2010 +0300
++++ b/toolkit/components/console/hudservice/HUDService.jsm	Mon Jul 19 17:58:58 2010 +0300
+@@ -1927,17 +1927,17 @@ HeadsUpDisplay.prototype = {
+ 
+       let nodes = this.notificationBox.insertBefore(this.HUDBox,
+         this.notificationBox.childNodes[0]);
+ 
+       return this.HUDBox;
+     }
+   },
+ 
+-  get console() { this._console || this.createConsole(); },
++  get console() { return this._console || this.createConsole(); },
+ 
+   getLogCount: function HUD_getLogCount()
+   {
+     return this.outputNode.childNodes.length;
+   },
+ 
+   getLogNodes: function HUD_getLogNodes()
+   {
+diff -r 3f3bfcd28d69 toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Mon Jul 19 15:45:18 2010 +0300
++++ b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Mon Jul 19 17:58:58 2010 +0300
+@@ -477,16 +477,52 @@ function testIteration() {
+ }
+ 
+ function testHUDGetters()
+ {
+   var HUD = HUDService.hudWeakReferences[hudId].get();
+   var jsterm = HUD.jsterm;
+   var klass = jsterm.inputNode.getAttribute("class");
+   ok(klass == "jsterm-input-node", "We have the input node.");
++
++  var hudconsole = HUD.console;
++  is(typeof hudconsole, "object", "HUD.console is an object");
++  is(typeof hudconsole.log, "function", "HUD.console.log is a function");
++  is(typeof hudconsole.info, "function", "HUD.console.info is a function");
++}
++
++function testPageReload() {
++  // see bug 578437 - The HUD console fails to re-attach the window.console 
++  // object after page reload.
++
++  browser.addEventListener("DOMContentLoaded", function onDOMLoad () {
++    browser.removeEventListener("DOMContentLoaded", onDOMLoad, false);
++
++    var console = browser.contentWindow.wrappedJSObject.console;
++
++    is(typeof console, "object", "window.console is an object, after page reload");
++    is(typeof console.log, "function", "console.log is a function");
++    is(typeof console.info, "function", "console.info is a function");
++    is(typeof console.warn, "function", "console.warn is a function");
++    is(typeof console.error, "function", "console.error is a function");
++    is(typeof console.exception, "function", "console.exception is a function");
++
++    testEnd();
++  }, false);
++
++  content.location.reload();
++}
++
++function testEnd() {
++  // testUnregister();
++  executeSoon(function () {
++    HUDService.deactivateHUDForContext(tab);
++    HUDService.shutdown();
++  });
++  finish();
+ }
+ 
+ let tab, browser, hudId, hud, filterBox, outputNode, cs;
+ 
+ let win = gBrowser.selectedBrowser;
+ tab = gBrowser.selectedTab;
+ browser = gBrowser.getBrowserForTab(tab);
+ 
+@@ -529,17 +565,13 @@ function test() {
+       testRecordEntry();
+       testRecordManyEntries();
+       testIteration();
+       testConsoleHistory();
+       testOutputOrder();
+       testNullUndefinedOutput();
+       testExecutionScope();
+ 
+-      // testUnregister();
+-      executeSoon(function () {
+-        HUDService.deactivateHUDForContext(tab);
+-        HUDService.shutdown();
+-      });
+-      finish();
++      testPageReload();
++
+     });
+   }, false);
+ }

@@ -1,0 +1,1612 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1320092445 -7200
+# Node ID 8332d81a7d6c8c235a83a7b9501e369ba6dc6a5e
+# Parent  b78d449f0c8b8e77a78a3b7ce8fb859ad7d253c8
+Bug 566085 - Inspect is oblivious to DOM changes
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -996,16 +996,19 @@ pref("services.sync.prefs.sync.xpinstall
+ #endif
+ 
+ // Disable the error console
+ pref("devtools.errorconsole.enabled", false);
+ 
+ // Enable the Inspector
+ pref("devtools.inspector.enabled", true);
+ 
++// Enable/disable the tracking of page changes in the Inspector tool.
++pref("devtools.inspector.trackchanges", false);
++
+ // Enable the style inspector
+ pref("devtools.styleinspector.enabled", true);
+ 
+ // Enable the Scratchpad tool.
+ pref("devtools.scratchpad.enabled", true);
+ 
+ // Enable tools for Chrome development.
+ pref("devtools.chrome.enabled", false);
+diff --git a/browser/devtools/highlighter/InsideOutBox.jsm b/browser/devtools/highlighter/InsideOutBox.jsm
+--- a/browser/devtools/highlighter/InsideOutBox.jsm
++++ b/browser/devtools/highlighter/InsideOutBox.jsm
+@@ -43,16 +43,17 @@
+  *  Curtis Bartley (Mozilla Corp.)
+  *  Mike Collins (IBM Almaden)
+  *  Kevin Decker
+  *  Mike Ratcliffe (Comartis AG)
+  *  Hernan Rodríguez Colmeiro
+  *  Austin Andrews
+  *  Christoph Dorn
+  *  Steven Roussey (AppCenter Inc, Network54)
++ *  Mihai Sucan (Mozilla Corp.)
+  */
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ //// InsideOutBox
+ 
+ /**
+  * InsideOutBoxView is a simple interface definition for views implementing
+  * InsideOutBox controls. All implementors must define these methods.
+@@ -515,16 +516,85 @@ InsideOutBox.prototype =
+       if (this.view.hasClass(parent, className))
+         return parent;
+     }
+ 
+     return null;
+   },
+ 
+   /**
++   * Insert a child before a given sibling in the tree.
++   * @param aParentNodeBox
++   *        The parent node to insert the object under.
++   * @param aRepObject
++   *        The object to create an object box for that will be inserted.
++   * @param aNextSibling
++   *        The sibling to insert the repObject before.
++   * @returns objectbox or null
++   */
++  insertChildBoxBefore:
++  function IOBox_insertChildBoxBefore(aParentNodeBox, aRepObject, aNextSibling)
++  {
++    let childBox = this.getChildObjectBox(aParentNodeBox);
++    let objectBox = this.findChildObjectBox(childBox, aRepObject);
++
++    // aRepObject is already in the tree
++    if (objectBox)
++      return objectBox;
++
++    objectBox = this.view.createObjectBox(aRepObject);
++    if (objectBox) {
++      let siblingBox = this.findChildObjectBox(childBox, aNextSibling);
++      childBox.insertBefore(objectBox, siblingBox);
++    }
++    return objectBox;
++  },
++
++  /**
++   * Remove the given object from the tree described by the parentNodeBox.
++   * @param aParentNodeBox
++   *        A subtree from which to remove aRepObject
++   * @param aRepObject
++   *        The object to remove from the tree
++   */
++  removeChildBox: function IOBox_removeChildBox(aParentNodeBox, aRepObject)
++  {
++    let childBox = this.getChildObjectBox(aParentNodeBox);
++    let objectBox = this.findChildObjectBox(childBox, aRepObject);
++    if (objectBox)
++      childBox.removeChild(objectBox);
++  },
++
++  /**
++   * Locates the attribute domplate node for a given element domplate. This method will
++   * only examine nodes marked with the "nodeAttr" class that are the direct
++   * children of the given element.
++   *
++   * @param {Element} aObjectNodeBox The domplate element to look up the
++   * attribute for.
++   * @param {String} aAttribute Attribute name.
++   * @returns {Element|null} Attribute's domplate node, or null if the attribute
++   * was not found.
++   */
++  findNodeAttrBox: function IOBox_findNodeAttrBox(aObjectNodeBox, aAttribute)
++  {
++    let children = aObjectNodeBox.querySelector(".nodeLabelBox").
++      querySelectorAll(".nodeAttr > .nodeName");
++    let child = null;
++    for (let i = 0, n = children.length; i < n; i++) {
++      child = children[i];
++      if (child.textContent == aAttribute) {
++        return child.parentNode;
++      }
++    }
++
++    return null;
++  },
++
++  /**
+    * We want all children of the parent of repObject.
+    */
+   populateChildBox: function IOBox_populateChildBox(repObject, nodeChildBox)
+   {
+     if (!repObject)
+       return null;
+ 
+     let parentObjectBox = this.getAncestorByClass(nodeChildBox, "nodeBox");
+diff --git a/browser/devtools/highlighter/TreePanel.jsm b/browser/devtools/highlighter/TreePanel.jsm
+--- a/browser/devtools/highlighter/TreePanel.jsm
++++ b/browser/devtools/highlighter/TreePanel.jsm
+@@ -37,16 +37,17 @@
+  * decision by deleting the provisions above and replace them with the notice
+  * and other provisions required by the GPL or the LGPL. If you do not delete
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ const Cu = Components.utils;
++const Ci = Components.interfaces;
+ 
+ Cu.import("resource:///modules/domplate.jsm");
+ Cu.import("resource:///modules/InsideOutBox.jsm");
+ Cu.import("resource:///modules/Services.jsm");
+ 
+ var EXPORTED_SYMBOLS = ["TreePanel", "DOMHelpers"];
+ 
+ const INSPECTOR_URI = "chrome://browser/content/inspector.html";
+@@ -105,16 +106,17 @@ TreePanel.prototype = {
+       label: this.IUI.strings.GetStringFromName("htmlPanel.label"),
+       tooltiptext: this.IUI.strings.GetStringFromName("htmlPanel.tooltiptext"),
+       accesskey: this.IUI.strings.GetStringFromName("htmlPanel.accesskey"),
+       context: this,
+       get isOpen() isOpen(),
+       show: this.open,
+       hide: this.close,
+       onSelect: this.select,
++      onMutation: this._onMutationEvent,
+       panel: this.openInDock ? null : this.container,
+       unregister: this.destroy,
+     };
+     this.editingEvents = {};
+ 
+     if (!this.openInDock) {
+       this._boundClose = this.close.bind(this);
+       this.container.addEventListener("popuphiding", this._boundClose, false);
+@@ -661,16 +663,234 @@ TreePanel.prototype = {
+           break;
+         else
+           return child.repObject;
+       }
+     }
+     return null;
+   },
+ 
++  /////////////////////////////////////////////////////////////////
++  // Mutation handlers
++  /////////////////////////////////////////////////////////////////
++
++  /**
++   * The event handler for DOM mutations. This is called by the InspectorUI when
++   * a DOM mutation happens.
++   *
++   * @private
++   * @param nsIDOMEvent aEvent
++   *        The DOM mutation event.
++   */
++  _onMutationEvent: function TP__onMutationEvent(aEvent)
++  {
++    switch (aEvent.type) {
++      case "DOMAttrModified":
++        this._onMutateAttr(aEvent);
++        break;
++      case "DOMCharacterDataModified":
++        this._onMutateText(aEvent);
++        break;
++      case "DOMNodeInserted":
++      case "DOMNodeRemoved":
++        this._onMutateNode(aEvent);
++        break;
++    }
++  },
++
++  /**
++   * Handler for the DOMAttrModified event.
++   *
++   * @private
++   * @param nsIDOMEvent aEvent
++   * @returns void
++   */
++  _onMutateAttr: function TP__onMutateAttr(aEvent)
++  {
++    let target = aEvent.target;
++    let attrChange = aEvent.attrChange;
++    let attrName = aEvent.attrName;
++    let newValue = aEvent.newValue;
++
++    let objectNodeBox = this.ioBox.findObjectBox(target);
++    if (!objectNodeBox) {
++      return;
++    }
++
++    if (domplateUtils.isVisible(objectNodeBox.repObject)) {
++      this.removeClass(objectNodeBox, "nodeHidden");
++    } else {
++      this.addClass(objectNodeBox, "nodeHidden");
++    }
++
++    let nodeAttrBox = null;
++
++    switch (attrChange) {
++      case aEvent.MODIFICATION:
++      case aEvent.ADDITION:
++        // Find the attribute node box, which has a span.nodeName within
++        // span.nodeAttr, holding the attribute name we want.
++        nodeAttrBox = this.ioBox.findNodeAttrBox(objectNodeBox, attrName);
++        // Find the span.nodeValue so we can change it.
++        let attrValueBox = nodeAttrBox ?
++                           nodeAttrBox.querySelector(".nodeValue") : null;
++
++        if (attrValueBox) {
++          attrValueBox.textContent = newValue;
++        } else {
++          // Add the new attribute.
++          nodeAttrBox = HTMLTemplates.AttrNode.tag.
++            replace({attr: aEvent.relatedNode}, this.treeBrowserDocument);
++
++          // New attributes go inside the nodeLabelBox, before the nodeBracket
++          // span.
++          let bracket = objectNodeBox.
++            querySelector(".nodeLabel > .nodeLabelBox > .nodeBracket");
++          bracket.parentNode.insertBefore(nodeAttrBox, bracket);
++        }
++        break;
++
++      case aEvent.REMOVAL:
++        // Remove the attribute node box.
++        nodeAttrBox = this.ioBox.findNodeAttrBox(objectNodeBox, attrName);
++        if (nodeAttrBox) {
++          nodeAttrBox.parentNode.removeChild(nodeAttrBox);
++        }
++        break;
++    }
++  },
++
++  /**
++   * Handler for the DOMCharacterDataModified event.
++   *
++   * @private
++   * @param nsIDOMEvent aEvent
++   * @returns void
++   */
++  _onMutateText: function TP__onMutateText(aEvent)
++  {
++    let target = aEvent.target;
++    let parent = target.parentNode;
++    let newValue = aEvent.newValue;
++
++    // Skip mutation events for comment nodes. We do not display comments for
++    // now.
++    if (target.nodeType == target.COMMENT_NODE) {
++      return;
++    }
++
++    let parentNodeBox = this.ioBox.findObjectBox(parent);
++    if (!parentNodeBox) {
++      return;
++    }
++
++    let parentTag = domplateUtils.getNodeBoxTag(parentNodeBox);
++    if (parentTag == HTMLTemplates.TextElement.tag) {
++      let nodeText = parentNodeBox.
++                     querySelector(".nodeLabel > .nodeLabelBox > .nodeText");
++      if (nodeText) {
++        nodeText.textContent = newValue;
++      }
++    } else {
++      // Get the children container box: the first child element with the
++      // .nodeChildBox class name.
++      let childBox = this.ioBox.getChildObjectBox(parentNodeBox);
++      if (!childBox) {
++        return;
++      }
++
++      // This gives us the text node container, which can be:
++      // HTMLTemplates.TextNode, CDATANode or CommentNode
++      let textNodeBox = this.ioBox.findChildObjectBox(childBox, target);
++      if (!textNodeBox) {
++        return;
++      }
++
++      // Find the .nodeText span.
++      let nodeText = textNodeBox.querySelector(".nodeText");
++      if (nodeText) {
++        nodeText.textContent = newValue;
++      }
++    }
++  },
++
++  /**
++   * Handler for the DOMNodeInserted and DOMNodeRemoved events.
++   *
++   * @private
++   * @param nsIDOMEvent aEvent
++   * @returns void
++   */
++  _onMutateNode: function TP__onMutateNode(aEvent)
++  {
++    let target = aEvent.target;
++    let parent = aEvent.relatedNode;
++    let removal = aEvent.type == "DOMNodeRemoved";
++
++    // Skip mutation events for attribute nodes. Their changes are handled by
++    // the onMutateAttr() method.
++    if (target.nodeType == target.ATTRIBUTE_NODE) {
++      return;
++    }
++
++    if (!this.showTextNodesWithWhitespace &&
++        this.DOMHelpers.isWhitespaceText(target)) {
++      return;
++    }
++
++    let parentNodeBox = this.ioBox.findObjectBox(parent);
++    if (!parentNodeBox) {
++      return;
++    }
++
++    // Make sure we follow changes in new iframes/frames. Also, remove any event
++    // listeners from obsolete frames.
++    let nodeName = target.nodeName.toLowerCase();
++    if (removal && target.contentWindow &&
++        (nodeName == "iframe" || nodeName == "frame")) {
++      this.IUI.detachMutationListeners(target.contentWindow, true);
++    }
++
++    let selection = this.IUI.selection;
++
++    if (parentNodeBox.populated) {
++      if (removal) {
++        this.ioBox.removeChildBox(parentNodeBox, target);
++
++        if (selection && (!selection.parentNode || target == selection ||
++            !this.ioBox.isInExistingRoot(selection))) {
++          this.IUI.inspectNode(parent);
++        }
++      } else {
++        let nextSibling = this.DOMHelpers.findNextSibling(target,
++          this.showTextNodesWithWhitespace);
++        this.ioBox.insertChildBoxBefore(parentNodeBox, target, nextSibling);
++      }
++    } else {
++      let newParentTag = domplateUtils.getNodeTag(parent);
++      if (!newParentTag) {
++        return;
++      }
++
++      let newParentNodeBox = newParentTag.replace({object: parent},
++        this.treeBrowserDocument);
++      parentNodeBox.parentNode.replaceChild(newParentNodeBox, parentNodeBox);
++
++      if (this.hasClass(parentNodeBox, "open")) {
++        this.ioBox.toggleObjectBox(newParentNodeBox, true);
++      }
++
++      if (selection &&
++          (!selection.parentNode || parent == selection ||
++           !this.ioBox.isInExistingRoot(selection))) {
++        this.IUI.inspectNode(parent);
++      }
++    }
++  },
++
+   /**
+    * Destructor function. Cleanup.
+    */
+   destroy: function TP_destroy()
+   {
+     if (this.isOpen()) {
+       this.close();
+     }
+@@ -819,14 +1039,41 @@ DOMHelpers.prototype = {
+   },
+ 
+   isWhitespaceText: function Helpers_isWhitespaceText(node)
+   {
+     return node.nodeType == this.window.Node.TEXT_NODE &&
+                             !/[^\s]/.exec(node.nodeValue);
+   },
+ 
++  /**
++   * Finds the next sibling of the given node. If the
++   * showTextNodesWithWhitespace parameter is set to true, the next sibling may
++   * be a whitespace, otherwise the first adjacent non-whitespace node is
++   * returned.
++   *
++   * @param {Node} node Node to start from.
++   * @returns {Node|null} Next sibling node, if one exists.
++   */
++  findNextSibling:
++  function Helpers_findNextSibling(node, showTextNodesWithWhitespace)
++  {
++    if (showTextNodesWithWhitespace) {
++      return node.nextSibling;
++    }
++
++    // Only return a non-whitespace node.
++    let sibling = node;
++    while (sibling = sibling.nextSibling) {
++      if (!this.isWhitespaceText(sibling)) {
++        return sibling;
++      }
++    }
++
++    return null;
++  },
++
+   destroy: function Helpers_destroy()
+   {
+     delete this.window;
+     delete this.treeWalker;
+   }
+ };
+diff --git a/browser/devtools/highlighter/domplate.jsm b/browser/devtools/highlighter/domplate.jsm
+--- a/browser/devtools/highlighter/domplate.jsm
++++ b/browser/devtools/highlighter/domplate.jsm
+@@ -978,17 +978,17 @@ function cropString(text, limit, alterTe
+     return text;
+ }
+ 
+ function cropMultipleLines(text, limit)
+ {
+   return escapeNewLines(this.cropString(text, limit));
+ }
+ 
+-function isVisible(elt)
++domplateUtils.isVisible = function isVisible(elt)
+ {
+   if (elt.localName) {
+     return elt.offsetWidth > 0 || elt.offsetHeight > 0 ||
+       elt.localName.toLowerCase() in invisibleTags;
+   } else {
+     return elt.offsetWidth > 0 || elt.offsetHeight > 0;
+   }
+     // || isElementSVG(elt) || isElementMathML(elt);
+@@ -1094,23 +1094,21 @@ domplateUtils.getNodeTag = function getN
+       return HTMLTemplates.Element.tag;
+   }
+   else if (node instanceof DOM.Text)
+     return HTMLTemplates.TextNode.tag;
+   else if (node instanceof DOM.CDATASection)
+     return HTMLTemplates.CDATANode.tag;
+   else if (node instanceof DOM.Comment)
+     return HTMLTemplates.CommentNode.tag;
+-  else if (node instanceof DOM.SourceText)
+-    return HTMLTemplates.SourceText.tag;
+   else
+     return HTMLTemplates.Nada.tag;
+ }
+ 
+-function getNodeBoxTag(nodeBox)
++domplateUtils.getNodeBoxTag = function getNodeBoxTag(nodeBox)
+ {
+   let re = /([^\s]+)NodeBox/;
+   let m = re.exec(nodeBox.className);
+   if (!m)
+     return null;
+ 
+   let nodeBoxType = m[1];
+   if (nodeBoxType == "container")
+@@ -1475,17 +1473,17 @@ BaseTemplates.Element = domplate(BaseTem
+   tag:
+     BaseTemplates.OBJECTLINK(
+       "&lt;",
+       domplate.SPAN({"class": "nodeTag"},
+         "$object.localName|toLowerCase"),
+       domplate.FOR("attr", "$object|attrIterator",
+         "&nbsp;$attr.localName=&quot;",
+         domplate.SPAN({"class": "nodeValue"},
+-          "$attr.nodeValue"),
++          "$attr.value"),
+         "&quot;"
+       ),
+       "&gt;"
+     ),
+ 
+   shortTag:
+     BaseTemplates.OBJECTLINK(
+       domplate.SPAN({"class": "$object|getVisible"},
+@@ -1497,17 +1495,17 @@ BaseTemplates.Element = domplate(BaseTem
+           "$object|getSelectorClass"),
+         domplate.SPAN({"class": "selectorValue"},
+           "$object|getValue")
+       )
+     ),
+ 
+   getVisible: function(elt)
+   {
+-    return isVisible(elt) ? "" : "selectorHidden";
++    return domplateUtils.isVisible(elt) ? "" : "selectorHidden";
+   },
+ 
+   getSelectorTag: function(elt)
+   {
+     return elt.localName.toLowerCase();
+   },
+ 
+   getSelectorId: function(elt)
+@@ -1589,17 +1587,17 @@ BaseTemplates.Element = domplate(BaseTem
+       }
+     }
+ 
+     return attrs;
+   },
+ 
+   getHidden: function(elt)
+   {
+-    return isVisible(elt) ? "" : "nodeHidden";
++    return domplateUtils.isVisible(elt) ? "" : "nodeHidden";
+   },
+ 
+ /* getXPath: function(elt)
+   {
+     return getElementTreeXPath(elt); // todo
+   }, */
+ 
+   getNodeTextGroups: function(element)
+@@ -1624,19 +1622,19 @@ BaseTemplates.Element = domplate(BaseTem
+ 
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ //// HTMLTemplates.tags
+ 
+ BaseTemplates.AttrTag =
+   domplate.SPAN({"class": "nodeAttr editGroup"},
+     "&nbsp;",
+-    domplate.SPAN({"class": "nodeName editable"}, "$attr.nodeName"),
++    domplate.SPAN({"class": "nodeName editable"}, "$attr.name"),
+     "=&quot;",
+-    domplate.SPAN({"class": "nodeValue editable", "data-attributeName": "$attr.nodeName"}, "$attr.nodeValue"),
++    domplate.SPAN({"class": "nodeValue editable", "data-attributeName": "$attr.name"}, "$attr.value"),
+     "&quot;");
+ 
+ BaseTemplates.TextTag =
+   domplate.SPAN({"class": "nodeText editable"},
+     domplate.FOR("chr", "$object|getNodeTextGroups",
+       domplate.SPAN({"class": "$chr.class $chr.extra"},
+         "$chr.str")));
+ 
+diff --git a/browser/devtools/highlighter/inspector.jsm b/browser/devtools/highlighter/inspector.jsm
+--- a/browser/devtools/highlighter/inspector.jsm
++++ b/browser/devtools/highlighter/inspector.jsm
+@@ -777,16 +777,23 @@ InspectorUI.prototype = {
+   browser: null,
+   tools: null,
+   toolEvents: null,
+   inspecting: false,
+   treePanelEnabled: true,
+   isDirty: false,
+   store: null,
+ 
++  // Listen for dynamic changes in the page.
++  listenPageChanges: true,
++
++  // Tells the current state of the Inspector. Are mutation event listeners
++  // attached?
++  mutationListenersAttached: false,
++
+   /**
+    * Toggle the inspector interface elements on or off.
+    *
+    * @param aEvent
+    *        The event that requested the UI change. Toolbar button or menu.
+    */
+   toggleInspectorUI: function IUI_toggleInspectorUI(aEvent)
+   {
+@@ -891,16 +898,24 @@ InspectorUI.prototype = {
+     this.breadcrumbs = new HTMLBreadcrumbs(this);
+ 
+     this.isDirty = false;
+ 
+     this.progressListener = new InspectorProgressListener(this);
+ 
+     // initialize the highlighter
+     this.initializeHighlighter();
++
++    this.listenPageChanges =
++      Services.prefs.getBoolPref("devtools.inspector.trackchanges");
++
++    if (this.listenPageChanges) {
++      this.attachMutationListeners(this.win, true);
++      this.mutationListenersAttached = true;
++    }
+   },
+ 
+   /**
+    * Register and initialize any included tools.
+    */
+   initTools: function IUI_initTools()
+   {
+     // Extras go here.
+@@ -964,16 +979,21 @@ InspectorUI.prototype = {
+     }
+ 
+     this.closing = true;
+     this.toolbar.hidden = true;
+ 
+     this.progressListener.destroy();
+     delete this.progressListener;
+ 
++    if (this.mutationListenersAttached) {
++      this.detachMutationListeners(this.win, true);
++      this.mutationListenersAttached = false;
++    }
++
+     if (!aKeepStore) {
+       this.store.deleteStore(this.winID);
+       this.win.removeEventListener("pagehide", this, true);
+     } else {
+       // Update the store before closing.
+       if (this.selection) {
+         this.store.setValue(this.winID, "selectedNode",
+           this.selection);
+@@ -1248,16 +1268,22 @@ InspectorUI.prototype = {
+             if (node && this.highlighter.isNodeHighlightable(node)) {
+               this.inspectNode(node, true);
+             }
+             event.preventDefault();
+             event.stopPropagation();
+             break;
+         }
+         break;
++      case "DOMAttrModified":
++      case "DOMCharacterDataModified":
++      case "DOMNodeInserted":
++      case "DOMNodeRemoved":
++        this._onMutationEvent(event);
++        break;
+     }
+   },
+ 
+   /////////////////////////////////////////////////////////////////////////
+   //// Utility Methods
+ 
+   /**
+    * inspect the given node, highlighting it on the page and selecting the
+@@ -1307,16 +1333,87 @@ InspectorUI.prototype = {
+         if (subnode) {
+           node = subnode;
+         }
+       }
+     }
+     return node;
+   },
+ 
++  /**
++   * Attach mutation event listeners to window and child windows to enable
++   * automatic updates of the tree panel when the DOM is changed.
++   *
++   * @param nsIDOMWindow aRootWindow
++   *        The window to start with attaching the mutation listeners.
++   * @returns void
++   */
++  attachMutationListeners:
++  function IUI_attachMutationListeners(aRootWindow, aRecursive)
++  {
++    let attachEvents = (function IUI__attachEvents(aWindow) {
++      let document = aWindow.document;
++      document.addEventListener("DOMAttrModified", this, true);
++      document.addEventListener("DOMCharacterDataModified", this, true);
++      document.addEventListener("DOMNodeInserted", this, true);
++      document.addEventListener("DOMNodeRemoved", this, true);
++    }).bind(this);
++
++    if (aRecursive) {
++      this.iterateWindows(aRootWindow, attachEvents);
++    } else {
++      attachEvents(aRootWindow);
++    }
++  },
++
++  /**
++   * Detach mutation event listeners from content window and child windows to
++   * disable automatic updates of the tree panel when the DOM is changed.
++   *
++   * @param nsIDOMWindow aRootWindow
++   *        The window to start with detaching the mutation listeners.
++   * @returns void
++   */
++  detachMutationListeners:
++  function IUI_detachMutationListeners(aRootWindow, aRecursive)
++  {
++    let detachEvents = (function IUI__detachEvents(aWindow) {
++      let document = aWindow.document;
++      document.removeEventListener("DOMAttrModified", this, true);
++      document.removeEventListener("DOMCharacterDataModified", this, true);
++      document.removeEventListener("DOMNodeInserted", this, true);
++      document.removeEventListener("DOMNodeRemoved", this, true);
++    }).bind(this);
++
++    if (aRecursive) {
++      this.iterateWindows(aRootWindow, detachEvents);
++    } else {
++      detachEvents(aRootWindow);
++    }
++  },
++
++  /**
++   * Event handler for DOM mutations. This method sends the event to all of the
++   * registered tools, if they are open.
++   *
++   * @private
++   * @param nsIDOMEvent aEvent
++   *        The DOM mutation event.
++   */
++  _onMutationEvent: function IUI__onMutationEvent(aEvent)
++  {
++    this.highlighter.highlightNode(this.selection);
++
++    this.toolsDo(function IUI_toolsOnMutation(aTool) {
++      if (aTool.isOpen && aTool.onMutation) {
++        aTool.onMutation.call(aTool.context, aEvent);
++      }
++    });
++  },
++
+   ///////////////////////////////////////////////////////////////////////////
+   //// Utility functions
+ 
+   /**
+    * Returns iframe content offset (iframe border + padding).
+    * Note: this function shouldn't need to exist, had the platform provided a
+    * suitable API for determining the offset between the iframe's content and
+    * its bounding client rect. Bug 626359 should provide us with such an API.
+@@ -1360,16 +1457,45 @@ InspectorUI.prototype = {
+       util = aWindow.QueryInterface(Ci.nsIInterfaceRequestor).
+         getInterface(Ci.nsIDOMWindowUtils);
+     } catch (ex) { }
+ 
+     return util.currentInnerWindowID;
+   },
+ 
+   /**
++   * Iterate through the sub-windows of a parent window with a callback
++   * function.
++   *
++   * @param {window} aWindow The start window object.
++   * @param {function} aCallback The callback function you want to invoke for
++   * each child window object.
++   * @returns {void}
++   */
++  iterateWindows: function IUI_iterateWindows(aWindow, aCallback)
++  {
++    if (!aWindow || !aWindow.document) {
++      return;
++    }
++
++    aCallback(aWindow);
++
++    if (!aWindow.frames) {
++      return;
++    }
++
++    for (let frame, i = 0, n = aWindow.frames.length; i < n; i++) {
++      frame = aWindow.frames[i];
++      if (frame && frame.document && frame != aWindow) {
++        this.iterateWindows(frame, aCallback);
++      }
++    }
++  },
++
++  /**
+    * @param msg
+    *        text message to send to the log
+    */
+   _log: function LOG(msg)
+   {
+     Services.console.logStringMessage(msg);
+   },
+ 
+@@ -1412,16 +1538,17 @@ InspectorUI.prototype = {
+    *   id: "toolname",
+    *   context: myTool,
+    *   label: "Button label",
+    *   icon: "chrome://somepath.png",
+    *   tooltiptext: "Button tooltip",
+    *   accesskey: "S",
+    *   isOpen: object.property, (getter) returning true if tool is open.
+    *   onSelect: object.method,
++   *   onMutation: object.method, called when a DOM mutation happens.
+    *   show: object.method, called to show the tool when button is pressed.
+    *   hide: object.method, called to hide the tool when button is pressed.
+    *   dim: object.method, called to disable a tool during highlighting.
+    *   unregister: object.method, called when tool should be destroyed.
+    *   panel: myTool.panel
+    * }
+    *
+    * @param aRegObj Object
+@@ -1784,16 +1911,36 @@ InspectorProgressListener.prototype = {
+   function IPL_onStateChange(aProgress, aRequest, aFlag, aStatus)
+   {
+     // Remove myself if the Inspector is no longer open.
+     if (!this.IUI.isInspectorOpen) {
+       this.destroy();
+       return;
+     }
+ 
++    this.checkPageChanged.apply(this, arguments);
++    if (this.IUI.mutationListenersAttached) {
++      this.onIframeNavigation.apply(this, arguments);
++    }
++  },
++
++  /**
++   * Checks if the InspectorUI.isDirty property is true, which means the user
++   * made changes to the page. If that is the case, a page navigation
++   * confirmation is displayed to allow the user to cancel navigation, to
++   * prevent data loss.
++   *
++   * @param nsIWebProgress aProgress
++   * @param nsIRequest aRequest
++   * @param number aFlag
++   * @param number aStatus
++   */
++  checkPageChanged:
++  function IPL_checkPageChanged(aProgress, aRequest, aFlag, aStatus)
++  {
+     // Skip non-start states.
+     if (!(aFlag & Ci.nsIWebProgressListener.STATE_START)) {
+       return;
+     }
+ 
+     // If the request is about to happen in a new window, we are not concerned
+     // about the request.
+     if (aProgress.DOMWindow != this.IUI.win) {
+@@ -1874,16 +2021,85 @@ InspectorProgressListener.prototype = {
+       notificationBox.PRIORITY_WARNING_HIGH, buttons, eventCallback);
+ 
+     // Make sure this not a transient notification, to avoid the automatic
+     // transient notification removal.
+     notification.persistence = -1;
+   },
+ 
+   /**
++   * Check if the progress listener happens for an iframe element within the
++   * currently inspected page. If that is the case, then we update the view as
++   * needed, and we also deal with mutation events for the iframe.
++   *
++   * @param nsIWebProgress aProgress
++   * @param nsIRequest aRequest
++   * @param number aFlag
++   */
++  onIframeNavigation:
++  function IPL_onIframeNavigation(aProgress, aRequest, aFlag) {
++    // We only want STATE_IS_NETWORK for windows.
++    if (!(aFlag & (Ci.nsIWebProgressListener.STATE_IS_NETWORK |
++                   Ci.nsIWebProgressListener.STATE_IS_WINDOW))) {
++      return;
++    }
++
++    // We only want STATE_START and STATE_STOP.
++    if (!(aFlag & Ci.nsIWebProgressListener.STATE_START) &&
++        !(aFlag & Ci.nsIWebProgressListener.STATE_STOP)) {
++      return;
++    }
++
++    let win = aProgress.DOMWindow;
++
++    // Only handle frames that are inside the Inspector tab.
++    if (win == this.IUI.win || !win.frameElement || win.top != this.IUI.win) {
++      return;
++    }
++
++    let treePanel = this.IUI.treePanel;
++    let ioBox = treePanel.ioBox;
++    let selection = this.IUI.selection;
++
++    // Refresh the tree panel when the user navigated away inside an iframe.
++    let objectBox = ioBox.findObjectBox(win.frameElement);
++    if (objectBox && (aFlag & Ci.nsIWebProgressListener.STATE_STOP)) {
++      let newObjectTag = domplateUtils.getNodeTag(win.frameElement);
++      if (!newObjectTag) {
++        return;
++      }
++
++      let parentNode = objectBox.parentNode;
++      let newObjectBox = newObjectTag.replace({object: win.frameElement},
++                                              treePanel.treeBrowserDocument);
++      parentNode.replaceChild(newObjectBox, objectBox);
++
++      if (treePanel.hasClass(objectBox, "open")) {
++        ioBox.toggleObjectBox(newObjectBox, true);
++      }
++
++      if (selection && (!selection.parentNode || win.frameElement == selection ||
++          !ioBox.isInExistingRoot(selection))) {
++        this.IUI.inspectNode(win.frameElement);
++      }
++    }
++
++    // Detach the mutation listeners for this window when the request starts.
++    if (aFlag & Ci.nsIWebProgressListener.STATE_START) {
++      this.IUI.detachMutationListeners(win, true);
++    }
++
++    // Attach the mutation listeners for this window when the request is done.
++    if (this.IUI.listenPageChanges &&
++        (aFlag & Ci.nsIWebProgressListener.STATE_STOP)) {
++      this.IUI.attachMutationListeners(win, false);
++    }
++  },
++
++  /**
+    * Destroy the progress listener instance.
+    */
+   destroy: function IPL_destroy()
+   {
+     this.IUI.tabbrowser.removeProgressListener(this);
+ 
+     let notificationBox = this.IUI.tabbrowser.getNotificationBox(this.IUI.browser);
+     let notification = notificationBox.
+@@ -2357,8 +2573,14 @@ XPCOMUtils.defineLazyGetter(InspectorUI.
+   });
+ 
+ XPCOMUtils.defineLazyGetter(this, "StyleInspector", function () {
+   var obj = {};
+   Cu.import("resource:///modules/devtools/StyleInspector.jsm", obj);
+   return obj.StyleInspector;
+ });
+ 
++XPCOMUtils.defineLazyGetter(this, "domplateUtils", function () {
++  let obj = {};
++  Cu.import("resource:///modules/domplate.jsm", obj);
++  return obj.domplateUtils;
++});
++
+diff --git a/browser/devtools/highlighter/test/Makefile.in b/browser/devtools/highlighter/test/Makefile.in
+--- a/browser/devtools/highlighter/test/Makefile.in
++++ b/browser/devtools/highlighter/test/Makefile.in
+@@ -60,15 +60,16 @@ _BROWSER_FILES = \
+ 		browser_inspector_editor.js \
+ 		browser_inspector_bug_566084_location_changed.js \
+ 		browser_inspector_infobar.js \
+ 		browser_inspector_bug_690361.js \
+ 		browser_inspector_bug_672902_keyboard_shortcuts.js \
+ 		browser_inspector_keybindings.js \
+ 		browser_inspector_breadcrumbs.html \
+ 		browser_inspector_breadcrumbs.js \
++		browser_inspector_bug_566085_mutations.js \
+ 		$(NULL)
+ 
+ # Disabled due to constant failures
+ # 		browser_inspector_treePanel_click.js \
+ 
+ libs::	$(_BROWSER_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/browser/devtools/highlighter/test/browser_inspector_bug_566085_mutations.js b/browser/devtools/highlighter/test/browser_inspector_bug_566085_mutations.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/highlighter/test/browser_inspector_bug_566085_mutations.js
+@@ -0,0 +1,539 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Inspector DOM Mutations Test.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Rob Campbell <rcampbell@mozilla.com>
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++let ioBox;
++let doc;
++let iframeAdded = false;
++let iframeReloaded = false;
++let parentDoc;
++let count = 0;
++let page = '<!DOCTYPE html><html>' +
++  '<body><div id="container">' +
++  '<div id="textnode">text node</div>' +
++  '<div id="attrs" class="test">attributes</div>' +
++  '<div id="elements"></div>' +
++  '<div id="replaceme" class="test">replace me</div>' +
++  '<div id="moveme">move me</div>' +
++  '<div id="frames"></div>' +
++  '</div></body></html>';
++
++// The test runs through the basic mutation events, starting with the
++// attribute ones. Execution order:
++// - test()
++// - startInspectorTests()
++// - runInspectorTests()
++// - addAttribute()
++// - modifyAttribute()
++// - deleteAttribute()
++// - modifyTextNode()
++// - addElementNode()
++// - moveElementNode() - moves an element node from one parent to another.
++// - replaceElementNode() - replaceChild() test.
++// - removeElementNode()
++// - addIframe() - adds a new iframe element with the same page content.
++// - addAttribute() - just a test that mutations work inside the new iframe.
++// - reloadIframe() - reloads the iframe.
++// - addAttribute() - test that mutations work after iframe navigation/reload.
++// - removeIframe()
++// - finishInspectorTests()
++
++function startInspectorTests() {
++  Services.prefs.setBoolPref("devtools.inspector.trackchanges", true);
++
++  ok(window.InspectorUI, "InspectorUI variable exists");
++  Services.obs.addObserver(inspectorOpened,
++                           InspectorUI.INSPECTOR_NOTIFICATIONS.OPENED, false);
++  InspectorUI.toggleInspectorUI();
++}
++
++function inspectorOpened() {
++  Services.obs.removeObserver(inspectorOpened,
++                              InspectorUI.INSPECTOR_NOTIFICATIONS.OPENED, false);
++
++  ok(InspectorUI.inspecting, "Inspector is highlighting");
++  ok(!InspectorUI.treePanel.isOpen(), "Inspector Tree Panel is not yet open");
++
++  InspectorUI.toggleInspection();
++
++
++  Services.obs.addObserver(treePanelOpened,
++                           InspectorUI.INSPECTOR_NOTIFICATIONS.TREEPANELREADY, false);
++
++  InspectorUI.treePanel.open();
++}
++
++function treePanelOpened() {
++  Services.obs.removeObserver(treePanelOpened,
++                              InspectorUI.INSPECTOR_NOTIFICATIONS.TREEPANELREADY, false);
++
++  ok(InspectorUI.treePanel.isOpen(), "Inspector Tree Panel is open");
++  ioBox = InspectorUI.treePanel.ioBox;
++
++  // Start testing...
++  executeSoon(addAttribute);
++}
++
++function finishInspectorTests() {
++  Services.obs.removeObserver(finishInspectorTests,
++                              InspectorUI.INSPECTOR_NOTIFICATIONS.CLOSED, false);
++  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++
++  Services.prefs.clearUserPref("devtools.inspector.trackchanges");
++
++  ioBox = parentDoc = doc = null;
++  gBrowser.removeCurrentTab();
++  finish();
++}
++
++function test() {
++  waitForExplicitFinish();
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++    doc = content.document;
++    waitForFocus(startInspectorTests, content);
++  }, true);
++
++  content.location = "data:text/html," + page;
++}
++
++function addAttribute() {
++  let attrs = doc.getElementById("attrs");
++  InspectorUI.inspectNode(attrs);
++
++  let handler = function(aEvent) {
++    doc.removeEventListener(aEvent.type, arguments.callee, false);
++
++    let objectBox = ioBox.findObjectBox(attrs);
++    ok(objectBox, "found #attrs objectBox");
++
++    let attrBox = ioBox.findNodeAttrBox(objectBox, "attr" + count);
++    ok(attrBox, "found #attrs[attr" + count + "] attrBox");
++
++    let nameBox = attrBox.querySelector(".nodeName");
++    ok(nameBox, "found #attrs[attr" + count + "] nodeName box");
++    is(nameBox.textContent, "attr" + count,
++       "#attrs[attr" + count + "] .nodeName box value is correct");
++
++    let valueBox = attrBox.querySelector(".nodeValue");
++    ok(valueBox, "found #attrs[attr" + count + "] nodeValue box");
++    is(valueBox.textContent, value,
++       "#attrs[attr" + count + "] .nodeValue textContent is correct");
++
++    if (iframeReloaded) {
++      removeIframe();
++    } else if (iframeAdded) {
++      reloadIframe();
++    } else {
++      // On first run we test the other mutation types as well.
++      modifyAttribute();
++    }
++  };
++
++  doc.addEventListener("DOMAttrModified", handler, false);
++
++  let value = Date.now();
++  attrs.setAttribute("attr" + (++count), value);
++}
++
++function modifyAttribute() {
++  let handler = function(aEvent) {
++    doc.removeEventListener(aEvent.type, arguments.callee, false);
++
++    let objectBox = ioBox.findObjectBox(node);
++    ok(objectBox, "found #attrs objectBox");
++
++    let attrBox = ioBox.findNodeAttrBox(objectBox, "class");
++    ok(attrBox, "found #attrs[class] attrBox");
++
++    let nameBox = attrBox.querySelector(".nodeName");
++    ok(nameBox, "found #attrs[class] nodeName box");
++    is(nameBox.textContent, "class",
++       "#attrs[class] .nodeName box value is correct");
++
++    let valueBox = attrBox.querySelector(".nodeValue");
++    ok(valueBox, "found #attrs[class] nodeValue box");
++    is(valueBox.textContent, node.className,
++       "#attrs[class] .nodeValue textContent is correct");
++
++    deleteAttribute();
++  };
++
++  doc.addEventListener("DOMAttrModified", handler, false);
++
++  let node = doc.getElementById("attrs");
++  node.className = "class" + Date.now();
++}
++
++function deleteAttribute() {
++  let node = doc.getElementById("attrs");
++  let attr = null;
++
++  for (var i = 0, n = node.attributes.length; i < n; i++) {
++    attr = node.attributes[i];
++    if (attr.name.indexOf("attr") == 0) {
++      break;
++    }
++  }
++
++  let handler = function(aEvent) {
++    doc.removeEventListener(aEvent.type, arguments.callee, false);
++
++    let objectBox = ioBox.findObjectBox(node);
++    ok(objectBox, "found #attrs objectBox");
++
++    let attrBox = ioBox.findNodeAttrBox(objectBox, attr.name);
++    ok(!attrBox, "#attrs[" + attr.name + "] attrBox is removed");
++
++    modifyTextNode();
++  };
++
++  doc.addEventListener("DOMAttrModified", handler, false);
++  node.removeAttribute(attr.name);
++}
++
++function modifyTextNode() {
++  let node = doc.getElementById("textnode");
++  InspectorUI.inspectNode(node);
++
++  let objectBox = ioBox.findObjectBox(node);
++  ok(objectBox, "found #textnode objectBox");
++
++  let nodeTextBox = objectBox.querySelector(".nodeText");
++  ok(nodeTextBox, "found #textnode .nodeText box");
++  is(nodeTextBox.textContent, node.textContent,
++     ".nodeText content is correct");
++
++  let handler = function(aEvent) {
++    doc.removeEventListener(aEvent.type, arguments.callee, false);
++
++    is(nodeTextBox.textContent, node.textContent,
++       ".nodeText content has been updated");
++
++    addElementNode();
++  };
++
++  doc.addEventListener("DOMCharacterDataModified", handler, false);
++  node.firstChild.nodeValue = "text node " + Date.now();
++}
++
++function addElementNode() {
++  let handler = function(aEvent) {
++    doc.removeEventListener(aEvent.type, arguments.callee, false);
++
++    InspectorUI.inspectNode(node);
++
++    let targetBox = ioBox.findObjectBox(target);
++    ok(targetBox, "found #elements box");
++
++    let targetChildrenBox = ioBox.getChildObjectBox(targetBox);
++    ok(targetChildrenBox, "found #elements children box");
++
++    let nodeBox = ioBox.findChildObjectBox(targetChildrenBox, node);
++    ok(nodeBox, "found the new element box");
++
++    let nodeTextBox = nodeBox.querySelector(".nodeText");
++    ok(nodeTextBox, "found .nodeText box");
++    is(nodeTextBox.textContent, node.textContent,
++       ".nodeText textContent is correct");
++
++    moveElementNode();
++  };
++
++  let target = doc.getElementById("elements");
++  let node = doc.createElement("p");
++  node.textContent = "foo element " + (++count);
++
++  doc.addEventListener("DOMNodeInserted", handler, false);
++  target.appendChild(node);
++}
++
++function moveElementNode() {
++  let container = doc.getElementById("container");
++
++  let bodyBox = ioBox.findObjectBox(doc.body);
++  ok(bodyBox, "found body box");
++
++  let bodyChildBox = ioBox.getChildObjectBox(bodyBox);
++  ok(bodyChildBox, "found body children box");
++
++  let containerBox = ioBox.findObjectBox(container);
++  ok(containerBox, "found #container box");
++
++  let containerChildBox = ioBox.getChildObjectBox(containerBox);
++  ok(containerChildBox, "found #container children box");
++
++  let containerChildrenBefore = containerChildBox.children.length;
++  let bodyChildrenBefore = bodyChildBox.children.length;
++
++  let node = doc.getElementById("moveme");
++
++  let handler = function(aEvent) {
++    doc.removeEventListener(aEvent.type, arguments.callee, false);
++
++    is(bodyChildBox.children.length, bodyChildrenBefore + 1,
++       "#moveme moved to body");
++    is(containerChildBox.children.length, containerChildrenBefore - 1,
++       "#moveme moved out from #container");
++
++    replaceElementNode();
++  };
++
++  doc.addEventListener("DOMNodeInserted", handler, false);
++  doc.body.appendChild(node);
++}
++
++function replaceElementNode() {
++  let target = doc.getElementById("container");
++  let targetBox = ioBox.findObjectBox(target);
++  ok(targetBox, "found the #container box");
++  let childBox = ioBox.getChildObjectBox(targetBox);
++  ok(childBox, "found the #container child box");
++
++  let oldNode = doc.getElementById("replaceme");
++  let oldNodeBox = ioBox.findChildObjectBox(childBox, oldNode);
++  ok(oldNodeBox, "found the #replaceme box, inside #container");
++
++  let newNode = doc.createElement("div");
++  newNode.id = oldNode.id;
++  newNode.className = "foo" + (++count);
++  newNode.textContent = "baz baz " + (++count);
++
++  let handler = function(aEvent) {
++    doc.removeEventListener(aEvent.type, arguments.callee, false);
++
++    oldNodeBox = ioBox.findChildObjectBox(childBox, oldNode);
++    ok(!oldNodeBox, "removed the old #replaceme box");
++
++    let newNodeBox = ioBox.findChildObjectBox(childBox, newNode);
++    ok(newNodeBox, "found the new #replaceme box, inside #container");
++
++    let attrBox = ioBox.findNodeAttrBox(newNodeBox, "class");
++    ok(attrBox, "found the class attribute box for the new #replaceme box.");
++
++    let nameBox = attrBox.querySelector(".nodeName");
++    ok(nameBox, "found attribute nodeName box");
++    is(nameBox.textContent, "class", "the nodeName box value is correct");
++
++    let valueBox = attrBox.querySelector(".nodeValue");
++    ok(valueBox, "found attribute nodeValue box");
++    is(valueBox.textContent, newNode.className,
++       "class attribute .nodeValue textContent is correct");
++
++    let nodeTextBox = newNodeBox.querySelector(".nodeText");
++    ok(nodeTextBox, "found .nodeText box of #replaceme");
++    is(nodeTextBox.textContent, newNode.textContent,
++       ".nodeText textContent is correct");
++
++    removeElementNode();
++  };
++
++  doc.addEventListener("DOMNodeInserted", handler, false);
++  target.replaceChild(newNode, oldNode);
++}
++
++function removeElementNode() {
++  let target = doc.getElementById("elements");
++  let targetBox = ioBox.findObjectBox(target);
++  ok(targetBox, "found #elements box");
++
++  let targetChildrenBox = ioBox.getChildObjectBox(targetBox);
++  ok(targetChildrenBox, "found #elements children box");
++
++  let childrenBefore = targetChildrenBox.children.length;
++
++  let handler = function(aEvent) {
++    doc.removeEventListener(aEvent.type, arguments.callee, false);
++
++    is(targetChildrenBox.children.length, childrenBefore - 1,
++       "removed an element node from #elements");
++
++    let nodeBox = ioBox.findObjectBox(node);
++    ok(!nodeBox, "confirm element node removal");
++
++    addIframe();
++  };
++
++  doc.addEventListener("DOMNodeRemoved", handler, false);
++
++  let node = target.firstElementChild;
++  target.removeChild(node);
++}
++
++function addIframe() {
++  let skipFirstStop = true;
++
++  let listener = {
++    QueryInterface: XPCOMUtils.generateQI([Ci.nsIWebProgressListener]),
++    onLocationChange: function() {},
++    onProgressChange: function() {},
++    onStatusChange: function() {},
++    onSecurityChange: function() {},
++
++    onStateChange:
++    function _onStateChange(aProgress, aRequest, aFlag, aStatus) {
++
++      // We only want STATE_STOP for windows.
++      if (!(aFlag & (Ci.nsIWebProgressListener.STATE_IS_NETWORK |
++                     Ci.nsIWebProgressListener.STATE_IS_WINDOW |
++                     Ci.nsIWebProgressListener.STATE_STOP))) {
++        return;
++      }
++
++      let win = aProgress.DOMWindow;
++
++      if (win.frameElement != iframe) {
++        return;
++      }
++
++      if (skipFirstStop) {
++        skipFirstStop = false;
++        return;
++      }
++
++      gBrowser.removeProgressListener(listener);
++
++      InspectorUI.inspectNode(iframe);
++
++      let iframeBox = ioBox.findObjectBox(iframe);
++      ok(iframeBox, "found the new iframe box");
++
++      // Global indicator that the iframe has been added.
++      iframeAdded = true;
++
++      parentDoc = doc;
++      doc = iframe.contentDocument;
++
++      InspectorUI.inspectNode(doc.body);
++
++      // Check if mutation events are tracked inside the iframe.
++      addAttribute();
++    }
++  };
++
++  let target = doc.getElementById("frames");
++  let iframe = doc.createElement("iframe");
++
++  gBrowser.addProgressListener(listener);
++
++  // The string replace is needed for Gecko to allow the loading of the iframe
++  // content. Gecko does not allow iframes with identical URI as the parent
++  // frame.
++  iframe.src = "data:text/html," + page.replace("<body>", "<body>iframe!");
++  target.appendChild(iframe);
++}
++
++function reloadIframe() {
++  let iframe = doc.defaultView.frameElement;
++  InspectorUI.inspectNode(iframe);
++
++  let skipFirstStop = true;
++
++  let listener = {
++    QueryInterface: XPCOMUtils.generateQI([Ci.nsIWebProgressListener]),
++    onLocationChange: function() {},
++    onProgressChange: function() {},
++    onStatusChange: function() {},
++    onSecurityChange: function() {},
++
++    onStateChange:
++    function _onStateChange(aProgress, aRequest, aFlag, aStatus) {
++      // We only want STATE_STOP for windows.
++      if (!(aFlag & (Ci.nsIWebProgressListener.STATE_IS_NETWORK |
++                     Ci.nsIWebProgressListener.STATE_IS_WINDOW |
++                     Ci.nsIWebProgressListener.STATE_STOP))) {
++        return;
++      }
++
++      let win = aProgress.DOMWindow;
++
++      if (win.frameElement != iframe) {
++        return;
++      }
++
++      if (skipFirstStop) {
++        skipFirstStop = false;
++        return;
++      }
++
++      gBrowser.removeProgressListener(listener);
++
++      doc = iframe.contentDocument;
++
++      InspectorUI.inspectNode(doc.documentElement);
++
++      iframeReloaded = true;
++
++      // Check if mutation events are tracked inside the iframe after reload.
++      addAttribute();
++    }
++  };
++
++  gBrowser.addProgressListener(listener);
++
++  doc.defaultView.location.reload();
++}
++
++function removeIframe() {
++  let iframeAttrs = doc.getElementById("attrs");
++  let iframe = doc.defaultView.frameElement;
++
++  // Back to the parent document.
++  doc = parentDoc;
++
++  let iframeBox = ioBox.findObjectBox(iframe);
++  ok(iframeBox, "we still have the iframe box");
++
++  let handler = function(aEvent) {
++    doc.removeEventListener(aEvent.type, arguments.callee, false);
++
++    let iframeBox = ioBox.findObjectBox(iframe);
++    ok(!iframeBox, "iframe box removed");
++
++    Services.obs.addObserver(finishInspectorTests,
++                             InspectorUI.INSPECTOR_NOTIFICATIONS.CLOSED, false);
++    InspectorUI.toggleInspectorUI();
++  };
++
++  doc.addEventListener("DOMNodeRemoved", handler, false);
++  let target = doc.getElementById("frames");
++  target.removeChild(iframe);
++}
++
+diff --git a/browser/devtools/styleinspector/CssHtmlTree.jsm b/browser/devtools/styleinspector/CssHtmlTree.jsm
+--- a/browser/devtools/styleinspector/CssHtmlTree.jsm
++++ b/browser/devtools/styleinspector/CssHtmlTree.jsm
+@@ -151,20 +151,22 @@ CssHtmlTree.prototype = {
+   {
+     return this.onlyUserStylesCheckbox.checked;
+   },
+ 
+   /**
+    * Update the highlighted element. The CssHtmlTree panel will show the style
+    * information for the given element.
+    * @param {nsIDOMElement} aElement The highlighted node to get styles for.
++   * @param {Boolean} aForceRefresh Force a refresh even if it is the same
++   * element.
+    */
+-  highlight: function CssHtmlTree_highlight(aElement)
++  highlight: function CssHtmlTree_highlight(aElement, aForceRefresh)
+   {
+-    if (this.viewedElement == aElement) {
++    if (this.viewedElement == aElement && !aForceRefresh) {
+       return;
+     }
+ 
+     this.viewedElement = aElement;
+ 
+     CssHtmlTree.processTemplate(this.templatePath, this.path, this);
+ 
+     if (this.htmlComplete) {
+diff --git a/browser/devtools/styleinspector/StyleInspector.jsm b/browser/devtools/styleinspector/StyleInspector.jsm
+--- a/browser/devtools/styleinspector/StyleInspector.jsm
++++ b/browser/devtools/styleinspector/StyleInspector.jsm
+@@ -83,16 +83,17 @@ StyleInspector.prototype = {
+       this.registrationObject = {
+         id: "styleinspector",
+         label: this.l10n("style.highlighter.button.label"),
+         tooltiptext: this.l10n("style.highlighter.button.tooltip"),
+         accesskey: this.l10n("style.highlighter.accesskey"),
+         context: this,
+         get isOpen() isOpen(),
+         onSelect: this.selectNode,
++        onMutation: this._onMutationEvent,
+         show: this.open,
+         hide: this.close,
+         dim: this.dimTool,
+         panel: this.panel,
+         unregister: this.destroy
+       };
+ 
+       // Register the registrationObject with the Highlighter
+@@ -229,16 +230,32 @@ StyleInspector.prototype = {
+     this.selectedNode = aNode;
+     if (this.isOpen() && !this.panel.hasAttribute("dimmed")) {
+       this.cssLogic.highlight(aNode);
+       this.cssHtmlTree.highlight(aNode);
+     }
+   },
+ 
+   /**
++   * The event handler for DOM mutations. This is called by the InspectorUI when
++   * a DOM mutation happens.
++   *
++   * @private
++   * @param nsIDOMEvent aEvent
++   *        The DOM mutation event.
++   */
++  _onMutationEvent: function TP__onMutationEvent(aEvent)
++  {
++    if (this.isOpen() && !this.panel.hasAttribute("dimmed")) {
++      this.cssLogic.highlight(this.selectedNode);
++      this.cssHtmlTree.highlight(this.selectedNode, true);
++    }
++  },
++
++  /**
+    * Destroy the style panel, remove listeners etc.
+    */
+   destroy: function SI_destroy()
+   {
+     if (this.isOpen())
+       this.close();
+     if (this.cssHtmlTree)
+       this.cssHtmlTree.destroy();

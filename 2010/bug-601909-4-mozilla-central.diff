@@ -1,0 +1,436 @@
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -1032,14 +1032,19 @@ pref("services.sync.prefs.sync.signon.re
+ pref("services.sync.prefs.sync.spellchecker.dictionary", true);
+ pref("services.sync.prefs.sync.xpinstall.whitelist.required", true);
+ #endif
+ 
+ // Disable the error console and inspector
+ pref("devtools.errorconsole.enabled", false);
+ pref("devtools.inspector.enabled", false);
+ 
++// The last Web Console height. This is initially 0 which means that the Web
++// Console will use the default height next time it shows.
++// Change to -1 if you do not want the Web Console to remember its last height.
++pref("devtools.hud.height", 0);
++
+ // Whether the character encoding menu is under the main Firefox button. This
+ // preference is a string so that localizers can alter it.
+ pref("browser.menu.showCharacterEncoding", "chrome://browser/locale/browser.properties");
+ 
+ // Whether the Panorama should animate going in/out of tabs
+ pref("browser.panorama.animate_zoom", true);
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -123,16 +123,26 @@ const ANIMATE_IN = 1;
+ 
+ // Constants used for defining the direction of JSTerm input history navigation.
+ const HISTORY_BACK = -1;
+ const HISTORY_FORWARD = 1;
+ 
+ // The maximum number of bytes a Network ResponseListener can hold.
+ const RESPONSE_BODY_LIMIT = 1048576; // 1 MB
+ 
++// Minimum console height, in pixels.
++const MINIMUM_CONSOLE_HEIGHT = 150;
++
++// Minimum page height, in pixels. This prevents the Web Console from
++// remembering a height that covers the whole page.
++const MINIMUM_PAGE_HEIGHT = 50;
++
++// The default console height, as a ratio from the content window inner height.
++const DEFAULT_CONSOLE_HEIGHT = 0.33;
++
+ const ERRORS = { LOG_MESSAGE_MISSING_ARGS:
+                  "Missing arguments: aMessage, aConsoleNode and aMessageNode are required.",
+                  CANNOT_GET_HUD: "Cannot getHeads Up Display with provided ID",
+                  MISSING_ARGS: "Missing arguments",
+                  LOG_OUTPUT_FAILED: "Log Failure: Could not append messageNode to outputNode",
+ };
+ 
+ /**
+@@ -1350,16 +1360,19 @@ function HUD_SERVICE()
+   }
+ 
+   this.mixins = mixins;
+ 
+   // These methods access the "this" object, but they're registered as
+   // event listeners. So we hammer in the "this" binding.
+   this.onTabClose = this.onTabClose.bind(this);
+   this.onWindowUnload = this.onWindowUnload.bind(this);
++
++  // Remembers the last console height, in pixels.
++  this.lastConsoleHeight = Services.prefs.getIntPref("devtools.hud.height");
+ };
+ 
+ HUD_SERVICE.prototype =
+ {
+   /**
+    * L10N shortcut function
+    *
+    * @param string aName
+@@ -1510,46 +1523,58 @@ HUD_SERVICE.prototype =
+     }
+     return false;
+   },
+ 
+   /**
+    * Activate a HeadsUpDisplay for the given tab context.
+    *
+    * @param Element aContext the tab element.
++   * @param boolean aAnimated tells if the Web Console opening is animated or
++   * not.
+    * @returns void
+    */
+-  activateHUDForContext: function HS_activateHUDForContext(aContext)
++  activateHUDForContext: function HS_activateHUDForContext(aContext, aAnimated)
+   {
+     this.wakeup();
+ 
+     var window = aContext.linkedBrowser.contentWindow;
+     var id = aContext.linkedBrowser.parentNode.parentNode.getAttribute("id");
+     this.registerActiveContext(id);
+-    HUDService.windowInitializer(window);
++    this.windowInitializer(window);
++
++    if (!aAnimated) {
++      this.disableAnimation("hud_" + id);
++    }
+   },
+ 
+   /**
+    * Deactivate a HeadsUpDisplay for the given tab context.
+    *
+    * @param nsIDOMWindow aContext
++   * @param boolean aAnimated tells if the Web Console closing is animated or
++   * not.
+    * @returns void
+    */
+-  deactivateHUDForContext: function HS_deactivateHUDForContext(aContext)
++  deactivateHUDForContext: function HS_deactivateHUDForContext(aContext, aAnimated)
+   {
+     let window = aContext.linkedBrowser.contentWindow;
+     let nBox = aContext.ownerDocument.defaultView.
+       getNotificationBox(window);
+     let hudId = "hud_" + nBox.id;
+     let displayNode = nBox.querySelector("#" + hudId);
+ 
+     if (hudId in this.displayRegistry && displayNode) {
+-    this.unregisterActiveContext(hudId);
++      if (!aAnimated) {
++        this.storeHeight(hudId);
++      }
++
++      this.unregisterActiveContext(hudId);
+       this.unregisterDisplay(displayNode);
+-    window.focus();
++      window.focus();
+     }
+   },
+ 
+   /**
+    * Clear the specified HeadsUpDisplay
+    *
+    * @param string|nsIDOMNode aHUD
+    *        Either the ID of a HUD or the DOM node corresponding to an outer
+@@ -2991,28 +3016,29 @@ HUD_SERVICE.prototype =
+    *        (ANIMATE_IN) or disappearing (ANIMATE_OUT).
+    * @param function aCallback An optional callback, which will be called with
+    *        the "transitionend" event passed as a parameter once the animation
+    *        finishes.
+    */
+   animate: function HS_animate(aHUDId, aDirection, aCallback)
+   {
+     let hudBox = this.getOutputNodeById(aHUDId);
+-    if (!hudBox.classList.contains("animated") && aCallback) {
+-      aCallback();
++    if (!hudBox.classList.contains("animated")) {
++      if (aCallback) {
++        aCallback();
++      }
+       return;
+     }
+ 
+     switch (aDirection) {
+       case ANIMATE_OUT:
+         hudBox.style.height = 0;
+         break;
+       case ANIMATE_IN:
+-        var contentWindow = hudBox.ownerDocument.defaultView;
+-        hudBox.style.height = Math.ceil(contentWindow.innerHeight / 3) + "px";
++        this.resetHeight(aHUDId);
+         break;
+     }
+ 
+     if (aCallback) {
+       hudBox.addEventListener("transitionend", aCallback, false);
+     }
+   },
+ 
+@@ -3020,20 +3046,80 @@ HUD_SERVICE.prototype =
+    * Disables all animation for a console, for unit testing. After this call,
+    * the console will instantly take on a reasonable height, and the close
+    * animation will not occur.
+    *
+    * @param string aHUDId The ID of the console.
+    */
+   disableAnimation: function HS_disableAnimation(aHUDId)
+   {
+-    let hudBox = this.getOutputNodeById(aHUDId);
+-    hudBox.classList.remove("animated");
+-    hudBox.style.height = "300px";
+-  }
++    let hudBox = HUDService.hudReferences[aHUDId].HUDBox;
++    if (hudBox.classList.contains("animated")) {
++      hudBox.classList.remove("animated");
++      this.resetHeight(aHUDId);
++    }
++  },
++
++  /**
++   * Reset the height of the Web Console.
++   *
++   * @param string aHUDId The ID of the Web Console.
++   */
++  resetHeight: function HS_resetHeight(aHUDId)
++  {
++    let HUD = this.hudReferences[aHUDId];
++
++    let innerHeight = HUD.contentWindow.innerHeight;
++    let splitter = HUD.HUDBox.parentNode.querySelector(".hud-splitter");
++    let chromeWindow = splitter.ownerDocument.defaultView;
++
++    let splitterStyle = chromeWindow.getComputedStyle(splitter, null);
++    innerHeight += parseInt(splitterStyle.height) +
++                   parseInt(splitterStyle.borderTopWidth) +
++                   parseInt(splitterStyle.borderBottomWidth);
++
++    let boxStyle = chromeWindow.getComputedStyle(HUD.HUDBox, null);
++    innerHeight += parseInt(boxStyle.height) +
++                   parseInt(boxStyle.borderTopWidth) +
++                   parseInt(boxStyle.borderBottomWidth);
++
++    let height = this.lastConsoleHeight > 0 ? this.lastConsoleHeight :
++      Math.ceil(innerHeight * DEFAULT_CONSOLE_HEIGHT);
++
++    if ((innerHeight - height) < MINIMUM_PAGE_HEIGHT) {
++      height = innerHeight - MINIMUM_PAGE_HEIGHT;
++    }
++    else if (height < MINIMUM_CONSOLE_HEIGHT) {
++      height = MINIMUM_CONSOLE_HEIGHT;
++    }
++
++    HUD.HUDBox.style.height = height + "px";
++  },
++
++  /**
++   * Remember the height of the given Web Console, such that it can later be
++   * reused when other Web Consoles are open.
++   *
++   * @param string aHUDId The ID of the Web Console.
++   */
++  storeHeight: function HS_storeHeight(aHUDId)
++  {
++    let hudBox = this.hudReferences[aHUDId].HUDBox;
++    let window = hudBox.ownerDocument.defaultView;
++    let style = window.getComputedStyle(hudBox, null);
++    let height = parseInt(style.height);
++    height += parseInt(style.borderTopWidth);
++    height += parseInt(style.borderBottomWidth);
++    this.lastConsoleHeight = height;
++
++    let pref = Services.prefs.getIntPref("devtools.hud.height");
++    if (pref > -1) {
++      Services.prefs.setIntPref("devtools.hud.height", height);
++    }
++  },
+ };
+ 
+ //////////////////////////////////////////////////////////////////////////
+ // HeadsUpDisplay
+ //////////////////////////////////////////////////////////////////////////
+ 
+ /*
+  * HeadsUpDisplay is an interactive console initialized *per tab*  that
+@@ -5058,28 +5144,30 @@ HeadsUpDisplayUICommands = {
+     var window = HUDService.currentContext();
+     var gBrowser = window.gBrowser;
+     var linkedBrowser = gBrowser.selectedTab.linkedBrowser;
+     var tabId = gBrowser.getNotificationBox(linkedBrowser).getAttribute("id");
+     var hudId = "hud_" + tabId;
+     var ownerDocument = gBrowser.selectedTab.ownerDocument;
+     var hud = ownerDocument.getElementById(hudId);
+     if (hud) {
++      HUDService.storeHeight(hudId);
++
+       HUDService.animate(hudId, ANIMATE_OUT, function() {
+         // If the user closes the console while the console is animating away,
+         // then these callbacks will queue up, but all the callbacks after the
+         // first will have no console to operate on. This test handles this
+         // case gracefully.
+         if (ownerDocument.getElementById(hudId)) {
+-          HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++          HUDService.deactivateHUDForContext(gBrowser.selectedTab, true);
+         }
+       });
+     }
+     else {
+-      HUDService.activateHUDForContext(gBrowser.selectedTab);
++      HUDService.activateHUDForContext(gBrowser.selectedTab, true);
+       HUDService.animate(hudId, ANIMATE_IN);
+     }
+   },
+ 
+   toggleFilter: function UIC_toggleFilter(aButton) {
+     var filter = aButton.getAttribute("buttonType");
+     var hudId = aButton.getAttribute("hudId");
+     var state = HUDService.getFilterState(hudId, filter);
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -96,16 +96,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js \
+ 	browser_webconsole_bug_595350_multiple_windows_and_tabs.js \
+ 	browser_webconsole_bug_594497_history_arrow_keys.js \
+ 	browser_webconsole_bug_588342_document_focus.js \
+ 	browser_webconsole_bug_595934_message_categories.js \
+ 	browser_webconsole_bug_601352_scroll.js \
+ 	browser_webconsole_bug_592442_closing_brackets.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
++	browser_webconsole_bug_601909_remember_height.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601909_remember_height.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601909_remember_height.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601909_remember_height.js
+@@ -0,0 +1,96 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++// Minimum console height, in pixels.
++const MINIMUM_CONSOLE_HEIGHT = 150;
++
++// Minimum page height, in pixels. This prevents the Web Console from
++// remembering a height that covers the whole page.
++const MINIMUM_PAGE_HEIGHT = 50;
++const HEIGHT_PREF = "devtools.hud.height";
++
++let hud, newHeight, height;
++
++function performTests(aEvent)
++{
++  browser.removeEventListener(aEvent, arguments.callee, true);
++
++  let innerHeight = content.innerHeight;
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  hud = HUDService.hudReferences[hudId].HUDBox;
++  height = parseInt(hud.style.height);
++
++  toggleConsole();
++
++  is(newHeight, height, "same height after reopening the console");
++  is(Services.prefs.getIntPref(HEIGHT_PREF), HUDService.lastConsoleHeight,
++    "pref is correct");
++
++  setHeight(Math.ceil(innerHeight * 0.5));
++  toggleConsole();
++
++  is(newHeight, height, "same height after reopening the console");
++  is(Services.prefs.getIntPref(HEIGHT_PREF), HUDService.lastConsoleHeight,
++    "pref is correct");
++
++  setHeight(MINIMUM_CONSOLE_HEIGHT - 1);
++  toggleConsole();
++
++  is(newHeight, MINIMUM_CONSOLE_HEIGHT, "minimum console height is respected");
++  is(Services.prefs.getIntPref(HEIGHT_PREF), HUDService.lastConsoleHeight,
++    "pref is correct");
++
++  setHeight(innerHeight - MINIMUM_PAGE_HEIGHT + 1);
++  toggleConsole();
++
++  is(newHeight, innerHeight - MINIMUM_PAGE_HEIGHT,
++    "minimum page height is respected");
++  is(Services.prefs.getIntPref(HEIGHT_PREF), HUDService.lastConsoleHeight,
++    "pref is correct");
++
++  setHeight(Math.ceil(innerHeight * 0.6));
++  Services.prefs.setIntPref(HEIGHT_PREF, -1);
++  toggleConsole();
++
++  is(newHeight, height, "same height after reopening the console");
++  is(Services.prefs.getIntPref(HEIGHT_PREF), -1, "pref is not updated");
++
++  closeConsole();
++  HUDService.lastConsoleHeight = 0;
++  Services.prefs.setIntPref(HEIGHT_PREF, 0);
++
++  executeSoon(finishTest);
++}
++
++function toggleConsole()
++{
++  closeConsole();
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  hud = HUDService.hudReferences[hudId].HUDBox;
++  newHeight = parseInt(hud.style.height);
++}
++
++function setHeight(aHeight)
++{
++  height = aHeight;
++  hud.style.height = height + "px";
++}
++
++function test()
++{
++  addTab("data:text/html,Web Console test for bug 601909");
++  browser.addEventListener("load", performTests, true);
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/head.js b/toolkit/components/console/hudservice/tests/browser/head.js
+--- a/toolkit/components/console/hudservice/tests/browser/head.js
++++ b/toolkit/components/console/hudservice/tests/browser/head.js
+@@ -126,16 +126,21 @@ function testLogEntry(aOutputNode, aMatc
+   ok(notfound, notfoundMsg);
+ }
+ 
+ function openConsole()
+ {
+   HUDService.activateHUDForContext(tab);
+ }
+ 
++function closeConsole()
++{
++  HUDService.deactivateHUDForContext(tab);
++}
++
+ function finishTest()
+ {
+   finish();
+ }
+ 
+ function tearDown()
+ {
+   try {

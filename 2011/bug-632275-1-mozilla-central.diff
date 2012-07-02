@@ -1,0 +1,237 @@
+diff --git a/toolkit/components/console/hudservice/PropertyPanel.jsm b/toolkit/components/console/hudservice/PropertyPanel.jsm
+--- a/toolkit/components/console/hudservice/PropertyPanel.jsm
++++ b/toolkit/components/console/hudservice/PropertyPanel.jsm
+@@ -45,16 +45,17 @@ Cu.import("resource://gre/modules/XPCOMU
+ Cu.import("resource://gre/modules/Services.jsm");
+ 
+ var EXPORTED_SYMBOLS = ["PropertyPanel", "PropertyTreeView", "namesAndValuesOf"];
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ //// Helper for PropertyTreeView
+ 
+ const TYPE_OBJECT = 0, TYPE_FUNCTION = 1, TYPE_ARRAY = 2, TYPE_OTHER = 3;
++const NATIVE_FUNCTION_REGEX = /^function\s*[a-z0-9_A-Z]*\(\)\s*\{\s*\[native code\]\s*\}$/;
+ 
+ /**
+  * Figures out the type of aObject and the string to display in the tree.
+  *
+  * @param object aObject
+  *        The object to operate on.
+  * @returns object
+  *          A object with the form:
+@@ -110,35 +111,62 @@ function presentableValueFor(aObject)
+       return {
+         type: TYPE_OBJECT,
+         display: m ? m[1] : "Object"
+       };
+   }
+ }
+ 
+ /**
++ * Tells if the given function is native or not.
++ *
++ * @param function aFunction
++ * @return boolean
++ *         True if the given funct
++ */
++function isNativeFunction(aFunction)
++{
++  return NATIVE_FUNCTION_REGEX.test(aFunction.toSource());
++}
++
++/**
+  * Get an array of property name value pairs for the tree.
+  *
+  * @param object aObject
+  *        The object to get properties for.
+  * @returns array of object
+  *          Objects have the name, value, display, type, children properties.
+  */
+ function namesAndValuesOf(aObject)
+ {
+   let pairs = [];
+-  let value, presentable;
++  let value, presentable, getter;
++
++  let isDOMDocument = aObject instanceof Ci.nsIDOMDocument;
+ 
+   for (var propName in aObject) {
+-    try {
+-      value = aObject[propName];
+-      presentable = presentableValueFor(value);
++    // See bug 632275: skip deprecated width and height properties.
++    if (isDOMDocument && (propName == "width" || propName == "height")) {
++      continue;
+     }
+-    catch (ex) {
+-      continue;
++
++    // Also skip non-native getters.
++    getter = aObject.__lookupGetter__(propName);
++    if (getter && !isNativeFunction(getter)) {
++      value = "";
++      presentable = {type: TYPE_OTHER, display: "Getter"};
++    }
++    else {
++      try {
++        value = aObject[propName];
++        presentable = presentableValueFor(value);
++      }
++      catch (ex) {
++        continue;
++      }
+     }
+ 
+     let pair = {};
+     pair.name = propName;
+     pair.display = propName + ": " + presentable.display;
+     pair.type = presentable.type;
+     pair.value = value;
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -121,16 +121,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_613642_maintain_scroll.js \
+ 	browser_webconsole_bug_613642_prune_scroll.js \
+ 	browser_webconsole_bug_618078_network_exceptions.js \
+ 	browser_webconsole_bug_613280_jsterm_copy.js \
+ 	browser_webconsole_bug_630733_response_redirect_headers.js \
+ 	browser_webconsole_bug_621644_jsterm_dollar.js \
+ 	browser_webconsole_bug_632817.js \
+ 	browser_webconsole_bug_611795.js \
++	browser_webconsole_bug_632275_getters_document_width.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+@@ -188,15 +189,16 @@ _BROWSER_TEST_PAGES = \
+ 	test-bug-601177-log-levels.js \
+ 	test-console-extras.html \
+ 	test-bug-603750-websocket.html \
+ 	test-bug-603750-websocket.js \
+ 	test-bug-599725-response-headers.sjs \
+ 	test-bug-618078-network-exceptions.html \
+ 	test-bug-630733-response-redirect-headers.sjs \
+ 	test-bug-621644-jsterm-dollar.html \
++	test-bug-632275-getters.html \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_632275_getters_document_width.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_632275_getters_document_width.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_632275_getters_document_width.js
+@@ -0,0 +1,80 @@
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Web Console test suite.
++ *
++ * The Initial Developer of the Original Code is
++ * Mozilla Corporation.
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Mihai Sucan <mihai.sucan@gmail.com> (original author)
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-632275-getters.html";
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoaded, true);
++}
++
++function tabLoaded() {
++  browser.removeEventListener("load", tabLoaded, true);
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let HUD = HUDService.hudReferences[hudId];
++  let jsterm = HUD.jsterm;
++
++  let doc = content.wrappedJSObject.document;
++
++  let panel = jsterm.openPropertyPanel("Test1", doc);
++
++  let rows = panel.treeView._rows;
++  let find = function(regex) {
++    return rows.some(function(row) {
++      return regex.test(row.display);
++    });
++  };
++
++  ok(!find(/^(width|height):/), "no document.width/height");
++
++  panel.destroy();
++
++  let getterValue = doc.foobar._val;
++
++  panel = jsterm.openPropertyPanel("Test2", doc.foobar);
++  rows = panel.treeView._rows;
++
++  is(getterValue, doc.foobar._val, "getter did not execute");
++  is(getterValue+1, doc.foobar.val, "getter executed");
++  is(getterValue+1, doc.foobar._val, "getter executed (recheck)");
++
++  ok(find(/^val: Getter$/),
++     "getter is properly displayed");
++
++  ok(find(new RegExp("^_val: " + getterValue + "$")),
++     "getter _val is properly displayed");
++
++  panel.destroy();
++
++  executeSoon(function() {
++    let textContent = HUD.outputNode.textContent;
++    is(textContent.indexOf("document.body.client"), -1,
++       "no document.width/height warning displayed");
++
++    finishTest();
++  });
++}
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-632275-getters.html b/toolkit/components/console/hudservice/tests/browser/test-bug-632275-getters.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-632275-getters.html
+@@ -0,0 +1,19 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 632275 - getters</title>
++    <!-- Any copyright is dedicated to the Public Domain.
++         http://creativecommons.org/publicdomain/zero/1.0/ -->
++
++<script type="application/javascript;version=1.8">
++  document.foobar = {
++    _val: 5,
++    get val() { return ++this._val; }
++  };
++</script>
++
++  </head>
++  <body>
++    <p>Web Console test for bug 632275 - getters.</p>
++  </body>
++</html>

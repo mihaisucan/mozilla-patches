@@ -1,0 +1,36 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1320516633 -7200
+# Node ID 7ac4a7fbae466e5aeaab06086cf870bdd8a251e3
+# Parent  a6508712707aa560c32ad79532552f853577911d
+Bug 699308 - [highlighter] highlighter closes during iframe requests
+
+diff --git a/browser/devtools/highlighter/inspector.jsm b/browser/devtools/highlighter/inspector.jsm
+--- a/browser/devtools/highlighter/inspector.jsm
++++ b/browser/devtools/highlighter/inspector.jsm
+@@ -2058,18 +2058,23 @@ InspectorProgressListener.prototype = {
+   function IPL_onStateChange(aProgress, aRequest, aFlag, aStatus)
+   {
+     // Remove myself if the Inspector is no longer open.
+     if (!this.IUI.isInspectorOpen) {
+       this.destroy();
+       return;
+     }
+ 
+-    // Skip non-start states.
+-    if (!(aFlag & Ci.nsIWebProgressListener.STATE_START)) {
++    let isStart = aFlag & Ci.nsIWebProgressListener.STATE_START;
++    let isDocument = aFlag & Ci.nsIWebProgressListener.STATE_IS_DOCUMENT;
++    let isNetwork = aFlag & Ci.nsIWebProgressListener.STATE_IS_NETWORK;
++    let isRequest = aFlag & Ci.nsIWebProgressListener.STATE_IS_REQUEST;
++
++    // Skip non-interesting states.
++    if (!isStart || !isDocument || !isRequest || !isNetwork) {
+       return;
+     }
+ 
+     // If the request is about to happen in a new window, we are not concerned
+     // about the request.
+     if (aProgress.DOMWindow != this.IUI.win) {
+       return;
+     }

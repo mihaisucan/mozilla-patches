@@ -1,0 +1,84 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -210,16 +210,19 @@ const MINIMUM_CONSOLE_HEIGHT = 150;
+ 
+ // Minimum page height, in pixels. This prevents the Web Console from
+ // remembering a height that covers the whole page.
+ const MINIMUM_PAGE_HEIGHT = 50;
+ 
+ // The default console height, as a ratio from the content window inner height.
+ const DEFAULT_CONSOLE_HEIGHT = 0.33;
+ 
++// Constant used when checking the typeof objects.
++const TYPEOF_FUNCTION = "function";
++
+ const ERRORS = { LOG_MESSAGE_MISSING_ARGS:
+                  "Missing arguments: aMessage, aConsoleNode and aMessageNode are required.",
+                  CANNOT_GET_HUD: "Cannot getHeads Up Display with provided ID",
+                  MISSING_ARGS: "Missing arguments",
+                  LOG_OUTPUT_FAILED: "Log Failure: Could not append messageNode to outputNode",
+ };
+ 
+ /**
+@@ -3677,16 +3680,21 @@ function JSTermHelper(aJSTerm)
+    */
+   aJSTerm.sandbox.pprint = function JSTH_pprint(aObject)
+   {
+     aJSTerm.helperEvaluated = true;
+     if (aObject === null || aObject === undefined || aObject === true || aObject === false) {
+       aJSTerm.console.error(HUDService.getStr("helperFuncUnsupportedTypeError"));
+       return;
+     }
++    else if (typeof aObject === TYPEOF_FUNCTION) {
++      aJSTerm.writeOutput(aObject + "\n", CATEGORY_OUTPUT, SEVERITY_LOG);
++      return;
++    }
++
+     let output = [];
+     let pairs = namesAndValuesOf(unwrap(aObject));
+ 
+     pairs.forEach(function(pair) {
+       output.push("  " + pair.display);
+     });
+ 
+     aJSTerm.writeOutput(output.join("\n"), CATEGORY_OUTPUT, SEVERITY_LOG);
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_jsterm.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_jsterm.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_jsterm.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_jsterm.js
+@@ -18,16 +18,17 @@
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *  David Dahl <ddahl@mozilla.com>
+  *  Julian Viereck <jviereck@mozilla.com>
+  *  Patrick Walton <pcwalton@mozilla.com>
+  *  Rob Campbell <rcampbell@mozilla.com>
++ *  Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -140,10 +141,17 @@ function testJSTerm()
+   is(labels.length, 1, "one line of output for keys(window)");
+ 
+   jsterm.clearOutput();
+   jsterm.execute("pprint('hi')");
+   // Doesn't conform to checkResult format, bug 614561
+   let label = jsterm.outputNode.querySelector(".webconsole-msg-output");
+   is(label.textContent.trim(), '0: "h"\n  1: "i"', 'pprint("hi") worked');
+ 
++  // check that pprint(function) shows function source, bug 618344
++  jsterm.clearOutput();
++  jsterm.execute("pprint(print)");
++  label = jsterm.outputNode.querySelector(".webconsole-msg-output");
++  isnot(label.textContent.indexOf("SEVERITY_LOG"), -1,
++        "pprint(function) shows function source");
++
+   finishTest();
+ }

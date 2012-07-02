@@ -1,0 +1,654 @@
+--- b/content/xbl/src/nsXBLDocumentInfo.cpp
++++ a/content/xbl/src/nsXBLDocumentInfo.cpp
+@@ -58,4 +58,2 @@
+ #include "xpcpublic.h"
+-#include "nsJSUtils.h"
+-#include "nsPIDOMWindow.h"
+  
+@@ -229,6 +227,6 @@
+   // this error.
+-  nsCOMPtr<nsIScriptError2>
+-    errorObject(do_CreateInstance(NS_SCRIPTERROR_CONTRACTID));
++  nsCOMPtr<nsIScriptError>
++    errorObject(do_CreateInstance("@mozilla.org/scripterror;1"));
+   nsCOMPtr<nsIConsoleService>
+-    consoleService(do_GetService(NS_CONSOLESERVICE_CONTRACTID));
++    consoleService(do_GetService("@mozilla.org/consoleservice;1"));
+ 
+@@ -237,13 +235,3 @@
+ 
+-    PRUint64 windowID = 0;
+-
+-    nsIScriptGlobalObject *globalObject =
+-      nsJSUtils::GetDynamicScriptGlobal(cx);
+-    if (globalObject) {
+-      nsCOMPtr<nsPIDOMWindow> win = do_QueryInterface(globalObject);
+-      if (win)
+-        windowID = win->WindowID();
+-    }
+-
+-    errorObject->InitWithWindowID
++    errorObject->Init
+          (reinterpret_cast<const PRUnichar*>(report->ucmessage),
+@@ -252,7 +240,5 @@
+           report->lineno, column, report->flags,
+-          "xbl javascript", windowID
++          "xbl javascript"
+           );
+-
+-    consoleService->LogMessage(
+-        (nsCOMPtr<nsIScriptError>)(do_QueryInterface(errorObject)));
++    consoleService->LogMessage(errorObject);
+   }
+diff -U8 b/content/xml/document/src/nsXMLDocument.cpp b/content/xml/document/src/nsXMLDocument.cpp
+--- b/content/xml/document/src/nsXMLDocument.cpp
++++ b/content/xml/document/src/nsXMLDocument.cpp
+@@ -397,35 +397,30 @@
+ 
+       nsAutoString error;
+       error.AssignLiteral("Cross site loading using document.load is no "
+                           "longer supported. Use XMLHttpRequest instead.");
+       nsCOMPtr<nsIScriptError2> errorObject =
+           do_CreateInstance(NS_SCRIPTERROR_CONTRACTID, &rv);
+       NS_ENSURE_SUCCESS(rv, rv);
+ 
+-      PRUint64 windowID = 0;
+-      nsCOMPtr<nsPIDOMWindow> win = callingDoc ?
+-        callingDoc->GetWindow() : this->GetWindow();
+-
+-      if (win) {
+-        windowID = win->WindowID();
+-      }
+-
+       rv = errorObject->InitWithWindowID(error.get(), NS_ConvertUTF8toUTF16(spec).get(),
+                                          nsnull, 0, 0, nsIScriptError::warningFlag,
+-                                         "DOM", windowID);
++                                         "DOM",
++                                         callingDoc ?
++                                           callingDoc->OuterWindowID() :
++                                           this->OuterWindowID());
+ 
+       NS_ENSURE_SUCCESS(rv, rv);
+ 
+       nsCOMPtr<nsIConsoleService> consoleService =
+         do_GetService(NS_CONSOLESERVICE_CONTRACTID);
+-      if (consoleService) {
+-        consoleService->LogMessage(
+-            (nsCOMPtr<nsIScriptError>)(do_QueryInterface(errorObject)));
++      nsCOMPtr<nsIScriptError> logError = do_QueryInterface(errorObject);
++      if (consoleService && logError) {
++        consoleService->LogMessage(logError);
+       }
+ 
+       return NS_ERROR_DOM_SECURITY_ERR;
+     }
+   }
+ 
+   // Partial Reset, need to restore principal for security reasons and
+   // event listener manager so that load listeners etc. will
+diff -U8 b/dom/base/nsDOMClassInfo.cpp b/dom/base/nsDOMClassInfo.cpp
+--- b/dom/base/nsDOMClassInfo.cpp
++++ b/dom/base/nsDOMClassInfo.cpp
+@@ -1702,36 +1702,28 @@
+       }
+       jsbytecode* pc = ::JS_GetFramePC(cx, fp);
+       if (pc) {
+         lineno = ::JS_PCToLineNumber(cx, script, pc);
+       }
+     }
+   }
+ 
+-  PRUint64 windowID = 0;
+-
+-  nsIScriptGlobalObject *globalObject = nsJSUtils::GetDynamicScriptGlobal(cx);
+-  if (globalObject) {
+-    nsCOMPtr<nsPIDOMWindow> win = do_QueryInterface(globalObject);
+-    if (win)
+-      windowID = win->WindowID();
+-  }
+-
+   nsresult rv = scriptError->InitWithWindowID(msg.get(),
+                                               sourcefile.get(),
+                                               EmptyString().get(),
+                                               lineno,
+                                               0, // column for error is not available
+                                               nsIScriptError::warningFlag,
+-                                              "DOM:HTML", windowID);
++                                              "DOM:HTML",
++                                              nsJSUtils::OuterWindowIDByContext(cx));
+ 
+   if (NS_SUCCEEDED(rv)){
+-    consoleService->LogMessage(
+-        (nsCOMPtr<nsIScriptError>)(do_QueryInterface(scriptError)));
++    nsCOMPtr<nsIScriptError> logError = do_QueryInterface(scriptError);
++    consoleService->LogMessage(logError);
+   }
+ }
+ 
+ static inline JSString *
+ IdToString(JSContext *cx, jsid id)
+ {
+   if (JSID_IS_STRING(id))
+     return JSID_TO_STRING(id);
+diff -U8 b/dom/src/threads/nsDOMThreadService.cpp b/dom/src/threads/nsDOMThreadService.cpp
+--- b/dom/src/threads/nsDOMThreadService.cpp
++++ b/dom/src/threads/nsDOMThreadService.cpp
+@@ -593,17 +593,16 @@
+     scriptError = do_CreateInstance(NS_SCRIPTERROR_CONTRACTID, &rv);
+   }
+ 
+   if (NS_FAILED(rv)) {
+     return;
+   }
+ 
+   nsCOMPtr<nsIScriptError2> scriptError2(do_QueryInterface(scriptError));
+-  PRUint64 windowID = worker->Pool()->WindowID();
+ 
+   nsAutoString message, filename, line;
+   PRUint32 lineNumber, columnNumber, flags, errorNumber;
+ 
+   if (aReport) {
+     if (aReport->ucmessage) {
+       message.Assign(reinterpret_cast<const PRUnichar*>(aReport->ucmessage));
+     }
+@@ -620,17 +619,18 @@
+   }
+ 
+   if (message.IsEmpty()) {
+     message.AssignWithConversion(aMessage);
+   }
+ 
+   rv = scriptError2->InitWithWindowID(message.get(), filename.get(), line.get(),
+                                       lineNumber, columnNumber, flags,
+-                                      "DOM Worker javascript", windowID);
++                                      "DOM Worker javascript",
++                                      worker->Pool()->WindowID());
+ 
+   if (NS_FAILED(rv)) {
+     return;
+   }
+ 
+   // Don't call the error handler if we're out of stack space.
+   if (errorNumber != JSMSG_SCRIPT_STACK_QUOTA &&
+       errorNumber != JSMSG_OVER_RECURSED) {
+diff -U8 b/dom/src/threads/nsDOMWorkerPool.cpp b/dom/src/threads/nsDOMWorkerPool.cpp
+--- b/dom/src/threads/nsDOMWorkerPool.cpp
++++ b/dom/src/threads/nsDOMWorkerPool.cpp
+@@ -63,28 +63,21 @@
+ #define LOG(_args) PR_LOG(gDOMThreadsLog, PR_LOG_DEBUG, _args)
+ 
+ nsDOMWorkerPool::nsDOMWorkerPool(nsIScriptGlobalObject* aGlobalObject,
+                                  nsIDocument* aDocument)
+ : mParentGlobal(aGlobalObject),
+   mParentDocument(aDocument),
+   mMonitor(nsnull),
+   mCanceled(PR_FALSE),
+-  mSuspended(PR_FALSE)
++  mSuspended(PR_FALSE),
++  mWindowID(aDocument ? aDocument->OuterWindowID() : 0)
+ {
+   NS_ASSERTION(aGlobalObject, "Must have a global object!");
+   NS_ASSERTION(aDocument, "Must have a document!");
+-
+-  nsCOMPtr<nsPIDOMWindow> win = aDocument->GetWindow();
+-  if (win) {
+-    mWindowID = win->WindowID();
+-  }
+-  else {
+-    mWindowID = 0;
+-  }
+ }
+ 
+ nsDOMWorkerPool::~nsDOMWorkerPool()
+ {
+   nsCOMPtr<nsIThread> mainThread;
+   NS_GetMainThread(getter_AddRefs(mainThread));
+ 
+   nsIScriptGlobalObject* global;
+diff -U8 b/dom/src/threads/nsDOMWorkerPool.h b/dom/src/threads/nsDOMWorkerPool.h
+--- b/dom/src/threads/nsDOMWorkerPool.h
++++ b/dom/src/threads/nsDOMWorkerPool.h
+@@ -78,17 +78,17 @@
+ 
+   nsresult NoteWorker(nsDOMWorker* aWorker);
+   void NoteDyingWorker(nsDOMWorker* aWorker);
+ 
+   PRMonitor* Monitor() {
+     return mMonitor;
+   }
+ 
+-  PRUint64 WindowID() {
++  const PRUint64 WindowID() const {
+     return mWindowID;
+   }
+ 
+ private:
+   virtual ~nsDOMWorkerPool();
+ 
+   void GetWorkers(nsTArray<nsDOMWorker*>& aArray);
+ 
+@@ -110,7 +110,7 @@
+   PRPackedBool mCanceled;
+   PRPackedBool mSuspended;
+ 
+-  PRUint64 mWindowID;
++  const PRUint64 mWindowID;
+ };
+ 
+ #endif /* __NSDOMWORKERPOOL_H__ */
+--- b/js/src/xpconnect/loader/Makefile.in
++++ a/js/src/xpconnect/loader/Makefile.in
+@@ -55,6 +55,2 @@
+ 
+-LOCAL_INCLUDES = \
+-		-I$(topsrcdir)/dom/base \
+-		$(NULL)
+-
+ DEFINES		+= -DJSFILE -DJS_THREADSAFE
+--- b/js/src/xpconnect/loader/mozJSComponentLoader.cpp
++++ a/js/src/xpconnect/loader/mozJSComponentLoader.cpp
+@@ -1,3 +1,2 @@
+ /* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+- * vim: set ts=8 sw=4 et tw=78:
+  *
+@@ -69,5 +68,2 @@
+ #include "nsString.h"
+-#include "nsIScriptGlobalObject.h"
+-#include "nsPIDOMWindow.h"
+-#include "nsJSUtils.h"
+ #ifndef XPCONNECT_STANDALONE
+@@ -151,3 +147,3 @@
+      */
+-    nsCOMPtr<nsIScriptError2> errorObject = 
++    nsCOMPtr<nsIScriptError> errorObject = 
+         do_CreateInstance(NS_SCRIPTERROR_CONTRACTID);
+@@ -155,12 +151,2 @@
+     if (consoleService && errorObject) {
+-        PRUint64 windowID = 0;
+-
+-        nsIScriptGlobalObject *globalObject =
+-            nsJSUtils::GetDynamicScriptGlobal(cx);
+-        if (globalObject) {
+-            nsCOMPtr<nsPIDOMWindow> win = do_QueryInterface(globalObject);
+-            if (win)
+-                windowID = win->WindowID();
+-        }
+-
+         /*
+@@ -174,13 +160,11 @@
+ 
+-        rv = errorObject->InitWithWindowID(reinterpret_cast<const PRUnichar*>
+-                                                           (rep->ucmessage),
+-                                           fileUni.get(),
+-                                           reinterpret_cast<const PRUnichar*>
+-                                                           (rep->uclinebuf),
+-                                           rep->lineno, column, rep->flags,
+-                                           "component javascript", windowID);
+-
++        rv = errorObject->Init(reinterpret_cast<const PRUnichar*>
++                                               (rep->ucmessage),
++                               fileUni.get(),
++                               reinterpret_cast<const PRUnichar*>
++                                               (rep->uclinebuf),
++                               rep->lineno, column, rep->flags,
++                               "component javascript");
+         if (NS_SUCCEEDED(rv)) {
+-            rv = consoleService->LogMessage(
+-                    (nsCOMPtr<nsIScriptError>)(do_QueryInterface(errorObject)));
++            rv = consoleService->LogMessage(errorObject);
+             if (NS_SUCCEEDED(rv)) {
+--- b/js/src/xpconnect/src/Makefile.in
++++ a/js/src/xpconnect/src/Makefile.in
+@@ -125,3 +125,2 @@
+ 		-I$(topsrcdir)/layout/base \
+-		-I$(topsrcdir)/dom/base \
+ 		$(NULL)
+diff -U8 b/js/src/xpconnect/src/xpccomponents.cpp b/js/src/xpconnect/src/xpccomponents.cpp
+--- b/js/src/xpconnect/src/xpccomponents.cpp
++++ b/js/src/xpconnect/src/xpccomponents.cpp
+@@ -48,18 +48,16 @@
+ #include "nsIScriptObjectPrincipal.h"
+ #include "nsIDOMWindow.h"
+ #include "xpcJSWeakReference.h"
+ #include "XPCWrapper.h"
+ #include "jsproxy.h"
+ #include "WrapperFactory.h"
+ #include "XrayWrapper.h"
+ #include "nsNullPrincipal.h"
+-#include "nsIScriptGlobalObject.h"
+-#include "nsPIDOMWindow.h"
+ #include "nsJSUtils.h"
+ 
+ #ifdef MOZ_JSLOADER
+ #include "mozJSComponentLoader.h"
+ #endif
+ 
+ /***************************************************************************/
+ // stuff used by all
+@@ -2912,25 +2910,17 @@
+     if(argc < 1)
+         return NS_ERROR_XPC_NOT_ENOUGH_ARGS;
+ 
+     jsval* argv;
+     rv = cc->GetArgvPtr(&argv);
+     if(NS_FAILED(rv) || !argv)
+         return NS_OK;
+ 
+-    PRUint64 windowID = 0;
+-
+-    nsIScriptGlobalObject *globalObject = nsJSUtils::GetDynamicScriptGlobal(cx);
+-    if(globalObject)
+-    {
+-        nsCOMPtr<nsPIDOMWindow> win = do_QueryInterface(globalObject);
+-        if(win)
+-            windowID = win->WindowID();
+-    }
++    const PRUint64 windowID = nsJSUtils::OuterWindowIDByContext(cx);
+ 
+     JSErrorReport* err = JS_ErrorFromException(cx, argv[0]);
+     if(err)
+     {
+         // It's a proper JS Error
+         nsAutoString fileUni;
+         CopyUTF8toUTF16(err->filename, fileUni);
+ 
+@@ -2943,18 +2933,18 @@
+                                                          (err->uclinebuf),
+                                          err->lineno,
+                                          column,
+                                          err->flags,
+                                          "XPConnect JavaScript", windowID);
+         if(NS_FAILED(rv))
+             return NS_OK;
+ 
+-        console->LogMessage(
+-          (nsCOMPtr<nsIScriptError>)(do_QueryInterface(scripterr)));
++        nsCOMPtr<nsIScriptError> logError = do_QueryInterface(scripterr);
++        console->LogMessage(logError);
+         return NS_OK;
+     }
+ 
+     // It's not a JS Error object, so we synthesize as best we're able
+     JSString* msgstr = JS_ValueToString(cx, argv[0]);
+     if(msgstr)
+     {
+         // Root the string during scripterr->Init
+@@ -2975,18 +2965,20 @@
+ 
+         rv = scripterr->InitWithWindowID(reinterpret_cast<const PRUnichar*>
+                                                   (JS_GetStringChars(msgstr)),
+                                          NS_ConvertUTF8toUTF16(fileName).get(),
+                                          nsnull,
+                                          lineNo, 0,
+                                          0, "XPConnect JavaScript", windowID);
+         if(NS_SUCCEEDED(rv))
+-            console->LogMessage(
+-              (nsCOMPtr<nsIScriptError>)(do_QueryInterface(scripterr)));
++        {
++            nsCOMPtr<nsIScriptError> logError = do_QueryInterface(scripterr);
++            console->LogMessage(logError);
++        }
+     }
+ 
+     return NS_OK;
+ }
+ 
+ #ifndef XPCONNECT_STANDALONE
+ #include "nsIScriptSecurityManager.h"
+ #include "nsIURI.h"
+diff -U8 b/js/src/xpconnect/src/xpcconvert.cpp b/js/src/xpconnect/src/xpcconvert.cpp
+--- b/js/src/xpconnect/src/xpcconvert.cpp
++++ b/js/src/xpconnect/src/xpcconvert.cpp
+@@ -46,18 +46,16 @@
+ #include "xpcprivate.h"
+ #include "nsString.h"
+ #include "nsIAtom.h"
+ #include "XPCWrapper.h"
+ #include "nsJSPrincipals.h"
+ #include "nsWrapperCache.h"
+ #include "WrapperFactory.h"
+ #include "AccessCheck.h"
+-#include "nsIScriptGlobalObject.h"
+-#include "nsPIDOMWindow.h"
+ #include "nsJSUtils.h"
+ 
+ //#define STRICT_CHECK_OF_UNICODE
+ #ifdef STRICT_CHECK_OF_UNICODE
+ #define ILLEGAL_RANGE(c) (0!=((c) & 0xFF80))
+ #else // STRICT_CHECK_OF_UNICODE
+ #define ILLEGAL_RANGE(c) (0!=((c) & 0xFF00))
+ #endif // STRICT_CHECK_OF_UNICODE
+@@ -1821,44 +1819,33 @@
+         {
+             bestMessage.AssignLiteral("JavaScript Error");
+         }
+ 
+         data = new nsScriptError();
+         if(!data)
+             return NS_ERROR_OUT_OF_MEMORY;
+ 
+-        PRUint64 windowID = 0;
+-
+-        JSContext * cx = ccx.GetJSContext();
+-
+-        nsIScriptGlobalObject *globalObject =
+-            nsJSUtils::GetDynamicScriptGlobal(cx);
+-        if(globalObject)
+-        {
+-            nsCOMPtr<nsPIDOMWindow> win = do_QueryInterface(globalObject);
+-            if(win)
+-                windowID = win->WindowID();
+-        }
+ 
+         data->InitWithWindowID(bestMessage.get(),
+                                NS_ConvertASCIItoUTF16(report->filename).get(),
+                                (const PRUnichar *)report->uclinebuf, report->lineno,
+                                report->uctokenptr - report->uclinebuf, report->flags,
+-                               "XPConnect JavaScript", windowID);
++                               "XPConnect JavaScript",
++                               nsJSUtils::OuterWindowIDByContext(ccx.GetJSContext()));
+     }
+ 
+     if(data)
+     {
+         nsCAutoString formattedMsg;
+         data->ToString(formattedMsg);
+ 
+         rv = ConstructException(NS_ERROR_XPC_JAVASCRIPT_ERROR_WITH_DETAILS,
+                                 formattedMsg.get(), ifaceName, methodName,
+-                                static_cast<nsIScriptError*>(data),
++                                static_cast<nsIScriptError*>(data.get()),
+                                 exceptn, nsnull, nsnull);
+     }
+     else
+     {
+         rv = ConstructException(NS_ERROR_XPC_JAVASCRIPT_ERROR,
+                                 nsnull, ifaceName, methodName, nsnull,
+                                 exceptn, nsnull, nsnull);
+     }
+diff -U8 b/js/src/xpconnect/src/xpcwrappedjsclass.cpp b/js/src/xpconnect/src/xpcwrappedjsclass.cpp
+--- b/js/src/xpconnect/src/xpcwrappedjsclass.cpp
++++ b/js/src/xpconnect/src/xpcwrappedjsclass.cpp
+@@ -42,18 +42,16 @@
+ 
+ /* Sharable code and data for wrapper around JSObjects. */
+ 
+ #include "xpcprivate.h"
+ #include "nsArrayEnumerator.h"
+ #include "nsWrapperCache.h"
+ #include "XPCWrapper.h"
+ #include "AccessCheck.h"
+-#include "nsIScriptGlobalObject.h"
+-#include "nsPIDOMWindow.h"
+ #include "nsJSUtils.h"
+ 
+ NS_IMPL_THREADSAFE_ISUPPORTS1(nsXPCWrappedJSClass, nsIXPCWrappedJSClass)
+ 
+ // the value of this variable is never used - we use its address as a sentinel
+ static uint32 zero_methods_descriptor;
+ 
+ void AutoScriptEvaluate::StartEvaluating(JSErrorReporter errorReporter)
+@@ -1211,36 +1209,24 @@
+                                 {
+                                     // Get line number w/o checking; 0 is ok.
+                                     location->GetLineNumber(&lineNumber);
+ 
+                                     // get a filename.
+                                     rv = location->GetFilename(getter_Copies(sourceName));
+                                 }
+ 
+-                                PRUint64 windowID = 0;
+-
+-                                nsIScriptGlobalObject *globalObject =
+-                                    nsJSUtils::GetDynamicScriptGlobal(cx);
+-                                if(globalObject)
+-                                {
+-                                    nsCOMPtr<nsPIDOMWindow> win =
+-                                        do_QueryInterface(globalObject);
+-                                    if(win)
+-                                        windowID = win->WindowID();
+-                                }
+-
+                                 nsCOMPtr<nsIScriptError2> scriptError2 =
+                                     do_QueryInterface(scriptError);
+                                 rv = scriptError2->InitWithWindowID(newMessage.get(),
+                                                                     NS_ConvertASCIItoUTF16(sourceName).get(),
+                                                                     nsnull,
+                                                                     lineNumber, 0, 0,
+                                                                     "XPConnect JavaScript",
+-                                                                    windowID);
++                                                                    nsJSUtils::OuterWindowIDByContext(cx));
+                                 if(NS_FAILED(rv))
+                                     scriptError = nsnull;
+                             }
+                         }
+                     }
+                     if(nsnull != scriptError)
+                         consoleService->LogMessage(scriptError);
+                 }
+diff -U8 b/parser/htmlparser/src/nsExpatDriver.cpp b/parser/htmlparser/src/nsExpatDriver.cpp
+--- b/parser/htmlparser/src/nsExpatDriver.cpp
++++ b/parser/htmlparser/src/nsExpatDriver.cpp
+@@ -370,17 +370,18 @@
+   : mExpatParser(nsnull),
+     mInCData(PR_FALSE),
+     mInInternalSubset(PR_FALSE),
+     mInExternalDTD(PR_FALSE),
+     mMadeFinalCallToExpat(PR_FALSE),
+     mIsFinalChunk(PR_FALSE),
+     mInternalState(NS_OK),
+     mExpatBuffered(0),
+-    mCatalogData(nsnull)
++    mCatalogData(nsnull),
++    mWindowID(0)
+ {
+ }
+ 
+ nsExpatDriver::~nsExpatDriver()
+ {
+   if (mExpatParser) {
+     XML_ParserFree(mExpatParser);
+   }
+@@ -1230,33 +1231,29 @@
+ #ifdef XML_DTD
+   XML_SetParamEntityParsing(mExpatParser, XML_PARAM_ENTITY_PARSING_ALWAYS);
+ #endif
+ 
+   mURISpec = aParserContext.mScanner->GetFilename();
+ 
+   XML_SetBase(mExpatParser, mURISpec.get());
+ 
+-  mWindowID = 0;
+   nsCOMPtr<nsIDocument> doc = do_QueryInterface(mOriginalSink->GetTarget());
+   if (doc) {
+     nsCOMPtr<nsPIDOMWindow> win = doc->GetWindow();
+     if (!win) {
+       PRBool aHasHadScriptHandlingObject;
+-      nsCOMPtr<nsIScriptGlobalObject> global =
++      nsIScriptGlobalObject *global =
+         doc->GetScriptHandlingObject(aHasHadScriptHandlingObject);
+       if (global) {
+         win = do_QueryInterface(global);
+       }
+-      if (win && !win->IsOuterWindow()) {
+-        win = win->GetOuterWindow();
+-      }
+     }
+     if (win) {
+-      mWindowID = win->WindowID();
++      mWindowID = win->GetOuterWindow()->WindowID();
+     }
+   }
+ 
+   // Set up the callbacks
+   XML_SetXmlDeclHandler(mExpatParser, Driver_HandleXMLDeclaration); 
+   XML_SetElementHandler(mExpatParser, Driver_HandleStartElement,
+                         Driver_HandleEndElement);
+   XML_SetCharacterDataHandler(mExpatParser, Driver_HandleCharacterData);
+only in patch2:
+--- a/content/base/public/nsIDocument.h
++++ b/content/base/public/nsIDocument.h
+@@ -679,2 +679,11 @@
+   /**
++   * Return the outer window ID.
++   */
++  PRUint64 OuterWindowID()
++  {
++    nsPIDOMWindow *window = GetWindow();
++    return window ? window->WindowID() : 0;
++  }
++
++  /**
+    * Get the script loader for this document
+only in patch2:
+--- a/dom/base/nsJSUtils.cpp
++++ b/dom/base/nsJSUtils.cpp
+@@ -177 +177,28 @@
+ }
++
++PRUint64
++nsJSUtils::OuterWindowIDByContext(JSContext *aContext, JSBool aUseDynamicScript)
++{
++  if (!aContext)
++    return 0;
++
++  PRUint64 windowID = 0;
++  nsIScriptGlobalObject *scriptGlobal;
++
++  if (aUseDynamicScript)
++    scriptGlobal = GetDynamicScriptGlobal(aContext);
++  else {
++    JSObject *jsGlobal = JS_GetGlobalForScopeChain(aContext);
++    if (jsGlobal)
++      scriptGlobal = GetStaticScriptGlobal(aContext, jsGlobal);
++  }
++
++  if (scriptGlobal) {
++    nsCOMPtr<nsPIDOMWindow> win = do_QueryInterface(scriptGlobal);
++    if (win)
++      windowID = win->GetOuterWindow()->WindowID();
++  }
++
++  return windowID;
++}
++
+only in patch2:
+--- a/dom/base/nsJSUtils.h
++++ b/dom/base/nsJSUtils.h
+@@ -71,2 +71,16 @@
+   static nsIScriptContext *GetDynamicScriptContext(JSContext *aContext);
++
++  /**
++   * Retrieve the outer window ID based on the given JSContext.
++   *
++   * @param JSContext aContext
++   *        The JSContext from which you want to find the outer window ID.
++   *
++   * @param JSBool [aUseDynamicScript=false]
++   *        If true, the dynamic script of the JSContext is used to retrieve the
++   *        window object. If false, the static script context is used.
++   *
++   * @returns PRUint64 the outer window ID.
++   */
++  static PRUint64 OuterWindowIDByContext(JSContext *aContext, JSBool aUseDynamicScript = JS_FALSE);
+ };

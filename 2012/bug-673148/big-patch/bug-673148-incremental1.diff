@@ -1,0 +1,572 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1331674056 -7200
+# Node ID f17e612adec2514e1ea2c7bff624e1ff39614cbb
+# Parent  31a81eb04432c0986c2e862e78507b02781ea629
+[mq]: more-fixes
+
+diff --git a/browser/devtools/webconsole/HUDService-content.js b/browser/devtools/webconsole/HUDService-content.js
+--- a/browser/devtools/webconsole/HUDService-content.js
++++ b/browser/devtools/webconsole/HUDService-content.js
+@@ -809,16 +809,18 @@ function NetworkResponseListener(aHttpAc
+   this.httpActivity = aHttpActivity;
+ }
+ 
+ NetworkResponseListener.prototype = {
+   QueryInterface:
+     XPCOMUtils.generateQI([Ci.nsIStreamListener, Ci.nsIInputStreamCallback,
+                            Ci.nsIRequestObserver, Ci.nsISupports]),
+ 
++  _foundOpenResponse: false,
++
+   /**
+    * The response will be written into the outputStream of this nsIPipe.
+    * Both ends of the pipe must be blocking.
+    */
+   sink: null,
+ 
+   /**
+    * The HttpActivity object associated with this response.
+@@ -868,46 +870,51 @@ NetworkResponseListener.prototype = {
+    * @param nsISupports aContext
+    * @param nsIInputStream aInputStream
+    * @param unsigned long aOffset
+    * @param unsigned long aCount
+    */
+   onDataAvailable:
+   function NRL_onDataAvailable(aRequest, aContext, aInputStream, aOffset, aCount)
+   {
++    this._findOpenResponse();
+     let data = NetUtil.readInputStreamToString(aInputStream, aCount);
+ 
+-    if (!this.httpActivity.responseBodyDiscarded &&
++    if (!this.httpActivity.discardResponseBody &&
+         this.receivedData.length < RESPONSE_BODY_LIMIT) {
+       this.receivedData += NetworkHelper.
+                            convertToUnicode(data, aRequest.contentCharset);
+     }
+   },
+ 
+   /**
+    * See documentation at
+    * https://developer.mozilla.org/En/NsIRequestObserver
+    *
+    * @param nsIRequest aRequest
+    * @param nsISupports aContext
+    */
+   onStartRequest: function NRL_onStartRequest(aRequest, aContext)
+   {
++    this.request = aRequest;
++
+     let channel = this.httpActivity.channel;
+     dump("NRL_onStartRequest\n");
++    this._findOpenResponse();
+ 
+     // Check response status and discard the body for redirects.
+-    if (!this.httpActivity.responseBodyDiscarded &&
++    // TODO: is this needed?
++    if (!this.httpActivity.discardResponseBody &&
+         channel instanceof Ci.nsIHttpChannel) {
+       switch (channel.responseStatus) {
+         case HTTP_MOVED_PERMANENTLY:
+         case HTTP_FOUND:
+         case HTTP_SEE_OTHER:
+         case HTTP_TEMPORARY_REDIRECT:
+-          this.httpActivity.responseBodyDiscarded = true;
++          this.httpActivity.discardResponseBody = true;
+           break;
+       }
+     }
+ 
+     // Asynchronously wait for the data coming from the request.
+     this.setAsyncListener(this.sink.inputStream, this);
+   },
+ 
+@@ -922,25 +929,69 @@ NetworkResponseListener.prototype = {
+    *        The request we are observing.
+    * @param nsISupports aContext
+    * @param nsresult aStatusCode
+    */
+   onStopRequest: function NRL_onStopRequest(aRequest, aContext, aStatusCode)
+   {
+     dump("NRL_onStopRequest\n");
+ 
+-    // FIXME
+-    let logResponse = this.httpActivity.log.entries[0].response;
++    this._findOpenResponse();
+ 
+     this.httpActivity.stage = "REQUEST_STOP";
++
++    if (!this.httpActivity.discardResponseBody &&
++        this.saveRequestAndResponseBodies) {
++      logResponse.content.size = this.receivedData.length;
++      logResponse.content.text = this.receivedData;
++    }
++
++    this.receivedData = "";
++
+     NetworkMonitor._sendMessageToChrome(this.httpActivity);
+ 
+     this.sink.outputStream.close();
+   },
+ 
++  _findOpenResponse: function NRL__findOpenResponse()
++  {
++    if (this._foundOpenResponse) {
++      return;
++    }
++
++    let logResponse = this.httpActivity.log.entries[0].response;
++    let openResponse = null;
++
++    for each (let item in NetworkMonitor.openResponses) {
++      if (item.channel !== this.httpActivity.channel) {
++        continue;
++      }
++
++      logResponse.headers = item.headers;
++      logResponse.cookies = item.cookies;
++      logResponse.httpVersion = item.httpVersion;
++      logResponse.status = item.status;
++      logResponse.statusText = item.statusText;
++      logResponse.content.mimeType = item.contentType;
++
++      openResponse = item.id;
++      break;
++    }
++
++    dump("NRL__findOpenResponse openResponse " + openResponse + "\n");
++
++    if (openResponse) {
++      delete NetworkMonitor.openResponses[openResponse];
++      this._foundOpenResponse = true;
++
++      this.httpActivity.stage = "http-on-examine-response";
++      NetworkMonitor._sendMessageToChrome(this.httpActivity);
++    }
++  },
++
+   /**
+    * Clean up the response listener once the response input stream is closed.
+    * This is called from onStopRequest() or from onInputStreamReady() when the
+    * stream is closed.
+    *
+    * @returns void
+    */
+   onStreamClose: function NRL_onStreamClose()
+@@ -948,33 +999,24 @@ NetworkResponseListener.prototype = {
+     if (!this.httpActivity) {
+       return;
+     }
+     dump("NRL_onStreamClose\n");
+ 
+     // Remove our listener from the request input stream.
+     this.setAsyncListener(this.sink.inputStream, null);
+ 
+-    if (!this.httpActivity.responseBodyDiscarded &&
+-        this.saveRequestAndResponseBodies) {
+-      /*FIXME
+-      this.httpActivity.log.entries[0].response.content = {
+-        text: this.receivedData,
+-      };*/
+-    }
+-
+     /* FIXME: need to see what we do with the network tests
+     if (HUDService.lastFinishedRequestCallback) {
+       HUDService.lastFinishedRequestCallback(this.httpActivity);
+     }
+     */
+ 
+     this.httpActivity.channel = null;
+     this.httpActivity = null;
+-    this.receivedData = "";
+     this.sink = null;
+     this.inputStream = null;
+   },
+ 
+   /**
+    * The nsIInputStreamCallback for when the request input stream is ready -
+    * either it has more data or it is closed.
+    *
+@@ -1024,40 +1066,37 @@ let NetworkMonitor = {
+     0x804b000b: "STATUS_RESOLVED",
+     0x804b0007: "STATUS_CONNECTING_TO",
+     0x804b0004: "STATUS_CONNECTED_TO",
+     0x804b0005: "STATUS_SENDING_TO",
+     0x804b000a: "STATUS_WAITING_FOR",
+     0x804b0006: "STATUS_RECEIVING_FROM"
+   },
+ 
++  harCreator: {
++    name: "Firefox Web Console",
++    version: Services.appinfo.version,
++  },
++
+   // Network response bodies are piped through a buffer of the given size (in
+   // bytes).
+   responsePipeSegmentSize: null,
+ 
+   /**
+    * FIXME: Whether to save the bodies of network requests and responses.  
+    * Disabled by
+    * default to save memory.
+    */
+   saveRequestAndResponseBodies: false,
+ 
+   openRequests: null,
+   openResponses: null,
+ 
+   init: function NM_init()
+   {
+-    let appInfo = Cc["@mozilla.org/xre/app-info;1"].getService(Ci.nsIXULAppInfo);
+-
+-    this.harCreator = {
+-      name: "Firefox Web Console",
+-      version: appInfo.version,
+-    };
+-    dump("NM_init appInfo version " + appInfo.version + "\n");
+-
+     this.responsePipeSegmentSize =
+       Services.prefs.getIntPref("network.buffer.cache.size");
+ 
+     this.openRequests = {};
+     this.openResponses = {};
+ 
+     activityDistributor.addObserver(this);
+ 
+@@ -1077,16 +1116,22 @@ let NetworkMonitor = {
+    * the nsIObserver service.
+    *
+    * @param string aTopic
+    * @param nsIHttpChannel aSubject
+    * @returns void
+    */
+   httpResponseExaminer: function NM_httpResponseExaminer(aSubject, aTopic)
+   {
++    // The httpResponseExaminer is used to retrieve the uncached response
++    // headers. The data retrieved is stored in openResponses if the associated
++    // openRequest object cannot be found. When NetworkMonitor receives
++    // notification that the transaction has closes, the data from openResponses
++    // is used.
++
+     if (aTopic != "http-on-examine-response" ||
+         !(aSubject instanceof Ci.nsIHttpChannel)) {
+       return;
+     }
+ 
+     let channel = aSubject.QueryInterface(Ci.nsIHttpChannel);
+     // Try to get the source window of the request.
+     let win = NetworkHelper.getWindowForRequest(channel);
+@@ -1101,73 +1146,56 @@ let NetworkMonitor = {
+       id: JSTerm.sequenceId,
+       channel: channel,
+       headers: [],
+       cookies: [],
+       httpVersion: "",
+     };
+ 
+     let setCookieHeader = null;
++    let contentType = null;
+ 
+     channel.visitResponseHeaders({
+-      visitHeader: function(aName, aValue) {
+-        if (aName.toLowerCase() == "set-cookie") {
++      visitHeader: function _visitHeader(aName, aValue) {
++        let lowerName = aName.toLowerCase();
++        if (lowerName == "set-cookie") {
+           setCookieHeader = aValue;
++        } else if (lowerName == "content-type") {
++          contentType = aValue;
+         }
+         response.headers.push({name: aName, value: aValue});
+       }
+     });
+ 
++    if (!response.headers.length) {
++      return; // No need to continue.
++    }
++
+     if (setCookieHeader) {
+       response.cookies = NetworkMonitor._parseSetCookieHeader(setCookieHeader);
+     }
+-
+-    if (!response.headers.length) {
+-      return; // No need to continue.
++    if (contentType) {
++      response.contentType = contentType;
+     }
+ 
+     // Determine the HTTP version.
+     let httpVersionMaj = {};
+     let httpVersionMin = {};
+ 
+     channel.QueryInterface(Ci.nsIHttpChannelInternal);
+     channel.getResponseVersion(httpVersionMaj, httpVersionMin);
+ 
+     response.status = channel.responseStatus;
+     response.statusText = channel.responseStatusText;
+     response.httpVersion = "HTTP/" + httpVersionMaj.value + "." +
+                                      httpVersionMin.value;
+ 
+     dump("httpResponseExaminer response.httpVersion '" + response.httpVersion + "' '" + response.status + "' '" + response.statusText + "'\n");
+ 
+-    let httpActivity = null;
+-    for each (let item in NetworkMonitor.openRequests) {
+-      if (item.channel === channel) {
+-        httpActivity = item;
+-        break;
+-      }
+-    }
+-
+-    dump("httpResponseExaminer httpActivity " + httpActivity + "\n");
+-
+-    if (httpActivity) {
+-      httpActivity.stage = "http-on-examine-response";
+-
+-      let entryResponse = httpActivity.log.entries[0].response;
+-      entryResponse.headers = response.headers;
+-      entryResponse.cookies = response.cookies;
+-      entryResponse.httpVersion = response.httpVersion;
+-      entryResponse.status = response.status;
+-      entryResponse.statusText = response.statusText;
+-
+-      NetworkMonitor._sendMessageToChrome(httpActivity);
+-    }
+-    else {
+-      NetworkMonitor.openResponses[response.id] = response;
+-    }
++    NetworkMonitor.openResponses[response.id] = response;
+   },
+ 
+   /**
+    * Begin observing HTTP traffic that we care about,
+    * namely traffic that originates inside any context that a Heads Up Display
+    * is active for.
+    */
+   // TODO: update comment
+@@ -1247,32 +1275,34 @@ let NetworkMonitor = {
+     let win = NetworkHelper.getWindowForRequest(aChannel);
+     if (!win || win.top !== JSTerm.window) {
+       return;
+     }
+ 
+     let httpActivity = this._createActivityObject(aChannel);
+     httpActivity.charset = win.document.characterSet; // see NM__onRequestBodySent()
+     httpActivity.stage = "REQUEST_HEADER"; // activity stage (aActivitySubtype)
+-    httpActivity.responseBodyDiscarded = !this.saveRequestAndResponseBodies;
++    httpActivity.discardRequestBody = !this.saveRequestAndResponseBodies;
++    httpActivity.discardResponseBody = !this.saveRequestAndResponseBodies;
+     httpActivity.timings.REQUEST_HEADER = aTimestamp;
+ 
+     let entry = httpActivity.log.entries[0];
+     // TODO: check date parsing works
+     entry.startedDateTime = new Date(Math.round(aTimestamp / 1000)).toISOString();
+ 
+-    dump("_onRequestHeader " + entry.startedDateTime + "\n");
++    dump("_onRequestHeader start date " + entry.startedDateTime + "\n");
+ 
+     let request = httpActivity.log.entries[0].request;
+ 
+     let cookieHeader = null;
+ 
+     // Copy the request header data.
+     aChannel.visitRequestHeaders({
+-      visitHeader: function(aName, aValue) {
++      visitHeader: function _visitHeader(aName, aValue)
++      {
+         if (aName.toLowerCase() == "cookie") {
+           cookieHeader = aValue;
+         }
+         request.headers.push({name: aName, value: aValue});
+       }
+     });
+ 
+     if (cookieHeader) {
+@@ -1288,31 +1318,31 @@ let NetworkMonitor = {
+ 
+     request.httpVersion = "HTTP/" + httpVersionMaj.value + "." +
+                                     httpVersionMin.value;
+ 
+     dump("request.httpVersion " + request.httpVersion + "\n");
+ 
+     request.headersSize = aExtraStringData.length;
+ 
+-    if (!httpActivity.responseBodyDiscarded) {
+-      this._setupResponseListener(httpActivity);
+-    }
++    this._setupResponseListener(httpActivity);
+ 
+     this.openRequests[httpActivity.id] = httpActivity;
+ 
+     this._sendMessageToChrome(httpActivity);
+   },
+ 
+   _createActivityObject: function NM__createActivityObject(aChannel)
+   {
+     // The httpActivity object will hold all information concerning this request
+     // and later response.
+-    // This is a HAR-like object.
+-    // See http://www.softwareishard.com/blog/har-12-spec
++    // This is a HAR-like object. Conformance to the spec is not guaranteed at
++    // this point.
++    // TODO: Bug 708717 - Add support for network log export to HAR
++    // Also see: http://www.softwareishard.com/blog/har-12-spec
+     return httpActivity = {
+       hudId: JSTerm.hudId,
+       id: JSTerm.sequenceId,
+       channel: aChannel,
+       charset: null, // see NM__onRequestHeader()
+       stage: null, // activity stage (aActivitySubtype)
+       timings: {}, // internal timing information
+       log: { // HAR object
+@@ -1372,17 +1402,17 @@ let NetworkMonitor = {
+ 
+     // Remember the input stream, so it isn't released by GC.
+     newListener.inputStream = sink.inputStream;
+     newListener.sink = sink;
+ 
+     let tee = Cc["@mozilla.org/network/stream-listener-tee;1"].
+               createInstance(Ci.nsIStreamListenerTee);
+ 
+-    let originalListener = aChannel.setNewListener(tee);
++    let originalListener = channel.setNewListener(tee);
+ 
+     tee.init(originalListener, sink.outputStream, newListener);
+   },
+ 
+   _sendMessageToChrome: function NM__sendMessageToChrome(aHttpActivity)
+   {
+     dump("_sendMessageToChrome " + aHttpActivity.stage + "\n");
+     sendAsyncMessage("WebConsole:NetworkActivity", {
+@@ -1392,19 +1422,18 @@ let NetworkMonitor = {
+       log: aHttpActivity.log,
+     });
+   },
+ 
+   _onRequestBodySent: function NM__onRequestBodySent(aHttpActivity)
+   {
+     dump("NM__onRequestBodySent\n");
+ 
+-    // FIXME
+-    aHttpActivity.requestBodyDiscarded = !this.saveRequestAndResponseBodies;
+-    if (!this.saveRequestAndResponseBodies) {
++    if (aHttpActivity.discardRequestBody) {
++      dump("NM__onRequestBodySent body discarded\n");
+       return;
+     }
+ 
+     let request = aHttpActivity.log.entries[0].request;
+ 
+     let sentBody = NetworkHelper.
+                    readPostTextFromRequest(aHttpActivity.channel,
+                                            aHttpActivity.charset);
+@@ -1426,55 +1455,61 @@ let NetworkMonitor = {
+ 
+     request.postData = {
+       mimeType: "",
+       params: [],
+       text: sentBody,
+       // could add mimeType and params
+     };
+ 
+-    // TODO: this might not be accurate! anything better?
++    // TODO: this might not be accurate! this should be the size before
++    // decompression, according to the HAR spec.
+     request.bodySize = sentBody.length;
+ 
+     // TODO: decide how we handle request and response bodies
+     this._sendMessageToChrome(aHttpActivity);
+   },
+ 
+   _onResponseHeader:
+   function NM__onResponseHeader(aHttpActivity, aExtraStringData)
+   {
++    // aExtraStringData contains the response headers. The first line contains
++    // the response status (e.g. HTTP/1.1 200 OK).
++    //
++    // Note: The response header is not saved here. Calling the
++    // aChannel.visitResponseHeaders() at this point sometimes causes an
++    // NS_ERROR_NOT_AVAILABLE exception.
++    //
++    // We could parse aExtraStringData to get the headers and their values, but
++    // that is not trivial to do in an accurate manner. Hence, we save the
++    // response headers in this.httpResponseExaminer().
+     dump("NM__onResponseHeader\n");
+ 
+     let response = aHttpActivity.log.entries[0].response;
+ 
+     let headers = aExtraStringData.split(/\r\n|\n|\r/);
+     let statusLine = headers.shift();
+ 
+-    //FIXME use regex
+-    let splittedStatusLine = statusLine.split(" ");
+-    response.httpVersion = splittedStatusLine[0];
+-    response.status = splittedStatusLine[1];
+-    response.statusText = statusLine.slice(statusLine.lastIndexOf(splittedStatusLine[2]), statusLine.length);
+-    //response.httpVersion = statusLine.replace(/^(HTTP\/\d+\.\d+).+$/, "$1");
+-    //response.status = statusLine.replace(/^HTTP\/\d+\.\d+ (\d+).+$/, "$1");
+-    //response.statusText = statusLine.replace(/^HTTP\/\d+\.\d+ 
+-    //\d+\s+(.+?)\s*$/, "$1");
++    let statusLineArray = statusLine.split(" ");
++    response.httpVersion = statusLineArray.shift();
++    response.status = statusLineArray.shift();
++    response.statusText = statusLineArray.join(" ");
+     response.headersSize = aExtraStringData.length;
+ 
+     // Discard the response body for known response statuses.
+     switch (response.status) {
+       case HTTP_MOVED_PERMANENTLY:
+       case HTTP_FOUND:
+       case HTTP_SEE_OTHER:
+       case HTTP_TEMPORARY_REDIRECT:
+-        aHttpActivity.responseBodyDiscarded = true;
++        aHttpActivity.discardResponseBody = true;
+         break;
+     }
+ 
+-    dump("NM__onResponseHeader response.httpVersion '" + response.httpVersion + "' '" + response.status + "' '" + response.statusText + "'\n");
++    dump("NM__onResponseHeader statusLine '" + statusLine + "' response.httpVersion '" + response.httpVersion + "' '" + response.status + "' '" + response.statusText + "'\n");
+ 
+     this._sendMessageToChrome(aHttpActivity);
+   },
+ 
+   _parseCookieHeader: function NM__parseCookieHeader(aHeader)
+   {
+     let cookies = aHeader.split(";");
+     let result = [];
+@@ -1533,34 +1568,17 @@ let NetworkMonitor = {
+   },
+ 
+   _onTransactionClose: function NM__onTransactionClose(aHttpActivity)
+   {
+     this._setupHarTimings(aHttpActivity);
+ 
+     let entry = aHttpActivity.log.entries[0];
+ 
+-    let openResponse = null;
+-
+-    for each (let item in this.openResponses) {
+-      if (item.channel !== aHttpActivity.channel) {
+-        continue;
+-      }
+-
+-      entry.response.headers = item.headers;
+-      entry.response.cookies = item.cookies;
+-      openResponse = item.id;
+-      break;
+-    }
+-
+-    if (openResponse) {
+-      delete this.openResponses[openResponse];
+-    }
+-
+-    dump("_onTransactionClose total " + entry.time + "ms openResponse " + openResponse + "\n");
++    dump("_onTransactionClose total " + entry.time + "ms\n");
+ 
+     this._sendMessageToChrome(aHttpActivity);
+ 
+     delete this.openRequests[aHttpActivity.id];
+   },
+ 
+   _setupHarTimings: function NM__setupHarTimings(aHttpActivity)
+   {

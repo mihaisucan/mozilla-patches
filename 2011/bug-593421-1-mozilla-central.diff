@@ -1,0 +1,117 @@
+diff --git a/browser/base/content/aboutHome.xhtml b/browser/base/content/aboutHome.xhtml
+--- a/browser/base/content/aboutHome.xhtml
++++ b/browser/base/content/aboutHome.xhtml
+@@ -44,16 +44,18 @@
+   <!ENTITY % htmlDTD
+     PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+     "DTD/xhtml1-strict.dtd">
+   %htmlDTD;
+   <!ENTITY % globalDTD SYSTEM "chrome://global/locale/global.dtd">
+   %globalDTD;
+   <!ENTITY % aboutHomeDTD SYSTEM "chrome://browser/locale/aboutHome.dtd">
+   %aboutHomeDTD;
++  <!ENTITY % browserDTD SYSTEM "chrome://browser/locale/browser.dtd" >
++  %browserDTD;
+ ]>
+ 
+ <html xmlns="http://www.w3.org/1999/xhtml">
+   <head>
+     <title>&abouthome.pageTitle;</title>
+ 
+     <link rel="icon" type="image/png" id="favicon"
+           href="chrome://branding/content/icon16.png"/>
+@@ -90,16 +92,20 @@
+         <div id="snippetContainer">
+           <div id="defaultSnippets">
+             <span hidden="true">&abouthome.defaultSnippet1.v1;</span>
+             <span hidden="true">&abouthome.defaultSnippet2.v1;</span>
+           </div>
+ 
+           <div id="snippets" hidden="true"/>
+         </div>
++
++        <div id="sessionRestoreContainer">
++          <button id="restorePreviousSession">&historyRestoreLastSession.label;</button>
++        </div>
+       </div>
+ 
+       <div id="bottomSection">
+         <div id="aboutMozilla">
+           <a href="http://www.mozilla.com/about/">&abouthome.aboutMozilla;</a>
+         </div>
+       </div>
+     </div>
+diff --git a/browser/base/content/browser.js b/browser/base/content/browser.js
+--- a/browser/base/content/browser.js
++++ b/browser/base/content/browser.js
+@@ -2547,16 +2547,24 @@ function BrowserImport()
+                       "migration", "centerscreen,chrome,resizable=no");
+   }
+ #else
+   window.openDialog("chrome://browser/content/migration/migration.xul",
+                     "migration", "modal,centerscreen,chrome,resizable=no");
+ #endif
+ }
+ 
++function BrowserOnLoad(document) {
++  if (/^about:home/.test(document.documentURI)) {
++    let ss = Components.classes["@mozilla.org/browser/sessionstore;1"].
++             getService(Components.interfaces.nsISessionStore);
++    if (!ss.canRestoreLastSession)
++      document.getElementById("restorePreviousSession").disabled = true;
++  }
++}
+ /**
+  * Handle command events bubbling up from error page content
+  */
+ function BrowserOnClick(event) {
+     // Don't trust synthetic events
+     if (!event.isTrusted || event.target.localName != "button")
+       return;
+ 
+@@ -2669,16 +2677,25 @@ function BrowserOnClick(event) {
+           title,
+           value,
+           "chrome://global/skin/icons/blacklist_favicon.png",
+           notificationBox.PRIORITY_CRITICAL_HIGH,
+           buttons
+         );
+       }
+     }
++    else if (/^about:home/.test(errorDoc.documentURI)) {
++      if (ot == errorDoc.getElementById("restorePreviousSession")) {
++        let ss = Cc["@mozilla.org/browser/sessionstore;1"].
++                 getService(Ci.nsISessionStore);
++        if (ss.canRestoreLastSession)
++          ss.restoreLastSession();
++        ot.disabled = true;
++      }
++    }
+ }
+ 
+ /**
+  * Re-direct the browser to a known-safe page.  This function is
+  * used when, for example, the user browses to a known malware page
+  * and is presented with about:blocked.  The "Get me out of here!"
+  * button should take the user to the default start page so that even
+  * when their own homepage is infected, we can get them somewhere safe.
+@@ -4617,16 +4634,19 @@ var TabsProgressListener = {
+ 
+     if (aStateFlags & Ci.nsIWebProgressListener.STATE_STOP &&
+         /^about:/.test(aWebProgress.DOMWindow.document.documentURI)) {
+       aBrowser.addEventListener("click", BrowserOnClick, false);
+       aBrowser.addEventListener("pagehide", function () {
+         aBrowser.removeEventListener("click", BrowserOnClick, false);
+         aBrowser.removeEventListener("pagehide", arguments.callee, true);
+       }, true);
++
++      // We might also care about the page being loaded.
++      BrowserOnLoad(aWebProgress.DOMWindow.document);
+     }
+   },
+ 
+   onLocationChange: function (aBrowser, aWebProgress, aRequest, aLocationURI) {
+     // Filter out any sub-frame loads
+     if (aBrowser.contentWindow == aWebProgress.DOMWindow)
+       FullZoom.onLocationChange(aLocationURI, false, aBrowser);
+   },

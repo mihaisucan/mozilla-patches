@@ -1,0 +1,453 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -83,17 +83,17 @@ XPCOMUtils.defineLazyGetter(this, "strin
+ 
+ // The amount of time in milliseconds that must pass between messages to
+ // trigger the display of a new group.
+ const NEW_GROUP_DELAY = 5000;
+ 
+ const ERRORS = { LOG_MESSAGE_MISSING_ARGS:
+                  "Missing arguments: aMessage, aConsoleNode and aMessageNode are required.",
+                  CANNOT_GET_HUD: "Cannot get WebConsole with provided ID",
+-                 HUD_WEAK_REFERENCE_FAIL: "Cannot get WebConsole from weak reference",
++                 HUD_REFERENCE_FAIL: "Cannot get WebConsole from reference",
+                  MISSING_ARGS: "Missing arguments",
+                  LOG_OUTPUT_FAILED: "Log Failure: Could not append messageNode to outputNode",
+ };
+ 
+ function HUD_SERVICE()
+ {
+   // TODO: provide mixins for FENNEC: bug 568621
+   if (appName() == "FIREFOX") {
+@@ -389,43 +389,42 @@ HUD_SERVICE.prototype =
+    * @returns void
+    */
+   setFilterState: function HS_setFilterState(aHUDId, aToggleType, aState)
+   {
+     this.filterPrefs[aHUDId][aToggleType] = aState;
+   },
+ 
+   /**
+-   * Keeps a weak reference for each HeadsUpDisplay that is created
++   * Keeps a reference for each HeadsUpDisplay that is created
+    *
+    */
+-  hudWeakReferences: {},
++  hudReferences: {},
+ 
+   /**
+-   * Register a weak reference of each HeadsUpDisplay that is created
++   * Register a reference of each HeadsUpDisplay that is created
+    *
+-   * @param object aHUDRef
+-   * @param string aHUDId
++   * @param HeadsUpDisplay aHUD
+    * @returns void
+    */
+-  registerHUDWeakReference:
+-  function HS_registerHUDWeakReference(aHUDRef, aHUDId)
++  registerHUDReference:
++  function HS_registerHUDReference(aHUD)
+   {
+-    this.hudWeakReferences[aHUDId] = aHUDRef;
++    this.hudReferences[aHUD.hudId] = aHUD;
+   },
+ 
+   /**
+    * Deletes a HeadsUpDisplay object from memory
+    *
+    * @param string aHUDId
+    * @returns void
+    */
+   deleteHeadsUpDisplay: function HS_deleteHeadsUpDisplay(aHUDId)
+   {
+-    delete this.hudWeakReferences[aHUDId].get();
++    delete this.hudReferences[aHUDId];
+   },
+ 
+   /**
+    * Register a new Heads Up Display
+    *
+    * @param string aHUDId
+    * @param string aURISpec
+    * @returns void
+@@ -707,23 +706,23 @@ HUD_SERVICE.prototype =
+   {
+     if (!aMessage) {
+       throw new Error(ERRORS.MISSING_ARGS);
+     }
+ 
+     // store this message in the storage module:
+     this.storage.recordEntry(aMessage);
+ 
+-    if (aMessage.hudId && aMessage.hudId in this.hudWeakReferences) {
+-      let hud = this.hudWeakReferences[aMessage.hudId].get();
++    if (aMessage.hudId && aMessage.hudId in this.hudReferences) {
++      let hud = this.hudReferences[aMessage.hudId];
+       if (hud) {
+         hud.logMessage(aMessage);
+       }
+       else {
+-        Cu.reportError(ERRORS.HUD_WEAK_REFERENCE_FAIL + ": " + aMessage.hudId);
++        Cu.reportError(ERRORS.HUD_REFERENCE_FAIL + ": " + aMessage.hudId);
+       }
+     }
+     else {
+       Cu.reportError(ERRORS.CANNOT_GET_HUD + ": " + aMessage.hudId);
+     }
+   },
+ 
+   /**
+@@ -1399,40 +1398,30 @@ HUD_SERVICE.prototype =
+       for (var i = 0; i < childNodes.length; i++) {
+         let id = childNodes[i].getAttribute("id");
+         if (id.split("_")[0] == "hud") {
+           hudNode = childNodes[i];
+           break;
+         }
+       }
+ 
++      // If there is no hudNode, we have to recreate the HeadsUpDisplay.
+       if (!hudNode) {
+         // get nBox object and call new HUD
+         let config = { parentNode: nBox,
+                        contentWindow: aContentWindow
+                      };
+ 
+         let _hud = new HeadsUpDisplay(config);
+-
+-        let hudWeakRef = Cu.getWeakReference(_hud);
+-        HUDService.registerHUDWeakReference(hudWeakRef, hudId);
++        HUDService.registerHUDReference(_hud);
+       }
+       else {
+-        // only need to attach a console object to the window object
+-        let config = { hudNode: hudNode,
+-                       consoleOnly: true,
+-                       contentWindow: aContentWindow
+-                     };
+-
+-        let _hud = new HeadsUpDisplay(config);
+-
+-        let hudWeakRef = Cu.getWeakReference(_hud);
+-        HUDService.registerHUDWeakReference(hudWeakRef, hudId);
+-
+-        aContentWindow.wrappedJSObject.console = _hud.console;
++        // Otherwise, just reattach the console to the page.
++        let _hud = this.hudReferences[hudId];
++        _hud.reattachConsole(aContentWindow);
+       }
+     }
+     // capture JS Errors
+     this.setOnErrorHandler(aContentWindow);
+   }
+ };
+ 
+ //////////////////////////////////////////////////////////////////////////
+@@ -1450,33 +1439,16 @@ function HeadsUpDisplay(aConfig)
+   //                  // or
+   //                  parentNodeId: "myHUDParent123",
+   //
+   //                  placement: "appendChild"
+   //                  // or
+   //                  placement: "insertBefore",
+   //                  placementChildNodeIndex: 0,
+   //                }
+-  //
+-  // or, just create a new console - as there is already a HUD in place
+-  // config: { hudNode: existingHUDDOMNode,
+-  //           consoleOnly: true,
+-  //           contentWindow: aWindow
+-  //         }
+-
+-  if (aConfig.consoleOnly) {
+-    this.HUDBox = aConfig.hudNode;
+-    this.parentNode = aConfig.hudNode.parentNode;
+-    this.notificationBox = this.parentNode;
+-    this.contentWindow = aConfig.contentWindow;
+-    this.uriSpec = aConfig.contentWindow.location.href;
+-    this.reattachConsole();
+-    this.HUDBox.querySelectorAll(".jsterm-input-node")[0].focus();
+-    return;
+-  }
+ 
+   this.HUDBox = null;
+ 
+   if (aConfig.parentNode) {
+     // TODO: need to replace these DOM calls with internal functions
+     // that operate on each application's node structure
+     // better yet, we keep these functions in a "bridgeModule" or the HUDService
+     // to keep a registry of nodeGetters for each application
+@@ -1624,41 +1596,40 @@ HeadsUpDisplay.prototype = {
+     else {
+       throw new Error("Unsupported Gecko Application");
+     }
+   },
+ 
+   /**
+    * Re-attaches a console when the contentWindow is recreated
+    *
++   * @param nsIDOMWindow aContentWindow
+    * @returns void
+    */
+-  reattachConsole: function HUD_reattachConsole()
++  reattachConsole: function HUD_reattachConsole(aContentWindow)
+   {
+-    this.hudId = this.HUDBox.getAttribute("id");
+-
+-    this.outputNode = this.HUDBox.querySelectorAll(".hud-output-node")[0];
+-
+-    this.contextMenu = this.HUDBox.querySelector("#" + this.hudId +
+-        "-output-contextmenu");
+-    this.copyOutputMenuItem = this.HUDBox.
+-      querySelector("menuitem[command=cmd_copy]");
+-
+-    this.chromeWindow = HUDService.
+-      getChromeWindowFromContentWindow(this.contentWindow);
+-    this.chromeDocument = this.HUDBox.ownerDocument;
+-
+-    this.filterBox = this.HUDBox.querySelector(".hud-filter-box");
+-
+-    if (this.outputNode) {
+-      // createConsole
++    this.contentWindow = aContentWindow;
++    this.uriSpec = this.contentWindow.location.href;
++
++    // createConsole
++    if (!this._console) {
+       this.createConsole();
+     }
+     else {
+-      throw new Error("Cannot get output node");
++      HUDService.updateLoadGroup(this.hudId, this.loadGroup);
++    }
++    this.contentWindow.wrappedJSObject.console = this.console;
++
++    if (!this.jsterm) {
++      this.createConsoleInput(this.contentWindow, this.consoleWrap, this.outputNode);
++      this.HUDBox.querySelector(".jsterm-input-node").focus();
++    }
++    else {
++      this.jsterm.context = Cu.getWeakReference(this.contentWindow);
++      this.jsterm.createSandbox();
+     }
+   },
+ 
+   /**
+    * Gets the loadGroup for the contentWindow
+    *
+    * @returns nsILoadGroup
+    */
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+@@ -245,17 +245,17 @@ function testConsoleLoggingAPI(aMethod)
+   HUDService.clearDisplay(hudId);
+   filterBox.value = "";
+ 
+   // test for multiple arguments.
+   HUDService.clearDisplay(hudId);
+   HUDService.setFilterState(hudId, aMethod, true);
+   browser.contentWindow.wrappedJSObject.console[aMethod]("foo", "bar");
+ 
+-  let HUD = HUDService.hudWeakReferences[hudId].get();
++  let HUD = HUDService.hudReferences[hudId];
+   let jsterm = HUD.jsterm;
+   let group = jsterm.outputNode.querySelector(".hud-group");
+   ok(/foo bar/.test(group.childNodes[1].childNodes[0].nodeValue),
+     "Emitted both console arguments");
+ }
+ 
+ function testLogEntry(aOutputNode, aMatchString, aSuccessErrObj)
+ {
+@@ -292,17 +292,17 @@ function testNet()
+     testPageReload();
+   }, false);
+ 
+   content.location = TEST_NETWORK_URI;
+ }
+ 
+ function testOutputOrder()
+ {
+-  let HUD = HUDService.hudWeakReferences[hudId].get();
++  let HUD = HUDService.hudReferences[hudId];
+   let jsterm = HUD.jsterm;
+   let outputNode = jsterm.outputNode;
+ 
+   jsterm.clearOutput();
+   jsterm.execute("console.log('foo', 'bar');");
+ 
+   let group = outputNode.querySelector(".hud-group");
+   is(group.childNodes.length, 4, "Four children in output");
+@@ -314,17 +314,17 @@ function testOutputOrder()
+   let outputSecond =
+     /foo bar/.test(outputChildren[2].childNodes[0].nodeValue);
+ 
+   ok(executedStringFirst && outputSecond, "executed string comes first");
+ }
+ 
+ function testGroups()
+ {
+-  let HUD = HUDService.hudWeakReferences[hudId].get();
++  let HUD = HUDService.hudReferences[hudId];
+   let jsterm = HUD.jsterm;
+   let outputNode = jsterm.outputNode;
+ 
+   jsterm.clearOutput();
+ 
+   let timestamp0 = Date.now();
+   jsterm.execute("0");
+   is(outputNode.querySelectorAll(".hud-group").length, 1,
+@@ -340,17 +340,17 @@ function testGroups()
+   HUD.HUDBox.lastTimestamp = 0;   // a "far past" value
+   jsterm.execute("2");
+   is(outputNode.querySelectorAll(".hud-group").length, 2,
+     "two groups exist after the third console message");
+ }
+ 
+ function testNullUndefinedOutput()
+ {
+-  let HUD = HUDService.hudWeakReferences[hudId].get();
++  let HUD = HUDService.hudReferences[hudId];
+   let jsterm = HUD.jsterm;
+   let outputNode = jsterm.outputNode;
+ 
+   jsterm.clearOutput();
+   jsterm.execute("null;");
+ 
+   let group = outputNode.querySelector(".hud-group");
+   is(group.childNodes.length, 3, "Three children in output");
+@@ -366,17 +366,17 @@ function testNullUndefinedOutput()
+   is(group.childNodes.length, 3, "Three children in output");
+   outputChildren = group.childNodes;
+ 
+   is (outputChildren[2].childNodes[0].nodeValue, "undefined",
+       "'undefined' printed to output");
+ }
+ 
+ function testJSInputAndOutputStyling() {
+-  let jsterm = HUDService.hudWeakReferences[hudId].get().jsterm;
++  let jsterm = HUDService.hudReferences[hudId].jsterm;
+ 
+   jsterm.clearOutput();
+   jsterm.execute("2 + 2");
+ 
+   let group = jsterm.outputNode.querySelector(".hud-group");
+   let outputChildren = group.childNodes;
+   let jsInputNode = outputChildren[1];
+   isnot(jsInputNode.childNodes[0].nodeValue.indexOf("2 + 2"), -1,
+@@ -455,17 +455,17 @@ function testRecordManyEntries() {
+   var end = Date.now();
+   var elapsed = end - start;
+   ok(cs.displayIndexes["foo"].length == 1001,
+      "1001 entries in foo now");
+ }
+ 
+ function testConsoleHistory()
+ {
+-  let HUD = HUDService.hudWeakReferences[hudId].get();
++  let HUD = HUDService.hudReferences[hudId];
+   let jsterm = HUD.jsterm;
+   let input = jsterm.inputNode;
+ 
+   let executeList = ["document", "window", "window.location"];
+ 
+   for each (var item in executeList) {
+     input.value = item;
+     jsterm.execute();
+@@ -502,17 +502,17 @@ function testConsoleHistory()
+   let idxLast = executeList.length - 1;
+   jsterm.historyPeruse(true);
+   is (input.value, executeList[idxLast], "check history next idx:" + idxLast);
+ }
+ 
+ // test property provider
+ function testPropertyProvider()
+ {
+-  var HUD = HUDService.hudWeakReferences[hudId].get();
++  var HUD = HUDService.hudReferences[hudId];
+   var jsterm = HUD.jsterm;
+   var context = jsterm.sandbox.window;
+   var completion;
+ 
+   // Test if the propertyProvider can be accessed from the jsterm object.
+   ok (jsterm.propertyProvider !== undefined, "JSPropertyProvider is defined");
+ 
+   completion = jsterm.propertyProvider(context, "thisIsNotDefined");
+@@ -529,17 +529,17 @@ function testPropertyProvider()
+   ok(completion.matches.length == 2, "two matches found");
+   ok(completion.matchProp == "locatio", "matching part is 'test'");
+   ok(completion.matches[0] == "location", "the first match is 'location'");
+   ok(completion.matches[1] == "locationbar", "the second match is 'locationbar'");
+ }
+ 
+ function testCompletion()
+ {
+-  var HUD = HUDService.hudWeakReferences[hudId].get();
++  var HUD = HUDService.hudReferences[hudId];
+   var jsterm = HUD.jsterm;
+   var input = jsterm.inputNode;
+ 
+   // Test typing 'docu'.
+   input.value = "docu";
+   input.setSelectionRange(4, 4);
+   jsterm.complete(jsterm.COMPLETE_HINT_ONLY);
+   is(input.value, "document", "'docu' completion");
+@@ -572,17 +572,17 @@ function testCompletion()
+   jsterm.complete(jsterm.COMPLETE_BACKWARD);
+   is(input.value, "document.getElementById", "'document.getElem' untab completion");
+   is(input.selectionStart, 16, "start selection is alright");
+   is(input.selectionEnd, 23, "end selection is alright");
+ }
+ 
+ function testJSInputExpand()
+ {
+-  let HUD = HUDService.hudWeakReferences[hudId].get();
++  let HUD = HUDService.hudReferences[hudId];
+   let jsterm = HUD.jsterm;
+   let input = jsterm.inputNode;
+   input.focus();
+ 
+   is(input.getAttribute("multiline"), "true", "multiline is enabled");
+ 
+   // Tests if the inputNode expands.
+   input.value = "hello\nworld\n";
+@@ -607,17 +607,17 @@ function testJSInputExpand()
+   EventUtils.synthesizeKey("d", {});
+   is(input.getAttribute("rows"), "1", "got 1 row");
+ }
+ 
+ function testExecutionScope()
+ {
+   content.location.href = TEST_URI;
+ 
+-  let HUD = HUDService.hudWeakReferences[hudId].get();
++  let HUD = HUDService.hudReferences[hudId];
+   let jsterm = HUD.jsterm;
+ 
+   jsterm.clearOutput();
+   jsterm.execute("location;");
+ 
+   let group = jsterm.outputNode.querySelector(".hud-group");
+ 
+   is(group.childNodes.length, 3, "Three children in output");
+@@ -652,17 +652,17 @@ function testIteration() {
+   }
+ 
+   ok(entries[0].id != entries2[0].id,
+      "two distinct pages of log entries");
+ }
+ 
+ function testHUDGetters()
+ {
+-  var HUD = HUDService.hudWeakReferences[hudId].get();
++  var HUD = HUDService.hudReferences[hudId];
+   var jsterm = HUD.jsterm;
+   var klass = jsterm.inputNode.getAttribute("class");
+   ok(klass == "jsterm-input-node", "We have the input node.");
+ 
+   var hudconsole = HUD.console;
+   is(typeof hudconsole, "object", "HUD.console is an object");
+   is(typeof hudconsole.log, "function", "HUD.console.log is a function");
+   is(typeof hudconsole.info, "function", "HUD.console.info is a function");

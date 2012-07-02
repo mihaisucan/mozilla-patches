@@ -1,0 +1,56 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1338714435 -10800
+# Node ID bc31fccf76227370cf7af65edd8242dfbb75399f
+# Parent  ff4163e5f8691154a0ffcbbba9fe1a851fdebdb1
+Bug 760837 - Intermittent browser_webconsole_bug_595934_message_categories.js | expectUncaughtException was called but no uncaught exception was detected
+
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_595934_message_categories.js b/browser/devtools/webconsole/test/browser_webconsole_bug_595934_message_categories.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_595934_message_categories.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_595934_message_categories.js
+@@ -70,37 +70,36 @@ const TESTS = [
+     matchString: "foobarCssParser",
+   },
+   { // #11
+     file: "test-bug-595934-malformedxml-external.html",
+     category: "malformed-xml",
+     matchString: "</html>",
+   },
+   { // #12
++    file: "test-bug-595934-workers.html",
++    category: "Web Worker",
++    matchString: "fooBarWorker",
++    expectError: true,
++  },
++  { // #13
+     file: "test-bug-595934-empty-getelementbyid.html",
+     category: "DOM",
+     matchString: "getElementById",
+   },
+-  { // #13
++  { // #14
+     file: "test-bug-595934-canvas-css.html",
+     category: "CSS Parser",
+     matchString: "foobarCanvasCssParser",
+   },
+-  { // #14
++  { // #15
+     file: "test-bug-595934-image.html",
+     category: "Image",
+     matchString: "corrupt",
+   },
+-  // TODO: disabled due to Bug 760837 - intermittent failures.
+-  //{ // #15
+-  //  file: "test-bug-595934-workers.html",
+-  //  category: "Web Worker",
+-  //  matchString: "fooBarWorker",
+-  //  expectError: true,
+-  //},
+ ];
+ 
+ let pos = -1;
+ 
+ let foundCategory = false;
+ let foundText = false;
+ let output = null;
+ let jsterm = null;

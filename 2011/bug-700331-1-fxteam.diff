@@ -1,0 +1,567 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1320693251 -7200
+# Node ID 50bceef3454c72d5fe3a00a998ff54812868bf87
+# Parent  900478e42d35a254c7fa4752872672b0612deaee
+Bug 700331 - Remove inspectstyle() from the Web Console
+
+diff --git a/browser/devtools/styleinspector/test/browser/Makefile.in b/browser/devtools/styleinspector/test/browser/Makefile.in
+--- a/browser/devtools/styleinspector/test/browser/Makefile.in
++++ b/browser/devtools/styleinspector/test/browser/Makefile.in
+@@ -42,32 +42,30 @@ srcdir    = @srcdir@
+ VPATH     = @srcdir@
+ relativesrcdir  = browser/devtools/styleinspector/test/browser
+ 
+ include $(DEPTH)/config/autoconf.mk
+ include $(topsrcdir)/config/rules.mk
+ 
+ _BROWSER_TEST_FILES = \
+   browser_styleinspector.js \
+-  browser_styleinspector_webconsole.js \
+   browser_bug683672.js \
+   browser_styleinspector_bug_672746_default_styles.js \
+   browser_styleinspector_bug_672744_search_filter.js \
+   browser_styleinspector_bug_689759_no_results_placeholder.js \
+   browser_bug_692400_element_style.js \
+   browser_ruleview_editor.js \
+   browser_ruleview_inherit.js \
+   browser_ruleview_manipulation.js \
+   browser_ruleview_override.js \
+   browser_ruleview_ui.js \
+   head.js \
+   $(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+-  browser_styleinspector_webconsole.htm \
+   browser_bug683672.html \
+   $(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/browser/devtools/styleinspector/test/browser/browser_styleinspector_webconsole.htm b/browser/devtools/styleinspector/test/browser/browser_styleinspector_webconsole.htm
+deleted file mode 100644
+--- a/browser/devtools/styleinspector/test/browser/browser_styleinspector_webconsole.htm
++++ /dev/null
+@@ -1,185 +0,0 @@
+-<!DOCTYPE HTML>
+-<html dir="ltr" xml:lang="en-US" lang="en-US"><head>
+-  <title>Style inspector test</title>
+-  <style>
+-    .text {
+-      font-family: sans-serif;
+-    }
+-
+-    .container > .text {
+-      font-family: serif;
+-    }
+-
+-    .text2 {
+-      font-family: sans-serif;
+-    }
+-
+-    .text3 {
+-      font-size: 100px;
+-    }
+-
+-    .text[dir=rtl] {
+-      font-family: monospace;
+-    }
+-
+-    .container .text {
+-      font-family: fantasy;
+-    }
+-
+-    #container .text {
+-      font-family: fantasy;
+-    }
+-
+-    .container > .text {
+-      font-family: cursive;
+-    }
+-
+-    #container > .text {
+-      font-family: cursive;
+-    }
+-
+-    #container > .dummy, #container > .dummy2 {
+-      font-family: cursive;
+-    }
+-
+-    div {
+-      font-family: fantasy;
+-    }
+-
+-    #container {
+-      font-family: fantasy;
+-    }
+-
+-    #container > span {
+-      font-family: cursive;
+-    }
+-
+-    #container .dummy {
+-      font-family: fantasy;
+-    }
+-
+-    html + .dummy {
+-      font-family: fantasy;
+-    }
+-
+-    span + span {
+-      font-family: fantasy;
+-    }
+-
+-    span[id=text] {
+-      font-family: cursive;
+-    }
+-
+-    span[att=glue] {
+-      font-family: cursive;
+-    }
+-
+-    span::before {
+-      font-family: cursive;
+-      content: "START ";
+-    }
+-
+-    span::after {
+-      font-family: cursive;
+-      content: " END";
+-    }
+-
+-    spawn::before {
+-      font-family: cursive;
+-      content: "START ";
+-    }
+-
+-    spawn::after {
+-      font-family: cursive;
+-      content: " END";
+-    }
+-
+-    a:link {
+-      font-family: sans-serif;
+-    }
+-
+-    .link:link {
+-      font-family: fantasy;
+-    }
+-
+-    a:visited {
+-      font-family: sans-serif;
+-    }
+-
+-    .link:visited {
+-      font-family: fantasy;
+-    }
+-
+-    a:active {
+-      font-family: sans-serif;
+-    }
+-
+-    .link:active {
+-      font-family: fantasy;
+-    }
+-
+-    a:hover {
+-      font-family: sans-serif;
+-    }
+-
+-    .link:hover {
+-      font-family: fantasy;
+-    }
+-
+-    a:focus {
+-      font-family: sans-serif;
+-      outline: 5px solid #0f0;
+-    }
+-
+-    .link:focus {
+-      font-family: fantasy;
+-    }
+-
+-    span::first-letter {
+-      font-family: sans-serif;
+-    }
+-
+-    .text::first-letter {
+-      font-family: fantasy;
+-    }
+-
+-    span::first-line {
+-      font-family: sans-serif;
+-    }
+-
+-    .text::first-line {
+-      font-family: fantasy;
+-    }
+-
+-    #container:first-child {
+-      font-family: sans-serif;
+-    }
+-
+-    div:first-child {
+-      font-family: fantasy;
+-    }
+-
+-    span:lang(en) {
+-      font-family: sans-serif;
+-    }
+-
+-    span:lang(it) {
+-      font-family: fantasy;
+-    }
+-
+-    html::-moz-selection {
+-      background-color: #f00;
+-      font-family: fantasy;
+-    }
+-  </style>
+-</head>
+-<body>
+-  <h2>font-size</h2>
+-  <div id="container">
+-    <span id="text" lang="en" class="text">Use inspectstyle($('text')) to inspect me</span><br />
+-    <span id="text2" class="text2">Use inspectstyle($('text2'))</span><br />
+-    <a class="link" href="#">Some Link</a>
+-    <h2>font-family has a single unmatched rule</h2>
+-  </div>
+-</body>
+-</html>
+diff --git a/browser/devtools/styleinspector/test/browser/browser_styleinspector_webconsole.js b/browser/devtools/styleinspector/test/browser/browser_styleinspector_webconsole.js
+deleted file mode 100644
+--- a/browser/devtools/styleinspector/test/browser/browser_styleinspector_webconsole.js
++++ /dev/null
+@@ -1,194 +0,0 @@
+-/* vim:set ts=2 sw=2 sts=2 et: */
+-/* ***** BEGIN LICENSE BLOCK *****
+- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
+- *
+- * The contents of this file are subject to the Mozilla Public License Version
+- * 1.1 (the "License"); you may not use this file except in compliance with
+- * the License. You may obtain a copy of the License at
+- * http://www.mozilla.org/MPL/
+- *
+- * Software distributed under the License is distributed on an "AS IS" basis,
+- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+- * for the specific language governing rights and limitations under the
+- * License.
+- *
+- * The Original Code is DevTools test code.
+- *
+- * The Initial Developer of the Original Code is Mozilla Foundation.
+- * Portions created by the Initial Developer are Copyright (C) 2011
+- * the Initial Developer. All Rights Reserved.
+- *
+- * Contributor(s):
+- *  Michael Ratcliffe <mratcliffe@mozilla.com>
+- *
+- * Alternatively, the contents of this file may be used under the terms of
+- * either the GNU General Public License Version 2 or later (the "GPL"), or
+- * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+- * in which case the provisions of the GPL or the LGPL are applicable instead
+- * of those above. If you wish to allow use of your version of this file only
+- * under the terms of either the GPL or the LGPL, and not to allow others to
+- * use your version of this file under the terms of the MPL, indicate your
+- * decision by deleting the provisions above and replace them with the notice
+- * and other provisions required by the GPL or the LGPL. If you do not delete
+- * the provisions above, a recipient may use your version of this file under
+- * the terms of any one of the MPL, the GPL or the LGPL.
+- *
+- * ***** END LICENSE BLOCK ***** */
+-
+-// Tests that inspectstyle(node) works properly
+-
+-const TEST_URI = "http://example.com/browser/browser/devtools/styleinspector/test/browser/browser_styleinspector_webconsole.htm";
+-
+-let doc;
+-let jsterm;
+-let hudBox;
+-let stylePanels = [];
+-
+-function test() {
+-  addTab(TEST_URI);
+-  browser.addEventListener("DOMContentLoaded", prepConsole, false);
+-}
+-
+-function prepConsole() {
+-  browser.removeEventListener("DOMContentLoaded", prepConsole, false);
+-  doc = content.document;
+-  openConsole();
+- 
+-  ok(window.StyleInspector, "StyleInspector exists");
+- 
+-  let hud = HUDService.getHudByWindow(content);
+-  ok(hud, "we have a console");
+- 
+-  hudBox = hud.HUDBox;
+-  ok(hudBox, "we have the console display");
+- 
+-  jsterm = hud.jsterm;
+-  ok(jsterm, "we have a jsterm");
+- 
+-  openStyleInspector1();
+-}
+-
+-function openStyleInspector1() {
+-  info("opening style inspector instance 1");
+-  Services.obs.addObserver(openStyleInspector2, "StyleInspector-opened", false);
+-  jsterm.execute("inspectstyle($('text'))");
+-}
+-
+-function openStyleInspector2() {
+-  Services.obs.removeObserver(openStyleInspector2, "StyleInspector-opened", false);
+-  info("opening style inspector instance 2");
+-  Services.obs.addObserver(openStyleInspector3, "StyleInspector-opened", false);
+-  jsterm.execute("inspectstyle($('text2'))");
+-}
+-
+-function openStyleInspector3() {
+-  Services.obs.removeObserver(openStyleInspector3, "StyleInspector-opened", false);
+-  info("opening style inspector instance 3");
+-  Services.obs.addObserver(teststylePanels, "StyleInspector-opened", false);
+-  jsterm.execute("inspectstyle($('container'))");
+-}
+-
+-function teststylePanels() {
+-  Services.obs.removeObserver(teststylePanels, "StyleInspector-opened", false);
+-
+-  info("adding style inspector instances to stylePanels array");
+-  let popupSet = document.getElementById("mainPopupSet");
+-  let len = popupSet.childNodes.length - 3;
+-  stylePanels.push(popupSet.childNodes[len++]);
+-  stylePanels.push(popupSet.childNodes[len++]);
+-  stylePanels.push(popupSet.childNodes[len++]);
+-
+-  let eltArray = [
+-    doc.getElementById("text"),
+-    doc.getElementById("text2"),
+-    doc.getElementById("container")
+-  ];
+-
+-  // We have 3 style inspector instances, each with an element selected:
+-  // 1. #text
+-  // 2. #text2
+-  // 3. #container
+-  //
+-  // We will loop through each instance and check that the correct node is
+-  // selected and that the correct css selector has been selected as active
+-  info("looping through array to check initialization");
+-  for (let i = 0, max = stylePanels.length; i < max; i++) {
+-    ok(stylePanels[i], "style inspector instance " + i +
+-       " correctly initialized");
+-    is(stylePanels[i].state, "open", "style inspector " + i + " is open");
+-
+-/*  // the following should be tested elsewhere
+-    // TODO bug 696166
+-    let htmlTree = stylePanels[i].cssHtmlTree;
+-    let cssLogic = htmlTree.cssLogic;
+-    let elt = eltArray[i];
+-    let eltId = elt.id;
+-
+-    // Check that the correct node is selected
+-    is(elt, htmlTree.viewedElement,
+-      "style inspector node matches the selected node (id=" + eltId + ")");
+-    is(htmlTree.viewedElement, stylePanels[i].cssLogic.viewedElement,
+-      "cssLogic node matches the cssHtmlTree node (id=" + eltId + ")");
+-
+-    // Check that the correct css selector has been selected as active
+-    let matchedSelectors = cssLogic.getPropertyInfo("font-family").matchedSelectors;
+-    let sel = matchedSelectors[0];
+-    let selector = sel.selector.text;
+-    let value = sel.value;
+-
+-    // Because we know which selectors should be the best match and what their
+-    // values should be we can check them
+-    switch(eltId) {
+-      case "text":
+-        is(selector, "#container > .text", "correct best match for #text");
+-        is(value, "cursive", "correct css property value for #" + eltId);
+-        break;
+-      case "text2":
+-        is(selector, "#container > span", "correct best match for #text2");
+-        is(value, "cursive", "correct css property value for #" + eltId);
+-        break;
+-      case "container":
+-        is(selector, "#container", "correct best match for #container");
+-        is(value, "fantasy", "correct css property value for #" + eltId);
+-    }
+-*/
+-  }
+-
+-  info("hiding stylePanels[1]");
+-  Services.obs.addObserver(styleInspectorClosedByHide,
+-                           "StyleInspector-closed", false);
+-  stylePanels[1].hidePopup();
+-}
+-
+-function styleInspectorClosedByHide()
+-{
+-  Services.obs.removeObserver(styleInspectorClosedByHide, "StyleInspector-closed", false);
+-  is(stylePanels[0].state, "open", "instance stylePanels[0] is still open");
+-  isnot(stylePanels[1].state, "open", "instance stylePanels[1] is not open");
+-  is(stylePanels[2].state, "open", "instance stylePanels[2] is still open");
+-
+-  info("closing web console");
+-  Services.obs.addObserver(styleInspectorClosedFromConsole1,
+-                           "StyleInspector-closed", false);
+-  closeConsole();
+-}
+-
+-function styleInspectorClosedFromConsole1()
+-{
+-  Services.obs.removeObserver(styleInspectorClosedFromConsole1,
+-                              "StyleInspector-closed", false);
+-  info("Style Inspector 1 and 2 closed");
+-  executeSoon(cleanUp);
+-}
+-
+-function cleanUp()
+-{
+-  let panels = document.querySelector("panel[hudToolId]");
+-  ok(!panels,
+-     "all style inspector panels are now detached and ready for garbage collection");
+-
+-  info("cleaning up");
+-
+-  doc = hudBox = stylePanels = jsterm = null;
+-  finishTest();
+-}
+diff --git a/browser/devtools/webconsole/HUDService.jsm b/browser/devtools/webconsole/HUDService.jsm
+--- a/browser/devtools/webconsole/HUDService.jsm
++++ b/browser/devtools/webconsole/HUDService.jsm
+@@ -74,22 +74,16 @@ XPCOMUtils.defineLazyServiceGetter(this,
+                                    "nsIClipboardHelper");
+ 
+ XPCOMUtils.defineLazyGetter(this, "gcli", function () {
+   var obj = {};
+   Cu.import("resource:///modules/gcli.jsm", obj);
+   return obj.gcli;
+ });
+ 
+-XPCOMUtils.defineLazyGetter(this, "StyleInspector", function () {
+-  var obj = {};
+-  Cu.import("resource:///modules/devtools/StyleInspector.jsm", obj);
+-  return obj.StyleInspector;
+-});
+-
+ XPCOMUtils.defineLazyGetter(this, "CssRuleView", function() {
+   let tmp = {};
+   Cu.import("resource:///modules/devtools/CssRuleView.jsm", tmp);
+   return tmp.CssRuleView;
+ });
+ 
+ XPCOMUtils.defineLazyGetter(this, "NetUtil", function () {
+   var obj = {};
+@@ -1855,20 +1849,16 @@ HUD_SERVICE.prototype =
+ 
+     this.unregisterActiveContext(aHUDId);
+ 
+     let popupset = hud.chromeDocument.getElementById("mainPopupSet");
+     let panels = popupset.querySelectorAll("panel[hudId=" + aHUDId + "]");
+     for (let i = 0; i < panels.length; i++) {
+       panels[i].hidePopup();
+     }
+-    panels = popupset.querySelectorAll("panel[hudToolId=" + aHUDId + "]");
+-    for (let i = 0; i < panels.length; i++) {
+-      panels[i].hidePopup();
+-    }
+ 
+     let id = ConsoleUtils.supString(aHUDId);
+     Services.obs.notifyObservers(id, "web-console-destroyed", null);
+ 
+     if (Object.keys(this.hudReferences).length == 0) {
+       let autocompletePopup = hud.chromeDocument.
+                               getElementById("webConsole_autocompletePopup");
+       if (autocompletePopup) {
+@@ -4593,50 +4583,16 @@ function JSTermHelper(aJSTerm)
+    */
+   aJSTerm.sandbox.inspect = function JSTH_inspect(aObject)
+   {
+     aJSTerm.helperEvaluated = true;
+     let propPanel = aJSTerm.openPropertyPanel(null, unwrap(aObject));
+     propPanel.panel.setAttribute("hudId", aJSTerm.hudId);
+   };
+ 
+-  /**
+-   * Inspects the passed aNode in the style inspector.
+-   *
+-   * @param object aNode
+-   *        aNode to inspect.
+-   * @returns void
+-   */
+-  aJSTerm.sandbox.inspectstyle = function JSTH_inspectstyle(aNode)
+-  {
+-    let errstr = null;
+-    aJSTerm.helperEvaluated = true;
+-
+-    if (!Services.prefs.getBoolPref("devtools.styleinspector.enabled")) {
+-      errstr = HUDService.getStr("inspectStyle.styleInspectorNotEnabled");
+-    } else if (!aNode) {
+-      errstr = HUDService.getStr("inspectStyle.nullObjectPassed");
+-    } else if (!(aNode instanceof Ci.nsIDOMNode)) {
+-      errstr = HUDService.getStr("inspectStyle.mustBeDomNode");
+-    } else if (!(aNode.style instanceof Ci.nsIDOMCSSStyleDeclaration)) {
+-      errstr = HUDService.getStr("inspectStyle.nodeHasNoStyleProps");
+-    }
+-
+-    if (!errstr) {
+-      let chromeWin = HUDService.getHudReferenceById(aJSTerm.hudId).chromeWindow;
+-      let styleInspector = new StyleInspector(chromeWin);
+-      styleInspector.createPanel(false, function() {
+-        styleInspector.panel.setAttribute("hudToolId", aJSTerm.hudId);
+-        styleInspector.open(aNode);
+-      });
+-    } else {
+-      aJSTerm.writeOutput(errstr + "\n", CATEGORY_OUTPUT, SEVERITY_ERROR);
+-    }
+-  };
+-
+   aJSTerm.sandbox.inspectrules = function JSTH_inspectrules(aNode)
+   {
+     aJSTerm.helperEvaluated = true;
+     let doc = aJSTerm.parentNode.ownerDocument;
+     let win = doc.defaultView;
+     let panel = createElement(doc, "panel", {
+       label: "CSS Rules",
+       titlebar: "normal",
+diff --git a/browser/locales/en-US/chrome/browser/devtools/webconsole.properties b/browser/locales/en-US/chrome/browser/devtools/webconsole.properties
+--- a/browser/locales/en-US/chrome/browser/devtools/webconsole.properties
++++ b/browser/locales/en-US/chrome/browser/devtools/webconsole.properties
+@@ -110,33 +110,16 @@ NetworkPanel.imageSizeDeltaDurationMS=%S
+ # flash data received from the server can't be displayed.
+ #
+ # The %S is replaced by the content type, that can't be displayed, examples are
+ #  o application/x-shockwave-flash
+ #  o music/crescendo
+ NetworkPanel.responseBodyUnableToDisplay.content=Unable to display responses of type "%S"
+ ConsoleAPIDisabled=The Web Console logging API (console.log, console.info, console.warn, console.error) has been disabled by a script on this page.
+ 
+-# LOCALIZATION NOTE (inspectStyle.nullObjectPassed):
+-# This message is returned when a null object is passed in to inspectstyle()
+-inspectStyle.nullObjectPassed=Object is null
+-
+-# LOCALIZATION NOTE (inspectStyle.mustBeDomNode):
+-# This message is returned when a non-DOM node is passed in to inspectstyle()
+-inspectStyle.mustBeDomNode=Object must be a valid DOM node
+-
+-# LOCALIZATION NOTE (inspectStyle.nodeHasNoStyleProps):
+-# This message is returned when an unstyleable object is passed in to inspectstyle()
+-inspectStyle.nodeHasNoStyleProps=Object cannot be styled
+-
+-# LOCALIZATION NOTE (inspectStyle.styleInspectorNotEnabled):
+-# This message is returned when devtools.styleinspector.enabled is not set to
+-# true
+-inspectStyle.styleInspectorNotEnabled=The style inspector is not enabled. Please set the option devtools.styleinspector.enabled to true in about:config to use this command.
+-
+ # LOCALIZATION NOTE (webConsolePosition): The label shown for the menu which
+ # allows the user to toggle between the Web Console positioning types.
+ webConsolePosition=Position
+ 
+ # LOCALIZATION NOTE (webConsolePositionTooltip): The tooltip shown when the user
+ # hovers the Position button in the Web Console toolbar.
+ webConsolePositionTooltip=Position the Web Console above or below the document
+ 

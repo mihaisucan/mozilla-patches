@@ -1,0 +1,1922 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1338567544 -10800
+# Node ID 13e4624d9503d44e4b7cc87bab1b960736b22580
+# Parent  a24414165cd43dfd58c55388e544ba95472a9060
+Bug 722685 - Console logging is slow; try: -b do -p linux,linuxqt,linux64,macosx64,win32,macosx -u mochitest-o -t none
+
+diff --git a/browser/devtools/webconsole/HUDService-content.js b/browser/devtools/webconsole/HUDService-content.js
+--- a/browser/devtools/webconsole/HUDService-content.js
++++ b/browser/devtools/webconsole/HUDService-content.js
+@@ -494,17 +494,17 @@ let Manager = {
+     this._enabledFeatures.slice().forEach(this.disableFeature, this);
+ 
+     this.hudId = null;
+     this._messageHandlers = null;
+ 
+     Manager = ConsoleAPIObserver = JSTerm = ConsoleListener = NetworkMonitor =
+       NetworkResponseListener = ConsoleProgressListener = null;
+ 
+-    Cc = Ci = Cu = XPCOMUtils = Services = gConsoleStorage =
++    Cc = Ci = Cu = XPCOMUtils = gConsoleStorage =
+       WebConsoleUtils = l10n = JSPropertyProvider = NetworkHelper =
+       NetUtil = activityDistributor = null;
+   },
+ };
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+ // JavaScript Terminal
+ ///////////////////////////////////////////////////////////////////////////////
+@@ -1498,17 +1498,17 @@ NetworkResponseListener.prototype = {
+    * NetworkMonitor.openResponses. This method takes the data from the open
+    * response object and puts it into the HTTP activity object, then sends it to
+    * the remote Web Console instance.
+    *
+    * @private
+    */
+   _findOpenResponse: function NRL__findOpenResponse()
+   {
+-    if (this._foundOpenResponse) {
++    if (!_alive || this._foundOpenResponse) {
+       return;
+     }
+ 
+     let openResponse = null;
+ 
+     for each (let item in NetworkMonitor.openResponses) {
+       if (item.channel === this.httpActivity.channel) {
+         openResponse = item;
+@@ -1740,17 +1740,17 @@ let NetworkMonitor = {
+    */
+   httpResponseExaminer: function NM_httpResponseExaminer(aSubject, aTopic)
+   {
+     // The httpResponseExaminer is used to retrieve the uncached response
+     // headers. The data retrieved is stored in openResponses. The
+     // NetworkResponseListener is responsible with updating the httpActivity
+     // object with the data from the new object in openResponses.
+ 
+-    if (aTopic != "http-on-examine-response" ||
++    if (!_alive || aTopic != "http-on-examine-response" ||
+         !(aSubject instanceof Ci.nsIHttpChannel)) {
+       return;
+     }
+ 
+     let channel = aSubject.QueryInterface(Ci.nsIHttpChannel);
+     // Try to get the source window of the request.
+     let win = NetworkHelper.getWindowForRequest(channel);
+     if (!win || win.top !== Manager.window) {
+diff --git a/browser/devtools/webconsole/HUDService.jsm b/browser/devtools/webconsole/HUDService.jsm
+--- a/browser/devtools/webconsole/HUDService.jsm
++++ b/browser/devtools/webconsole/HUDService.jsm
+@@ -168,16 +168,24 @@ const ERRORS = { LOG_MESSAGE_MISSING_ARG
+ };
+ 
+ // The indent of a console group in pixels.
+ const GROUP_INDENT = 12;
+ 
+ // The pref prefix for webconsole filters
+ const PREFS_PREFIX = "devtools.webconsole.filter.";
+ 
++// The number of messages to display in a single display update. If we display
++// too many messages at once we slow the Firefox UI too much.
++const MESSAGES_IN_INTERVAL = 30;
++
++// The delay between display updates - tells how often we should push new
++// messages to screen.
++const OUTPUT_INTERVAL = 90; // milliseconds
++
+ ///////////////////////////////////////////////////////////////////////////
+ //// Helper for creating the network panel.
+ 
+ /**
+  * Creates a DOMNode and sets all the attributes of aAttributes on the created
+  * element.
+  *
+  * @param nsIDOMDocument aDocument
+@@ -207,68 +215,34 @@ function createElement(aDocument, aTag, 
+  * Ensures that the number of message nodes of type aCategory don't exceed that
+  * category's line limit by removing old messages as needed.
+  *
+  * @param aHUDId aHUDId
+  *        The HeadsUpDisplay ID.
+  * @param integer aCategory
+  *        The category of message nodes to limit.
+  * @return number
+- *         The current user-selected log limit.
++ *         The number of removed nodes.
+  */
+ function pruneConsoleOutputIfNecessary(aHUDId, aCategory)
+ {
+-  // Get the log limit, either from the pref or from the constant.
+-  let logLimit;
+-  try {
+-    let prefName = CATEGORY_CLASS_FRAGMENTS[aCategory];
+-    logLimit = Services.prefs.getIntPref("devtools.hud.loglimit." + prefName);
+-  } catch (e) {
+-    logLimit = DEFAULT_LOG_LIMIT;
+-  }
+-
+   let hudRef = HUDService.getHudReferenceById(aHUDId);
+   let outputNode = hudRef.outputNode;
+-
+-  let scrollBox = outputNode.scrollBoxObject.element;
+-  let oldScrollHeight = scrollBox.scrollHeight;
+-  let scrolledToBottom = ConsoleUtils.isOutputScrolledToBottom(outputNode);
++  let logLimit = hudRef.logLimitForCategory(aCategory);
+ 
+   // Prune the nodes.
+   let messageNodes = outputNode.querySelectorAll(".webconsole-msg-" +
+       CATEGORY_CLASS_FRAGMENTS[aCategory]);
+-  let removeNodes = messageNodes.length - logLimit;
+-  for (let i = 0; i < removeNodes; i++) {
+-    let node = messageNodes[i];
+-    if (node._evalCacheId && !node._panelOpen) {
+-      hudRef.jsterm.clearObjectCache(node._evalCacheId);
+-    }
+-
+-    if (node.classList.contains("webconsole-msg-cssparser")) {
+-      let desc = messageNodes[i].childNodes[2].textContent;
+-      let location = "";
+-      if (node.childNodes[4]) {
+-        location = node.childNodes[4].getAttribute("title");
+-      }
+-      delete hudRef.cssNodes[desc + location];
+-    }
+-    else if (node.classList.contains("webconsole-msg-inspector")) {
+-      hudRef.pruneConsoleDirNode(node);
+-      continue;
+-    }
+-
+-    node.parentNode.removeChild(node);
++  let removeNodes = Math.max(0, messageNodes.length - logLimit);
++  if (removeNodes) {
++    let nodesToRemove = Array.prototype.slice.call(messageNodes, 0, removeNodes);
++    nodesToRemove.forEach(hudRef.removeOutputMessage, hudRef);
+   }
+ 
+-  if (!scrolledToBottom && removeNodes > 0 &&
+-      oldScrollHeight != scrollBox.scrollHeight) {
+-    scrollBox.scrollTop -= oldScrollHeight - scrollBox.scrollHeight;
+-  }
+-
+-  return logLimit;
++  return removeNodes;
+ }
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ //// The HUD service
+ 
+ function HUD_SERVICE()
+ {
+   // These methods access the "this" object, but they're registered as
+@@ -1049,28 +1023,70 @@ function HeadsUpDisplay(aTab)
+ 
+   // Track callback functions registered for specific async requests sent to the
+   // content process.
+   this.asyncRequests = {};
+ 
+   // create a panel dynamically and attach to the parentNode
+   this.createHUD();
+ 
++  this._outputQueue = [];
++  this._pruneCategoriesQueue = {};
++  this._pruneNodesQueue = [];
++
+   // create the JSTerm input element
+   this.jsterm = new JSTerm(this);
+   this.jsterm.inputNode.focus();
+ 
+   // A cache for tracking repeated CSS Nodes.
+   this.cssNodes = {};
+ 
+   this._setupMessageManager();
+ }
+ 
+ HeadsUpDisplay.prototype = {
+   /**
++   * Last time when we displayed any message in the output. Timestamp in
++   * milliseconds since the Unix epoch.
++   *
++   * @private
++   * @type number
++   */
++  _lastOutputFlush: 0,
++
++  /**
++   * The number of messages displayed in the last interval. The interval is
++   * given by OUTPUT_INTERVAL.
++   */
++  _messagesDisplayedInInterval: 0,
++
++  /**
++   * Message nodes are stored here in a queue for later display.
++   *
++   * @private
++   * @type array
++   */
++  _outputQueue: null,
++
++  /**
++   * Keep track of the categories we need to prune from time to time.
++   *
++   * @private
++   * @type array
++   */
++  _pruneCategoriesQueue: null,
++
++  /**
++   * Array of specific nodes that need to be pruned from output.
++   * @private
++   * @type array
++   */
++  _pruneNodesQueue: null,
++
++  /**
+    * Message names that the HUD listens for. These messages come from the remote
+    * Web Console content script.
+    *
+    * @private
+    * @type array
+    */
+   _messageListeners: ["JSTerm:EvalObject", "WebConsole:ConsoleAPI",
+     "WebConsole:CachedMessages", "WebConsole:PageError", "JSTerm:EvalResult",
+@@ -1389,41 +1405,26 @@ HeadsUpDisplay.prototype = {
+    */
+   _displayCachedConsoleMessages:
+   function HUD__displayCachedConsoleMessages(aRemoteMessages)
+   {
+     if (!aRemoteMessages.length) {
+       return;
+     }
+ 
+-    // Turn off scrolling for the moment.
+-    ConsoleUtils.scroll = false;
+-    this.outputNode.hidden = true;
+-
+     aRemoteMessages.forEach(function(aMessage) {
+       switch (aMessage._type) {
+         case "PageError":
+           this.reportPageError(aMessage);
+           break;
+         case "ConsoleAPI":
+           this.logConsoleAPIMessage(aMessage);
+           break;
+       }
+     }, this);
+-
+-    this.outputNode.hidden = false;
+-    ConsoleUtils.scroll = true;
+-
+-    // Scroll to bottom.
+-    let numChildren = this.outputNode.childNodes.length;
+-    if (numChildren && this.outputNode.clientHeight) {
+-      // We also check the clientHeight to force a reflow, otherwise
+-      // ensureIndexIsVisible() does not work after outputNode.hidden = false.
+-      this.outputNode.ensureIndexIsVisible(numChildren - 1);
+-    }
+   },
+ 
+   /**
+    * Shortcut to make XUL nodes
+    *
+    * @param string aTag
+    * @returns nsIDOMNode
+    */
+@@ -2481,21 +2482,274 @@ HeadsUpDisplay.prototype = {
+         return;
+       }
+ 
+       aCallback(this, aEvent);
+     }, false);
+   },
+ 
+   /**
++   * Output a message node. This filters a node appropriately, then sends it to
++   * the output, regrouping and pruning output as necessary.
++   *
++   * Note: this call is async - the given message node may not be displayed when
++   * you call this method.
++   *
++   * @param nsIDOMNode aNode
++   *        The message node to send to the output.
++   * @param nsIDOMNode [aNodeAfter]
++   *        Insert the node after the given aNodeAfter (optional).
++   */
++  outputMessageNode: function HUD_outputMessageNode(aNode, aNodeAfter)
++  {
++    this._outputQueue.push([aNode, aNodeAfter]);
++    this._flushMessageQueue();
++  },
++
++  /**
++   * Try to flush the output message queue. This takes the messages in the
++   * output queue and displays them. Outputting stops at MESSAGES_IN_INTERVAL.
++   * Further output is queued to happen later - see OUTPUT_INTERVAL.
++   *
++   * @private
++   */
++  _flushMessageQueue: function HUD__flushMessageQueue()
++  {
++    if ((Date.now() - this._lastOutputFlush) >= OUTPUT_INTERVAL) {
++      this._messagesDisplayedInInterval = 0;
++    }
++
++    // Determine how many messages we can display now.
++    let toDisplay = Math.min(this._outputQueue.length,
++                             MESSAGES_IN_INTERVAL -
++                             this._messagesDisplayedInInterval);
++
++    if (!toDisplay) {
++      if (!this._outputTimeout && this._outputQueue.length > 0) {
++        this._outputTimeout =
++          this.chromeWindow.setTimeout(function() {
++            delete this._outputTimeout;
++            this._flushMessageQueue();
++          }.bind(this), OUTPUT_INTERVAL);
++      }
++      return;
++    }
++
++    // Try to prune the message queue.
++    if (this._outputQueue.length > toDisplay && this._pruneOutputQueue()) {
++      toDisplay = Math.min(this._outputQueue.length, toDisplay);
++    }
++
++    let batch = this._outputQueue.splice(0, toDisplay);
++    if (!batch.length) {
++      return;
++    }
++
++    let outputNode = this.outputNode;
++    let lastVisibleNode = null;
++    let scrolledToBottom = ConsoleUtils.isOutputScrolledToBottom(outputNode);
++    let scrollBox = outputNode.scrollBoxObject.element;
++
++    // Output the current batch of messages.
++    batch.forEach(function(aItem) {
++      let [node, afterNode] = aItem;
++
++      let isFiltered = ConsoleUtils.filterMessageNode(node, this.hudId);
++
++      let isRepeated = false;
++      if (node.classList.contains("webconsole-msg-cssparser")) {
++        isRepeated = ConsoleUtils.filterRepeatedCSS(node, outputNode,
++                                                    this.hudId);
++      }
++
++      if (!isRepeated &&
++          (node.classList.contains("webconsole-msg-console") ||
++           node.classList.contains("webconsole-msg-exception") ||
++           node.classList.contains("webconsole-msg-error"))) {
++        isRepeated = ConsoleUtils.filterRepeatedConsole(node, outputNode);
++      }
++
++      if (!isRepeated) {
++        outputNode.insertBefore(node,
++                                afterNode ? afterNode.nextSibling : null);
++        this._pruneCategoriesQueue[node.category] = true;
++      }
++
++      let hudId = WebConsoleUtils.supportsString(this.hudId);
++      let nodeID = node.getAttribute("id");
++      Services.obs.notifyObservers(hudId, "web-console-message-created", nodeID);
++
++      if (!isRepeated && !isFiltered) {
++        lastVisibleNode = node;
++      }
++    }, this);
++
++    // Keep track of how many messages we displayed, so we do not display too
++    // many at once.
++    this._messagesDisplayedInInterval += batch.length;
++
++    let oldScrollHeight = 0;
++
++    // Prune messages if needed. We do not do this for every flush call to
++    // improve performance.
++    let removedNodes = 0;
++    if (!(this._outputQueue.length % (MESSAGES_IN_INTERVAL - 1)) ||
++        this._pruneNodesQueue.length) {
++      oldScrollHeight = scrollBox.scrollHeight;
++
++      this._pruneNodesQueue.forEach(this.removeOutputMessage, this);
++      removedNodes += this._pruneNodesQueue.length;
++      this._pruneNodesQueue = [];
++
++      let categories = Object.keys(this._pruneCategoriesQueue);
++      categories.forEach(function _pruneOutput(aCategory) {
++        removedNodes += pruneConsoleOutputIfNecessary(this.hudId, aCategory);
++      }, this);
++
++      this._pruneCategoriesQueue = {};
++    }
++
++    // Regroup messages at the end of the queue.
++    if (!this._outputQueue.length) {
++      HUDService.regroupOutput(outputNode);
++    }
++
++    let isInputOutput = lastVisibleNode &&
++      (lastVisibleNode.classList.contains("webconsole-msg-input") ||
++       lastVisibleNode.classList.contains("webconsole-msg-output"));
++
++    // Scroll to the new node if it is not filtered, and if the output node is
++    // scrolled at the bottom or if the new node is a jsterm input/output
++    // message.
++    if (lastVisibleNode && (scrolledToBottom || isInputOutput)) {
++      ConsoleUtils.scrollToVisible(lastVisibleNode);
++    }
++    else if (!scrolledToBottom && removedNodes > 0 &&
++             oldScrollHeight != scrollBox.scrollHeight) {
++      // If there were pruned messages and if scroll is not at the bottom, then
++      // we need to adjust the scroll location.
++      scrollBox.scrollTop -= oldScrollHeight - scrollBox.scrollHeight;
++    }
++
++    // If the queue is not empty, schedule another flush.
++    if (!this._outputTimeout && this._outputQueue.length > 0) {
++      this._outputTimeout =
++        this.chromeWindow.setTimeout(function() {
++          delete this._outputTimeout;
++          this._flushMessageQueue();
++        }.bind(this), OUTPUT_INTERVAL);
++    }
++
++    this._lastOutputFlush = Date.now();
++  },
++
++  /**
++   * Prune the queue of messages to display. This avoids displaying messages
++   * that will be removed at the end of the queue anyway.
++   * @private
++   */
++  _pruneOutputQueue: function HUD__pruneOutputQueue()
++  {
++    let nodes = {};
++
++    // Group the messages per category.
++    this._outputQueue.forEach(function(aItem, aIndex) {
++      let [node] = aItem;
++      let category = node.category;
++      if (!(category in nodes)) {
++        nodes[category] = [];
++      }
++      nodes[category].push(aIndex);
++    }, this);
++
++    let pruned = 0;
++
++    // Loop through the categories we found and prune if needed.
++    for (let category in nodes) {
++      let limit = this.logLimitForCategory(category);
++      let indexes = nodes[category];
++      if (indexes.length > limit) {
++        let n = Math.max(0, indexes.length - limit);
++        pruned += n;
++        for (let i = n - 1; i >= 0; i--) {
++          let node = this._outputQueue[indexes[i]][0];
++          this._outputQueue.splice(indexes[i], 1);
++        }
++
++        // Prune all existing nodes in output from the same category.
++        let outputNodes = this.outputNode.querySelectorAll(".webconsole-msg-" +
++                          CATEGORY_CLASS_FRAGMENTS[category]);
++        this._pruneNodesQueue.push.apply(this._pruneNodesQueue,
++          Array.prototype.slice.call(outputNodes));
++      }
++    }
++
++    return pruned;
++  },
++
++  /**
++   * Retrieve the limit of messages for a specific category.
++   *
++   * @param number aCategory
++   *        The category of messages you want to retrieve the limit for. See the
++   *        CATEGORY_* constants.
++   * @return number
++   *         The number of messages allowed for the specific category.
++   */
++  logLimitForCategory: function HUD_logLimitForCategory(aCategory)
++  {
++    let logLimit = DEFAULT_LOG_LIMIT;
++
++    try {
++      let prefName = CATEGORY_CLASS_FRAGMENTS[aCategory];
++      logLimit = Services.prefs.getIntPref("devtools.hud.loglimit." + prefName);
++      logLimit = Math.max(logLimit, 1);
++    }
++    catch (e) { }
++
++    return logLimit;
++  },
++
++  /**
++   * Remove a given message from the output.
++   *
++   * @param nsIDOMNode aNode
++   *        The message node you want to remove.
++   */
++  removeOutputMessage: function HUD_removeOutputMessage(aNode)
++  {
++    if (aNode._evalCacheId && !aNode._panelOpen) {
++      this.jsterm.clearObjectCache(aNode._evalCacheId);
++    }
++
++    if (aNode.classList.contains("webconsole-msg-cssparser")) {
++      let desc = aNode.childNodes[2].textContent;
++      let location = "";
++      if (aNode.childNodes[4]) {
++        location = aNode.childNodes[4].getAttribute("title");
++      }
++      delete this.cssNodes[desc + location];
++    }
++    else if (aNode.classList.contains("webconsole-msg-inspector")) {
++      this.pruneConsoleDirNode(aNode);
++      return;
++    }
++
++    aNode.parentNode.removeChild(aNode);
++  },
++
++  /**
+    * Destroy the HUD object. Call this method to avoid memory leaks when the Web
+    * Console is closed.
+    */
+   destroy: function HUD_destroy()
+   {
++    this._outputQueue = [];
++    this._pruneNodesQueue = [];
++
+     this.sendMessageToContent("WebConsole:Destroy", {});
+ 
+     this._messageListeners.forEach(function(aName) {
+       this.messageManager.removeMessageListener(aName, this);
+     }, this);
+ 
+     if (this.jsterm) {
+       this.jsterm.destroy();
+@@ -2528,16 +2782,18 @@ HeadsUpDisplay.prototype = {
+     if (this.splitter.parentNode) {
+       this.splitter.parentNode.removeChild(this.splitter);
+     }
+ 
+     delete this.asyncRequests;
+     delete this.messageManager;
+     delete this.browser;
+     delete this.chromeDocument;
++    delete this.chromeWindow;
++    delete this.outputNode;
+ 
+     this.positionMenuitems.above.removeEventListener("command",
+       this._positionConsoleAbove, false);
+     this.positionMenuitems.below.removeEventListener("command",
+       this._positionConsoleBelow, false);
+     this.positionMenuitems.window.removeEventListener("command",
+       this._positionConsoleWindow, false);
+ 
+@@ -2885,27 +3141,17 @@ JSTerm.prototype = {
+   clearOutput: function JST_clearOutput(aClearStorage)
+   {
+     let hud = this.hud;
+     hud.cssNodes = {};
+ 
+     let outputNode = hud.outputNode;
+     let node;
+     while ((node = outputNode.firstChild)) {
+-      if (node._evalCacheId && !node._panelOpen) {
+-        this.clearObjectCache(node._evalCacheId);
+-      }
+-
+-      if (node.classList &&
+-          node.classList.contains("webconsole-msg-inspector")) {
+-        hud.pruneConsoleDirNode(node);
+-      }
+-      else {
+-        outputNode.removeChild(node);
+-      }
++      hud.removeOutputMessage(node);
+     }
+ 
+     hud.HUDBox.lastTimestamp = 0;
+     hud.groupDepth = 0;
+ 
+     if (aClearStorage) {
+       hud.sendMessageToContent("ConsoleAPI:ClearCache", {});
+     }
+@@ -3882,33 +4128,41 @@ ConsoleUtils = {
+   /**
+    * Applies the user's filters to a newly-created message node via CSS
+    * classes.
+    *
+    * @param nsIDOMNode aNode
+    *        The newly-created message node.
+    * @param string aHUDId
+    *        The ID of the HUD which this node is to be inserted into.
++   * @return boolean
++   *         True if the message was filtered or false otherwise.
+    */
+   filterMessageNode: function ConsoleUtils_filterMessageNode(aNode, aHUDId) {
++    let isFiltered = false;
++
+     // Filter by the message type.
+     let prefKey = MESSAGE_PREFERENCE_KEYS[aNode.category][aNode.severity];
+     if (prefKey && !HUDService.getFilterState(aHUDId, prefKey)) {
+       // The node is filtered by type.
+       aNode.classList.add("hud-filtered-by-type");
++      isFiltered = true;
+     }
+ 
+     // Filter on the search string.
+     let search = HUDService.getFilterStringByHUDId(aHUDId);
+     let text = aNode.clipboardText;
+ 
+     // if string matches the filter text
+     if (!HUDService.stringMatchesFilters(text, search)) {
+       aNode.classList.add("hud-filtered-by-string");
++      isFiltered = true;
+     }
++
++    return isFiltered;
+   },
+ 
+   /**
+    * Merge the attributes of the two nodes that are about to be filtered.
+    * Increment the number of repeats of aOriginal.
+    *
+    * @param nsIDOMNode aOriginal
+    *        The Original Node. The one being merged into.
+@@ -4005,60 +4259,18 @@ ConsoleUtils = {
+    *        The message node to send to the output.
+    * @param string aHUDId
+    *        The ID of the HUD in which to insert this node.
+    * @param nsIDOMNode [aNodeAfter]
+    *        Insert the node after the given aNodeAfter (optional).
+    */
+   outputMessageNode:
+   function ConsoleUtils_outputMessageNode(aNode, aHUDId, aNodeAfter) {
+-    ConsoleUtils.filterMessageNode(aNode, aHUDId);
+-    let outputNode = HUDService.hudReferences[aHUDId].outputNode;
+-
+-    let scrolledToBottom = ConsoleUtils.isOutputScrolledToBottom(outputNode);
+-
+-    let isRepeated = false;
+-    if (aNode.classList.contains("webconsole-msg-cssparser")) {
+-      isRepeated = this.filterRepeatedCSS(aNode, outputNode, aHUDId);
+-    }
+-
+-    if (!isRepeated &&
+-        (aNode.classList.contains("webconsole-msg-console") ||
+-         aNode.classList.contains("webconsole-msg-exception") ||
+-         aNode.classList.contains("webconsole-msg-error"))) {
+-      isRepeated = this.filterRepeatedConsole(aNode, outputNode);
+-    }
+-
+-    if (!isRepeated) {
+-      outputNode.insertBefore(aNode, aNodeAfter ? aNodeAfter.nextSibling : null);
+-    }
+-
+-    HUDService.regroupOutput(outputNode);
+-
+-    if (pruneConsoleOutputIfNecessary(aHUDId, aNode.category) == 0) {
+-      // We can't very well scroll to make the message node visible if the log
+-      // limit is zero and the node was destroyed in the first place.
+-      return;
+-    }
+-
+-    let isInputOutput = aNode.classList.contains("webconsole-msg-input") ||
+-                        aNode.classList.contains("webconsole-msg-output");
+-    let isFiltered = aNode.classList.contains("hud-filtered-by-string") ||
+-                     aNode.classList.contains("hud-filtered-by-type");
+-
+-    // Scroll to the new node if it is not filtered, and if the output node is
+-    // scrolled at the bottom or if the new node is a jsterm input/output
+-    // message.
+-    if (!isFiltered && !isRepeated && (scrolledToBottom || isInputOutput)) {
+-      ConsoleUtils.scrollToVisible(aNode);
+-    }
+-
+-    let id = WebConsoleUtils.supportsString(aHUDId);
+-    let nodeID = aNode.getAttribute("id");
+-    Services.obs.notifyObservers(id, "web-console-message-created", nodeID);
++    let hud = HUDService.getHudReferenceById(aHUDId);
++    hud.outputMessageNode(aNode, aNodeAfter);
+   },
+ 
+   /**
+    * Check if the given output node is scrolled to the bottom.
+    *
+    * @param nsIDOMNode aOutputNode
+    * @return boolean
+    *         True if the output node is scrolled to the bottom, or false
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_basic_net_logging.js b/browser/devtools/webconsole/test/browser_webconsole_basic_net_logging.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_basic_net_logging.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_basic_net_logging.js
+@@ -9,30 +9,37 @@
+ const TEST_NETWORK_URI = "http://example.com/browser/browser/devtools/webconsole/test/test-network.html" + "?_date=" + Date.now();
+ 
+ function test() {
+   addTab("data:text/html;charset=utf-8,Web Console basic network logging test");
+   browser.addEventListener("load", onLoad, true);
+ }
+ 
+ function onLoad(aEvent) {
+-  browser.removeEventListener(aEvent.type, arguments.callee, true);
+-  openConsole();
+-
+-  browser.addEventListener("load", testBasicNetLogging, true);
+-  content.location = TEST_NETWORK_URI;
++  browser.removeEventListener(aEvent.type, onLoad, true);
++  openConsole(null, function() {
++    browser.addEventListener("load", testBasicNetLogging, true);
++    content.location = TEST_NETWORK_URI;
++  });
+ }
+ 
+ function testBasicNetLogging(aEvent) {
+-  browser.removeEventListener(aEvent.type, arguments.callee, true);
++  browser.removeEventListener(aEvent.type, testBasicNetLogging, true);
+ 
+   outputNode = HUDService.getHudByWindow(content).outputNode;
+ 
+-  executeSoon(function() {
+-    findLogEntry("test-network.html");
+-    findLogEntry("testscript.js");
+-    findLogEntry("test-image.png");
+-    findLogEntry("network console");
+-
+-    finishTest();
++  waitForSuccess({
++    name: "network console message",
++    validatorFn: function()
++    {
++      return outputNode.textContent.indexOf("running network console") > -1;
++    },
++    successFn: function()
++    {
++      findLogEntry("test-network.html");
++      findLogEntry("testscript.js");
++      findLogEntry("test-image.png");
++      finishTest();
++    },
++    failureFn: finishTest,
+   });
+ }
+ 
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_585237_line_limit.js b/browser/devtools/webconsole/test/browser_webconsole_bug_585237_line_limit.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_585237_line_limit.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_585237_line_limit.js
+@@ -91,31 +91,16 @@ function testGen() {
+     failureFn: finishTest,
+   });
+ 
+   yield;
+ 
+   is(countMessageNodes(), 30, "there are 30 message nodes in the output " +
+      "when the log limit is set to 30");
+ 
+-  prefBranch.setIntPref("console", 0);
+-  console.log("baz");
+-
+-  waitForSuccess({
+-    name: "clear output",
+-    validatorFn: function()
+-    {
+-      return countMessageNodes() == 0;
+-    },
+-    successFn: testNext,
+-    failureFn: finishTest,
+-  });
+-
+-  yield;
+-
+   prefBranch.clearUserPref("console");
+   hud = testDriver = prefBranch = console = outputNode = null;
+   finishTest();
+ 
+   yield;
+ }
+ 
+ function countMessageNodes() {
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_597460_filter_scroll.js b/browser/devtools/webconsole/test/browser_webconsole_bug_597460_filter_scroll.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_597460_filter_scroll.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_597460_filter_scroll.js
+@@ -18,28 +18,46 @@ function consoleOpened(aHud) {
+   }
+ 
+   HUDService.setFilterState(hud.hudId, "network", false);
+   HUDService.setFilterState(hud.hudId, "networkinfo", false);
+ 
+   hud.filterBox.value = "test message";
+   HUDService.updateFilterText(hud.filterBox);
+ 
+-  browser.addEventListener("load", tabReload, true);
++  let waitForNetwork = {
++    name: "network message",
++    validatorFn: function()
++    {
++      return hud.outputNode.querySelector(".webconsole-msg-network");
++    },
++    successFn: testScroll,
++    failureFn: finishTest,
++  };
+ 
+-  executeSoon(function() {
+-    content.location.reload();
++  waitForSuccess({
++    name: "console messages displayed",
++    validatorFn: function()
++    {
++      return hud.outputNode.textContent.indexOf("test message 199") > -1;
++    },
++    successFn: function()
++    {
++      browser.addEventListener("load", function onReload() {
++        browser.removeEventListener("load", onReload, true);
++        waitForSuccess(waitForNetwork);
++      }, true);
++      content.location.reload();
++    },
++    failureFn: finishTest,
+   });
+ }
+ 
+-function tabReload(aEvent) {
+-  browser.removeEventListener(aEvent.type, tabReload, true);
+-
++function testScroll() {
+   let msgNode = hud.outputNode.querySelector(".webconsole-msg-network");
+-  ok(msgNode, "found network message");
+   ok(msgNode.classList.contains("hud-filtered-by-type"),
+     "network message is filtered by type");
+   ok(msgNode.classList.contains("hud-filtered-by-string"),
+     "network message is filtered by string");
+ 
+   let scrollBox = hud.outputNode.scrollBoxObject.element;
+   ok(scrollBox.scrollTop > 0, "scroll location is not at the top");
+ 
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_613013_console_api_iframe.js b/browser/devtools/webconsole/test/browser_webconsole_bug_613013_console_api_iframe.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_613013_console_api_iframe.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_613013_console_api_iframe.js
+@@ -17,33 +17,37 @@ let TestObserver = {
+   {
+     if (aTopic == "console-api-log-event") {
+       executeSoon(performTest);
+     }
+   }
+ };
+ 
+ function tabLoad(aEvent) {
+-  browser.removeEventListener(aEvent.type, arguments.callee, true);
++  browser.removeEventListener(aEvent.type, tabLoad, true);
+ 
+-  openConsole();
+-
+-  let hudId = HUDService.getHudIdByWindow(content);
+-  hud = HUDService.hudReferences[hudId];
+-
+-  Services.obs.addObserver(TestObserver, "console-api-log-event", false);
+-  content.location.reload();
++  openConsole(null, function(aHud) {
++    hud = aHud;
++    Services.obs.addObserver(TestObserver, "console-api-log-event", false);
++    content.location.reload();
++  });
+ }
+ 
+ function performTest() {
+-  isnot(hud.outputNode.textContent.indexOf("foobarBug613013"), -1,
+-        "console.log() message found");
+-
+   Services.obs.removeObserver(TestObserver, "console-api-log-event");
+   TestObserver = null;
+-  finishTest();
++
++  waitForSuccess({
++    name: "console.log() message",
++    validatorFn: function()
++    {
++      return hud.outputNode.textContent.indexOf("foobarBug613013") > -1;
++    },
++    successFn: finishTest,
++    failureFn: finishTest,
++  });
+ }
+ 
+ function test() {
+   addTab(TEST_URI);
+   browser.addEventListener("load", tabLoad, true);
+ }
+ 
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_614793_jsterm_scroll.js b/browser/devtools/webconsole/test/browser_webconsole_bug_614793_jsterm_scroll.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_614793_jsterm_scroll.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_614793_jsterm_scroll.js
+@@ -12,40 +12,55 @@ function consoleOpened(hud) {
+ 
+   let outputNode = hud.outputNode;
+   let boxObject = outputNode.scrollBoxObject.element;
+ 
+   for (let i = 0; i < 150; i++) {
+     content.console.log("test message " + i);
+   }
+ 
++  let oldScrollTop = -1;
++
+   waitForSuccess({
+     name: "console.log messages displayed",
+     validatorFn: function()
+     {
+       return outputNode.itemCount == 150;
+     },
+     successFn: function()
+     {
+-      let oldScrollTop = boxObject.scrollTop;
++      oldScrollTop = boxObject.scrollTop;
+       ok(oldScrollTop > 0, "scroll location is not at the top");
+ 
+       hud.jsterm.execute("'hello world'");
+ 
++      waitForSuccess(waitForExecute);
++    },
++    failureFn: finishTest,
++  });
++
++  let waitForExecute = {
++    name: "jsterm output displayed",
++    validatorFn: function()
++    {
++      return outputNode.querySelector(".webconsole-msg-output");
++    },
++    successFn: function()
++    {
+       isnot(boxObject.scrollTop, oldScrollTop, "scroll location updated");
+ 
+       oldScrollTop = boxObject.scrollTop;
+       outputNode.scrollBoxObject.ensureElementIsVisible(outputNode.lastChild);
+ 
+       is(boxObject.scrollTop, oldScrollTop, "scroll location is the same");
+ 
+       finishTest();
+     },
+     failureFn: finishTest,
+-  });
++  };
+ }
+ 
+ function test() {
+   addTab("data:text/html;charset=utf-8,Web Console test for bug 614793: jsterm result scroll");
+   browser.addEventListener("load", function onLoad(aEvent) {
+     browser.removeEventListener(aEvent.type, onLoad, true);
+     openConsole(null, consoleOpened);
+   }, true);
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_644419_log_limits.js b/browser/devtools/webconsole/test/browser_webconsole_bug_644419_log_limits.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_644419_log_limits.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_644419_log_limits.js
+@@ -51,24 +51,25 @@ function testWebDevLimits(aEvent) {
+ 
+ function testWebDevLimits2() {
+   // Fill the log with Web Developer errors.
+   for (let i = 0; i < 11; i++) {
+     content.console.log("test message " + i);
+   }
+ 
+   waitForSuccess({
+-    name: "11 console.log messages displayed",
++    name: "10 console.log messages displayed and one pruned",
+     validatorFn: function()
+     {
+-      return outputNode.textContent.indexOf("test message 10") > -1;
++      let message0 = outputNode.textContent.indexOf("test message 0");
++      let message10 = outputNode.textContent.indexOf("test message 10");
++      return message0 == -1 && message10 > -1;
+     },
+     successFn: function()
+     {
+-      testLogEntry(outputNode, "test message 0", "first message is pruned", false, true);
+       findLogEntry("test message 1");
+       // Check if the sentinel entry is still there.
+       findLogEntry("bar is not defined");
+ 
+       Services.prefs.setIntPref("devtools.hud.loglimit.console", gOldPref);
+       testJsLimits();
+     },
+     failureFn: testJsLimits,
+@@ -156,24 +157,38 @@ function loadImage() {
+     gImage && gImage.removeEventListener("load", loadImage, true);
+     gImage = content.document.createElement("img");
+     gImage.src = "test-image.png?_fubar=" + gCounter;
+     body.insertBefore(gImage, body.firstChild);
+     gImage.addEventListener("load", loadImage, true);
+     gCounter++;
+     return;
+   }
++
+   is(gCounter, 11, "loaded 11 files");
+-  testLogEntry(outputNode, "test-image.png?_fubar=0", "first message is pruned", false, true);
+-  findLogEntry("test-image.png?_fubar=1");
+-  // Check if the sentinel entry is still there.
+-  findLogEntry("testing Net limits");
+ 
+-  Services.prefs.setIntPref("devtools.hud.loglimit.network", gOldPref);
+-  testCssLimits();
++  waitForSuccess({
++    name: "loaded 11 files, one message pruned",
++    validatorFn: function()
++    {
++      let message0 = outputNode.querySelector('*[value*="test-image.png?_fubar=0"]');
++      let message10 = outputNode.querySelector('*[value*="test-image.png?_fubar=10"]');
++      return !message0 && message10;
++    },
++    successFn: function()
++    {
++      findLogEntry("test-image.png?_fubar=1");
++      // Check if the sentinel entry is still there.
++      findLogEntry("testing Net limits");
++
++      Services.prefs.setIntPref("devtools.hud.loglimit.network", gOldPref);
++      testCssLimits();
++    },
++    failureFn: testCssLimits,
++  });
+ }
+ 
+ function testCssLimits() {
+   gOldPref = Services.prefs.getIntPref("devtools.hud.loglimit.cssparser");
+   Services.prefs.setIntPref("devtools.hud.loglimit.cssparser", 10);
+ 
+   hud.jsterm.clearOutput();
+   content.console.log("testing CSS limits");
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_646025_console_file_location.js b/browser/devtools/webconsole/test/browser_webconsole_bug_646025_console_file_location.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_646025_console_file_location.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_646025_console_file_location.js
+@@ -11,34 +11,43 @@ const TEST_URI = "http://example.com/bro
+                  "test-bug-646025-console-file-location.html";
+ 
+ function test() {
+   addTab("data:text/html;charset=utf-8,Web Console file location display test");
+   browser.addEventListener("load", onLoad, true);
+ }
+ 
+ function onLoad(aEvent) {
+-  browser.removeEventListener(aEvent.type, arguments.callee, true);
+-  openConsole();
+-  hudId = HUDService.getHudIdByWindow(content);
+-
+-  browser.addEventListener("load", testConsoleFileLocation, true);
+-  content.location = TEST_URI;
++  browser.removeEventListener(aEvent.type, onLoad, true);
++  openConsole(null, function(aHud) {
++    hud = aHud;
++    browser.addEventListener("load", testConsoleFileLocation, true);
++    content.location = TEST_URI;
++  });
+ }
+ 
+ function testConsoleFileLocation(aEvent) {
+-  browser.removeEventListener(aEvent.type, arguments.callee, true);
++  browser.removeEventListener(aEvent.type, testConsoleFileLocation, true);
+ 
+-  outputNode = HUDService.hudReferences[hudId].outputNode;
++  outputNode = hud.outputNode;
+ 
+-  executeSoon(function() {
+-    findLogEntry("test-file-location.js");
+-    findLogEntry("message for level");
+-    findLogEntry("test-file-location.js:5");
+-    findLogEntry("test-file-location.js:6");
+-    findLogEntry("test-file-location.js:7");
+-    findLogEntry("test-file-location.js:8");
+-    findLogEntry("test-file-location.js:9");
++  waitForSuccess({
++    name: "console API messages",
++    validatorFn: function()
++    {
++      return outputNode.textContent.indexOf("message for level debug") > -1;
++    },
++    successFn: function()
++    {
++      findLogEntry("test-file-location.js");
++      findLogEntry("message for level");
++      findLogEntry("test-file-location.js:5");
++      findLogEntry("test-file-location.js:6");
++      findLogEntry("test-file-location.js:7");
++      findLogEntry("test-file-location.js:8");
++      findLogEntry("test-file-location.js:9");
+ 
+-    finishTest();
++      finishTest();
++    },
++    failureFn: finishTest,
+   });
+ }
+ 
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_658368_time_methods.js b/browser/devtools/webconsole/test/browser_webconsole_bug_658368_time_methods.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_658368_time_methods.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_658368_time_methods.js
+@@ -13,28 +13,35 @@ function test() {
+     browser.removeEventListener("load", onLoad, true);
+     openConsole(null, consoleOpened);
+   }, true);
+ }
+ 
+ function consoleOpened(hud) {
+   outputNode = hud.outputNode;
+ 
+-  executeSoon(function() {
+-    findLogEntry("aTimer: timer started");
+-    findLogEntry("ms");
+-
+-    // The next test makes sure that timers with the same name but in separate
+-    // tabs, do not contain the same value.
+-    addTab("data:text/html;charset=utf-8,<script type='text/javascript'>" +
+-           "console.timeEnd('bTimer');</script>");
+-    browser.addEventListener("load", function onLoad() {
+-      browser.removeEventListener("load", onLoad, true);
+-      openConsole(null, testTimerIndependenceInTabs);
+-    }, true);
++  waitForSuccess({
++    name: "aTimer started",
++    validatorFn: function()
++    {
++      return outputNode.textContent.indexOf("aTimer: timer started") > -1;
++    },
++    successFn: function()
++    {
++      findLogEntry("ms");
++      // The next test makes sure that timers with the same name but in separate
++      // tabs, do not contain the same value.
++      addTab("data:text/html;charset=utf-8,<script type='text/javascript'>" +
++             "console.timeEnd('bTimer');</script>");
++      browser.addEventListener("load", function onLoad() {
++        browser.removeEventListener("load", onLoad, true);
++        openConsole(null, testTimerIndependenceInTabs);
++      }, true);
++    },
++    failureFn: finishTest,
+   });
+ }
+ 
+ function testTimerIndependenceInTabs(hud) {
+   outputNode = hud.outputNode;
+ 
+   executeSoon(function() {
+     testLogEntry(outputNode, "bTimer: timer started", "bTimer was not started",
+@@ -51,28 +58,36 @@ function testTimerIndependenceInTabs(hud
+   });
+ }
+ 
+ function testTimerIndependenceInSameTab() {
+   let hudId = HUDService.getHudIdByWindow(content);
+   let hud = HUDService.hudReferences[hudId];
+   outputNode = hud.outputNode;
+ 
+-  executeSoon(function() {
+-    findLogEntry("bTimer: timer started");
+-    hud.jsterm.clearOutput();
++  waitForSuccess({
++    name: "bTimer started",
++    validatorFn: function()
++    {
++      return outputNode.textContent.indexOf("bTimer: timer started") > -1;
++    },
++    successFn: function() {
++      hud.jsterm.clearOutput();
+ 
+-    // Now the following console.timeEnd() call shouldn't display anything,
+-    // if the timers in different pages are not related.
+-    browser.addEventListener("load", function onLoad() {
+-      browser.removeEventListener("load", onLoad, true);
+-      executeSoon(testTimerIndependenceInSameTabAgain);
+-    }, true);
+-    content.location = "data:text/html;charset=utf-8,<script type='text/javascript'>" +
+-           "console.timeEnd('bTimer');</script>";
++      // Now the following console.timeEnd() call shouldn't display anything,
++      // if the timers in different pages are not related.
++      browser.addEventListener("load", function onLoad() {
++        browser.removeEventListener("load", onLoad, true);
++        executeSoon(testTimerIndependenceInSameTabAgain);
++      }, true);
++      content.location = "data:text/html;charset=utf-8," +
++        "<script type='text/javascript'>" +
++        "console.timeEnd('bTimer');</script>";
++    },
++    failureFn: finishTest,
+   });
+ }
+ 
+ function testTimerIndependenceInSameTabAgain(hud) {
+   let hudId = HUDService.getHudIdByWindow(content);
+   let hud = HUDService.hudReferences[hudId];
+   outputNode = hud.outputNode;
+ 
+diff --git a/dom/base/ConsoleAPI.js b/dom/base/ConsoleAPI.js
+--- a/dom/base/ConsoleAPI.js
++++ b/dom/base/ConsoleAPI.js
+@@ -2,87 +2,113 @@
+ /* vim: set ft=javascript ts=2 et sw=2 tw=80: */
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ let Cu = Components.utils;
+ let Ci = Components.interfaces;
+ let Cc = Components.classes;
++
+ // The maximum allowed number of concurrent timers per page.
+ const MAX_PAGE_TIMERS = 10000;
+ 
++// The regular expression used to parse %s/%d and other placeholders for
++// variables in strings that need to be interpolated.
++const ARGUMENT_PATTERN = /%\d*\.?\d*([osdif])\b/g;
++
++// The maximum stacktrace depth when populating the stacktrace array used for
++// console.trace().
++const DEFAULT_MAX_STACKTRACE_DEPTH = 200;
++
++// The console API methods are async and their action is executed later. This
++// delay tells how much later.
++const CALL_DELAY = 30; // milliseconds
++
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource://gre/modules/ConsoleAPIStorage.jsm");
+ 
++let nsITimer = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
++
+ function ConsoleAPI() {}
+ ConsoleAPI.prototype = {
+ 
+   classID: Components.ID("{b49c18f8-3379-4fc0-8c90-d7772c1a9ff3}"),
+ 
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsIDOMGlobalPropertyInitializer]),
+ 
++  _timerInitialized: false,
++  _queuedCalls: null,
++  _timerCallback: null,
++  _destroyedWindows: null,
++
+   // nsIDOMGlobalPropertyInitializer
+   init: function CA_init(aWindow) {
+     Services.obs.addObserver(this, "xpcom-shutdown", false);
+     Services.obs.addObserver(this, "inner-window-destroyed", false);
+ 
++
+     let outerID;
+     let innerID;
+     try {
+       let windowUtils = aWindow.QueryInterface(Ci.nsIInterfaceRequestor)
+                           .getInterface(Ci.nsIDOMWindowUtils);
+ 
+       outerID = windowUtils.outerWindowID;
+       innerID = windowUtils.currentInnerWindowID;
+     }
+     catch (ex) {
+       Cu.reportError(ex);
+     }
+ 
++    let meta = {
++      outerID: outerID,
++      innerID: innerID,
++    };
++
+     let self = this;
+     let chromeObject = {
+       // window.console API
+       log: function CA_log() {
+-        self.notifyObservers(outerID, innerID, "log", self.processArguments(arguments));
++        self.queueCall("log", arguments, meta);
+       },
+       info: function CA_info() {
+-        self.notifyObservers(outerID, innerID, "info", self.processArguments(arguments));
++        self.queueCall("info", arguments, meta);
+       },
+       warn: function CA_warn() {
+-        self.notifyObservers(outerID, innerID, "warn", self.processArguments(arguments));
++        self.queueCall("warn", arguments, meta);
+       },
+       error: function CA_error() {
+-        self.notifyObservers(outerID, innerID, "error", self.processArguments(arguments));
++        self.queueCall("error", arguments, meta);
+       },
+       debug: function CA_debug() {
+-        self.notifyObservers(outerID, innerID, "log", self.processArguments(arguments));
++        self.queueCall("debug", arguments, meta);
+       },
+       trace: function CA_trace() {
+-        self.notifyObservers(outerID, innerID, "trace", self.getStackTrace());
++        self.queueCall("trace", arguments, meta);
+       },
+       // Displays an interactive listing of all the properties of an object.
+       dir: function CA_dir() {
+-        self.notifyObservers(outerID, innerID, "dir", arguments);
++        self.queueCall("dir", arguments, meta);
+       },
+       group: function CA_group() {
+-        self.notifyObservers(outerID, innerID, "group", self.beginGroup(arguments));
++        self.queueCall("group", arguments, meta);
+       },
+       groupCollapsed: function CA_groupCollapsed() {
+-        self.notifyObservers(outerID, innerID, "groupCollapsed", self.beginGroup(arguments));
++        self.queueCall("groupCollapsed", arguments, meta);
+       },
+       groupEnd: function CA_groupEnd() {
+-        self.notifyObservers(outerID, innerID, "groupEnd", arguments);
++        self.queueCall("groupEnd", arguments, meta);
+       },
+       time: function CA_time() {
+-        self.notifyObservers(outerID, innerID, "time", self.startTimer(innerID, arguments[0]));
++        self.queueCall("time", arguments, meta);
+       },
+       timeEnd: function CA_timeEnd() {
+-        self.notifyObservers(outerID, innerID, "timeEnd", self.stopTimer(innerID, arguments[0]));
++        self.queueCall("timeEnd", arguments, meta);
+       },
+       __exposedProps__: {
+         log: "r",
+         info: "r",
+         warn: "r",
+         error: "r",
+         debug: "r",
+         trace: "r",
+@@ -118,129 +144,233 @@ ConsoleAPI.prototype = {
+       __noSuchMethod__: { enumerable: true, configurable: true, writable: true,
+                           value: function() {} },
+       __mozillaConsole__: { value: true }
+     };
+ 
+     Object.defineProperties(contentObj, properties);
+     Cu.makeObjectPropsNormal(contentObj);
+ 
++    this._queuedCalls = [];
++    this._destroyedWindows = [];
++    this._timerCallback = {
++      notify: this._timerCallbackNotify.bind(this),
++    };
++
+     return contentObj;
+   },
+ 
+   observe: function CA_observe(aSubject, aTopic, aData)
+   {
+     if (aTopic == "xpcom-shutdown") {
+       Services.obs.removeObserver(this, "xpcom-shutdown");
+       Services.obs.removeObserver(this, "inner-window-destroyed");
++      this._destroyedWindows = [];
++      this._queuedCalls = [];
+     }
+     else if (aTopic == "inner-window-destroyed") {
+       let innerWindowID = aSubject.QueryInterface(Ci.nsISupportsPRUint64).data;
+       delete this.timerRegistry[innerWindowID + ""];
++      this._destroyedWindows.push(innerWindowID);
+     }
+   },
+ 
+   /**
++   * Queue a call to a console method. See the CALL_DELAY constant.
++   *
++   * @param string aMethod
++   *        The console method the code has invoked.
++   * @param object aArguments
++   *        The arguments passed to the console method.
++   * @param object aMeta
++   *        The associated call meta information. This needs to hold the inner
++   *        and outer window IDs from where the console method was called.
++   */
++  queueCall: function CA_queueCall(aMethod, aArguments, aMeta)
++  {
++    let metaForCall = {
++      outerID: aMeta.outerID,
++      innerID: aMeta.innerID,
++      timeStamp: Date.now(),
++      stack: this.getStackTrace(aMethod != "trace" ? 1 : null),
++    };
++
++    this._queuedCalls.push([aMethod, aArguments, metaForCall]);
++
++    if (!this._timerInitialized) {
++      nsITimer.initWithCallback(this._timerCallback, CALL_DELAY,
++                                Ci.nsITimer.TYPE_ONE_SHOT);
++      this._timerInitialized = true;
++    }
++  },
++
++  /**
++   * Timer callback used to process each of the queued calls.
++   * @private
++   */
++  _timerCallbackNotify: function CA__timerCallbackNotify()
++  {
++    this._timerInitialized = false;
++    this._queuedCalls.splice(0).forEach(this._processQueuedCall, this);
++    this._destroyedWindows = [];
++  },
++
++  /**
++   * Process a queued call to a console method.
++   *
++   * @private
++   * @param array aCall
++   *        Array that holds information about the queued call.
++   */
++  _processQueuedCall: function CA__processQueuedItem(aCall)
++  {
++    let [method, args, meta] = aCall;
++
++    let notifyMeta = {
++      outerID: meta.outerID,
++      innerID: meta.innerID,
++      timeStamp: meta.timeStamp,
++      frame: meta.stack[0],
++    };
++
++    let notifyArguments = null;
++
++    switch (method) {
++      case "log":
++      case "info":
++      case "warn":
++      case "error":
++      case "debug":
++        notifyArguments = this.processArguments(args);
++        break;
++      case "trace":
++        notifyArguments = meta.stack;
++        break;
++      case "group":
++      case "groupCollapsed":
++        notifyArguments = this.beginGroup(args);
++        break;
++      case "groupEnd":
++      case "dir":
++        notifyArguments = args;
++        break;
++      case "time":
++        notifyArguments = this.startTimer(meta.innerID, args[0], meta.timeStamp);
++        break;
++      case "timeEnd":
++        notifyArguments = this.stopTimer(meta.innerID, args[0], meta.timeStamp);
++        break;
++      default:
++        // unknown console API method!
++        return;
++    }
++
++    this.notifyObservers(method, notifyArguments, notifyMeta);
++  },
++
++  /**
+    * Notify all observers of any console API call.
+    *
+-   * @param number aOuterWindowID
+-   *        The outer window ID from where the message came from.
+-   * @param number aInnerWindowID
+-   *        The inner window ID from where the message came from.
+    * @param string aLevel
+    *        The message level.
+    * @param mixed aArguments
+    *        The arguments given to the console API call.
+-   **/
+-  notifyObservers:
+-  function CA_notifyObservers(aOuterWindowID, aInnerWindowID, aLevel, aArguments) {
+-    if (!aOuterWindowID) {
+-      return;
+-    }
+-
+-    let stack = this.getStackTrace();
+-    // Skip the first frame since it contains an internal call.
+-    let frame = stack[1];
++   * @param object aMeta
++   *        Object that holds metadata about the console API call:
++   *        - outerID - the outer ID of the window where the message came from.
++   *        - innerID - the inner ID of the window where the message came from.
++   *        - frame - the youngest content frame in the call stack.
++   *        - timeStamp - when the console API call occurred.
++   */
++  notifyObservers: function CA_notifyObservers(aLevel, aArguments, aMeta) {
+     let consoleEvent = {
+-      ID: aOuterWindowID,
+-      innerID: aInnerWindowID,
++      ID: aMeta.outerID,
++      innerID: aMeta.innerID,
+       level: aLevel,
+-      filename: frame.filename,
+-      lineNumber: frame.lineNumber,
+-      functionName: frame.functionName,
++      filename: aMeta.frame.filename,
++      lineNumber: aMeta.frame.lineNumber,
++      functionName: aMeta.frame.functionName,
+       arguments: aArguments,
+-      timeStamp: Date.now(),
++      timeStamp: aMeta.timeStamp,
+     };
+ 
+     consoleEvent.wrappedJSObject = consoleEvent;
+ 
+-    ConsoleAPIStorage.recordEvent(aInnerWindowID, consoleEvent);
++    // Store messages for which the inner window was not destroyed.
++    if (this._destroyedWindows.indexOf(aMeta.innerID) == -1) {
++      ConsoleAPIStorage.recordEvent(aMeta.innerID, consoleEvent);
++    }
+ 
+-    Services.obs.notifyObservers(consoleEvent,
+-                                 "console-api-log-event", aOuterWindowID);
++    Services.obs.notifyObservers(consoleEvent, "console-api-log-event",
++                                 aMeta.outerID);
+   },
+ 
+   /**
+    * Process the console API call arguments in order to perform printf-like
+    * string substitution.
+    * TODO: object substitution should display an interactive property list (bug
+    * 685815) and width and precision qualifiers should be taken into account
+    * (bug 685813).
+    *
+    * @param mixed aArguments
+    *        The arguments given to the console API call.
+    **/
+   processArguments: function CA_processArguments(aArguments) {
+-    if (aArguments.length < 2) {
++    if (aArguments.length < 2 || typeof aArguments[0] != "string") {
+       return aArguments;
+     }
+     let args = Array.prototype.slice.call(aArguments);
+     let format = args.shift();
+-    if (typeof format != "string") {
+-      return aArguments;
+-    }
+     // Format specification regular expression.
+-    let pattern = /%(\d*).?(\d*)[a-zA-Z]/g;
+-    let processed = format.replace(pattern, function CA_PA_substitute(spec) {
+-      switch (spec[spec.length-1]) {
++    let processed = format.replace(ARGUMENT_PATTERN, function CA_PA_substitute(match, submatch) {
++      switch (submatch) {
+         case "o":
+         case "s":
+           return String(args.shift());
+         case "d":
+         case "i":
+           return parseInt(args.shift());
+         case "f":
+           return parseFloat(args.shift());
+         default:
+-          return spec;
++          return submatch;
+       };
+     });
+     args.unshift(processed);
+     return args;
+   },
+ 
+   /**
+    * Build the stacktrace array for the console.trace() call.
+    *
++   * @param number [aMaxDepth=DEFAULT_MAX_STACKTRACE_DEPTH]
++   *        Optional maximum stacktrace depth.
+    * @return array
+    *         Each element is a stack frame that holds the following properties:
+    *         filename, lineNumber, functionName and language.
+-   **/
+-  getStackTrace: function CA_getStackTrace() {
++   */
++  getStackTrace: function CA_getStackTrace(aMaxDepth) {
++    if (!aMaxDepth) {
++      aMaxDepth = DEFAULT_MAX_STACKTRACE_DEPTH;
++    }
++
+     let stack = [];
+-    let frame = Components.stack.caller;
++    let frame = Components.stack.caller.caller;
+     while (frame = frame.caller) {
+       if (frame.language == Ci.nsIProgrammingLanguage.JAVASCRIPT ||
+           frame.language == Ci.nsIProgrammingLanguage.JAVASCRIPT2) {
+         stack.push({
+           filename: frame.filename,
+           lineNumber: frame.lineNumber,
+           functionName: frame.name,
+           language: frame.language,
+         });
++        if (stack.length == aMaxDepth) {
++          break;
++        }
+       }
+     }
+ 
+     return stack;
+   },
+ 
+   /**
+    * Begin a new group for logging output together.
+@@ -260,64 +390,68 @@ ConsoleAPI.prototype = {
+ 
+   /**
+    * Create a new timer by recording the current time under the specified name.
+    *
+    * @param number aWindowId
+    *        The inner ID of the window.
+    * @param string aName
+    *        The name of the timer.
++   * @param number [aTimestamp=Date.now()]
++   *        Optional timestamp that tells when the timer was originally started.
+    * @return object
+    *        The name property holds the timer name and the started property
+    *        holds the time the timer was started. In case of error, it returns
+    *        an object with the single property "error" that contains the key
+    *        for retrieving the localized error message.
+    **/
+-  startTimer: function CA_startTimer(aWindowId, aName) {
++  startTimer: function CA_startTimer(aWindowId, aName, aTimestamp) {
+     if (!aName) {
+         return;
+     }
+     let innerID = aWindowId + "";
+     if (!this.timerRegistry[innerID]) {
+         this.timerRegistry[innerID] = {};
+     }
+     let pageTimers = this.timerRegistry[innerID];
+     if (Object.keys(pageTimers).length > MAX_PAGE_TIMERS - 1) {
+         return { error: "maxTimersExceeded" };
+     }
+     let key = aWindowId + "-" + aName.toString();
+     if (!pageTimers[key]) {
+-        pageTimers[key] = Date.now();
++        pageTimers[key] = aTimestamp || Date.now();
+     }
+     return { name: aName, started: pageTimers[key] };
+   },
+ 
+   /**
+    * Stop the timer with the specified name and retrieve the elapsed time.
+    *
+    * @param number aWindowId
+    *        The inner ID of the window.
+    * @param string aName
+    *        The name of the timer.
++   * @param number [aTimestamp=Date.now()]
++   *        Optional timestamp that tells when the timer was originally stopped.
+    * @return object
+    *        The name property holds the timer name and the duration property
+    *        holds the number of milliseconds since the timer was started.
+    **/
+-  stopTimer: function CA_stopTimer(aWindowId, aName) {
++  stopTimer: function CA_stopTimer(aWindowId, aName, aTimestamp) {
+     if (!aName) {
+         return;
+     }
+     let innerID = aWindowId + "";
+     let pageTimers = this.timerRegistry[innerID];
+     if (!pageTimers) {
+         return;
+     }
+     let key = aWindowId + "-" + aName.toString();
+     if (!pageTimers[key]) {
+         return;
+     }
+-    let duration = Date.now() - pageTimers[key];
++    let duration = (aTimestamp || Date.now()) - pageTimers[key];
+     delete pageTimers[key];
+     return { name: aName, duration: duration };
+   }
+ };
+ 
+ let NSGetFactory = XPCOMUtils.generateNSGetFactory([ConsoleAPI]);
+diff --git a/dom/tests/browser/browser_ConsoleAPITests.js b/dom/tests/browser/browser_ConsoleAPITests.js
+--- a/dom/tests/browser/browser_ConsoleAPITests.js
++++ b/dom/tests/browser/browser_ConsoleAPITests.js
+@@ -1,66 +1,62 @@
+ /* vim:set ts=2 sw=2 sts=2 et: */
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ const TEST_URI = "http://example.com/browser/dom/tests/browser/test-console-api.html";
+ 
+-var gWindow, gLevel, gArgs;
++var gWindow, gLevel, gArgs, gTestDriver;
+ 
+ function test() {
+   waitForExplicitFinish();
+ 
+   var tab = gBrowser.addTab(TEST_URI);
+   gBrowser.selectedTab = tab;
+   var browser = gBrowser.selectedBrowser;
+ 
+   registerCleanupFunction(function () {
++    gWindow = gLevel = gArgs = gTestDriver = null;
+     gBrowser.removeTab(tab);
+   });
+ 
+   ConsoleObserver.init();
+ 
+   browser.addEventListener("DOMContentLoaded", function onLoad(event) {
+     browser.removeEventListener("DOMContentLoaded", onLoad, false);
+     executeSoon(function test_executeSoon() {
+       gWindow = browser.contentWindow;
+       consoleAPISanityTest();
+-      observeConsoleTest();
++      gTestDriver = observeConsoleTest();
++      gTestDriver.next();
+     });
+ 
+   }, false);
+ }
+ 
+ function testConsoleData(aMessageObject) {
+   let messageWindow = getWindowByWindowId(aMessageObject.ID);
+   is(messageWindow, gWindow, "found correct window by window ID");
+ 
+   is(aMessageObject.level, gLevel, "expected level received");
+   ok(aMessageObject.arguments, "we have arguments");
+   is(aMessageObject.arguments.length, gArgs.length, "arguments.length matches");
+ 
+   if (gLevel == "trace") {
+     is(aMessageObject.arguments.toSource(), gArgs.toSource(),
+        "stack trace is correct");
+-
+-    // Now test the location information in console.log()
+-    startLocationTest();
+   }
+   else {
+     gArgs.forEach(function (a, i) {
+       is(aMessageObject.arguments[i], a, "correct arg " + i);
+     });
+   }
+ 
+-  if (aMessageObject.level == "error") {
+-    // Now test console.trace()
+-    startTraceTest();
+-  }
++  gTestDriver.next();
+ }
+ 
+ function testLocationData(aMessageObject) {
+   let messageWindow = getWindowByWindowId(aMessageObject.ID);
+   is(messageWindow, gWindow, "found correct window by window ID");
+ 
+   is(aMessageObject.level, gLevel, "expected level received");
+   ok(aMessageObject.arguments, "we have arguments");
+@@ -158,50 +154,72 @@ function expect(level) {
+   gLevel = level;
+   gArgs = Array.slice(arguments, 1);
+ }
+ 
+ function observeConsoleTest() {
+   let win = XPCNativeWrapper.unwrap(gWindow);
+   expect("log", "arg");
+   win.console.log("arg");
++  yield;
+ 
+   expect("info", "arg", "extra arg");
+   win.console.info("arg", "extra arg");
++  yield;
+ 
+   // We don't currently support width and precision qualifiers, but we don't
+   // choke on them either.
+   expect("warn", "Lesson 1: PI is approximately equal to 3.14159");
+   win.console.warn("Lesson %d: %s is approximately equal to %1.2f",
+                    1,
+                    "PI",
+                    3.14159);
++  yield;
++
+   expect("log", "%d, %s, %l");
+   win.console.log("%d, %s, %l");
++  yield;
++
+   expect("log", "%a %b %c");
+   win.console.log("%a %b %c");
++  yield;
++
+   expect("log", "%a %b %c", "a", "b");
+   win.console.log("%a %b %c", "a", "b");
++  yield;
++
+   expect("log", "2, a, %l", 3);
+   win.console.log("%d, %s, %l", 2, "a", 3);
++  yield;
+ 
+   // Bug #692550 handle null and undefined.
+   expect("log", "null, undefined");
+   win.console.log("%s, %s", null, undefined);
++  yield;
+ 
+   // Bug #696288 handle object as first argument.
+   let obj = { a: 1 };
+   expect("log", obj, "a");
+   win.console.log(obj, "a");
++  yield;
+ 
+   expect("dir", win.toString());
+   win.console.dir(win);
++  yield;
+ 
+   expect("error", "arg");
+   win.console.error("arg");
++
++  yield;
++
++  startTraceTest();
++  yield;
++
++  startLocationTest();
++  yield;
+ }
+ 
+ function consoleAPISanityTest() {
+   let win = XPCNativeWrapper.unwrap(gWindow);
+   ok(win.console, "we have a console attached");
+   ok(win.console, "we have a console attached, 2nd attempt");
+ 
+   ok(win.console.log, "console.log is here");
+diff --git a/dom/tests/browser/browser_ConsoleStoragePBTest.js b/dom/tests/browser/browser_ConsoleStoragePBTest.js
+--- a/dom/tests/browser/browser_ConsoleStoragePBTest.js
++++ b/dom/tests/browser/browser_ConsoleStoragePBTest.js
+@@ -9,34 +9,54 @@ function test() {
+     return;
+   }
+ 
+   waitForExplicitFinish();
+ 
+   var CSS = {};
+   Cu.import("resource://gre/modules/ConsoleAPIStorage.jsm", CSS);
+ 
+-  function checkStorageOccurs(shouldOccur) {
++  let innerID, beforeEvents, storageShouldOccur;
++
++  var ConsoleObserver = {
++    QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
++
++    observe: function CO_observe(aSubject, aTopic, aData)
++    {
++      if (aTopic != "console-api-log-event") {
++        return;
++      }
++
++      let afterEvents = CSS.ConsoleAPIStorage.getEvents(innerID);
++
++      is(beforeEvents.length == afterEvents.length - 1,
++         storageShouldOccur,
++         "storage should" + (storageShouldOccur ? "" : " not") + " occur");
++
++      executeSoon(function() {
++        Services.obs.removeObserver(ConsoleObserver, "console-api-log-event");
++        pb.privateBrowsingEnabled = storageShouldOccur;
++      });
++    }
++  };
++
++  function checkStorageOccurs() {
++    Services.obs.addObserver(ConsoleObserver, "console-api-log-event", false);
++
+     let win = XPCNativeWrapper.unwrap(browser.contentWindow);
+-    let innerID = getInnerWindowId(win);
++    innerID = getInnerWindowId(win);
+ 
+-    let beforeEvents = CSS.ConsoleAPIStorage.getEvents(innerID);
+-    win.console.log("foo bar baz (private: " + !shouldOccur + ")");
+-
+-    let afterEvents = CSS.ConsoleAPIStorage.getEvents(innerID);
+-
+-    is(beforeEvents.length == afterEvents.length - 1,
+-       shouldOccur, "storage should" + (shouldOccur ? "" : "n't") + " occur");
++    beforeEvents = CSS.ConsoleAPIStorage.getEvents(innerID);
++    win.console.log("foo bar baz (private: " + !storageShouldOccur + ")");
+   }
+ 
+   function pbObserver(aSubject, aTopic, aData) {
+     if (aData == "enter") {
+-      checkStorageOccurs(false);
+-
+-      executeSoon(function () { pb.privateBrowsingEnabled = false; });
++      storageShouldOccur = false;
++      checkStorageOccurs();
+     } else if (aData == "exit") {
+       executeSoon(finish);
+     }
+   }
+ 
+   const TEST_URI = "http://example.com/browser/dom/tests/browser/test-console-api.html";
+   var tab = gBrowser.selectedTab = gBrowser.addTab(TEST_URI);
+   var browser = gBrowser.selectedBrowser;
+@@ -56,19 +76,18 @@ function test() {
+   });
+ 
+   browser.addEventListener("DOMContentLoaded", function onLoad(event) {
+     if (browser.currentURI.spec != TEST_URI)
+       return;
+ 
+     browser.removeEventListener("DOMContentLoaded", onLoad, false);
+ 
+-    checkStorageOccurs(true);
+-
+-    pb.privateBrowsingEnabled = true;
++    storageShouldOccur = true;
++    checkStorageOccurs();
+   }, false);
+ }
+ 
+ function getInnerWindowId(aWindow) {
+   return aWindow.QueryInterface(Ci.nsIInterfaceRequestor)
+                 .getInterface(Ci.nsIDOMWindowUtils)
+                 .currentInnerWindowID;
+ }

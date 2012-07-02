@@ -1,0 +1,196 @@
+diff -r 1ac07fe5f6c9 toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm	Wed Jul 21 01:34:14 2010 -0700
++++ b/toolkit/components/console/hudservice/HUDService.jsm	Wed Jul 21 14:09:08 2010 +0300
+@@ -1727,20 +1727,20 @@ HeadsUpDisplay.prototype = {
+    * Shortcut to make HTML nodes
+    *
+    * @param string aTag
+    * @returns nsIDOMNode
+    */
+   makeHTMLNode:
+   function HUD_makeHTMLNode(aTag)
+   {
+-    try {
++    if (this.HTMLFactory) {
+       return this.HTMLFactory(aTag);
+     }
+-    catch (ex) {
++    else {
+       var ns = ELEMENT_NS;
+       var nsUri = ELEMENT_NS_URI;
+       var tag = ns + aTag;
+       return this.chromeDocument.createElementNS(nsUri, tag);
+     }
+   },
+ 
+   /**
+diff -r 1ac07fe5f6c9 toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in	Wed Jul 21 01:34:14 2010 -0700
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in	Wed Jul 21 14:09:08 2010 +0300
+@@ -51,15 +51,16 @@ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-mutation.html \
+ 	testscript.js \
+ 	test-filter.html \
+ 	test-observe-http-ajax.html \
+ 	test-data.json \
+ 	test-property-provider.html \
++	test-error.html \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff -r 1ac07fe5f6c9 toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Wed Jul 21 01:34:14 2010 -0700
++++ b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Wed Jul 21 14:09:08 2010 +0300
+@@ -60,16 +60,18 @@ const TEST_URI = "http://example.com/bro
+ const TEST_HTTP_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-observe-http-ajax.html";
+ 
+ const TEST_NETWORK_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-network.html";
+ 
+ const TEST_FILTER_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-filter.html";
+ 
+ const TEST_PROPERTY_PROVIDER_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-property-provider.html";
+ 
++const TEST_ERROR_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-error.html";
++
+ function noCacheUriSpec(aUriSpec) {
+   return aUriSpec + "?_=" + Date.now();
+ }
+ 
+ content.location.href = TEST_URI;
+ 
+ function testRegistries() {
+   var displaysIdx = HUDService.displaysIndex();
+@@ -238,29 +240,25 @@ function testConsoleLoggingAPI(aMethod)
+   let jsterm = HUD.jsterm;
+   let outputLogNode = jsterm.outputNode;
+   ok(/foo bar/.test(outputLogNode.childNodes[0].childNodes[0].nodeValue),
+     "Emitted both console arguments");
+ }
+ 
+ function testLogEntry(aOutputNode, aMatchString, aSuccessErrObj)
+ {
+-  executeSoon(function (){
+-                var msgs = aOutputNode.childNodes;
+-                for (var i = 0; i < msgs.length; i++) {
+-                  var message = msgs[i].innerHTML.indexOf(aMatchString);
+-                  if (message > -1) {
+-                    ok(true, aSuccessErrObj.success);
+-                    return;
+-                  }
+-                  else {
+-                    throw new Error(aSuccessErrObj.err);
+-                  }
+-                }
+-              });
++  var msgs = aOutputNode.childNodes;
++  for (var i = 0; i < msgs.length; i++) {
++    var message = msgs[i].innerHTML.indexOf(aMatchString);
++    if (message > -1) {
++      ok(true, aSuccessErrObj.success);
++      return;
++    }
++  }
++  throw new Error(aSuccessErrObj.err);
+ }
+ 
+ // test network logging
+ function testNet()
+ {
+   HUDService.activateHUDForContext(tab);
+   content.location = TEST_NETWORK_URI;
+   executeSoon(function () {
+@@ -573,22 +571,64 @@ function testPageReload() {
+ 
+     is(typeof console, "object", "window.console is an object, after page reload");
+     is(typeof console.log, "function", "console.log is a function");
+     is(typeof console.info, "function", "console.info is a function");
+     is(typeof console.warn, "function", "console.warn is a function");
+     is(typeof console.error, "function", "console.error is a function");
+     is(typeof console.exception, "function", "console.exception is a function");
+ 
+-    testEnd();
++    testErrorOnPageReload();
+   }, false);
+ 
+   content.location.reload();
+ }
+ 
++function testErrorOnPageReload() {
++  // see bug 580030: the error handler fails silently after page reload.
++  // https://bugzilla.mozilla.org/show_bug.cgi?id=580030
++
++  var pageReloaded = false;
++  browser.addEventListener("DOMContentLoaded", function onDOMLoad() {
++    if (!pageReloaded) {
++      pageReloaded = true;
++      content.location.reload();
++      return;
++    }
++
++    browser.removeEventListener("DOMContentLoaded", onDOMLoad, false);
++
++    // dispatch a click event to the button in the test page.
++    var contentDocument = browser.contentDocument.wrappedJSObject;
++    var button = contentDocument.getElementsByTagName("button")[0];
++    var clickEvent = contentDocument.createEvent("MouseEvents");
++    clickEvent.initMouseEvent("click", true, true, null, 0, 0, 0, 0, 0,
++      false, false, false, false, 0, null);
++
++    var successMsg = "Found the error message after page reload";
++    var errMsg = "Could not get the error message after page reload";
++
++    var display = HUDService.getDisplayByURISpec(content.location.href);
++    var outputNode = display.querySelectorAll(".hud-output-node")[0];
++
++    button.addEventListener("click", function onClickHandler() {
++      button.removeEventListener("click", onClickHandler, false);
++
++      testLogEntry(outputNode, "fooBazBaz",
++        { success: successMsg, err: errMsg });
++
++      testEnd();
++    }, false);
++
++    button.dispatchEvent(clickEvent);
++  }, false);
++
++  content.location.href = TEST_ERROR_URI;
++}
++
+ function testEnd() {
+   // testUnregister();
+   executeSoon(function () {
+     HUDService.deactivateHUDForContext(tab);
+     HUDService.shutdown();
+   });
+   finish();
+ }
+diff -r 1ac07fe5f6c9 toolkit/components/console/hudservice/tests/browser/test-error.html
+--- /dev/null	Thu Jan 01 00:00:00 1970 +0000
++++ b/toolkit/components/console/hudservice/tests/browser/test-error.html	Wed Jul 21 14:09:08 2010 +0300
+@@ -0,0 +1,19 @@
++<!DOCTYPE HTML>
++<html dir="ltr" xml:lang="en-US" lang="en-US">
++  <head>
++    <title>Console error test</title>
++  </head>
++  <body>
++    <h1>Heads Up Display - error test</h1>
++    <p><button>generate error</button></p>
++
++    <script type="text/javascript"><!--
++      var button = document.getElementsByTagName("button")[0];
++
++      button.addEventListener("click", function () {
++        fooBazBaz.bar();
++      }, false);
++    // --></script>
++  </body>
++</html>
++

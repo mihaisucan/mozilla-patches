@@ -1,0 +1,606 @@
+diff -r 771ddc7c8c16 toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm	Wed Jul 07 21:12:15 2010 +0300
++++ b/toolkit/components/console/hudservice/HUDService.jsm	Fri Jul 09 21:19:59 2010 +0300
+@@ -447,18 +447,16 @@ HUD_SERVICE.prototype =
+ 
+     if (!aHUDId || !aURISpec){
+       throw new Error(ERRORS.MISSING_ARGS);
+     }
+     this.filterPrefs[aHUDId] = this.defaultFilterPrefs;
+     this.displayRegistry[aHUDId] = aURISpec;
+     this._headsUpDisplays[aHUDId] = { id: aHUDId, };
+     this.registerActiveContext(aHUDId);
+-    // init storage objects:
+-    this.storage.createDisplay(aHUDId);
+ 
+     var huds = this.uriRegistry[aURISpec];
+     var foundHUDId = false;
+ 
+     if (huds) {
+       var len = huds.length;
+       for (var i = 0; i < len; i++) {
+         if (huds[i] == aHUDId) {
+@@ -496,18 +494,16 @@ HUD_SERVICE.prototype =
+       }
+     }
+     // remove the DOM Nodes
+     parent.removeChild(outputNode);
+     // remove our record of the DOM Nodes from the registry
+     delete this._headsUpDisplays[aId];
+     // remove the HeadsUpDisplay object from memory
+     this.deleteHeadsUpDisplay(aId);
+-    // remove the related storage object
+-    this.storage.removeDisplay(aId);
+     let displays = this.displays();
+ 
+     var uri  = this.displayRegistry[aId];
+     var specHudArr = this.uriRegistry[uri];
+ 
+     for (var i = 0; i < specHudArr.length; i++) {
+       if (specHudArr[i] == aId) {
+         specHudArr.splice(i, 1);
+@@ -726,17 +722,17 @@ HUD_SERVICE.prototype =
+       }
+     }
+     else {
+       // log everything
+       aConsoleNode.appendChild(aMessageNode);
+       aMessageNode.scrollIntoView(false);
+     }
+     // store this message in the storage module:
+-    this.storage.recordEntry(aMessage.hudId, aMessage);
++    this.storage.recordEntry(aMessage);
+   },
+ 
+   /**
+    * logs a message to the Heads Up Display that originates
+    * in the nsIConsoleService
+    *
+    * @param nsIConsoleMessage aMessage
+    * @param nsIDOMNode aConsoleNode
+@@ -749,17 +745,17 @@ HUD_SERVICE.prototype =
+                                                    aFilterState,
+                                                    aFilterString)
+   {
+     if (aFilterState){
+       aConsoleNode.appendChild(aMessageNode);
+       aMessageNode.scrollIntoView(false);
+     }
+     // store this message in the storage module:
+-    this.storage.recordEntry(aMessage.hudId, aMessage);
++    this.storage.recordEntry(aMessage);
+   },
+ 
+   /**
+    * Logs a Message.
+    * @param aMessage
+    *        The message to log, which is a JS object, this is the
+    *        "raw" log message
+    * @param aConsoleNode
+@@ -3233,45 +3229,66 @@ HeadsUpDisplayUICommands = {
+ };
+ 
+ //////////////////////////////////////////////////////////////////////////
+ // ConsoleStorage
+ //////////////////////////////////////////////////////////////////////////
+ 
+ var prefs = Services.prefs;
+ 
+-const GLOBAL_STORAGE_INDEX_ID = "GLOBAL_CONSOLE";
+ const PREFS_BRANCH_PREF = "devtools.hud.display.filter";
+ const PREFS_PREFIX = "devtools.hud.display.filter.";
+ const PREFS = { mutation: PREFS_PREFIX + "mutation",
+                 network: PREFS_PREFIX + "network",
+                 cssparser: PREFS_PREFIX + "cssparser",
+                 exception: PREFS_PREFIX + "exception",
+                 error: PREFS_PREFIX + "error",
+                 info: PREFS_PREFIX + "info",
+                 warn: PREFS_PREFIX + "warn",
+                 log: PREFS_PREFIX + "log",
+                 global: PREFS_PREFIX + "global",
+               };
+ 
+ function ConsoleStorage()
+ {
+   this.sequencer = null;
+-  this.consoleDisplays = {};
+-  // each display will have an index that tracks each ConsoleEntry
+-  this.displayIndexes = {};
+-  this.globalStorageIndex = [];
+-  this.globalDisplay = {};
+-  this.createDisplay(GLOBAL_STORAGE_INDEX_ID);
+-  // TODO: need to create a method that truncates the message
+-  // see bug 570543
++
++  // All entries are stored here. Keys hold the ID of each entry.
++  this.globalEntries = {};
++
++  // All the entry IDs are stored here, in the order they are added.
++  this.globalIndex = [];
+ 
+   // store an index of display prefs
+   this.displayPrefs = {};
+ 
++  // Index size. This keeps track of how many entries are in the index.
++  this.indexSize = 0;
++
++  // Index space. This is used to track how many entries are freed in the index.
++  this.indexSpace = 0;
++
++  // The maximum number of stored entries. This is the global value, meaning 
++  // that the storage will not hold more entries than allowed here, irrespective 
++  // of the number of HUDs.
++  this.maxEntries = 5000;
++
++  // Entries older than N seconds will be deleted.
++  this.oldestEntryAllowed = 300; // seconds
++
++  // The truncation interval in seconds. How often should the entries be 
++  // truncated?
++  this.truncationDelay = 30; // seconds
++
++  // The truncation interval.
++  // @private
++  // FIXME: which chromeWindow?
++  //this.truncationInterval_ = chromeWindow.setInterval(this.truncateEntries,
++  //  this.truncationDelay);
++
+   // check prefs for existence, create & load if absent, load them if present
+   let filterPrefs;
+   let defaultDisplayPrefs;
+ 
+   try {
+     filterPrefs = prefs.getBoolPref(PREFS_BRANCH_PREF);
+   }
+   catch (ex) {
+@@ -3333,17 +3350,17 @@ ConsoleStorage.prototype = {
+     prefs.setBoolPref(PREFS.exception, (aPrefsObject.exception ? true : false));
+     prefs.setBoolPref(PREFS.error, (aPrefsObject.error ? true : false));
+     prefs.setBoolPref(PREFS.info, (aPrefsObject.info ? true : false));
+     prefs.setBoolPref(PREFS.warn, (aPrefsObject.warn ? true : false));
+     prefs.setBoolPref(PREFS.log, (aPrefsObject.log ? true : false));
+     prefs.setBoolPref(PREFS.global, (aPrefsObject.global ? true : false));
+   },
+ 
+-  sequenceId: function CS_sequencerId()
++  sequenceId: function CS_sequenceId()
+   {
+     if (!this.sequencer) {
+       this.sequencer = this.createSequencer();
+     }
+     return this.sequencer.next();
+   },
+ 
+   createSequencer: function CS_createSequencer()
+@@ -3352,19 +3369,32 @@ ConsoleStorage.prototype = {
+       while(1) {
+         aInt++;
+         yield aInt;
+       }
+     }
+     return sequencer(-1);
+   },
+ 
+-  globalStore: function CS_globalStore(aIndex)
++  /**
++   * Record multiple entries at once.
++   *
++   * @param array aEntries the array of entries you want recorded.
++   * @returns boolean true if all entries were added without any errors, or 
++   * false otherwise.
++   */
++  recordEntries: function CS_recordEntries(aEntries)
+   {
+-    return this.displayStore(GLOBAL_CONSOLE_DOM_NODE_ID);
++    var result = true;
++    for (let i = 0, n = aEntries.length; i < n; i++) {
++      if (!this.recordEntry(aEntries[i])) {
++        result = false;
++      }
++    }
++    return result;
+   },
+ 
+   displayStore: function CS_displayStore(aId)
+   {
+     var self = this;
+     var idx = -1;
+     var id = aId;
+     var aLength = self.displayIndexes[id].length;
+@@ -3391,76 +3421,128 @@ ConsoleStorage.prototype = {
+         var entry = self.consoleDisplays[id][index];
+         yield entry;
+       }
+     }
+ 
+     return displayStoreGenerator(-1, aLength);
+   },
+ 
+-  recordEntries: function CS_recordEntries(aHUDId, aConfigArray)
++  /**
++   * Record an entry in the storage.
++   *
++   * @param object aEntry the entry object.
++   * @returns integer the entry ID.
++   */
++  recordEntry: function CS_recordEntry(aEntry)
+   {
+-    var len = aConfigArray.length;
+-    for (var i = 0; i < len; i++){
+-      this.recordEntry(aHUDId, aConfigArray[i]);
++    var id = this.sequenceId();
++
++    aEntry.storageId = id;
++    this.globalEntries[id] = aEntry;
++    this.globalIndex.push(id);
++    this.indexSize++;
++
++    // Execute the truncateEntries() method every 10 entries.
++    // FIXME: this code is here instead of executing the truncation with an 
++    // interval.
++    if (!(this.indexSize % 10)) {
++      this.truncateEntries();
++    }
++
++    return id;
++  },
++
++  /**
++   * Retrieve an entry from the storage.
++   *
++   * @param integer aId The entry ID.
++   * @returns object The entry object.
++   */
++  getEntry: function CS_getEntry(aId)
++  {
++    return this.globalEntries[aId];
++  },
++
++  /**
++   * Update an entry in the storage.
++   *
++   * @param object aEntry the entry object, which must have the storageId 
++   * property to indicate which entry will be updated.
++   * @returns boolean True if the update was sucessful, or false otherwise.
++   */
++  updateEntry: function CS_updateEntry(aEntry)
++  {
++    // TODO: update networking log entries with subsequent http transactions
++    // see bug 568634
++
++    if (!("storageId" in aEntry) || !(aEntry.storageId in this.globalEntries)) {
++      return false;
++    }
++
++    this.globalEntries[aEntry.storageId] = aEntry;
++
++    return true;
++  },
++
++  /**
++   * Truncate stored entries. This function removes the oldest entries.
++   * @returns void
++   */
++  truncateEntries: function CS_truncateEntries()
++  {
++    if (!this.globalIndex.length) {
++      return;
++    }
++
++    // Remove anything that is above the limit of maximum number of allowed 
++    // entries.
++    if (this.indexSize > this.maxEntries) {
++      let diff = this.indexSize - this.maxEntries;
++      for (let id, i = this.indexSpace; i < diff; i++) {
++        id = this.globalIndex[i];
++        delete this.globalEntries[id];
++      }
++      this.indexSpace += diff;
++      this.indexSize -= diff;
++    }
++
++    // Remove obsolete entries.
++    var ts = ConsoleUtils.timestamp() - this.oldestEntryAllowed*1000;
++    for (let id, entry, i = this.indexSpace, n = this.indexSize; i < n; i++) {
++      id = this.globalIndex[i];
++      entry = this.globalEntries[id];
++      if (!entry || entry.timestamp < ts) {
++        delete this.globalEntries[id];
++        this.indexSpace++;
++        this.indexSize--;
++      }
++      else if (entry && entry.timestamp >= ts) {
++        break;
++      }
++    }
++
++    // Clean the index.
++    if (this.indexSpace >= (this.globalIndex.length/2)) {
++      this.globalIndex.splice(0, this.indexSpace);
++      this.indexSpace = 0;
++      // Now this.indexSize == this.globalIndex.length
+     }
+   },
+ 
+-
+-  recordEntry: function CS_recordEntry(aHUDId, aConfig)
++  /**
++   * Clear the storage by removing all entries.
++   * @returns void
++   */
++  clearAll: function CS_clearAll()
+   {
+-    var id = this.sequenceId();
+-
+-    this.globalStorageIndex[id] = { hudId: aHUDId };
+-
+-    var displayStorage = this.consoleDisplays[aHUDId];
+-
+-    var displayIndex = this.displayIndexes[aHUDId];
+-
+-    if (displayStorage && displayIndex) {
+-      var entry = new ConsoleEntry(aConfig, id);
+-      displayIndex.push(entry.id);
+-      displayStorage[entry.id] = entry;
+-      return entry;
+-    }
+-    else {
+-      throw new Error("Cannot get displayStorage or index object for id " + aHUDId);
+-    }
+-  },
+-
+-  getEntry: function CS_getEntry(aId)
+-  {
+-    var display = this.globalStorageIndex[aId];
+-    var storName = display.hudId;
+-    return this.consoleDisplays[storName][aId];
+-  },
+-
+-  updateEntry: function CS_updateEntry(aUUID)
+-  {
+-    // update an individual entry
+-    // TODO: see bug 568634
+-  },
+-
+-  createDisplay: function CS_createdisplay(aId)
+-  {
+-    if (!this.consoleDisplays[aId]) {
+-      this.consoleDisplays[aId] = {};
+-      this.displayIndexes[aId] = [];
+-    }
+-  },
+-
+-  removeDisplay: function CS_removeDisplay(aId)
+-  {
+-    try {
+-      delete this.consoleDisplays[aId];
+-      delete this.displayIndexes[aId];
+-    }
+-    catch (ex) {
+-      Cu.reportError("Could not remove console display for id " + aId);
+-    }
++    this.globalEntries = {};
++    this.globalIndex = [];
++    this.indexSpace = 0;
++    this.indexSize = 0;
+   }
+ };
+ 
+ /**
+  * A Console log entry
+  *
+  * @param JSObject aConfig, object literal with ConsolEntry properties
+  * @param integer aId
+diff -r 771ddc7c8c16 toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Wed Jul 07 21:12:15 2010 +0300
++++ b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Fri Jul 09 21:19:59 2010 +0300
+@@ -359,55 +359,156 @@ function testCreateDisplay() {
+   cs.createDisplay("foo");
+   ok(typeof cs.consoleDisplays["foo"] == "object",
+      "foo display exists");
+   ok(typeof cs.displayIndexes["foo"] == "object",
+      "foo index exists");
+ }
+ 
+ function testRecordEntry() {
+-  var config = {
++  cs.clearAll();
++  is(cs.globalIndex.length, 0, "storage is empty");
++
++  var entry = {
++    id: 0,
++    logLevel: "network",
++    message: "HumminaHummina!",
++    timestamp: (new Date()).getTime() - 60000,
++    activity: {
++      stage: "barStage",
++      data: "bar bar bar bar"
++    }
++  };
++
++  var storageId = cs.recordEntry(entry);
++  ok(!isNaN(storageId), "storageId is correct");
++  is(entry.storageId, storageId, "entry.storageId is correct");
++
++  is(cs.globalIndex.length, 1, "we added one entry");
++  ok(cs.globalEntries[storageId], "entry found in storage");
++
++  entry = cs.getEntry(storageId);
++  is(entry.storageId, storageId,
++    "we got the entry back through the getEntry() interface");
++  is(entry.id, 0, "entry.id == 0");
++}
++
++function testRecordManyEntries() {
++  var entries = [];
++  var ts = (new Date()).getTime();
++
++  for (let entry, i = 1; i < 1000; i++){
++    entry = {
++      id: i,
++      logLevel: "network",
++      message: "HumminaHummina!",
++      timestamp: ts+i,
++      activity: {
++        stage: "barStage",
++        data: "bar bar bar bar"
++      }
++    };
++    entries.push(entry);
++  }
++
++  var start = Date.now();
++  ok(cs.recordEntries(entries), "recordEntries() was successful");
++  var elapsed = Date.now()- start;
++
++  is(cs.globalIndex.length, entries.length+1, cs.globalIndex.length +
++    " entries in storage now. it took " + elapsed + " ms");
++}
++
++function testUpdateEntry() {
++  var entry = {
++    id: 1000,
+     logLevel: "network",
+     message: "HumminaHummina!",
+     activity: {
+       stage: "barStage",
+       data: "bar bar bar bar"
+     }
+   };
+-  var entry = cs.recordEntry("foo", config);
+-  var res = entry.id;
+-  ok(entry.id != null, "Entry.id is: " + res);
+-  ok(cs.displayIndexes["foo"].length == 1,
+-     "We added one entry.");
+-  entry = cs.getEntry(res);
+-  ok(entry.id > -1,
+-     "We got an entry through the global interface");
++
++  var storageId = cs.recordEntry(entry);
++  ok(storageId, "record new entry");
++  is(cs.globalIndex.length, 1001, "cs.globalIndex.length == 1001");
++
++  entry.newProperty = "new value";
++  entry.message = "HumminaHumminaUpdate!";
++
++  ok(cs.updateEntry(entry), "updateEntry() was successful");
++
++  entry = cs.getEntry(storageId);
++  is(entry.storageId, storageId,
++    "we got the entry back through the getEntry() interface");
++  is(entry.id, 1000, "entry.id == 1000");
++
++  is(entry.newProperty, "new value", "entry.newProperty is correct");
++  is(entry.message, "HumminaHumminaUpdate!", "entry.message is correct");
+ }
+ 
+-function testRecordManyEntries() {
+-  var configArr = [];
++function testStorageTruncate() {
++  // make sure the current state is as expected.
++  is(cs.globalIndex.length, 1001, "cs.globalIndex.length == 1001");
++  is(cs.indexSize, cs.globalIndex.length, "cs.globalIndex.length == cs.indexSize");
++  is(cs.indexSpace, 0, "cs.indexSpace == 0");
+ 
+-  for (var i = 0; i < 1000; i++){
+-    let config = {
+-      logLevel: "network",
+-      message: "HumminaHummina!",
+-      activity: {
+-        stage: "barStage",
+-        data: "bar bar bar bar"
+-      }
+-    };
+-    configArr.push(config);
+-  }
++  cs.maxEntries = 2000;
++  cs.oldestEntryAllowed = 80;
+ 
+-  var start = Date.now();
+-  cs.recordEntries("foo", configArr);
+-  var end = Date.now();
+-  var elapsed = end - start;
+-  ok(cs.displayIndexes["foo"].length == 1001,
+-     "1001 entries in foo now");
++  // the following must have no effect, because the entries we have are not too 
++  // many and they are not too old.
++  cs.truncateEntries();
++
++  is(cs.globalIndex.length, 1001, "cs.globalIndex.length == 1001");
++  is(cs.indexSize, cs.globalIndex.length, "cs.globalIndex.length == cs.indexSize");
++  is(cs.indexSpace, 0, "cs.indexSpace == 0");
++
++  // this must remove the first entry we added. it has a timestamp of over 50 
++  // seconds.
++  cs.oldestEntryAllowed = 50;
++  cs.truncateEntries();
++
++  is(cs.indexSpace, 1, "cs.indexSpace == 1");
++  is(cs.indexSize, 1000, "cs.indexSize == 1000");
++  is(cs.globalIndex.length, 1001, "cs.globalIndex.length == 1001");
++
++  // try to retrieve the entry that was removed. here it is expected that the 
++  // entry.storageId still exists in globalIndex[0].
++  var entry = cs.getEntry(cs.globalIndex[0]);
++  ok(!entry, "oldest entry truncated");
++
++  // this must remove 300 of the oldest entries.
++  cs.maxEntries = 700;
++  cs.truncateEntries();
++
++  is(cs.indexSpace, 301, "cs.indexSpace == 301");
++  is(cs.indexSize, cs.maxEntries, "cs.indexSize == " + cs.maxEntries);
++  is(cs.globalIndex.length, 1001, "cs.globalIndex.length == 1001");
++
++  // this must remove another set of 500 of the oldest entries.
++  cs.maxEntries = 200;
++  cs.truncateEntries();
++
++  // this time we expect indexSpace to be 0, and that the actual clean up of 
++  // globalIndex has been performed. we expect this because indexSpace > 
++  // globalIndex.length/2.
++  is(cs.indexSpace, 0, "cs.indexSpace == 0");
++  is(cs.indexSize, cs.maxEntries, "cs.indexSize == " + cs.maxEntries);
++  is(cs.globalIndex.length, cs.maxEntries, "cs.globalIndex.length == " +
++    cs.maxEntries);
++
++  // check if the oldest entry is the correct one
++  entry = cs.getEntry(cs.globalIndex[0]);
++  is(entry.id, 801, "oldest entry.id == 801");
++
++  // check if the newest entry is the correct one
++  entry = cs.getEntry(cs.globalIndex[cs.globalIndex.length-1]);
++  is(entry.id, 1000, "newest entry.id == 1000");
+ }
+ 
+ function testIteration() {
+   var id = "foo";
+   var it = cs.displayStore(id);
+   var entry = it.next();
+   var entry2 = it.next();
+ 
+@@ -475,20 +576,22 @@ function test() {
+       testConsoleLoggingAPI("warn");
+       testConsoleLoggingAPI("error");
+       testConsoleLoggingAPI("exception");
+ 
+       testNet();
+       // testDOMMutation();
+ 
+       // ConsoleStorageTests
+-      testCreateDisplay();
++      //testCreateDisplay();
+       testRecordEntry();
+       testRecordManyEntries();
+-      testIteration();
++      testUpdateEntry();
++      testStorageTruncate();
++      //testIteration();
+       testCompletion();
+       testPropertyProvider();
+ 
+       // testUnregister();
+       executeSoon(function () {
+         HUDService.deactivateHUDForContext(tab);
+         HUDService.shutdown();
+       });

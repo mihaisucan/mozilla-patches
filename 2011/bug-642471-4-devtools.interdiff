@@ -1,0 +1,1407 @@
+diff -U8 b/browser/base/content/highlighter.xhtml b/browser/base/content/highlighter.xhtml
+--- b/browser/base/content/highlighter.xhtml
++++ b/browser/base/content/highlighter.xhtml
+@@ -24,24 +24,40 @@
++   -   Paul Rouget <paul@mozilla.com>
+    -
+    - Alternatively, the contents of this file may be used under the terms of
+    - either the GNU General Public License Version 2 or later (the "GPL"), or
+    - the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+    - in which case the provisions of the GPL or the LGPL are applicable instead
+    - of those above. If you wish to allow use of your version of this file only
+    - under the terms of either the GPL or the LGPL, and not to allow others to
+    - use your version of this file under the terms of the MPL, indicate your
+    - decision by deleting the provisions above and replace them with the notice
+    - and other provisions required by the LGPL or the GPL. If you do not delete
+    - the provisions above, a recipient may use your version of this file under
+    - the terms of any one of the MPL, the GPL or the LGPL.
+    -
+    - ***** END LICENSE BLOCK ***** -->
+ <html xmlns="http://www.w3.org/1999/xhtml">
+ <head>
+-<link rel="stylesheet" href="chrome://browser/skin/highlighter.css" type="text/css"/>
++  <link rel="stylesheet" href="chrome://browser/skin/highlighter.css" type="text/css"/>
+ </head>
+ <body>
+-<canvas id="surface"/>
+-<div id="close-button"></div>
+-<img id="bgimage" src="chrome://browser/content/lines.png"/>
++<div id="close-button"/>
++
++<!--
++    To darken the page around the selected node, we use black-transparent
++    divs, organized in 3 rows, keeping the div in the middle transparent.
++-->
++<div id="veil-container">
++  <div id="veil">
++    <div id="veil-topbox" class="veil"/>
++    <div id="veil-middlebox">
++      <div id="veil-leftbox" class="veil"/>
++      <div id="veil-transparentbox"/>
++      <div id="veil-rightbox" class="veil"/>
++    </div>
++    <div id="veil-bottombox" class="veil"/>
++  </div>
++</div>
++
+ </body>
+-</html>
+\ Pas de fin de ligne à la fin du fichier.
++</html>
+diff -U8 b/browser/base/content/inspector.js b/browser/base/content/inspector.js
+--- b/browser/base/content/inspector.js
++++ b/browser/base/content/inspector.js
+@@ -20,16 +20,17 @@
+  * The Mozilla Foundation.
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Rob Campbell <rcampbell@mozilla.com> (original author)
+  *   Mihai Șucan <mihai.sucan@gmail.com>
+  *   Julian Viereck <jviereck@mozilla.com>
++ *   Paul Rouget <paul@mozilla.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -56,293 +57,256 @@
+ };
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ //// IFrameHighlighter
+ 
+ /**
+  * A highlighter mechanism using a transparent xul iframe.
+  *
+- * @param aBrowser
+- *        The XUL browser object for the content window being highlighted.
++ * @param nsIDOMNode aBrowser
++ *        The xul:browser object for the content window being highlighted.
+  */
+ function IFrameHighlighter(aBrowser)
+ {
+   this._init(aBrowser);
+ }
+ 
+ IFrameHighlighter.prototype = {
+ 
+-  _init: function IFrameHighlighter__init(aBrowser) {
++  _init: function IFH__init(aBrowser)
++  {
+     this.browser = aBrowser;
+     this.ready = false;
+     let stack = this.browser.parentNode;
+     this.win = this.browser.contentWindow;
+     this._highlighting = false;
+ 
++    let div = document.createElement("div");
++    div.flex = 1;
++    div.setAttribute("style", "pointer-events: none; -moz-user-focus: ignore");
++
+     let iframe = document.createElement("iframe");
+     iframe.setAttribute("id", "highlighter-frame");
+     iframe.setAttribute("transparent", "true");
+     iframe.setAttribute("type", "content");
+     iframe.addEventListener("DOMTitleChanged", function(event) {
+       event.stopPropagation();
+     }, true);
+     iframe.flex = 1;
++    iframe.setAttribute("style", "-moz-user-focus: ignore");
+ 
+     let self = this;
+     iframe.addEventListener("load", function iframeLoaded() {
+-      self.iframe.removeEventListener("load", iframeLoaded,
+-        true);
++      self.iframe.removeEventListener("load", iframeLoaded, true);
+       self.iframeDoc = iframe.contentDocument;
+-      self.canvas = self.iframeDoc.getElementById("surface");
+-      self.bgImage = self.iframeDoc.getElementById("bgimage");
+-      self.resizeCanvas();
+-      self.ready = true;
++
++      self.veilTopDiv = self.iframeDoc.getElementById("veil-topbox");
++      self.veilLeftDiv = self.iframeDoc.getElementById("veil-leftbox");
++      self.veilMiddleDiv = self.iframeDoc.getElementById("veil-middlebox");
++      self.veilTransparentDiv = self.iframeDoc.getElementById("veil-transparentbox");
++
+       let closeButton = self.iframeDoc.getElementById("close-button");
+       closeButton.addEventListener("click", function IFH_closeClicked(evt) {
+-        evt.target.removeEventListener("click", IFH_closeClicked, false);
++        closeButton.removeEventListener("click", IFH_closeClicked, false);
+         InspectorUI.closeInspectorUI();
+       }, false);
++
++      iframe.contentWindow.addEventListener("resize", self, false);
++      self.handleResize();
++      self.ready = true;
+       Services.obs.notifyObservers(null, "highlighter-ready", null);
+     }, true);
+ 
+-    this.bgPattern = null;
+-
+     iframe.setAttribute("src", "chrome://browser/content/highlighter.xhtml");
+-    iframe.setAttribute("onMozMousePixelScroll",
+-      "InspectorUI.highlighter.handlePixelScroll(event)");
+ 
+-    stack.appendChild(iframe);
++    div.appendChild(iframe);
++    stack.appendChild(div);
+     this.iframe = iframe;
++    this.iframeContainer = div;
+   },
+ 
+   /**
+    * Destroy the iframe and its nodes.
+    */
+-  destroy: function IFrameHighlighter_destroy()
++  destroy: function IFH_destroy()
+   {
+     this.ready = false;
+     this._highlightRect = null;
+     this._highlighting = false;
+-    this.bgPattern = null;
+-    this.bgImage = null;
++    this.veilTopDiv = null;
++    this.veilLeftDiv = null;
++    this.veilMiddleDiv = null;
++    this.veilTransparentDiv = null;
+     this.node = null;
+-    this.canvas = null;
+     this.iframeDoc = null;
+-    this.browser.parentNode.removeChild(this.iframe);
++    this.browser.parentNode.removeChild(this.iframeContainer);
++    this.iframeContainer = null;
+     this.iframe = null;
+     this.win = null
+     this.browser = null;
+   },
+ 
+   /**
+-   * Get the 2d context of the highlighter's canvas element.
+-   */
+-  get context() {
+-    return this.canvas.getContext("2d");
+-  },
+-
+-  /**
+    * Is the highlighter highlighting? Public method for querying the state
+    * of the highlighter.
+    */
+   get isHighlighting() {
+     return this._highlighting;
+   },
+ 
+-  createBGPattern: function IFrameHighlighter_createBGPattern()
+-  {
+-    this.bgPattern = this.context.createPattern(this.bgImage, 'repeat');
+-    this.context.fillStyle = this.bgPattern;
+-  },
+-
+-  /**
+-   * Clear the background.
+-   */
+-  clearBackground: function IFrameHighlighter_clearBackground()
+-  {
+-    if (!this.bgPattern)
+-      this.createBGPattern();
+-    else
+-      this.context.fillStyle = this.bgPattern;
+-
+-    this.context.fillRect(0, 0, this.width, this.height);
+-  },
+-
+-  /**
+-   * Resize the canvas. Called from resize event in the parent window by
+-   * InspectorUI.
+-   */
+-  resizeCanvas: function IFrameHighlighter_resizeCanvas()
+-  {
+-    this.height = this.canvas.height = this.win.innerHeight;
+-    this.width = this.canvas.width = this.win.innerWidth;
+-    this.backgroundColor = "#09f";
+-    this.clearBackground();
+-  },
+-
+   /**
+    * Highlight this.node, unhilighting first if necessary.
+    *
+-   * @param scroll
++   * @param boolean aScroll
+    *        Boolean determining whether to scroll or not.
+    */
+-  highlight: function IFrameHighlighter_highlight(scroll)
++  highlight: function IFH_highlight(aScroll)
+   {
+     // node is not set or node is not highlightable, bail
+     if (!this.node || !this.isNodeHighlightable()) {
+       return;
+     }
+ 
+     this.unhighlight();
+ 
+-    let rect = this.node.getBoundingClientRect();
++    let clientRect = this.node.getBoundingClientRect();
++
++    // clientRect is read-only, we need to be able to change properties.
++    let rect = {top: clientRect.top,
++                left: clientRect.left,
++                width: clientRect.width,
++                height: clientRect.height};
++
+     if (rect == this._highlightRect) {
+       return; // same rectangle
+     }
+ 
+-    if (scroll) {
++    if (aScroll) {
+       this.node.scrollIntoView();
+     }
+ 
+-    if (this.viewContainsRect(rect)) {
+-      this.highlightRectangle(rect);
+-    } else {
+-      this.highlightVisibleRegion(rect);
+-    }
++    // Go up in the tree of frames to determine the correct rectangle
++    // coordinates and size.
++    let frameWin = this.node.ownerDocument.defaultView;
++    do {
++      let frameRect = frameWin.frameElement ?
++                      frameWin.frameElement.getBoundingClientRect() :
++                      {top: 0, left: 0};
++
++      if (rect.top < 0) {
++        rect.height += rect.top;
++        rect.top = 0;
++      }
++
++      if (rect.left < 0) {
++        rect.width += rect.left;
++        rect.left = 0;
++      }
++
++      let diffx = frameWin.innerWidth - rect.left - rect.width;
++      if (diffx < 0) {
++        rect.width += diffx;
++      }
++      let diffy = frameWin.innerHeight - rect.top - rect.height;
++      if (diffy < 0) {
++        rect.height += diffy;
++      }
++
++      rect.left += frameRect.left;
++      rect.top += frameRect.top;
++
++      frameWin = frameWin.parent;
++    } while (frameWin != this.win);
++
++    this.highlightRectangle(rect);
+ 
+     if (this._highlighting) {
+       Services.obs.notifyObservers(null, "inspector-highlighting", null);
+     }
+   },
+ 
+   /**
+    * Highlight the given node.
+    *
+-   * @param aNode
++   * @param nsIDOMNode aNode
+    *        a DOM element to be highlighted
+-   * @param aParams
++   * @param object aParams
+    *        extra parameters object
+    */
+-  highlightNode: function IFrameHighlighter_highlightNode(aNode, aParams)
++  highlightNode: function IFH_highlightNode(aNode, aParams)
+   {
+     this.node = aNode;
+     this.highlight(aParams && aParams.scroll);
+   },
+ 
+   /**
+-   * Highlight the visible region of the region described by aRect, if any.
++   * Highlight a rectangular region.
+    *
+-   * @param aRect
++   * @param object aRect
++   *        The rectangle region to highlight.
+    * @returns boolean
+-   *          was a region highlighted?
+-   */
+-  highlightVisibleRegion: function IFrameHighlighter_highlightVisibleRegion(aRect)
+-  {
+-    let offsetX = 0;
+-    let offsetY = 0;
+-    let nodeWidth = 0;
+-    let nodeHeight = 0;
+-
+-    // If any of these edges are out-of-bounds, the node's rectangle is
+-    // completely out-of-view and we can return.
+-    if (aRect.top > this.height || aRect.left > this.width ||
+-        aRect.bottom < 0 || aRect.right < 0) {
+-      return false;
+-    }
+-
+-    // Calculate node offsets, if values are negative, then start at 0.
+-    offsetX = Math.max(aRect.left, 0);
+-    offsetY = Math.max(aRect.top, 0);
+-
+-    // Calculate actual node width, taking into account the available visible
+-    // width.
+-    nodeWidth = aRect.right > this.width ? this.width - aRect.left :
+-      aRect.width;
+-
+-    // Add negative left if necessary.
+-    nodeWidth = aRect.left < 0 ? nodeWidth + aRect.left : nodeWidth;
+-
+-    // Calculate actual node height using the same formula as above for width.
+-    nodeHeight = aRect.bottom > this.height ? this.height - aRect.top :
+-      aRect.height;
+-
+-    // Add negative top if necessary.
+-    nodeHeight = aRect.top < 0 ? nodeHeight + aRect.top : nodeHeight;
+-
+-    // If width and height are greater than 0, highlight the node
+-    // sized to nodeWidth and nodeHeight.
+-    if (nodeWidth > 0 && nodeHeight > 0) {
+-      let finalRect = {
+-        left: offsetX,
+-        top: offsetY,
+-        width: nodeWidth,
+-        height: nodeHeight
+-      }
+-      this.highlightRectangle(finalRect);
+-      return true;
+-    }
+-
+-    return false;
+-  },
+-
+-  /**
+-   * Highlight a rectangular region in the canvas.
+-   *
+-   * @param aStartX, aStartY the starting X and Y position of the rectangle.
+-   * @param aExtentX, aExtentY the width and height of the region.
++   *          True if the rectangle was highlighted, false otherwise.
+    */
+   highlightRectangle: function IFH_highlightRectangle(aRect)
+   {
+-    if (!this._highlighting) {
+-      // may not be needed if we clear before entry
+-      this.clearBackground();
++    if (aRect.left >= 0 && aRect.top >= 0 &&
++        aRect.width > 0 && aRect.height > 0) {
++      // The bottom div and the right div are flexibles (flex=1).
++      // We don't need to resize them.
++      this.veilTopDiv.style.height = aRect.top + "px";
++      this.veilLeftDiv.style.width = aRect.left + "px";
++      this.veilMiddleDiv.style.height = aRect.height + "px";
++      this.veilTransparentDiv.style.width = aRect.width + "px";
++
++      this._highlighting = true;
++    } else {
++      this.veilMiddleDiv.style.height = 0;
++      this.veilTransparentDiv.style.width = 0;
++      this._highlighting = false;
+     }
+ 
+-    this.context.clearRect(aRect.left, aRect.top, aRect.width, aRect.height);
+-    this._highlighting = true;
+     this._highlightRect = aRect;
++
++    return this._highlighting;
+   },
+ 
+   /**
+    * Clear the highlighter surface.
+    */
+-  unhighlight: function IFrameHighlighter_unhighlight()
++  unhighlight: function IFH_unhighlight()
+   {
+-    if (this._highlighting) {
+-      this.clearBackground();
+-    }
+     this._highlighting = false;
+     Services.obs.notifyObservers(null, "inspector-unhighlighting", null);
+   },
+ 
+   /**
+    * Return the midpoint of a line from pointA to pointB.
+    *
+-   * @param aPointA
++   * @param object aPointA
+    *        An object with x and y properties.
+-   * @param aPointB
++   * @param object aPointB
+    *        An object with x and y properties.
+-   * @returns aPoint
++   * @returns object
+    *          An object with x and y properties.
+    */
+-  midPoint: function IFrameHighlighter_midPoint(aPointA, aPointB)
++  midPoint: function IFH_midPoint(aPointA, aPointB)
+   {
+     let pointC = { };
+     pointC.x = (aPointB.x - aPointA.x) / 2 + aPointA.x;
+     pointC.y = (aPointB.y - aPointA.y) / 2 + aPointA.y;
+     return pointC;
+   },
+ 
+   /**
+    * Return the node under the highlighter rectangle. Useful for testing.
+    * Calculation based on midpoint of diagonal from top left to bottom right
+    * of panel.
+    *
+-   * @returns a DOM node or null if none
++   * @returns nsIDOMNode|null
+    */
+   get highlitNode()
+   {
+     // Not highlighting? Bail.
+     if (!this._highlighting || !this._highlightRect) {
+       return null;
+     }
+ 
+@@ -362,106 +326,156 @@
+     return InspectorUI.elementFromPoint(this.win.document, midpoint.x,
+       midpoint.y);
+   },
+ 
+   /**
+    * Is this.node highlightable?
+    *
+    * @returns boolean
++   *          True if the node is highlightable or false otherwise.
+    */
+-  isNodeHighlightable: function IFrameHighlighter_isNodeHighlightable()
++  isNodeHighlightable: function IFH_isNodeHighlightable()
+   {
+-    if (!this.node) {
++    if (!this.node || this.node.nodeType != Node.ELEMENT_NODE) {
+       return false;
+     }
+     let nodeName = this.node.nodeName.toLowerCase();
+-    if (nodeName[0] == '#') {
+-      return false;
+-    }
+     return !INSPECTOR_INVISIBLE_ELEMENTS[nodeName];
+   },
+ 
+-  /**
+-   * Returns true if the given viewport-relative rect is within the visible area
+-   * of the window.
+-   *
+-   * @param aRect
+-   *        a CSS rectangle object
+-   * @returns boolean
+-   */
+-  viewContainsRect: function IFrameHighlighter_viewContainsRect(aRect)
+-  {
+-    let visibleWidth = this.win.innerWidth;
+-    let visibleHeight = this.win.innerHeight;
+-
+-    return ((0 <= aRect.left) && (aRect.right <= visibleWidth) &&
+-        (0 <= aRect.top) && (aRect.bottom <= visibleHeight))
+-  },
+-
+   /////////////////////////////////////////////////////////////////////////
+   //// Event Handling
+ 
+   attachInspectListeners: function IFH_attachInspectListeners()
+   {
+-    if (!this.iframeDoc) {
+-      return; // not ready yet
+-    }
+-    this.iframeDoc.addEventListener("mousemove",
+-      this.handleMouseMove.bind(this), true);
+-    this.iframeDoc.addEventListener("click", InspectorUI, true);
++    this.browser.addEventListener("mousemove", this, true);
++    this.browser.addEventListener("click", this, true);
++    this.browser.addEventListener("dblclick", this, true);
++    this.browser.addEventListener("mousedown", this, true);
++    this.browser.addEventListener("mouseup", this, true);
+   },
+ 
+   detachInspectListeners: function IFH_detachInspectListeners()
+   {
+-    this.iframeDoc.removeEventListener("mousemove",
+-      this.handleMouseMove.bind(this), true);
+-    this.iframeDoc.removeEventListener("click", InspectorUI, true);
++    this.browser.removeEventListener("mousemove", this, true);
++    this.browser.removeEventListener("click", this, true);
++    this.browser.removeEventListener("dblclick", this, true);
++    this.browser.removeEventListener("mousedown", this, true);
++    this.browser.removeEventListener("mouseup", this, true);
++  },
++
++  /**
++   * Generic event handler.
++   *
++   * @param nsIDOMEvent aEvent
++   *        The DOM event object.
++   */
++  handleEvent: function IFH_handleEvent(aEvent)
++  {
++    switch (aEvent.type) {
++      case "click":
++        this.handleClick(aEvent);
++        break;
++      case "mousemove":
++        this.handleMouseMove(aEvent);
++        break;
++      case "resize":
++        this.handleResize(aEvent);
++        break;
++      case "dblclick":
++      case "mousedown":
++      case "mouseup":
++        aEvent.stopPropagation();
++        aEvent.preventDefault();
++        break;
++    }
++  },
++
++  /**
++   * Handle clicks on the iframe.
++   *
++   * @param nsIDOMEvent aEvent
++   *        The DOM event.
++   */
++  handleClick: function IFH_handleClick(aEvent)
++  {
++    if (aEvent.button == 0) {
++      let win = aEvent.target.ownerDocument.defaultView;
++      InspectorUI.stopInspecting();
++      win.focus();
++    }
++    aEvent.preventDefault();
++    aEvent.stopPropagation();
+   },
+ 
+   /**
+    * Handle mousemoves in panel when InspectorUI.inspecting is true.
+    *
+    * @param aEvent
+    *        The MouseEvent triggering the method.
+    */
+-  handleMouseMove: function IFrameHighlighter_handleMouseMove(aEvent)
++  handleMouseMove: function IFH_handleMouseMove(aEvent)
+   {
+     if (!InspectorUI.inspecting) {
+       return;
+     }
+ 
+-    let element = InspectorUI.elementFromPoint(this.win.document,
++    let element = InspectorUI.elementFromPoint(aEvent.target.ownerDocument,
+       aEvent.clientX, aEvent.clientY);
+     if (element && element != this.node) {
+       InspectorUI.inspectNode(element);
+     }
+   },
+ 
+   /**
+-   * Handle MozMousePixelScroll in panel when InspectorUI.inspecting is true.
+-   *
+-   * @param aEvent
+-   *        The onMozMousePixelScrollEvent triggering the method.
+-   * @returns void
++   * Handle window resize events.
+    */
+-  handlePixelScroll: function IFrameHighlighter_handlePixelScroll(aEvent) {
+-    let element = InspectorUI.elementFromPoint(this.win.document,
+-      aEvent.clientX, aEvent.clientY);
+-    let win = element.ownerDocument.defaultView;
+-
+-    if (aEvent.axis == aEvent.HORIZONTAL_AXIS) {
+-      win.scrollBy(aEvent.detail, 0);
++  handleResize: function IFH_handleResize()
++  {
++    let style = this.iframeContainer.style;
++    if (this.win.scrollMaxY && this.win.scrollbars.visible) {
++      style.paddingRight = this.getScrollbarWidth() + "px";
++    } else {
++      style.paddingRight = 0;
++    }
++    if (this.win.scrollMaxX && this.win.scrollbars.visible) {
++      style.paddingBottom = this.getScrollbarWidth() + "px";
+     } else {
+-      win.scrollBy(0, aEvent.detail);
++      style.paddingBottom = 0;
+     }
++
+     this.highlight();
+-    aEvent.stopPropagation();
+   },
+ 
++  /**
++   * Determine the scrollbar width in the current document.
++   *
++   * @returns number
++   *          The scrollbar width in pixels.
++   */
++  getScrollbarWidth: function IFH_getScrollbarWidth()
++  {
++    if (this._scrollbarWidth) {
++      return this._scrollbarWidth;
++    }
++
++    let hbox = document.createElement("hbox");
++    hbox.setAttribute("style", "height: 0%; overflow: hidden");
++
++    let scrollbar = document.createElement("scrollbar");
++    scrollbar.setAttribute("orient", "vertical");
++    hbox.appendChild(scrollbar);
++
++    document.documentElement.appendChild(hbox);
++    this._scrollbarWidth = scrollbar.clientWidth;
++    document.documentElement.removeChild(hbox);
++
++    return this._scrollbarWidth;
++  },
+ };
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ //// InspectorUI
+ 
+ /**
+  * Main controller class for the Inspector.
+  */
+@@ -708,18 +722,17 @@
+     if (!this.domplate) {
+       Cu.import("resource:///modules/domplate.jsm", this);
+       this.domplateUtils.setDOM(window);
+     }
+ 
+ -   // open inspector UI
+     this.openTreePanel();
+ 
+-    this.win.document.addEventListener("scroll", this, false);
+-    this.win.addEventListener("resize", this, false);
++    this.browser.addEventListener("scroll", this, true);
+     this.inspectCmd.setAttribute("checked", true);
+   },
+ 
+   /**
+    * Initialize highlighter.
+    */
+   initializeHighlighter: function IUI_initializeHighlighter()
+   {
+@@ -780,18 +793,17 @@
+       }
+       InspectorStore.setValue(this.winID, "inspecting", this.inspecting);
+     }
+ 
+     if (InspectorStore.isEmpty()) {
+       gBrowser.tabContainer.removeEventListener("TabSelect", this, false);
+     }
+ 
+-    this.win.document.removeEventListener("scroll", this, false);
+-    this.win.removeEventListener("resize", this, false);
++    this.browser.removeEventListener("scroll", this, true);
+     this.stopInspecting();
+     if (this.highlighter) {
+       this.highlighter.destroy();
+       this.highlighter = null;
+     }
+ 
+     if (this.treePanelDiv) {
+       this.treePanelDiv.ownerPanel = null;
+@@ -838,18 +850,20 @@
+   },
+ 
+   /**
+    * Stop inspecting webpage, detach page listeners, disable highlighter
+    * event listeners.
+    */
+   stopInspecting: function IUI_stopInspecting()
+   {
+-    if (!this.inspecting)
++    if (!this.inspecting) {
+       return;
++    }
++
+     this.detachPageListeners();
+     this.inspecting = false;
+     if (this.highlighter.node) {
+       this.select(this.highlighter.node, true, true);
+     } else {
+       this.select(null, true, true);
+     }
+   },
+@@ -885,25 +899,23 @@
+   {
+     // Setup the InspectorStore or restore state
+     this.initializeStore();
+ 
+     if (InspectorStore.getValue(this.winID, "inspecting")) {
+       this.startInspecting();
+     }
+ 
++    this.win.focus();
+     Services.obs.notifyObservers(null, "inspector-opened", null);
+   },
+ 
+   highlighterReady: function IUI_highlighterReady()
+   {
+     Services.obs.removeObserver(InspectorUI.highlighterReady, "highlighter-ready", false);
+-
+-    InspectorUI.highlighter.ready = true;
+-
+     InspectorUI.notifyReady();
+   },
+ 
+   /**
+    * Main callback handler for events.
+    *
+    * @param event
+    *        The event to be handled.
+@@ -957,29 +969,23 @@
+         }
+         break;
+       case "keypress":
+         switch (event.keyCode) {
+           case KeyEvent.DOM_VK_RETURN:
+           case KeyEvent.DOM_VK_ESCAPE:
+-            this.stopInspecting();
++            if (this.inspecting) {
++              this.stopInspecting();
++              event.preventDefault();
++              event.stopPropagation();
++            }
+             break;
+         }
+         break;
+-      case "mousemove":
+-        // not implemented here.
+-        break;
+-      case "click":
+-        this.stopInspecting();
+-        break;
+       case "scroll":
+         this.highlighter.highlight();
+         break;
+-      case "resize":
+-        this.highlighter.resizeCanvas();
+-        this.highlighter.highlight();
+-        break;
+     }
+   },
+ 
+   /**
+    * Handle click events in the html tree panel.
+    * @param aEvent
+@@ -1005,27 +1011,27 @@
+   },
+ 
+   /**
+    * Attach event listeners to content window and child windows to enable
+    * highlighting and click to stop inspection.
+    */
+   attachPageListeners: function IUI_attachPageListeners()
+   {
+-    this.win.addEventListener("keypress", this, true);
++    this.browser.addEventListener("keypress", this, true);
+     this.highlighter.attachInspectListeners();
+   },
+ 
+   /**
+    * Detach event listeners from content window and child windows
+    * to disable highlighting.
+    */
+   detachPageListeners: function IUI_detachPageListeners()
+   {
+-    this.win.removeEventListener("keypress", this, true);
++    this.browser.removeEventListener("keypress", this, true);
+     this.highlighter.detachInspectListeners();
+   },
+ 
+   /////////////////////////////////////////////////////////////////////////
+   //// Utility Methods
+ 
+   /**
+    * inspect the given node, highlighting it on the page and selecting the
+@@ -1033,17 +1039,16 @@
+    *
+    * @param aNode
+    *        the element in the document to inspect
+    */
+   inspectNode: function IUI_inspectNode(aNode)
+   {
+     this.select(aNode, true, true);
+     this.highlighter.highlightNode(aNode);
+-    Services.obs.notifyObservers(null, "inspector-inspecting-node", null);
+   },
+ 
+   /**
+    * Find an element from the given coordinates. This method descends through
+    * frames to find the element the user clicked inside frames.
+    *
+    * @param DOMDocument aDocument the document to look into.
+    * @param integer aX
+diff -U8 b/browser/base/content/test/inspector/Makefile.in b/browser/base/content/test/inspector/Makefile.in
+--- b/browser/base/content/test/inspector/Makefile.in
++++ b/browser/base/content/test/inspector/Makefile.in
+@@ -48,14 +48,13 @@
+ 		browser_inspector_treeSelection.js \
+ 		browser_inspector_highlighter.js \
++		browser_inspector_iframeTest.js \
+ 		browser_inspector_scrolling.js \
+ 		browser_inspector_store.js \
+ 		browser_inspector_tab_switch.js \
+ 		browser_inspector_treePanel_output.js \
+ 		browser_inspector_treePanel_input.html \
+ 		browser_inspector_treePanel_result.html \
+ 		$(NULL)
+ 
+-# todo readd browser_inspector_iframeTest.js \
+-
+ libs::	$(_BROWSER_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff -U8 b/browser/base/content/test/inspector/browser_inspector_highlighter.js b/browser/base/content/test/inspector/browser_inspector_highlighter.js
+--- b/browser/base/content/test/inspector/browser_inspector_highlighter.js
++++ b/browser/base/content/test/inspector/browser_inspector_highlighter.js
+@@ -121,7 +121,7 @@
+     doc = content.document;
+     waitForFocus(createDocument, content);
+   }, true);
+-  
++
+   content.location = "data:text/html,basic tests for inspector";
+ }
+ 
+diff -U8 b/browser/base/content/test/inspector/browser_inspector_iframeTest.js b/browser/base/content/test/inspector/browser_inspector_iframeTest.js
+--- b/browser/base/content/test/inspector/browser_inspector_iframeTest.js
++++ b/browser/base/content/test/inspector/browser_inspector_iframeTest.js
+@@ -75,60 +75,59 @@
+   }, false);
+ 
+   iframe1.src = 'data:text/html,little iframe';
+   doc.body.appendChild(iframe1);
+ }
+ 
+ function moveMouseOver(aElement)
+ {
+-  let rect = aElement.getBoundingClientRect();
+-  EventUtils.synthesizeMouse(highlighterFrame.contentDocument.documentElement,
+-    rect.left + 2, rect.top + 2, {type: "mousemove"},
+-    highlighterFrame.contentWindow);
++  EventUtils.synthesizeMouse(aElement, 2, 2, {type: "mousemove"},
++    aElement.ownerDocument.defaultView);
+ }
+ 
+ function setupIframeTests()
+ {
+   Services.obs.addObserver(runIframeTests, "inspector-opened", false);
+   InspectorUI.openInspectorUI();
+ }
+ 
+ function runIframeTests()
+ {
+   Services.obs.removeObserver(runIframeTests, "inspector-opened", false);
+   Services.obs.addObserver(performTestComparisons1, "inspector-highlighting", false);
+   highlighterFrame = InspectorUI.highlighter.iframe;
+-  executeSoon(moveMouseOver(div1));
++  executeSoon(moveMouseOver.bind(this, div1));
+ }
+ 
+ function performTestComparisons1()
+ {
+   Services.obs.removeObserver(performTestComparisons1, "inspector-highlighting", false);
+   Services.obs.addObserver(performTestComparisons2, "inspector-highlighting", false);
+ 
+-  todo(InspectorUI.selection, div1, "selection matches div1 node");
+-  todo(InspectorUI.highlighter.highlitNode, div1, "highlighter matches selection");
++  is(InspectorUI.selection, div1, "selection matches div1 node");
++  is(InspectorUI.highlighter.highlitNode, div1, "highlighter matches selection");
+ 
+-  executeSoon(moveMouseOver(div2));
++  executeSoon(moveMouseOver.bind(this, div2));
+ }
+ 
+ function performTestComparisons2()
+ {
+-  dump("testComparisons2\n");
+   Services.obs.removeObserver(performTestComparisons2, "inspector-highlighting", false);
+ 
+-  // todo(InspectorUI.selection, div2, "selection matches div2 node");
+-  // todo(InspectorUI.highlighter.highlitNode, div2, "highlighter matches selection");
++  is(InspectorUI.selection, div2, "selection matches div2 node");
++  is(InspectorUI.highlighter.highlitNode, div2, "highlighter matches selection");
+ 
+   finishUp();
+ }
+ 
+ function finishUp() {
+   InspectorUI.closeInspectorUI(true);
++
++  doc = div1 = div2 = iframe1 = iframe2 = highlighterFrame = null;
+   gBrowser.removeCurrentTab();
+   finish();
+ }
+ 
+ function test()
+ {
+   waitForExplicitFinish();
+   gBrowser.selectedTab = gBrowser.addTab();
+diff -U8 b/browser/base/content/test/inspector/browser_inspector_initialization.js b/browser/base/content/test/inspector/browser_inspector_initialization.js
+--- b/browser/base/content/test/inspector/browser_inspector_initialization.js
++++ b/browser/base/content/test/inspector/browser_inspector_initialization.js
+@@ -77,7 +77,7 @@
+     doc = content.document;
+     waitForFocus(startInspectorTests, content);
+   }, true);
+-  
++
+   content.location = "data:text/html,basic tests for inspector";
+ }
+ 
+diff -U8 b/browser/base/content/test/inspector/browser_inspector_scrolling.js b/browser/base/content/test/inspector/browser_inspector_scrolling.js
+--- b/browser/base/content/test/inspector/browser_inspector_scrolling.js
++++ b/browser/base/content/test/inspector/browser_inspector_scrolling.js
+@@ -80,26 +80,30 @@
+ function performScrollingTest()
+ {
+   Services.obs.removeObserver(performScrollingTest, "inspector-highlighting", false);
+ 
+   let documentElement = InspectorUI.highlighter.iframeDoc.documentElement;
+   let highlighterWindow = InspectorUI.highlighter.iframe.contentWindow;
+   let divRect = iframe.getBoundingClientRect();
+ 
+-  EventUtils.synthesizeMouseScroll(documentElement,
+-    divRect.left + 10,
+-    divRect.top + 10,
+-    {axis:"vertical", delta:50, type:"MozMousePixelScroll"}, highlighterWindow);
+-
+-  is(iframe.contentDocument.body.scrollTop, 50, "inspected iframe scrolled");
+-
+-  InspectorUI.closeInspectorUI();
+-  gBrowser.removeCurrentTab();
+-  finish();
++  EventUtils.synthesizeMouseScroll(div, 10, 10,
++    {axis:"vertical", delta:50, type:"MozMousePixelScroll"},
++    iframe.contentWindow);
++
++  gBrowser.selectedBrowser.addEventListener("scroll", function() {
++    gBrowser.selectedBrowser.removeEventListener("scroll", arguments.callee, false);
++
++    is(iframe.contentDocument.body.scrollTop, 50, "inspected iframe scrolled");
++
++    div = iframe = doc = null;
++    InspectorUI.closeInspectorUI();
++    gBrowser.removeCurrentTab();
++    finish();
++  }, false);
+ }
+ 
+ function test()
+ {
+   waitForExplicitFinish();
+   gBrowser.selectedTab = gBrowser.addTab();
+   gBrowser.selectedBrowser.addEventListener("load", function() {
+     gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
+diff -U8 b/browser/base/content/test/inspector/browser_inspector_treePanel_input.html b/browser/base/content/test/inspector/browser_inspector_treePanel_input.html
+--- b/browser/base/content/test/inspector/browser_inspector_treePanel_input.html
++++ b/browser/base/content/test/inspector/browser_inspector_treePanel_input.html
+@@ -13,21 +13,21 @@
+     // --></script>
+   </head>
+   <body arbitrary:attribute="value">
+     <p>Inspector tree panel test.</p>
+ 
+-    <div id="foo" class="foo bar baz" style="border:1px solid red; 
++    <div id="foo" class="foo bar baz" style="border:1px solid red;
+       unknownProperty: unknownValue; color: withUnkownValue">
+       <unknownTag unknownAttribute="fooBar">
+         <p unknownAttribute="fooBar" data-test1="value">hello world!</p>
+       </unknownTag>
+     </div>
+ 
+-    <div id="duplicate" id="duplicate" id="different" class="test" class="foo" 
++    <div id="duplicate" id="duplicate" id="different" class="test" class="foo"
+       fooBar="baz" fooBar="bazbaz">test</div>
+ 
+-    <iframe src="data:text/html,&lt;div&gt;hello from an iframe!&lt;/div&gt;">no 
++    <iframe src="data:text/html,&lt;div&gt;hello from an iframe!&lt;/div&gt;">no
+       frames!</iframe>
+ 
+     <!-- hello world from a comment! -->
+   </body>
+ </html>
+diff -U8 b/browser/base/content/test/inspector/browser_inspector_treePanel_output.js b/browser/base/content/test/inspector/browser_inspector_treePanel_output.js
+--- b/browser/base/content/test/inspector/browser_inspector_treePanel_output.js
++++ b/browser/base/content/test/inspector/browser_inspector_treePanel_output.js
+@@ -119,5 +119,5 @@
+     waitForFocus(tabFocused, content);
+   }, true);
+-  
++
+   content.location = TEST_URI;
+ }
+diff -U8 b/browser/base/content/test/inspector/browser_inspector_treeSelection.js b/browser/base/content/test/inspector/browser_inspector_treeSelection.js
+--- b/browser/base/content/test/inspector/browser_inspector_treeSelection.js
++++ b/browser/base/content/test/inspector/browser_inspector_treeSelection.js
+@@ -54,17 +54,16 @@
+     "aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco " +
+     "laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure " +
+     "dolor in reprehenderit in voluptate velit esse cillum dolore eu " +
+     "fugiat nulla pariatur. Excepteur sint occaecat cupidatat non " +
+     "proident, sunt in culpa qui officia deserunt mollit anim id est laborum.";
+   div.appendChild(h1);
+   div.appendChild(p1);
+   div.appendChild(p2);
+-  // doc.body.addEventListener("DOMSubtreeModified", , false);
+   doc.body.appendChild(div);
+   setupSelectionTests();
+ }
+ 
+ function setupSelectionTests()
+ {
+   h1 = doc.querySelectorAll("h1")[0];
+   ok(h1, "we have the header node");
+@@ -105,7 +104,7 @@
+     doc = content.document;
+     waitForFocus(createDocument, content);
+   }, true);
+-  
++
+   content.location = "data:text/html,basic tests for inspector";
+ }
+ 
+diff -U8 b/browser/base/jar.mn b/browser/base/jar.mn
+--- b/browser/base/jar.mn
++++ b/browser/base/jar.mn
+@@ -25,17 +25,16 @@
+         content/browser/aboutRobots-widget-left.png   (content/aboutRobots-widget-left.png)
+ *       content/browser/browser.css                   (content/browser.css)
+ *       content/browser/browser.js                    (content/browser.js)
+ *       content/browser/browser.xul                   (content/browser.xul)
+ *       content/browser/browser-tabPreviews.xml       (content/browser-tabPreviews.xml)
+ *       content/browser/fullscreen-video.xhtml        (content/fullscreen-video.xhtml)
+         content/browser/highlighter.xhtml             (content/highlighter.xhtml)
+ *       content/browser/inspector.html                (content/inspector.html)
+-        content/browser/lines.png                     (content/lines.png)
+ *       content/browser/scratchpad.xul                (content/scratchpad.xul)
+ *       content/browser/scratchpad.js                 (content/scratchpad.js)
+ *       content/browser/pageinfo/pageInfo.xul         (content/pageinfo/pageInfo.xul)
+ *       content/browser/pageinfo/pageInfo.js          (content/pageinfo/pageInfo.js)
+ *       content/browser/pageinfo/pageInfo.css         (content/pageinfo/pageInfo.css)
+ *       content/browser/pageinfo/pageInfo.xml         (content/pageinfo/pageInfo.xml)
+ *       content/browser/pageinfo/feeds.js             (content/pageinfo/feeds.js)
+ *       content/browser/pageinfo/feeds.xml            (content/pageinfo/feeds.xml)
+diff -U8 b/browser/themes/gnomestripe/browser/highlighter.css b/browser/themes/gnomestripe/browser/highlighter.css
+--- b/browser/themes/gnomestripe/browser/highlighter.css
++++ b/browser/themes/gnomestripe/browser/highlighter.css
+@@ -1,8 +1,45 @@
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is the Mozilla Inspector Module.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Rob Campbell <rcampbell@mozilla.com> (original author)
++ *   Paul Rouget <paul@mozilla.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
+ 
+ body {
+   margin: 0;
+   overflow: hidden;
+ }
+ 
+ #close-button {
+   background-image: url("KUI-close.png");
+@@ -18,9 +55,49 @@
+ 
+-#surface {
+-  margin: 0;
+-  opacity: 0.3;
++.veil {
++  background-color: rgba(0, 0, 0, 0.5);
++}
++
++.veil, #veil-middlebox, #veil-transparentbox {
++  -moz-transition: 0.1s;
++  -moz-transition-timing-function: linear;
++}
++
++#veil-container {
++  position: absolute;
++  top: 0;
++  left: 0;
++  width: 100%;
++  height: 100%;
++}
++
++#veil {
++  width: 100%;
++  height: 100%;
++  display: -moz-box;
++  -moz-box-orient: vertical;
++}
++
++#veil-topbox, #veil-bottombox {
++  width: 100%;
++}
++
++#veil-bottombox {
++  -moz-box-flex: 1;
++}
++
++#veil-middlebox {
++  display: -moz-box;
++  -moz-box-orient: horizontal;
++}
++
++#veil-leftbox, #veil-rightbox {
++  height: 100%;
++}
++
++#veil-rightbox {
++  -moz-box-flex: 1;
+ }
+ 
+-#bgimage {
+-  display: none;
++#veil {
++  vertical-align: top;
+ }
+diff -U8 b/browser/themes/pinstripe/browser/highlighter.css b/browser/themes/pinstripe/browser/highlighter.css
+--- b/browser/themes/pinstripe/browser/highlighter.css
++++ b/browser/themes/pinstripe/browser/highlighter.css
+@@ -1,8 +1,45 @@
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is the Mozilla Inspector Module.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Rob Campbell <rcampbell@mozilla.com> (original author)
++ *   Paul Rouget <paul@mozilla.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
+ 
+ body {
+   margin: 0;
+   overflow: hidden;
+ }
+ 
+ #close-button {
+   background-image: url("KUI-close.png");
+@@ -19,9 +56,48 @@
+-#surface {
+-  margin: 0;
+-  opacity: 0.3;
++.veil {
++  background-color: rgba(0, 0, 0, 0.5);
++}
++
++.veil, #veil-middlebox, #veil-transparentbox {
++  -moz-transition: 0.1s;
++  -moz-transition-timing-function: linear;
++}
++
++#veil-container {
++  position: absolute;
++  top: 0;
++  left: 0;
++  width: 100%;
++  height: 100%;
++}
++
++#veil {
++  width: 100%;
++  height: 100%;
++  display: -moz-box;
++  -moz-box-orient: vertical;
++}
++
++#veil-topbox, #veil-bottombox {
++  width: 100%;
++}
++
++#veil-bottombox {
++  -moz-box-flex: 1;
++}
++
++#veil-middlebox {
++  display: -moz-box;
++  -moz-box-orient: horizontal;
++}
++
++#veil-leftbox, #veil-rightbox {
++  height: 100%;
+ }
+ 
+-#bgimage {
+-  display: none;
++#veil-rightbox {
++  -moz-box-flex: 1;
+ }
+ 
++#veil {
++  vertical-align: top;
++}
+diff -U8 b/browser/themes/winstripe/browser/highlighter.css b/browser/themes/winstripe/browser/highlighter.css
+--- b/browser/themes/winstripe/browser/highlighter.css
++++ b/browser/themes/winstripe/browser/highlighter.css
+@@ -1,8 +1,45 @@
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is the Mozilla Inspector Module.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Rob Campbell <rcampbell@mozilla.com> (original author)
++ *   Paul Rouget <paul@mozilla.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
+ 
+ body {
+   margin: 0;
+   overflow: hidden;
+ }
+ 
+ #close-button {
+   background-image: url("KUI-close.png");
+@@ -19,8 +56,49 @@
+-#surface {
+-  margin: 0;
+-  opacity: 0.3;
++.veil {
++  background-color: rgba(0, 0, 0, 0.5);
++}
++
++.veil, #veil-middlebox, #veil-transparentbox {
++  -moz-transition: 0.1s;
++  -moz-transition-timing-function: linear;
++}
++
++#veil-container {
++  position: absolute;
++  top: 0;
++  left: 0;
++  width: 100%;
++  height: 100%;
++}
++
++#veil {
++  width: 100%;
++  height: 100%;
++  display: -moz-box;
++  -moz-box-orient: vertical;
++}
++
++#veil-topbox, #veil-bottombox {
++  width: 100%;
+ }
+ 
+-#bgimage {
+-  display: none;
++#veil-bottombox {
++  -moz-box-flex: 1;
+ }
++
++#veil-middlebox {
++  display: -moz-box;
++  -moz-box-orient: horizontal;
++}
++
++#veil-leftbox, #veil-rightbox {
++  height: 100%;
++}
++
++#veil-rightbox {
++  -moz-box-flex: 1;
++}
++
++#veil {
++  vertical-align: top;
++}
++

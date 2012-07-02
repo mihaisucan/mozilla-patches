@@ -1,0 +1,520 @@
+# HG changeset patch
+# Date 1302112109 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Parent 29119c651183589d1f9c518ed7b6f1b254016ffe
+bug 636725: unit tests for Workspace
+
+diff --git a/browser/base/content/test/Makefile.in b/browser/base/content/test/Makefile.in
+--- a/browser/base/content/test/Makefile.in
++++ b/browser/base/content/test/Makefile.in
+@@ -187,16 +187,21 @@ _BROWSER_FILES = \
+                  browser_inspector_domPanel.js \
+                  browser_inspector_iframeTest.js \
+                  browser_inspector_scrolling.js \
+                  browser_inspector_store.js \
+                  browser_inspector_tab_switch.js \
+                  browser_inspector_treePanel_output.js \
+                  browser_inspector_treePanel_input.html \
+                  browser_inspector_treePanel_result.html \
++                 browser_workspace_initialization.js \
++                 browser_workspace_contexts.js \
++                 browser_workspace_execute_print.js \
++                 browser_workspace_inspect.js \
++                 browser_workspace_files.js \
+                  browser_overflowScroll.js \
+                  browser_pageInfo.js \
+                  browser_page_style_menu.js \
+                  browser_pinnedTabs.js \
+                  browser_plainTextLinks.js \
+                  browser_pluginnotification.js \
+                  browser_relatedTabs.js \
+                  browser_sanitize-passwordDisabledHosts.js \
+diff --git a/browser/base/content/test/browser_workspace_contexts.js b/browser/base/content/test/browser_workspace_contexts.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_workspace_contexts.js
+@@ -0,0 +1,95 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Workspace Tests.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Mihai Sucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++let wsWindow;
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++
++    wsWindow = Workspace.openWorkspace();
++    wsWindow.addEventListener("load", runTests, false);
++  }, true);
++
++  content.location = "data:text/html,test context switch in Workspace";
++}
++
++function runTests()
++{
++  wsWindow.removeEventListener("load", arguments.callee, false);
++
++  let ws = wsWindow.Workspace;
++
++  ws.setContentContext();
++
++  is(ws.executionContext, wsWindow.WORKSPACE_CONTEXT_CONTENT,
++     "executionContext is content");
++
++  ok(ws.textbox, "textbox exists");
++  ws.textbox.value = "window.foobarBug636725 = 'aloha';";
++
++  ok(!content.wrappedJSObject.foobarBug636725,
++     "no content.foobarBug636725");
++
++  ws.execute();
++
++  is(content.wrappedJSObject.foobarBug636725, "aloha",
++     "content.foobarBug636725 has been set");
++
++  ws.setChromeContext();
++
++  is(ws.executionContext, wsWindow.WORKSPACE_CONTEXT_CHROME,
++     "executionContext is chrome");
++
++  ws.textbox.value = "window.foobarBug636725 = 'aloha2';";
++
++  ok(!window.foobarBug636725, "no window.foobarBug636725");
++
++  ws.execute();
++
++  is(window.foobarBug636725, "aloha2", "window.foobarBug636725 has been set");
++
++  wsWindow.close();
++  wsWindow = null;
++  gBrowser.removeCurrentTab();
++  finish();
++}
+diff --git a/browser/base/content/test/browser_workspace_execute_print.js b/browser/base/content/test/browser_workspace_execute_print.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_workspace_execute_print.js
+@@ -0,0 +1,87 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Workspace Tests.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Mihai Sucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++let wsWindow;
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++
++    wsWindow = Workspace.openWorkspace();
++    wsWindow.addEventListener("load", runTests, false);
++  }, true);
++
++  content.location = "data:text/html,<p>test execute() and print() in Workspace";
++}
++
++function runTests()
++{
++  wsWindow.removeEventListener("load", arguments.callee, false);
++
++  let ws = wsWindow.Workspace;
++
++  content.wrappedJSObject.foobarBug636725 = 1;
++
++  ok(ws.textbox, "textbox exists");
++  ws.textbox.value = "++window.foobarBug636725";
++
++  ws.execute();
++
++  is(ws.textbox.value, "++window.foobarBug636725",
++     "execute() does not change the textbox value");
++
++  is(content.wrappedJSObject.foobarBug636725, 2,
++     "execute() updated window.foobarBug636725");
++
++  ws.print();
++
++  is(content.wrappedJSObject.foobarBug636725, 3,
++     "print() updated window.foobarBug636725");
++
++  is(ws.textbox.value, "++window.foobarBug636725\n 3\n",
++     "print() shows evaluation result in the textbox");
++
++  wsWindow.close();
++  wsWindow = null;
++  gBrowser.removeCurrentTab();
++  finish();
++}
+diff --git a/browser/base/content/test/browser_workspace_files.js b/browser/base/content/test/browser_workspace_files.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_workspace_files.js
+@@ -0,0 +1,112 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Workspace Tests.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Mihai Sucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++let wsWindow;
++let Cc = Components.classes;
++let Ci = Components.interfaces;
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++
++    wsWindow = Workspace.openWorkspace();
++    wsWindow.addEventListener("load", runTests, false);
++  }, true);
++
++  content.location = "data:text/html,<p>test file open and save in Workspace";
++}
++
++function runTests()
++{
++  wsWindow.removeEventListener("load", arguments.callee, false);
++
++  let ws = wsWindow.Workspace;
++
++  let fileContent = "hello.world('bug636725');";
++
++  // Create a temporary file.
++  let file = Services.dirsvc.get("TmpD", Ci.nsIFile);
++  file.append("fileForBug636725.tmp");
++  file.createUnique(Ci.nsIFile.NORMAL_FILE_TYPE, 0666);
++
++  // Write to the file.
++  let fout = Cc["@mozilla.org/network/file-output-stream;1"].
++            createInstance(Ci.nsIFileOutputStream);
++  let modeFlags = 0x02 | 0x08 | 0x20;
++  fout.init(file.QueryInterface(Ci.nsILocalFile), modeFlags, 0644, 0);
++  fout.write(fileContent, fileContent.length);
++  fout.close();
++
++  // Import the file into Workspace.
++  ws.importFromFile(file.QueryInterface(Ci.nsILocalFile));
++
++  is(ws.textbox.value, fileContent,
++     "successfully opened the file");
++
++  // Save the file after changes.
++  fileContent += "// omg, saved!";
++  ws.textbox.value = fileContent;
++
++  ws.exportToFile(file.QueryInterface(Ci.nsILocalFile), true);
++
++  // Read back the file.
++  let fin = Cc["@mozilla.org/network/file-input-stream;1"].
++           createInstance(Ci.nsIFileInputStream);
++  fin.init(file.QueryInterface(Ci.nsILocalFile), -1, -1, 0);
++
++  let sis = Cc["@mozilla.org/scriptableinputstream;1"].
++            createInstance(Ci.nsIScriptableInputStream);
++  sis.init(fin);
++
++  let updatedContent = sis.read(sis.available());
++
++  sis.close();
++  fin.close();
++
++  is(updatedContent, fileContent, "file properly updated");
++
++  // Done!
++  wsWindow.close();
++  wsWindow = null;
++  gBrowser.removeCurrentTab();
++  finish();
++}
+diff --git a/browser/base/content/test/browser_workspace_initialization.js b/browser/base/content/test/browser_workspace_initialization.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_workspace_initialization.js
+@@ -0,0 +1,72 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Workspace Tests.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Mihai Sucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++let wsWindow;
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++
++    ok(Workspace, "Workspace variable exists");
++
++    wsWindow = Workspace.openWorkspace();
++    wsWindow.addEventListener("load", runTests, false);
++  }, true);
++
++  content.location = "data:text/html,initialization test for Workspace";
++}
++
++function runTests()
++{
++  wsWindow.removeEventListener("load", arguments.callee, false);
++
++  let ws = wsWindow.Workspace;
++  ok(ws, "Workspace object exists in new window");
++  is(typeof ws.execute, "function", "Workspace.execute() exists");
++  is(typeof ws.inspect, "function", "Workspace.inspect() exists");
++  is(typeof ws.print, "function", "Workspace.print() exists");
++
++  wsWindow.close();
++  wsWindow = null;
++  gBrowser.removeCurrentTab();
++  finish();
++}
+diff --git a/browser/base/content/test/browser_workspace_inspect.js b/browser/base/content/test/browser_workspace_inspect.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_workspace_inspect.js
+@@ -0,0 +1,98 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Workspace Tests.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Mihai Sucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++let wsWindow;
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++
++    wsWindow = Workspace.openWorkspace();
++    wsWindow.addEventListener("load", runTests, false);
++  }, true);
++
++  content.location = "data:text/html,<title>foobarBug636725</title>" +
++    "<p>test inspect() in Workspace";
++}
++
++function runTests()
++{
++  wsWindow.removeEventListener("load", arguments.callee, false);
++
++  let ws = wsWindow.Workspace;
++
++  ok(ws.textbox, "textbox exists");
++  ws.textbox.value = "document";
++
++  ws.inspect();
++
++  let propPanel = document.querySelector(".workspace_propertyPanel");
++  ok(propPanel, "property panel is open");
++
++  propPanel.addEventListener("popupshown", function() {
++    propPanel.removeEventListener("popupshown", arguments.callee, false);
++
++    let tree = propPanel.querySelector("tree");
++    ok(tree, "property panel tree found");
++
++    let column = tree.columns[0];
++    let found = false;
++
++    for (let i = 0; i < tree.view.rowCount; i++) {
++      let cell = tree.view.getCellText(i, column);
++      if (cell == 'title: "foobarBug636725"') {
++        found = true;
++        break;
++      }
++    }
++    ok(found, "found the document.title property");
++
++    executeSoon(function() {
++      propPanel.hidePopup();
++
++      wsWindow.close();
++      wsWindow = null;
++      gBrowser.removeCurrentTab();
++      finish();
++    });
++  }, false);
++}

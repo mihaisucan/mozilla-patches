@@ -1,0 +1,41 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -3447,17 +3447,17 @@ let ConsoleAPIObserver = {
+       // Find the HUD ID for the topmost window
+       let hudId = HUDService.getHudIdByWindow(win.top);
+       if (!hudId)
+         return;
+ 
+       HUDService.logConsoleAPIMessage(hudId, aMessage.level, aMessage.arguments);
+     }
+     else if (aTopic == "quit-application-granted") {
+-      this.shutdown();
++      HUDService.shutdown();
+     }
+   },
+ 
+   shutdown: function CAO_shutdown()
+   {
+     Services.obs.removeObserver(this, "quit-application-granted");
+     Services.obs.removeObserver(this, "console-api-log-event");
+   }
+@@ -5580,17 +5580,17 @@ HUDWindowObserver = {
+     else if (aTopic == "xpcom-shutdown") {
+       this.uninit();
+     }
+   },
+ 
+   uninit: function HWO_uninit()
+   {
+     Services.obs.removeObserver(this, "content-document-global-created");
+-    HUDService.shutdown();
++    Services.obs.removeObserver(this, "xpcom-shutdown");
+     this.initialConsoleCreated = false;
+   },
+ 
+ };
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+ // CommandController
+ ///////////////////////////////////////////////////////////////////////////////

@@ -1,0 +1,309 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1326715179 -7200
+# Node ID b54c8094dad55d48f9ac17da5b489d077cd8ba37
+# Parent  5104705ee96a447a4d6fed2f74eb1b581171bd0a
+Bug 714942 - Implement minimal UI for Jump to line in the Source Editor. r=rcampbell
+
+diff --git a/browser/devtools/scratchpad/scratchpad.xul b/browser/devtools/scratchpad/scratchpad.xul
+--- a/browser/devtools/scratchpad/scratchpad.xul
++++ b/browser/devtools/scratchpad/scratchpad.xul
+@@ -161,16 +161,20 @@
+   <key id="key_findAgain"
+        keycode="VK_F3"
+        command="cmd_findAgain"/>
+   <key id="key_findPrevious"
+        keycode="VK_F3"
+        command="cmd_findPrevious"
+        modifiers="shift"/>
+ #endif
++  <key id="key_gotoLine"
++       key="&gotoLineCmd.key;"
++       command="cmd_gotoLine"
++       modifiers="accel"/>
+ </keyset>
+ 
+ 
+ <menubar id="sp-menubar">
+   <menu id="sp-file-menu" label="&fileMenu.label;"
+         accesskey="&fileMenu.accesskey;">
+     <menupopup id="sp-menu-filepopup">
+       <menuitem id="sp-menu-newscratchpad"
+@@ -253,16 +257,22 @@
+                 accesskey="&findCmd.accesskey;"
+                 key="key_find"
+                 command="cmd_find"/>
+       <menuitem id="sp-menu-findAgain"
+                 label="&findAgainCmd.label;"
+                 accesskey="&findAgainCmd.accesskey;"
+                 key="key_findAgain"
+                 command="cmd_findAgain"/>
++      <menuseparator/>
++      <menuitem id="sp-menu-gotoLine"
++                label="&gotoLineCmd.label;"
++                accesskey="&gotoLineCmd.accesskey;"
++                key="key_gotoLine"
++                command="cmd_gotoLine"/>
+     </menupopup>
+   </menu>
+ 
+   <menu id="sp-execute-menu" label="&executeMenu.label;"
+         accesskey="&executeMenu.accesskey;">
+     <menupopup id="sp-menu_executepopup">
+       <menuitem id="sp-text-run"
+                 label="&run.label;"
+diff --git a/browser/devtools/scratchpad/test/Makefile.in b/browser/devtools/scratchpad/test/Makefile.in
+--- a/browser/devtools/scratchpad/test/Makefile.in
++++ b/browser/devtools/scratchpad/test/Makefile.in
+@@ -53,16 +53,17 @@ include $(topsrcdir)/config/rules.mk
+ 		browser_scratchpad_ui.js \
+ 		browser_scratchpad_bug_646070_chrome_context_pref.js \
+ 		browser_scratchpad_bug_660560_tab.js \
+ 		browser_scratchpad_open.js \
+ 		browser_scratchpad_restore.js \
+ 		browser_scratchpad_bug_679467_falsy.js \
+ 		browser_scratchpad_bug_699130_edit_ui_updates.js \
+ 		browser_scratchpad_bug_669612_unsaved.js \
+-		head.js \
+ 		browser_scratchpad_bug_653427_confirm_close.js \
+ 		browser_scratchpad_bug684546_reset_undo.js \
+ 		browser_scratchpad_bug690552_display_outputs_errors.js \
+ 		browser_scratchpad_bug650345_find_ui.js \
++		browser_scratchpad_bug714942_goto_line_ui.js \
++		head.js \
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/browser/devtools/scratchpad/test/browser_scratchpad_bug714942_goto_line_ui.js b/browser/devtools/scratchpad/test/browser_scratchpad_bug714942_goto_line_ui.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/scratchpad/test/browser_scratchpad_bug714942_goto_line_ui.js
+@@ -0,0 +1,45 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function browserLoad() {
++    gBrowser.selectedBrowser.removeEventListener("load", browserLoad, true);
++    openScratchpad(runTests);
++  }, true);
++
++  content.location = "data:text/html,<p>test the 'Jump to line' feature in Scratchpad";
++}
++
++function runTests(aWindow, aScratchpad)
++{
++  let editor = aScratchpad.editor;
++  let text = "foobar bug650345\nBug650345 bazbaz\nfoobar omg\ntest";
++  editor.setText(text);
++  editor.setCaretOffset(0);
++
++  let oldPrompt = Services.prompt;
++  let desiredValue = null;
++  Services.prompt = {
++    prompt: function(aWindow, aTitle, aMessage, aValue) {
++      aValue.value = desiredValue;
++      return true;
++    },
++  };
++
++  desiredValue = 3;
++  EventUtils.synthesizeKey("J", {accelKey: true}, aWindow);
++  is(editor.getCaretOffset(), 34, "caret offset is correct");
++
++  desiredValue = 2;
++  aWindow.goDoCommand("cmd_gotoLine")
++  is(editor.getCaretOffset(), 17, "caret offset is correct (again)");
++
++  Services.prompt = oldPrompt;
++
++  finish();
++}
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -287,16 +287,17 @@ SourceEditor.prototype = {
+       "undo": [this.undo, this],
+       "redo": [this.redo, this],
+       "tab": [this._doTab, this],
+       "Unindent Lines": [this._doUnindentLines, this],
+       "enter": [this._doEnter, this],
+       "Find...": [this.ui.find, this.ui],
+       "Find Next Occurrence": [this.ui.findNext, this.ui],
+       "Find Previous Occurrence": [this.ui.findPrevious, this.ui],
++      "Goto Line...": [this.ui.gotoLine, this.ui],
+     };
+ 
+     for (let name in actions) {
+       let action = actions[name];
+       this._view.setAction(name, action[0].bind(action[1]));
+     }
+ 
+     let keys = (config.keys || []).concat(DEFAULT_KEYBINDINGS);
+diff --git a/browser/devtools/sourceeditor/source-editor-overlay.xul b/browser/devtools/sourceeditor/source-editor-overlay.xul
+--- a/browser/devtools/sourceeditor/source-editor-overlay.xul
++++ b/browser/devtools/sourceeditor/source-editor-overlay.xul
+@@ -37,10 +37,11 @@
+    - ***** END LICENSE BLOCK ***** -->
+ 
+ <overlay id="sourceEditorOverlay"
+          xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul">
+   <commandset id="sourceEditorCommands">
+     <command id="cmd_find" oncommand="goDoCommand('cmd_find')"/>
+     <command id="cmd_findAgain" oncommand="goDoCommand('cmd_findAgain')" disabled="true"/>
+     <command id="cmd_findPrevious" oncommand="goDoCommand('cmd_findPrevious')" disabled="true"/>
++    <command id="cmd_gotoLine" oncommand="goDoCommand('cmd_gotoLine')"/>
+   </commandset>
+ </overlay>
+diff --git a/browser/devtools/sourceeditor/source-editor-ui.jsm b/browser/devtools/sourceeditor/source-editor-ui.jsm
+--- a/browser/devtools/sourceeditor/source-editor-ui.jsm
++++ b/browser/devtools/sourceeditor/source-editor-ui.jsm
+@@ -71,16 +71,44 @@ SourceEditorUI.prototype = {
+   {
+     if (this._ownerWindow.controllers) {
+       this._controller = new SourceEditorController(this.editor);
+       this._ownerWindow.controllers.insertControllerAt(0, this._controller);
+     }
+   },
+ 
+   /**
++   * The "go to line" command UI. This displays a prompt that allows the user to
++   * input the line number to jump to.
++   */
++  gotoLine: function SEU_gotoLine()
++  {
++    let oldLine = this.editor.getCaretPosition ?
++                  this.editor.getCaretPosition().line : null;
++    let newLine = {value: oldLine !== null ? oldLine + 1 : ""};
++
++    let result = Services.prompt.prompt(this._ownerWindow,
++      SourceEditorUI.strings.GetStringFromName("gotoLineCmd.promptTitle"),
++      SourceEditorUI.strings.GetStringFromName("gotoLineCmd.promptMessage"),
++      newLine, null, {});
++
++    newLine.value = parseInt(newLine.value);
++    if (result && !isNaN(newLine.value) && --newLine.value != oldLine) {
++      if (this.editor.getLineCount) {
++        let lines = this.editor.getLineCount() - 1;
++        this.editor.setCaretPosition(Math.max(0, Math.min(lines, newLine.value)));
++      } else {
++        this.editor.setCaretPosition(Math.max(0, newLine.value));
++      }
++    }
++
++    return true;
++  },
++
++  /**
+    * The "find" command UI. This displays a prompt that allows the user to input
+    * the string to search for in the code. By default the current selection is
+    * used as a search string, or the last search string.
+    */
+   find: function SEU_find()
+   {
+     let str = {value: this.editor.getSelectedText()};
+     if (!str.value && this.editor.lastFind) {
+@@ -186,16 +214,17 @@ SourceEditorController.prototype = {
+   supportsCommand: function SEC_supportsCommand(aCommand)
+   {
+     let result;
+ 
+     switch (aCommand) {
+       case "cmd_find":
+       case "cmd_findAgain":
+       case "cmd_findPrevious":
++      case "cmd_gotoLine":
+         result = true;
+         break;
+       default:
+         result = false;
+         break;
+     }
+ 
+     return result;
+@@ -210,16 +239,17 @@ SourceEditorController.prototype = {
+    *         True if the command is enabled, false otherwise.
+    */
+   isCommandEnabled: function SEC_isCommandEnabled(aCommand)
+   {
+     let result;
+ 
+     switch (aCommand) {
+       case "cmd_find":
++      case "cmd_gotoLine":
+         result = true;
+         break;
+       case "cmd_findAgain":
+       case "cmd_findPrevious":
+         result = this._editor.lastFind && this._editor.lastFind.lastFound != -1;
+         break;
+       default:
+         result = false;
+@@ -243,13 +273,16 @@ SourceEditorController.prototype = {
+         this._editor.ui.find();
+         break;
+       case "cmd_findAgain":
+         this._editor.ui.findNext();
+         break;
+       case "cmd_findPrevious":
+         this._editor.ui.findPrevious();
+         break;
++      case "cmd_gotoLine":
++        this._editor.ui.gotoLine();
++        break;
+     }
+   },
+ 
+   onEvent: function() { }
+ };
+diff --git a/browser/locales/en-US/chrome/browser/devtools/scratchpad.dtd b/browser/locales/en-US/chrome/browser/devtools/scratchpad.dtd
+--- a/browser/locales/en-US/chrome/browser/devtools/scratchpad.dtd
++++ b/browser/locales/en-US/chrome/browser/devtools/scratchpad.dtd
+@@ -78,16 +78,20 @@
+ <!ENTITY findAgainCmd.key             "G">
+ <!ENTITY findAgainCmd.accesskey       "g">
+ <!-- LOCALIZATION NOTE (findPreviousCmd.key): This key is used only on Macs.
+   -  Windows and Linux builds use the Shift-F3 key which is not localizable on
+   -  purpose.
+   -->
+ <!ENTITY findPreviousCmd.key          "G">
+ 
++<!ENTITY gotoLineCmd.label            "Jump to line…">
++<!ENTITY gotoLineCmd.key              "J">
++<!ENTITY gotoLineCmd.accesskey        "J">
++
+ <!ENTITY run.label                    "Run">
+ <!ENTITY run.accesskey                "R">
+ <!ENTITY run.key                      "r">
+ 
+ <!ENTITY inspect.label                "Inspect">
+ <!ENTITY inspect.accesskey            "I">
+ <!ENTITY inspect.key                  "i">
+ 
+diff --git a/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties b/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties
+--- a/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties
++++ b/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties
+@@ -13,8 +13,18 @@
+ # when the user wants to search for a string in the code. You can
+ # access this feature by pressing Ctrl-F on Windows/Linux or Cmd-F on Mac.
+ findCmd.promptTitle=Find…
+ 
+ # LOCALIZATION NOTE  (gotoLineCmd.promptMessage): This is the message shown when
+ # the user wants to search for a string in the code. You can
+ # access this feature by pressing Ctrl-F on Windows/Linux or Cmd-F on Mac.
+ findCmd.promptMessage=Search for:
++
++# LOCALIZATION NOTE  (gotoLineCmd.promptTitle): This is the dialog title used
++# when the user wants to jump to a specific line number in the code. You can
++# access this feature by pressing Ctrl-J on Windows/Linux or Cmd-J on Mac.
++gotoLineCmd.promptTitle=Go to line…
++
++# LOCALIZATION NOTE  (gotoLineCmd.promptMessage): This is the message shown when
++# the user wants to jump to a specific line number in the code. You can
++# access this feature by pressing Ctrl-J on Windows/Linux or Cmd-J on Mac.
++gotoLineCmd.promptMessage=Jump to line number:

@@ -1,0 +1,199 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -4683,18 +4683,22 @@ LogMessage.prototype = {
+ 
+     var ts = ConsoleUtils.timestamp();
+     this.timestampedMessage = ConsoleUtils.timestampString(ts) + ": " +
+       this.message.message;
+     var messageTxtNode = this.textFactory(this.timestampedMessage + "\n");
+ 
+     this.messageNode.appendChild(messageTxtNode);
+ 
+-    var klass = "hud-msg-node hud-" + this.level;
+-    this.messageNode.setAttribute("class", klass);
++    this.messageNode.classList.add("hud-msg-node");
++    this.messageNode.classList.add("hud-" + this.level);
++
++    if (this.activityObject.category == "CSS Parser") {
++      this.messageNode.classList.add("hud-cssparser");
++    }
+ 
+     var self = this;
+ 
+     var messageObject = {
+       logLevel: self.level,
+       message: self.message,
+       timestamp: ts,
+       activity: self.activityObject,
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -86,16 +86,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_588342_document_focus.js \
+ 	browser_webconsole_bug_585237_line_limit.js \
+ 	browser_webconsole_bug_581231_close_button.js \
+ 	browser_webconsole_bug_582201_duplicate_errors.js \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_583816_tab_focus.js \
+ 	browser_webconsole_bug_594477_clickable_output.js \
++	browser_webconsole_bug_589162_css_filter.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_589162_css_filter.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_589162_css_filter.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_589162_css_filter.js
+@@ -0,0 +1,57 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "data:text/html,<div style='font-size:3em;" +
++  "foobarCssParser:baz'>test CSS parser filter</div>"
++
++function onContentLoaded()
++{
++  browser.removeEventListener("load", arguments.callee, true);
++
++  let HUD = HUDService.getDisplayByURISpec(content.location.href);
++  let hudId = HUD.getAttribute("id");
++  let filterBox = HUD.querySelector(".hud-filter-box");
++  let outputNode = HUD.querySelector(".hud-output-node");
++
++  let warningFound = "the unknown CSS property warning is displayed";
++  let warningNotFound = "could not find the unknown CSS property warning";
++
++  testLogEntry(outputNode, "foobarCssParser",
++    { success: warningFound, err: warningNotFound }, true);
++
++  HUDService.setFilterState(hudId, "cssparser", false);
++
++  warningNotFound = "the unknown CSS property warning is not displayed, " +
++    "after filtering";
++  warningFound = "the unknown CSS property warning is still displayed, " +
++    "after filtering";
++
++  testLogEntry(outputNode, "foobarCssParser",
++    { success: warningNotFound, err: warningFound }, true, true);
++
++  finishTest();
++}
++
++/**
++ * Unit test for bug 589162:
++ * CSS filtering on the console does not work
++ */
++function test()
++{
++  addTab(TEST_URI);
++  browser.addEventListener("load", function() {
++    browser.removeEventListener("load", arguments.callee, true);
++
++    openConsole();
++    browser.addEventListener("load", onContentLoaded, true);
++    content.location.reload();
++  }, true);
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/head.js b/toolkit/components/console/hudservice/tests/browser/head.js
+--- a/toolkit/components/console/hudservice/tests/browser/head.js
++++ b/toolkit/components/console/hudservice/tests/browser/head.js
+@@ -15,16 +15,17 @@
+  * The Original Code is DevTools test code.
+  *
+  * The Initial Developer of the Original Code is Mozilla Foundation.
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *  David Dahl <ddahl@mozilla.com>
++ *  Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -64,24 +65,60 @@ let win = gBrowser.selectedBrowser;
+ function addTab(aURL)
+ {
+   gBrowser.selectedTab = gBrowser.addTab();
+   content.location = aURL;
+   tab = gBrowser.selectedTab;
+   browser = gBrowser.getBrowserForTab(tab);
+ }
+ 
+-function testLogEntry(aOutputNode, aMatchString, aSuccessErrObj)
++/**
++ * Check if a log entry exists in the HUD output node.
++ *
++ * @param {Element} aOutputNode
++ *        the HUD output node.
++ * @param {string} aMatchString
++ *        the string you want to check if it exists in the output node.
++ * @param {boolean} [aOnlyVisible=false]
++ *        find only messages that are visible, not hidden by the filter.
++ * @param {boolean} [aFailIfFound=false]
++ *        fail the test if the string is found in the output node.
++ */
++function testLogEntry(aOutputNode, aMatchString, aSuccessErrObj, aOnlyVisible,
++                      aFailIfFound)
+ {
+-  var message = aOutputNode.textContent.indexOf(aMatchString);
+-  if (message > -1) {
+-    ok(true, aSuccessErrObj.success);
+-    return;
++  let found = true;
++  let notfound = false;
++  let foundMsg = aSuccessErrObj.success;
++  let notfoundMsg = aSuccessErrObj.err;
++
++  if (aFailIfFound) {
++    found = false;
++    notfound = true;
++    foundMsg = aSuccessErrObj.err;
++    notfoundMsg = aSuccessErrObj.success;
+   }
+-  ok(false, aSuccessErrObj.err);
++
++  let selector = ".hud-group > *";
++
++  // Skip entries that are hidden by the filter.
++  if (aOnlyVisible) {
++    selector += ":not(.hud-filtered-by-type)";
++  }
++
++  let msgs = aOutputNode.querySelectorAll(selector);
++  for (let i = 0, n = msgs.length; i < n; i++) {
++    let message = msgs[i].textContent.indexOf(aMatchString);
++    if (message > -1) {
++      ok(found, foundMsg);
++      return;
++    }
++  }
++
++  ok(notfound, notfoundMsg);
+ }
+ 
+ function openConsole()
+ {
+   HUDService.activateHUDForContext(tab);
+ }
+ 
+ function finishTest()

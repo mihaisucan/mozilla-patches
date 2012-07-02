@@ -1,0 +1,113 @@
+diff -U8 b/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- b/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -146,16 +146,18 @@
+ 	test-bug-595934-dom-events-external.html \
+ 	test-bug-595934-dom-events-external.js \
+ 	test-bug-595934-dom-events-external2.html \
+ 	test-bug-595934-dom-events-external2.js \
+ 	test-bug-595934-canvas.html \
+ 	test-bug-595934-canvas.js \
+ 	test-bug-595934-css-parser.html \
+ 	test-bug-595934-css-parser.css \
++	test-bug-595934-canvas-css.html \
++	test-bug-595934-canvas-css.js \
+ 	test-bug-595934-malformedxml-external.html \
+ 	test-bug-595934-malformedxml-external.xml \
+ 	test-bug-595934-empty-getelementbyid.html \
+ 	test-bug-595934-empty-getelementbyid.js \
+ 	test-bug-597136-external-script-errors.html \
+ 	test-bug-597136-external-script-errors.js \
+ 	test-bug-613013-console-api-iframe.html \
+ 	test-bug-597756-reopen-closed-tab.html \
+diff -U8 b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js
+--- b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js
+@@ -84,31 +84,36 @@
+     category: "malformed-xml",
+     matchString: "malformed-xml",
+   },
+   { // #14
+     file: "test-bug-595934-empty-getelementbyid.html",
+     category: "DOM",
+     matchString: "getElementById",
+   },
++  { // #15
++    file: "test-bug-595934-canvas-css.html",
++    category: "CSS Parser",
++    matchString: "foobarCanvasCssParser",
++  },
+ ];
+ 
+ let pos = -1;
+ 
+ let TestObserver = {
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
+ 
+   observe: function test_observe(aSubject)
+   {
+     if (!(aSubject instanceof Ci.nsIScriptError)) {
+       return;
+     }
+ 
+     is(aSubject.category, TESTS[pos].category,
+-      "test #" + pos + ": error category " + TESTS[pos].category);
++      "test #" + pos + ": error category '" + TESTS[pos].category + "'");
+ 
+     if (aSubject.category == TESTS[pos].category) {
+       executeSoon(performTest);
+     }
+     else {
+       testEnd();
+     }
+   }
+@@ -154,13 +159,13 @@
+ function performTest() {
+   let textContent = hud.outputNode.textContent;
+   isnot(textContent.indexOf(TESTS[pos].matchString), -1,
+-    "test #" + pos + ": message found " + TESTS[pos].matchString);
++    "test #" + pos + ": message found '" + TESTS[pos].matchString + "'");
+ 
+   testNext();
+ }
+ 
+ function test() {
+-  addTab("data:text/html,Web Console test for bug 595934.");
++  addTab("data:text/html,Web Console test for bug 595934 - message categories coverage.");
+   browser.addEventListener("load", tabLoad, true);
+ }
+ 
+only in patch2:
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-canvas-css.html
+@@ -0,0 +1,16 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: CSS Parser (with
++      Canvas)</title>
++    <!-- Any copyright is dedicated to the Public Domain.
++         http://creativecommons.org/publicdomain/zero/1.0/ -->
++    <script type="text/javascript"
++            src="test-bug-595934-canvas-css.js"></script>
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "CSS Parser" (with
++    Canvas).</p>
++    <p><canvas width="200" height="200">Canvas support is required!</canvas></p>
++  </body>
++</html>
+only in patch2:
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-canvas-css.js
+@@ -0,0 +1,10 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++window.addEventListener("DOMContentLoaded", function() {
++  var canvas = document.querySelector("canvas");
++  var context = canvas.getContext("2d");
++  context.strokeStyle = "foobarCanvasCssParser";
++}, false);

@@ -1,0 +1,361 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1328734150 -7200
+# Node ID 698abd2ae00c2c6a29285c39d19e4934e9213fcb
+# Parent  ce92b3e09da59c1e7ce1f0f4e1480718e568c5cc
+Bug 717219 - Source Editor should highlight the current line in HTML documents
+
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -85,16 +85,17 @@ const ORION_EVENTS = {
+ /**
+  * Known Orion annotation types.
+  */
+ const ORION_ANNOTATION_TYPES = {
+   currentBracket: "orion.annotation.currentBracket",
+   matchingBracket: "orion.annotation.matchingBracket",
+   breakpoint: "orion.annotation.breakpoint",
+   task: "orion.annotation.task",
++  currentLine: "orion.annotation.currentLine",
+ };
+ 
+ /**
+  * Default key bindings in the Orion editor.
+  */
+ const DEFAULT_KEYBINDINGS = [
+   {
+     action: "undo",
+@@ -147,16 +148,17 @@ SourceEditor.prototype = {
+   _undoStack: null,
+   _linesRuler: null,
+   _annotationRuler: null,
+   _overviewRuler: null,
+   _styler: null,
+   _annotationStyler: null,
+   _annotationModel: null,
+   _dragAndDrop: null,
++  _currentLineAnnotation: null,
+   _mode: null,
+   _expandTab: null,
+   _tabSize: null,
+   _iframeWindow: null,
+   _eventTarget: null,
+   _eventListenersQueue: null,
+ 
+   /**
+@@ -259,17 +261,17 @@ SourceEditor.prototype = {
+     });
+ 
+     let onOrionLoad = function() {
+       this._view.removeEventListener("Load", onOrionLoad);
+       this._onOrionLoad();
+     }.bind(this);
+ 
+     this._view.addEventListener("Load", onOrionLoad);
+-    if (Services.appinfo.OS == "Linux") {
++    if (config.highlightCurrentLine || Services.appinfo.OS == "Linux") {
+       this._view.addEventListener("Selection", this._onOrionSelection);
+     }
+ 
+     let KeyBinding = window.require("orion/textview/keyBinding").KeyBinding;
+     let TextDND = window.require("orion/textview/textDND").TextDND;
+     let Rulers = window.require("orion/textview/rulers");
+     let LineNumberRuler = Rulers.LineNumberRuler;
+     let AnnotationRuler = Rulers.AnnotationRuler;
+@@ -540,32 +542,83 @@ SourceEditor.prototype = {
+     }
+ 
+     this.setText(this.getLineDelimiter() + prefix, selection.start,
+                  selection.end);
+     return true;
+   },
+ 
+   /**
+-   * Orion Selection event handler for the X Window System users. This allows
+-   * one to select text and have it copied into the X11 PRIMARY.
++   * The Orion Selection event handler. The current caret line is
++   * highlighted and for Linux users the selected text is copied into the X11
++   * PRIMARY buffer.
+    *
+    * @private
+    * @param object aEvent
+    *        The Orion Selection event object.
+    */
+   _onOrionSelection: function SE__onOrionSelection(aEvent)
+   {
+-    let text = this.getText(aEvent.newValue.start, aEvent.newValue.end);
+-    if (!text) {
++    if (this._config.highlightCurrentLine) {
++      this._highlightCurrentLine(aEvent);
++    }
++
++    if (Services.appinfo.OS == "Linux") {
++      let text = this.getText(aEvent.newValue.start, aEvent.newValue.end);
++      if (!text) {
++        return;
++      }
++
++      clipboardHelper.copyStringToClipboard(text,
++                                            Ci.nsIClipboard.kSelectionClipboard);
++    }
++  },
++
++  /**
++   * Highlight the current line using the Orion annotation model.
++   *
++   * @private
++   * @param object aEvent
++   *        The Selection event object.
++   */
++  _highlightCurrentLine: function SE__highlightCurrentLine(aEvent)
++  {
++    let annotationModel = this._annotationModel;
++    let model = this._model;
++    let oldAnnotation = this._currentLineAnnotation;
++    let newSelection = aEvent.newValue;
++
++    let collapsed = newSelection.start == newSelection.end;
++    if (!collapsed) {
++      if (oldAnnotation) {
++        annotationModel.removeAnnotation(oldAnnotation);
++        this._currentLineAnnotation = null;
++      }
+       return;
+     }
+ 
+-    clipboardHelper.copyStringToClipboard(text,
+-                                          Ci.nsIClipboard.kSelectionClipboard);
++    let line = model.getLineAtOffset(newSelection.start);
++    let lineStart = model.getLineStart(line);
++    let lineEnd = model.getLineEnd(line);
++
++    let title = oldAnnotation ? oldAnnotation.title :
++                SourceEditorUI.strings.GetStringFromName("annotation.currentLine");
++
++    this._currentLineAnnotation = {
++      start: lineStart,
++      end: lineEnd,
++      type: ORION_ANNOTATION_TYPES.currentLine,
++      title: title,
++      html: "<div class='annotationHTML currentLine'></div>",
++      overviewStyle: {styleClass: "annotationOverview currentLine"},
++      lineStyle: {styleClass: "annotationLine currentLine"},
++    };
++
++    annotationModel.replaceAnnotations(oldAnnotation ? [oldAnnotation] : null,
++                                       [this._currentLineAnnotation]);
+   },
+ 
+   /**
+    * Highlight the Orion annotations. This updates the annotation styler as
+    * needed.
+    * @private
+    */
+   _highlightAnnotations: function SE__highlightAnnotations()
+@@ -579,16 +632,20 @@ SourceEditor.prototype = {
+       this._iframeWindow.require("orion/textview/annotations").AnnotationStyler;
+ 
+     let styler = new AnnotationStyler(this._view, this._annotationModel);
+     this._annotationStyler = styler;
+ 
+     styler.addAnnotationType(ORION_ANNOTATION_TYPES.matchingBracket);
+     styler.addAnnotationType(ORION_ANNOTATION_TYPES.currentBracket);
+     styler.addAnnotationType(ORION_ANNOTATION_TYPES.task);
++
++    if (this._config.highlightCurrentLine) {
++      styler.addAnnotationType(ORION_ANNOTATION_TYPES.currentLine);
++    }
+   },
+ 
+   /**
+    * Retrieve the list of Orion Annotations filtered by type for the given text range.
+    *
+    * @private
+    * @param string aType
+    *        The annotation type to filter annotations for.
+@@ -1020,17 +1077,16 @@ SourceEditor.prototype = {
+     switch (aMode) {
+       case SourceEditor.MODES.JAVASCRIPT:
+       case SourceEditor.MODES.CSS:
+         let TextStyler =
+           window.require("examples/textview/textStyler").TextStyler;
+ 
+         this._styler = new TextStyler(this._view, aMode, this._annotationModel);
+         this._styler.setFoldingEnabled(false);
+-        this._styler.setHighlightCaretLine(true);
+         break;
+ 
+       case SourceEditor.MODES.HTML:
+       case SourceEditor.MODES.XML:
+         let TextMateStyler =
+           window.require("orion/editor/textMateStyler").TextMateStyler;
+         let HtmlGrammar =
+           window.require("orion/editor/htmlGrammar").HtmlGrammar;
+@@ -1175,17 +1231,17 @@ SourceEditor.prototype = {
+     return breakpoints;
+   },
+ 
+   /**
+    * Destroy/uninitialize the editor.
+    */
+   destroy: function SE_destroy()
+   {
+-    if (Services.appinfo.OS == "Linux") {
++    if (this._config.highlightCurrentLine || Services.appinfo.OS == "Linux") {
+       this._view.removeEventListener("Selection", this._onOrionSelection);
+     }
+     this._onOrionSelection = null;
+ 
+     this._view.destroy();
+     this.ui.destroy();
+     this.ui = null;
+ 
+@@ -1196,16 +1252,17 @@ SourceEditor.prototype = {
+     this._undoStack = null;
+     this._styler = null;
+     this._linesRuler = null;
+     this._annotationRuler = null;
+     this._overviewRuler = null;
+     this._dragAndDrop = null;
+     this._annotationModel = null;
+     this._annotationStyler = null;
++    this._currentLineAnnotation = null;
+     this._eventTarget = null;
+     this._eventListenersQueue = null;
+     this._view = null;
+     this._model = null;
+     this._config = null;
+     this._lastFind = null;
+   },
+ };
+diff --git a/browser/devtools/sourceeditor/source-editor.jsm b/browser/devtools/sourceeditor/source-editor.jsm
+--- a/browser/devtools/sourceeditor/source-editor.jsm
++++ b/browser/devtools/sourceeditor/source-editor.jsm
+@@ -176,16 +176,22 @@ SourceEditor.DEFAULTS = {
+   /**
+    * Display the overview gutter/ruler. This gutter presents an overview of the
+    * current annotations in the editor, for example the breakpoints.
+    * @type boolean
+    */
+   showOverviewRuler: false,
+ 
+   /**
++   * Highlight the current line.
++   * @type boolean
++   */
++  highlightCurrentLine: true,
++
++  /**
+    * An array of objects that allows you to define custom editor keyboard
+    * bindings. Each object can have:
+    *   - action - name of the editor action to invoke.
+    *   - code - keyCode for the shortcut.
+    *   - accel - boolean for the Accel key (Cmd on Macs, Ctrl on Linux/Windows).
+    *   - shift - boolean for the Shift key.
+    *   - alt - boolean for the Alt key.
+    *   - callback - optional function to invoke, if the action is not predefined
+diff --git a/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties b/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties
+--- a/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties
++++ b/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties
+@@ -28,8 +28,13 @@ gotoLineCmd.promptTitle=Go to line…
+ # the user wants to jump to a specific line number in the code. You can
+ # access this feature by pressing Ctrl-J on Windows/Linux or Cmd-J on Mac.
+ gotoLineCmd.promptMessage=Jump to line number:
+ 
+ # LOCALIZATION NOTE  (annotation.breakpoint.title): This is the text shown in
+ # front of any breakpoint annotation when it is displayed as a tooltip in one of
+ # the editor gutters. This feature is used in the JavaScript Debugger.
+ annotation.breakpoint.title=Breakpoint: %S
++
++# LOCALIZATION NOTE  (annotation.currentLine): This is the text shown in
++# a tooltip displayed in any of the editor gutters when the user hovers the
++# current line.
++annotation.currentLine=Current line
+diff --git a/browser/themes/gnomestripe/devtools/orion.css b/browser/themes/gnomestripe/devtools/orion.css
+--- a/browser/themes/gnomestripe/devtools/orion.css
++++ b/browser/themes/gnomestripe/devtools/orion.css
+@@ -148,21 +148,23 @@
+ 
+ .token_tab {
+   /* images/white_tab.png */
+   background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAJCAIAAACJ2loDAAAABnRSTlMA/wD/AP83WBt9AAAAMklEQVR4nGP4TwRgoK6i52c3bz5w6zMSA6tJn28d2Lx589nnCAYu63AaSLxJRLoJPwAAeNk0aG4opfMAAAAASUVORK5CYII=");
+   background-repeat: no-repeat;
+   background-position: left center;
+ }
+ 
+-.line_caret { /* Current line */
++.line_caret,
++.annotationLine.currentLine { /* Current line */
+   background: #dae2ee; /* lighter than the background */
+ }
+ 
+-.readonly .line_caret {
++.readonly .line_caret,
++.readonly .annotationLine.currentLine {
+   background: #cddae5; /* a bit darker than the background */
+ }
+ 
+ /* Styling for html syntax highlighting */
+ .entity-name-tag {
+   color: #dd0058; /* purple */
+ }
+ 
+diff --git a/browser/themes/pinstripe/devtools/orion.css b/browser/themes/pinstripe/devtools/orion.css
+--- a/browser/themes/pinstripe/devtools/orion.css
++++ b/browser/themes/pinstripe/devtools/orion.css
+@@ -148,21 +148,23 @@
+ 
+ .token_tab {
+   /* images/white_tab.png */
+   background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAJCAIAAACJ2loDAAAABnRSTlMA/wD/AP83WBt9AAAAMklEQVR4nGP4TwRgoK6i52c3bz5w6zMSA6tJn28d2Lx589nnCAYu63AaSLxJRLoJPwAAeNk0aG4opfMAAAAASUVORK5CYII=");
+   background-repeat: no-repeat;
+   background-position: left center;
+ }
+ 
+-.line_caret { /* Current line */
++.line_caret,
++.annotationLine.currentLine { /* Current line */
+   background: #dae2ee; /* lighter than the background */
+ }
+ 
+-.readonly .line_caret {
++.readonly .line_caret,
++.readonly .annotationLine.currentLine {
+   background: #cddae5; /* a bit darker than the background */
+ }
+ 
+ /* Styling for html syntax highlighting */
+ .entity-name-tag {
+   color: #dd0058; /* purple */
+ }
+ 
+diff --git a/browser/themes/winstripe/devtools/orion.css b/browser/themes/winstripe/devtools/orion.css
+--- a/browser/themes/winstripe/devtools/orion.css
++++ b/browser/themes/winstripe/devtools/orion.css
+@@ -148,21 +148,23 @@
+ 
+ .token_tab {
+   /* images/white_tab.png */
+   background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAJCAIAAACJ2loDAAAABnRSTlMA/wD/AP83WBt9AAAAMklEQVR4nGP4TwRgoK6i52c3bz5w6zMSA6tJn28d2Lx589nnCAYu63AaSLxJRLoJPwAAeNk0aG4opfMAAAAASUVORK5CYII=");
+   background-repeat: no-repeat;
+   background-position: left center;
+ }
+ 
+-.line_caret { /* Current line */
++.line_caret,
++.annotationLine.currentLine { /* Current line */
+   background: #dae2ee; /* lighter than the background */
+ }
+ 
+-.readonly .line_caret {
++.readonly .line_caret,
++.readonly .annotationLine.currentLine {
+   background: #cddae5; /* a bit darker than the background */
+ }
+ 
+ /* Styling for html syntax highlighting */
+ .entity-name-tag {
+   color: #dd0058; /* purple */
+ }
+ 

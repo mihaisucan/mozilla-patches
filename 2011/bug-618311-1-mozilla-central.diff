@@ -1,0 +1,195 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1735,16 +1735,29 @@ HUD_SERVICE.prototype =
+     for (let windowID in this.windowIds) {
+       if (this.windowIds[windowID] == id) {
+         delete this.windowIds[windowID];
+       }
+     }
+ 
+     this.unregisterActiveContext(id);
+ 
++    let doc = outputNode.ownerDocument;
++    let popupset = doc.getElementById("mainPopupSet");
++    let panels = popupset.querySelectorAll("panel[hudId=" + id + "]");
++    for (let i = 0; i < panels.length; i++) {
++      let panel = panels[i];
++      let closeButton = panel.querySelector(".jsPropertyPanelCloseButton");
++      if (closeButton) {
++        closeButton.doCommand();
++      } else {
++        panel.hidePopup();
++      }
++    }
++
+     if (Object.keys(this.hudReferences).length == 0) {
+       this.suspend();
+     }
+   },
+ 
+   /**
+    * "Wake up" the Web Console activity. This is called when the first Web
+    * Console is open. This method initializes the various observers we have.
+@@ -2066,16 +2079,17 @@ HUD_SERVICE.prototype =
+     let doc = aNode.ownerDocument;
+     let parent = doc.getElementById("mainPopupSet");
+     let netPanel = new NetworkPanel(parent, aHttpActivity);
+     netPanel.linkNode = aNode;
+ 
+     let panel = netPanel.panel;
+     panel.openPopup(aNode, "after_pointer", 0, 0, false, false);
+     panel.sizeTo(450, 500);
++    panel.setAttribute("hudId", aHttpActivity.hudId);
+     aHttpActivity.panels.push(Cu.getWeakReference(netPanel));
+     return netPanel;
+   },
+ 
+   /**
+    * Begin observing HTTP traffic that we care about,
+    * namely traffic that originates inside any context that a Heads Up Display
+    * is active for.
+@@ -3860,17 +3874,18 @@ function JSTermHelper(aJSTerm)
+    *
+    * @param object aObject
+    *        Object to inspect.
+    * @returns void
+    */
+   aJSTerm.sandbox.inspect = function JSTH_inspect(aObject)
+   {
+     aJSTerm.helperEvaluated = true;
+-    aJSTerm.openPropertyPanel(null, unwrap(aObject));
++    let propPanel = aJSTerm.openPropertyPanel(null, unwrap(aObject));
++    propPanel.panel.setAttribute("hudId", aJSTerm.hudId);
+   };
+ 
+   /**
+    * Prints aObject to the output.
+    *
+    * @param object aObject
+    *        Object to print to the output.
+    * @returns void
+@@ -4170,17 +4185,18 @@ JSTerm.prototype = {
+     node.addEventListener("click", function(aEvent) {
+       if (aEvent.detail != 1 || aEvent.button != 0 ||
+           (this._startX != aEvent.clientX &&
+            this._startY != aEvent.clientY)) {
+         return;
+       }
+ 
+       if (!this._panelOpen) {
+-        self.openPropertyPanel(aEvalString, aOutputObject, this);
++        let propPanel = self.openPropertyPanel(aEvalString, aOutputObject, this);
++        propPanel.panel.setAttribute("hudId", self.hudId);
+         this._panelOpen = true;
+       }
+     }, false);
+ 
+     ConsoleUtils.outputMessageNode(node, this.hudId);
+   },
+ 
+   /**
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -115,16 +115,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_view_source.js \
+ 	browser_webconsole_bug_602572_log_bodies_checkbox.js \
+ 	browser_webconsole_bug_614793_jsterm_scroll.js \
+ 	browser_webconsole_bug_599725_response_headers.js \
+ 	browser_webconsole_bug_613642_maintain_scroll.js \
+ 	browser_webconsole_bug_613642_prune_scroll.js \
+ 	browser_webconsole_bug_618078_network_exceptions.js \
+ 	browser_webconsole_bug_613280_jsterm_copy.js \
++	browser_webconsole_bug_618311_close_panels.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_618311_close_panels.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_618311_close_panels.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_618311_close_panels.js
+@@ -0,0 +1,78 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", function() {
++    browser.removeEventListener("load", arguments.callee, true);
++
++    openConsole();
++    content.location.reload();
++    browser.addEventListener("load", tabLoaded, true);
++  }, true);
++}
++
++function tabLoaded() {
++  browser.removeEventListener("load", tabLoaded, true);
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let HUD = HUDService.hudReferences[hudId];
++
++  HUD.jsterm.execute("document");
++
++  let networkMessage = HUD.outputNode.querySelector(".webconsole-msg-network");
++  ok(networkMessage, "found network message");
++
++  let networkLink = networkMessage.querySelector(".webconsole-msg-link");
++  ok(networkLink, "found network message link");
++
++  let jstermMessage = HUD.outputNode.querySelector(".webconsole-msg-output");
++  ok(jstermMessage, "found output message");
++
++  let popupset = document.getElementById("mainPopupSet");
++  ok(popupset, "found #mainPopupSet");
++
++  let popupsShown = 0;
++  let hiddenPopups = 0;
++
++  let onpopupshown = function() {
++    popupsShown++;
++    if (popupsShown == 2) {
++      document.removeEventListener("popupshown", onpopupshown, false);
++
++      executeSoon(function() {
++        let popups = popupset.querySelectorAll("panel[hudId=" + hudId + "]");
++        is(popups.length, 2, "found two popups");
++
++        document.addEventListener("popuphidden", onpopuphidden, false);
++        executeSoon(closeConsole);
++      });
++    }
++  };
++
++  let onpopuphidden = function() {
++    hiddenPopups++;
++    if (hiddenPopups == 2) {
++      document.removeEventListener("popuphidden", onpopuphidden, false);
++
++      executeSoon(function() {
++        let popups = popupset.querySelectorAll("panel[hudId=" + hudId + "]");
++        is(popups.length, 0, "no popups found");
++
++        executeSoon(finishTest);
++      });
++    }
++  };
++
++  document.addEventListener("popupshown", onpopupshown, false);
++
++  EventUtils.synthesizeMouse(networkLink, 2, 2, {});
++  EventUtils.synthesizeMouse(jstermMessage, 2, 2, {});
++}

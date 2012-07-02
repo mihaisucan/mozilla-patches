@@ -1,0 +1,733 @@
+diff --git a/accessible/src/base/nsAccessNode.cpp b/accessible/src/base/nsAccessNode.cpp
+--- a/accessible/src/base/nsAccessNode.cpp
++++ b/accessible/src/base/nsAccessNode.cpp
+@@ -368,17 +368,18 @@ nsAccessNode::ScrollTo(PRUint32 aScrollT
+   nsIFrame *frame = GetFrame();
+   NS_ENSURE_TRUE(frame, NS_ERROR_FAILURE);
+ 
+   nsCOMPtr<nsIContent> content = frame->GetContent();
+   NS_ENSURE_TRUE(content, NS_ERROR_FAILURE);
+ 
+   PRInt16 vPercent, hPercent;
+   nsCoreUtils::ConvertScrollTypeToPercents(aScrollType, &vPercent, &hPercent);
+-  return shell->ScrollContentIntoView(content, vPercent, hPercent);
++  return shell->ScrollContentIntoView(content, vPercent, hPercent,
++                                      nsIPresShell::SCROLL_OVERFLOW_HIDDEN);
+ }
+ 
+ NS_IMETHODIMP
+ nsAccessNode::ScrollToPoint(PRUint32 aCoordinateType, PRInt32 aX, PRInt32 aY)
+ {
+   nsIFrame *frame = GetFrame();
+   if (!frame)
+     return NS_ERROR_FAILURE;
+diff --git a/accessible/src/base/nsAccessible.cpp b/accessible/src/base/nsAccessible.cpp
+--- a/accessible/src/base/nsAccessible.cpp
++++ b/accessible/src/base/nsAccessible.cpp
+@@ -2363,17 +2363,18 @@ nsAccessible::DispatchClickEvent(nsICont
+ {
+   if (IsDefunct())
+     return;
+ 
+   nsCOMPtr<nsIPresShell> presShell = GetPresShell();
+ 
+   // Scroll into view.
+   presShell->ScrollContentIntoView(aContent, NS_PRESSHELL_SCROLL_ANYWHERE,
+-                                   NS_PRESSHELL_SCROLL_ANYWHERE);
++                                   NS_PRESSHELL_SCROLL_ANYWHERE,
++                                   nsIPresShell::SCROLL_OVERFLOW_HIDDEN);
+ 
+   // Fire mouse down and mouse up events.
+   PRBool res = nsCoreUtils::DispatchMouseEvent(NS_MOUSE_BUTTON_DOWN, presShell,
+                                                aContent);
+   if (!res)
+     return;
+ 
+   nsCoreUtils::DispatchMouseEvent(NS_MOUSE_BUTTON_UP, presShell, aContent);
+diff --git a/content/html/content/src/nsGenericHTMLElement.cpp b/content/html/content/src/nsGenericHTMLElement.cpp
+--- a/content/html/content/src/nsGenericHTMLElement.cpp
++++ b/content/html/content/src/nsGenericHTMLElement.cpp
+@@ -803,17 +803,18 @@ nsGenericHTMLElement::ScrollIntoView(PRB
+   if (!optional_argc) {
+     aTop = PR_TRUE;
+   }
+ 
+   PRIntn vpercent = aTop ? NS_PRESSHELL_SCROLL_TOP :
+     NS_PRESSHELL_SCROLL_BOTTOM;
+ 
+   presShell->ScrollContentIntoView(this, vpercent,
+-                                   NS_PRESSHELL_SCROLL_ANYWHERE);
++                                   NS_PRESSHELL_SCROLL_ANYWHERE,
++                                   nsIPresShell::SCROLL_OVERFLOW_HIDDEN);
+ 
+   return NS_OK;
+ }
+ 
+ NS_IMETHODIMP
+ nsGenericHTMLElement::GetSpellcheck(PRBool* aSpellcheck)
+ {
+   NS_ENSURE_ARG_POINTER(aSpellcheck);
+diff --git a/dom/base/nsFocusManager.cpp b/dom/base/nsFocusManager.cpp
+--- a/dom/base/nsFocusManager.cpp
++++ b/dom/base/nsFocusManager.cpp
+@@ -1795,17 +1795,18 @@ void
+ nsFocusManager::ScrollIntoView(nsIPresShell* aPresShell,
+                                nsIContent* aContent,
+                                PRUint32 aFlags)
+ {
+   // if the noscroll flag isn't set, scroll the newly focused element into view
+   if (!(aFlags & FLAG_NOSCROLL))
+     aPresShell->ScrollContentIntoView(aContent,
+                                       NS_PRESSHELL_SCROLL_IF_NOT_VISIBLE,
+-                                      NS_PRESSHELL_SCROLL_IF_NOT_VISIBLE);
++                                      NS_PRESSHELL_SCROLL_IF_NOT_VISIBLE,
++                                      nsIPresShell::SCROLL_OVERFLOW_HIDDEN);
+ }
+ 
+ 
+ void
+ nsFocusManager::RaiseWindow(nsPIDOMWindow* aWindow)
+ {
+   // don't raise windows that are already raised or are in the process of
+   // being lowered
+diff --git a/layout/base/nsDocumentViewer.cpp b/layout/base/nsDocumentViewer.cpp
+--- a/layout/base/nsDocumentViewer.cpp
++++ b/layout/base/nsDocumentViewer.cpp
+@@ -2674,17 +2674,18 @@ NS_IMETHODIMP DocumentViewerImpl::Scroll
+    // get the primary frame
+ 
+    nsCOMPtr<nsIContent> content(do_QueryInterface(aNode));
+    NS_ENSURE_TRUE(content, NS_ERROR_FAILURE);
+ 
+    // Tell the PresShell to scroll to the primary frame of the content.
+    NS_ENSURE_SUCCESS(presShell->ScrollContentIntoView(content,
+                                                       NS_PRESSHELL_SCROLL_TOP,
+-                                                      NS_PRESSHELL_SCROLL_ANYWHERE),
++                                                      NS_PRESSHELL_SCROLL_ANYWHERE,
++                                                      nsIPresShell::SCROLL_OVERFLOW_HIDDEN),
+                      NS_ERROR_FAILURE);
+    return NS_OK;
+ }
+ 
+ void
+ DocumentViewerImpl::CallChildren(CallChildFunc aFunc, void* aClosure)
+ {
+   nsCOMPtr<nsIDocShellTreeNode> docShellNode(do_QueryReferent(mContainer));
+diff --git a/layout/base/nsIPresShell.h b/layout/base/nsIPresShell.h
+--- a/layout/base/nsIPresShell.h
++++ b/layout/base/nsIPresShell.h
+@@ -17,16 +17,17 @@
+  * The Initial Developer of the Original Code is
+  * Netscape Communications Corporation.
+  * Portions created by the Initial Developer are Copyright (C) 1998
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Steve Clark <buster@netscape.com>
+  *   Dan Rosen <dr@netscape.com>
++ *   Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either of the GNU General Public License Version 2 or later (the "GPL"),
+  * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -134,18 +135,18 @@ typedef struct CapturingContentInfo {
+   nsIContent* mContent;
+ 
+   CapturingContentInfo() :
+     mAllowed(PR_FALSE), mRetargetToElement(PR_FALSE), mPreventDrag(PR_FALSE),
+     mContent(nsnull) { }
+ } CapturingContentInfo;
+ 
+ #define NS_IPRESSHELL_IID     \
+- { 0xb79574cd, 0x2555, 0x4b57, \
+-    { 0xb3, 0xf8, 0x27, 0x57, 0x3e, 0x60, 0x74, 0x01 } }
++ { 0xd1978bee, 0x43b9, 0x40de, \
++    { 0x95, 0x47, 0x85, 0x06, 0x5e, 0x02, 0xec, 0xb4 } }
+ 
+ // Constants for ScrollContentIntoView() function
+ #define NS_PRESSHELL_SCROLL_TOP      0
+ #define NS_PRESSHELL_SCROLL_BOTTOM   100
+ #define NS_PRESSHELL_SCROLL_LEFT     0
+ #define NS_PRESSHELL_SCROLL_RIGHT    100
+ #define NS_PRESSHELL_SCROLL_CENTER   50
+ #define NS_PRESSHELL_SCROLL_ANYWHERE -1
+@@ -539,20 +540,28 @@ public:
+    *                  100 (NS_PRESSHELL_SCROLL_RIGHT) means the frame's right
+    *                  edge is aligned with the right edge of the visible area.
+    *                  For values in between, the point "aVPercent" across the frame
+    *                  is placed at the point "aVPercent" across the visible area.
+    *                  A value of 50 (NS_PRESSHELL_SCROLL_CENTER) centers the frame
+    *                  horizontally . A value of NS_PRESSHELL_SCROLL_ANYWHERE means move
+    *                  the frame the minimum amount necessary in order for the entire
+    *                  frame to be visible horizontally (if possible)
++   * @param aFlags    If SCROLL_FIRST_ANCESTOR_ONLY is set, only the nearest
++   *                  scrollable ancestor is scrolled, otherwise all
++   *                  scrollable ancestors may be scrolled if necessary.
++   *                  If SCROLL_OVERFLOW_HIDDEN is set then we may scroll in a
++   *                  direction even if overflow:hidden is specified in that
++   *                  direction; otherwise we will not scroll in that direction
++   *                  when overflow:hidden is set for that direction.
+    */
+   virtual NS_HIDDEN_(nsresult) ScrollContentIntoView(nsIContent* aContent,
+                                                      PRIntn      aVPercent,
+-                                                     PRIntn      aHPercent) = 0;
++                                                     PRIntn      aHPercent,
++                                                     PRUint32    aFlags) = 0;
+ 
+   enum {
+     SCROLL_FIRST_ANCESTOR_ONLY = 0x01,
+     SCROLL_OVERFLOW_HIDDEN = 0x02
+   };
+   /**
+    * Scrolls the view of the document so that the given area of a frame
+    * is visible, if possible. Layout is not flushed before scrolling.
+diff --git a/layout/base/nsPresShell.cpp b/layout/base/nsPresShell.cpp
+--- a/layout/base/nsPresShell.cpp
++++ b/layout/base/nsPresShell.cpp
+@@ -21,16 +21,17 @@
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Steve Clark <buster@netscape.com>
+  *   Håkan Waara <hwaara@chello.se>
+  *   Dan Rosen <dr@netscape.com>
+  *   Daniel Glazman <glazman@netscape.com>
+  *   Mats Palmgren <matspal@gmail.com>
++ *   Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either of the GNU General Public License Version 2 or later (the "GPL"),
+  * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -767,17 +768,18 @@ public:
+ 
+   virtual NS_HIDDEN_(void) ClearFrameRefs(nsIFrame* aFrame);
+   virtual NS_HIDDEN_(already_AddRefed<nsIRenderingContext>) GetReferenceRenderingContext();
+   virtual NS_HIDDEN_(nsresult) GoToAnchor(const nsAString& aAnchorName, PRBool aScroll);
+   virtual NS_HIDDEN_(nsresult) ScrollToAnchor();
+ 
+   virtual NS_HIDDEN_(nsresult) ScrollContentIntoView(nsIContent* aContent,
+                                                      PRIntn      aVPercent,
+-                                                     PRIntn      aHPercent);
++                                                     PRIntn      aHPercent,
++                                                     PRUint32    aFlags);
+   virtual PRBool ScrollFrameRectIntoView(nsIFrame*     aFrame,
+                                          const nsRect& aRect,
+                                          PRIntn        aVPercent,
+                                          PRIntn        aHPercent,
+                                          PRUint32      aFlags);
+   virtual nsRectVisibility GetRectVisibility(nsIFrame *aFrame,
+                                              const nsRect &aRect,
+                                              nscoord aMinTwips) const;
+@@ -999,17 +1001,18 @@ protected:
+ #ifdef DEBUG
+   void DoVerifyReflow();
+   void VerifyHasDirtyRootAncestor(nsIFrame* aFrame);
+ #endif
+ 
+   // Helper for ScrollContentIntoView
+   void DoScrollContentIntoView(nsIContent* aContent,
+                                PRIntn      aVPercent,
+-                               PRIntn      aHPercent);
++                               PRIntn      aHPercent,
++                               PRUint32    aFlags);
+ 
+   friend struct AutoRenderingStateSaveRestore;
+   friend struct RenderingState;
+ 
+   struct RenderingState {
+     RenderingState(PresShell* aPresShell) 
+       : mRenderFlags(aPresShell->mRenderFlags)
+       , mDisplayPort(aPresShell->mDisplayPort)
+@@ -3914,17 +3917,18 @@ PresShell::GoToAnchor(const nsAString& a
+ 
+ #ifdef ACCESSIBILITY
+   nsIContent *anchorTarget = content;
+ #endif
+ 
+   if (content) {
+     if (aScroll) {
+       rv = ScrollContentIntoView(content, NS_PRESSHELL_SCROLL_TOP,
+-                                 NS_PRESSHELL_SCROLL_ANYWHERE);
++                                 NS_PRESSHELL_SCROLL_ANYWHERE,
++                                 SCROLL_OVERFLOW_HIDDEN);
+       NS_ENSURE_SUCCESS(rv, rv);
+ 
+       nsIScrollableFrame* rootScroll = GetRootScrollFrameAsScrollable();
+       if (rootScroll) {
+         mLastAnchorScrolledTo = content;
+         mLastAnchorScrollPositionY = rootScroll->GetScrollPosition().y;
+       }
+     }
+@@ -4021,17 +4025,18 @@ PresShell::ScrollToAnchor()
+   NS_ASSERTION(mDidInitialReflow, "should have done initial reflow by now");
+ 
+   nsIScrollableFrame* rootScroll = GetRootScrollFrameAsScrollable();
+   if (!rootScroll ||
+       mLastAnchorScrollPositionY != rootScroll->GetScrollPosition().y)
+     return NS_OK;
+ 
+   nsresult rv = ScrollContentIntoView(mLastAnchorScrolledTo, NS_PRESSHELL_SCROLL_TOP,
+-                                      NS_PRESSHELL_SCROLL_ANYWHERE);
++                                      NS_PRESSHELL_SCROLL_ANYWHERE,
++                                      SCROLL_OVERFLOW_HIDDEN);
+   mLastAnchorScrolledTo = nsnull;
+   return rv;
+ }
+ 
+ /*
+  * Helper (per-continuation) for ScrollContentIntoView.
+  *
+  * @param aContainerFrame [in] the frame which aRect is relative to
+@@ -4204,17 +4209,18 @@ static void ScrollToShowRect(nsIScrollab
+   }
+ 
+   aScrollFrame->ScrollTo(scrollPt, nsIScrollableFrame::INSTANT);
+ }
+ 
+ nsresult
+ PresShell::ScrollContentIntoView(nsIContent* aContent,
+                                  PRIntn      aVPercent,
+-                                 PRIntn      aHPercent)
++                                 PRIntn      aHPercent,
++                                 PRUint32    aFlags)
+ {
+   nsCOMPtr<nsIContent> content = aContent; // Keep content alive while flushing.
+   NS_ENSURE_TRUE(content, NS_ERROR_NULL_POINTER);
+   nsCOMPtr<nsIDocument> currentDoc = content->GetCurrentDoc();
+   NS_ENSURE_STATE(currentDoc);
+ 
+   NS_ASSERTION(mDidInitialReflow, "should have done initial reflow by now");
+ 
+@@ -4229,25 +4235,26 @@ PresShell::ScrollContentIntoView(nsICont
+   // (or suppressed it altogether because we're suppressing interruptible
+   // flushes right now) and won't necessarily get the position correct, but do
+   // a best-effort scroll here.  The other option would be to do this inside
+   // FlushPendingNotifications, but I'm not sure the repeated scrolling that
+   // could trigger if reflows keep getting interrupted would be more desirable
+   // than a single best-effort scroll followed by one final scroll on the first
+   // completed reflow.
+   if (mContentToScrollTo) {
+-    DoScrollContentIntoView(content, aVPercent, aHPercent);
++    DoScrollContentIntoView(content, aVPercent, aHPercent, aFlags);
+   }
+   return NS_OK;
+ }
+ 
+ void
+ PresShell::DoScrollContentIntoView(nsIContent* aContent,
+                                    PRIntn      aVPercent,
+-                                   PRIntn      aHPercent)
++                                   PRIntn      aHPercent,
++                                   PRUint32    aFlags)
+ {
+   NS_ASSERTION(mDidInitialReflow, "should have done initial reflow by now");
+ 
+   nsIFrame* frame = aContent->GetPrimaryFrame();
+   if (!frame) {
+     mContentToScrollTo = nsnull;
+     return;
+   }
+@@ -4280,17 +4287,17 @@ PresShell::DoScrollContentIntoView(nsICo
+   PRBool haveRect = PR_FALSE;
+   PRBool useWholeLineHeightForInlines = aVPercent != NS_PRESSHELL_SCROLL_ANYWHERE;
+   do {
+     AccumulateFrameBounds(container, frame, useWholeLineHeightForInlines,
+                           frameBounds, haveRect);
+   } while ((frame = frame->GetNextContinuation()));
+ 
+   ScrollFrameRectIntoView(container, frameBounds, aVPercent, aHPercent,
+-                          SCROLL_OVERFLOW_HIDDEN);
++                          aFlags);
+ }
+ 
+ PRBool
+ PresShell::ScrollFrameRectIntoView(nsIFrame*     aFrame,
+                                    const nsRect& aRect,
+                                    PRIntn        aVPercent,
+                                    PRIntn        aHPercent,
+                                    PRUint32      aFlags)
+@@ -4881,17 +4888,18 @@ PresShell::FlushPendingNotifications(moz
+ 
+     if (aType >= (mSuppressInterruptibleReflows ? Flush_Layout : Flush_InterruptibleLayout) &&
+         !mIsDestroying) {
+       mFrameConstructor->RecalcQuotesAndCounters();
+       mViewManager->FlushDelayedResize(PR_TRUE);
+       if (ProcessReflowCommands(aType < Flush_Layout) && mContentToScrollTo) {
+         // We didn't get interrupted.  Go ahead and scroll to our content
+         DoScrollContentIntoView(mContentToScrollTo, mContentScrollVPosition,
+-                                mContentScrollHPosition);
++                                mContentScrollHPosition,
++                                SCROLL_OVERFLOW_HIDDEN);
+         mContentToScrollTo = nsnull;
+       }
+     }
+ 
+     if (aType >= Flush_Layout) {
+       // Flush plugin geometry. Don't flush plugin geometry for
+       // interruptible layouts, since WillPaint does an interruptible
+       // layout.
+@@ -7173,17 +7181,18 @@ PresShell::PrepareToUseCaretPosition(nsI
+     // frame is actually in view. The result is that the frame is aligned with
+     // the top of the window, but the menu is still at the bottom.
+     //
+     // Doing this call first forces the frame to be in view, eliminating the
+     // problem. The only difference in the result is that if your cursor is in
+     // an edit box below the current view, you'll get the edit box aligned with
+     // the top of the window. This is arguably better behavior anyway.
+     rv = ScrollContentIntoView(content, NS_PRESSHELL_SCROLL_IF_NOT_VISIBLE,
+-                                        NS_PRESSHELL_SCROLL_IF_NOT_VISIBLE);
++                                        NS_PRESSHELL_SCROLL_IF_NOT_VISIBLE,
++                                        SCROLL_OVERFLOW_HIDDEN);
+     NS_ENSURE_SUCCESS(rv, PR_FALSE);
+     frame = content->GetPrimaryFrame();
+     NS_WARN_IF_FALSE(frame, "No frame for focused content?");
+   }
+ 
+   // Actually scroll the selection (ie caret) into view. Note that this must
+   // be synchronous since we will be checking the caret position on the screen.
+   //
+@@ -7235,17 +7244,18 @@ PresShell::PrepareToUseCaretPosition(nsI
+ void
+ PresShell::GetCurrentItemAndPositionForElement(nsIDOMElement *aCurrentEl,
+                                                nsIContent** aTargetToUse,
+                                                nsIntPoint& aTargetPt,
+                                                nsIWidget *aRootWidget)
+ {
+   nsCOMPtr<nsIContent> focusedContent(do_QueryInterface(aCurrentEl));
+   ScrollContentIntoView(focusedContent, NS_PRESSHELL_SCROLL_ANYWHERE,
+-                                        NS_PRESSHELL_SCROLL_ANYWHERE);
++                                        NS_PRESSHELL_SCROLL_ANYWHERE,
++                                        SCROLL_OVERFLOW_HIDDEN);
+ 
+   nsPresContext* presContext = GetPresContext();
+ 
+   PRBool istree = PR_FALSE, checkLineHeight = PR_TRUE;
+   nscoord extraTreeY = 0;
+ 
+ #ifdef MOZ_XUL
+   // Set the position to just underneath the current item for multi-select
+diff --git a/layout/inspector/src/inFlasher.cpp b/layout/inspector/src/inFlasher.cpp
+--- a/layout/inspector/src/inFlasher.cpp
++++ b/layout/inspector/src/inFlasher.cpp
+@@ -191,17 +191,18 @@ inFlasher::ScrollElementIntoView(nsIDOME
+   nsCOMPtr<nsIPresShell> presShell = inLayoutUtils::GetPresShellFor(window);
+   if (!presShell) {
+     return NS_OK;
+   }
+ 
+   nsCOMPtr<nsIContent> content = do_QueryInterface(aElement);
+   presShell->ScrollContentIntoView(content,
+                                    NS_PRESSHELL_SCROLL_ANYWHERE /* VPercent */,
+-                                   NS_PRESSHELL_SCROLL_ANYWHERE /* HPercent */);
++                                   NS_PRESSHELL_SCROLL_ANYWHERE /* HPercent */,
++                                   nsIPresShell::SCROLL_OVERFLOW_HIDDEN);
+ 
+   return NS_OK;
+ }
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+ // inFlasher
+ 
+ void
+diff --git a/layout/xul/base/src/nsScrollBoxObject.cpp b/layout/xul/base/src/nsScrollBoxObject.cpp
+--- a/layout/xul/base/src/nsScrollBoxObject.cpp
++++ b/layout/xul/base/src/nsScrollBoxObject.cpp
+@@ -16,16 +16,17 @@
+  *
+  * The Initial Developer of the Original Code is
+  * Netscape Communications Corporation.
+  * Portions created by the Initial Developer are Copyright (C) 1998
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Original Author: David W. Hyatt (hyatt@netscape.com)
++ *   Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either of the GNU General Public License Version 2 or later (the "GPL"),
+  * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -249,66 +250,28 @@ NS_IMETHODIMP nsScrollBoxObject::ScrollT
+   sf->ScrollTo(nsPoint(0, y), nsIScrollableFrame::INSTANT);
+   return NS_OK;
+ }
+ 
+ /* void scrollToElement (in nsIDOMElement child); */
+ NS_IMETHODIMP nsScrollBoxObject::ScrollToElement(nsIDOMElement *child)
+ {
+     NS_ENSURE_ARG_POINTER(child);
+-    nsIScrollableFrame* sf = GetScrollFrame();
+-    if (!sf)
+-       return NS_ERROR_FAILURE;
+ 
+     nsCOMPtr<nsIPresShell> shell = GetPresShell(PR_FALSE);
+     if (!shell) {
+       return NS_ERROR_UNEXPECTED;
+     }
+ 
+-    nsIFrame* scrolledBox = GetScrolledBox(this);
+-    if (!scrolledBox)
+-       return NS_ERROR_FAILURE;
+-
+-    nsRect rect, crect;
+-    nsCOMPtr<nsIDOMDocument> doc;
+-    child->GetOwnerDocument(getter_AddRefs(doc));
+-    nsCOMPtr<nsIDocument> nsDoc(do_QueryInterface(doc));
+-    if(!nsDoc)
+-      return NS_ERROR_UNEXPECTED;
+-
+-    nsCOMPtr<nsIBoxObject> childBoxObject;
+-    nsDoc->GetBoxObjectFor(child, getter_AddRefs(childBoxObject));
+-    if(!childBoxObject)
+-      return NS_ERROR_UNEXPECTED;
+-
+-    PRInt32 x,y;
+-    childBoxObject->GetX(&x);
+-    childBoxObject->GetY(&y);
+-    // get the twips rectangle from the boxobject (which has pixels)    
+-    rect.x = nsPresContext::CSSPixelsToAppUnits(x);
+-    rect.y = nsPresContext::CSSPixelsToAppUnits(y);
+-
+-    // TODO: make sure the child is inside the box
+-
+-    // get our current info
+-    nsPoint cp = sf->GetScrollPosition();
+-    nsIntRect prect;
+-    GetOffsetRect(prect);
+-    crect = prect.ToAppUnits(nsPresContext::AppUnitsPerCSSPixel());
+-    nscoord newx=cp.x, newy=cp.y;
+-
+-    // we only scroll in the direction of the scrollbox orientation
+-    // always scroll to left or top edge of child element
+-    if (scrolledBox->IsHorizontal()) {
+-        newx = rect.x - crect.x;
+-    } else {
+-        newy = rect.y - crect.y;
+-    }
+-    // scroll away
+-    sf->ScrollTo(nsPoint(newx, newy), nsIScrollableFrame::INSTANT);
++    nsCOMPtr<nsIContent> content = do_QueryInterface(child);
++    shell->ScrollContentIntoView(content,
++                                 NS_PRESSHELL_SCROLL_TOP,
++                                 NS_PRESSHELL_SCROLL_LEFT,
++                                 nsIPresShell::SCROLL_FIRST_ANCESTOR_ONLY |
++                                 nsIPresShell::SCROLL_OVERFLOW_HIDDEN);
+     return NS_OK;
+ }
+ 
+ /* void scrollToIndex (in long index); */
+ NS_IMETHODIMP nsScrollBoxObject::ScrollToIndex(PRInt32 index)
+ {
+     return NS_ERROR_NOT_IMPLEMENTED;
+ }
+@@ -342,78 +305,27 @@ NS_IMETHODIMP nsScrollBoxObject::GetScro
+     return NS_OK;
+ }
+ 
+ /* void ensureElementIsVisible (in nsIDOMElement child); */
+ NS_IMETHODIMP nsScrollBoxObject::EnsureElementIsVisible(nsIDOMElement *child)
+ {
+     NS_ENSURE_ARG_POINTER(child);
+ 
+-    // Start with getting info about the child, since that will flush
+-    // layout and possibly destroy scrollable views, presshells, etc.
+-    nsCOMPtr<nsIDOMDocument> doc;
+-    // XXXbz sXBL/XBL2 issue -- which document?
+-    child->GetOwnerDocument(getter_AddRefs(doc));
+-    nsCOMPtr<nsIDocument> nsDoc(do_QueryInterface(doc));
+-    if(!nsDoc)
+-        return NS_ERROR_UNEXPECTED;
++    nsCOMPtr<nsIPresShell> shell = GetPresShell(PR_FALSE);
++    if (!shell) {
++      return NS_ERROR_UNEXPECTED;
++    }
+ 
+-    nsCOMPtr<nsIBoxObject> childBoxObject;
+-    nsDoc->GetBoxObjectFor(child, getter_AddRefs(childBoxObject));
+-    if(!childBoxObject)
+-      return NS_ERROR_UNEXPECTED;
+-
+-    PRInt32 x, y, width, height;
+-    childBoxObject->GetX(&x);
+-    childBoxObject->GetY(&y);
+-    childBoxObject->GetWidth(&width);
+-    childBoxObject->GetHeight(&height);
+-
+-    nsIScrollableFrame* sf = GetScrollFrame();
+-    if (!sf)
+-       return NS_ERROR_FAILURE;
+-
+-    nsIFrame* scrolledBox = GetScrolledBox(this);
+-    if (!scrolledBox)
+-       return NS_ERROR_FAILURE;
+-
+-    nsRect rect, crect;
+-    // get the twips rectangle from the boxobject (which has pixels)    
+-    rect.x = nsPresContext::CSSPixelsToAppUnits(x);
+-    rect.y = nsPresContext::CSSPixelsToAppUnits(y);
+-    rect.width = nsPresContext::CSSPixelsToAppUnits(width);
+-    rect.height = nsPresContext::CSSPixelsToAppUnits(height);
+-
+-    // TODO: make sure the child is inside the box
+-
+-    // get our current info
+-    nsPoint cp = sf->GetScrollPosition();
+-    nsIntRect prect;
+-    GetOffsetRect(prect);
+-    crect = prect.ToAppUnits(nsPresContext::AppUnitsPerCSSPixel());
+-
+-    nscoord newx=cp.x, newy=cp.y;
+-
+-    // we only scroll in the direction of the scrollbox orientation
+-    if (scrolledBox->IsHorizontal()) {
+-        if ((rect.x - crect.x) + rect.width > cp.x + crect.width) {
+-            newx = cp.x + (((rect.x - crect.x) + rect.width)-(cp.x + crect.width));
+-        } else if (rect.x - crect.x < cp.x) {
+-            newx = rect.x - crect.x;
+-        }
+-    } else {
+-        if ((rect.y - crect.y) + rect.height > cp.y + crect.height) {
+-            newy = cp.y + (((rect.y - crect.y) + rect.height)-(cp.y + crect.height));
+-        } else if (rect.y - crect.y < cp.y) {
+-            newy = rect.y - crect.y;
+-        }
+-    }
+-    
+-    // scroll away
+-    sf->ScrollTo(nsPoint(newx, newy), nsIScrollableFrame::INSTANT);
++    nsCOMPtr<nsIContent> content = do_QueryInterface(child);
++    shell->ScrollContentIntoView(content,
++                                 NS_PRESSHELL_SCROLL_ANYWHERE,
++                                 NS_PRESSHELL_SCROLL_ANYWHERE,
++                                 nsIPresShell::SCROLL_FIRST_ANCESTOR_ONLY |
++                                 nsIPresShell::SCROLL_OVERFLOW_HIDDEN);
+     return NS_OK;
+ }
+ 
+ /* void ensureIndexIsVisible (in long index); */
+ NS_IMETHODIMP nsScrollBoxObject::EnsureIndexIsVisible(PRInt32 index)
+ {
+     return NS_ERROR_NOT_IMPLEMENTED;
+ }
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -93,16 +93,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_583816_tab_focus.js \
+ 	browser_webconsole_bug_594477_clickable_output.js \
+ 	browser_webconsole_bug_589162_css_filter.js \
+ 	browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js \
+ 	browser_webconsole_bug_595350_multiple_windows_and_tabs.js \
+ 	browser_webconsole_bug_594497_history_arrow_keys.js \
+ 	browser_webconsole_bug_588342_document_focus.js \
+ 	browser_webconsole_bug_595934_message_categories.js \
++	browser_webconsole_bug_601352_scroll.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ # compartment-disabled
+ #	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601352_scroll.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601352_scroll.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601352_scroll.js
+@@ -0,0 +1,62 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let HUD = HUDService.hudWeakReferences[hudId].get();
++
++  let longMessage = "";
++  for (let i = 0; i < 20; i++) {
++    longMessage += "LongNonwrappingMessage";
++  }
++
++  for (let i = 0; i < 100; i++) {
++    HUD.console.log("test message " + i);
++  }
++
++  HUD.console.log(longMessage);
++
++  for (let i = 0; i < 100; i++) {
++    HUD.console.log("test message " + i);
++  }
++
++  HUD.jsterm.execute("1+1");
++
++  executeSoon(function() {
++    isnot(HUD.outputNode.scrollTop, 0, "scroll location is not at the top");
++
++    let node = HUD.outputNode.querySelector(".hud-group > *:last-child");
++    let rectNode = node.getBoundingClientRect();
++    let rectOutput = HUD.outputNode.getBoundingClientRect();
++
++    // Visible scroll viewport.
++    let height = HUD.outputNode.scrollHeight - HUD.outputNode.scrollTop;
++
++    // Top position of the last message node, relative to the outputNode.
++    let top = rectNode.top - rectOutput.top;
++
++    // Bottom position of the last message node, relative to the outputNode.
++    let bottom = rectNode.bottom - rectOutput.top;
++
++    ok(top >= 0 && bottom <= height, "last message is visible");
++
++    finishTest();
++  });
++}
++
++function test() {
++  addTab("data:text/html,Web Console test for bug 601352");
++  browser.addEventListener("load", tabLoad, true);
++}
++
+diff --git a/toolkit/components/satchel/src/nsFormFillController.cpp b/toolkit/components/satchel/src/nsFormFillController.cpp
+--- a/toolkit/components/satchel/src/nsFormFillController.cpp
++++ b/toolkit/components/satchel/src/nsFormFillController.cpp
+@@ -289,17 +289,18 @@ nsFormFillController::SetPopupOpen(PRBoo
+       NS_ENSURE_STATE(content);
+       nsCOMPtr<nsIDocShell> docShell = GetDocShellForInput(mFocusedInput);
+       NS_ENSURE_STATE(docShell);
+       nsCOMPtr<nsIPresShell> presShell;
+       docShell->GetPresShell(getter_AddRefs(presShell));
+       NS_ENSURE_STATE(presShell);
+       presShell->ScrollContentIntoView(content,
+                                        NS_PRESSHELL_SCROLL_IF_NOT_VISIBLE,
+-                                       NS_PRESSHELL_SCROLL_IF_NOT_VISIBLE);
++                                       NS_PRESSHELL_SCROLL_IF_NOT_VISIBLE,
++                                       nsIPresShell::SCROLL_OVERFLOW_HIDDEN);
+       // mFocusedPopup can be destroyed after ScrollContentIntoView, see bug 420089
+       if (mFocusedPopup)
+         mFocusedPopup->OpenAutocompletePopup(this, mFocusedInput);
+     } else
+       mFocusedPopup->ClosePopup();
+   }
+ 
+   return NS_OK;

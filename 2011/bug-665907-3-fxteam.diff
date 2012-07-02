@@ -1,0 +1,180 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1314894813 -10800
+# Node ID 239ebb24dcb7bb48a05c68ea45c76ee52ce77c7f
+# Parent  922f27baed983a3ba3eccc466bca203d13f439ba
+Bug 665907 - [highlighter] Bounding boxes update are slow while the page is scrolling.
+
+diff --git a/browser/base/content/highlighter.css b/browser/base/content/highlighter.css
+--- a/browser/base/content/highlighter.css
++++ b/browser/base/content/highlighter.css
+@@ -7,19 +7,20 @@
+   top: 0;
+   left: 0;
+ }
+ 
+ #highlighter-veil-container {
+   overflow: hidden;
+ }
+ 
+-.highlighter-veil,
+-#highlighter-veil-middlebox,
+-#highlighter-veil-transparentbox {
++#highlighter-veil-container:not([locked]) > .highlighter-veil,
++#highlighter-veil-container:not([locked]) > #highlighter-veil-middlebox,
++#highlighter-veil-container:not([locked]) > #highlighter-veil-middlebox > .highlighter-veil,
++#highlighter-veil-container:not([locked]) > #highlighter-veil-middlebox > #highlighter-veil-transparentbox {
+   -moz-transition-property: width, height;
+   -moz-transition-duration: 0.1s;
+   -moz-transition-timing-function: linear;
+ }
+ 
+ #highlighter-veil-bottombox,
+ #highlighter-veil-rightbox {
+   -moz-box-flex: 1;
+diff --git a/browser/base/content/inspector.js b/browser/base/content/inspector.js
+--- a/browser/base/content/inspector.js
++++ b/browser/base/content/inspector.js
+@@ -105,31 +105,31 @@ Highlighter.prototype = {
+     this.browser = aBrowser;
+     let stack = this.browser.parentNode;
+     this.win = this.browser.contentWindow;
+     this._highlighting = false;
+ 
+     this.highlighterContainer = document.createElement("stack");
+     this.highlighterContainer.id = "highlighter-container";
+ 
+-    let veilBox = document.createElement("vbox");
+-    veilBox.id = "highlighter-veil-container";
++    this.veilContainer = document.createElement("vbox");
++    this.veilContainer.id = "highlighter-veil-container";
+ 
+     let controlsBox = document.createElement("box");
+     controlsBox.id = "highlighter-controls";
+ 
+     // The veil will make the whole page darker except
+     // for the region of the selected box.
+-    this.buildVeil(veilBox);
++    this.buildVeil(this.veilContainer);
+ 
+     // The controlsBox will host the different interactive
+     // elements of the highlighter (buttons, toolbars, ...).
+     this.buildControls(controlsBox);
+ 
+-    this.highlighterContainer.appendChild(veilBox);
++    this.highlighterContainer.appendChild(this.veilContainer);
+     this.highlighterContainer.appendChild(controlsBox);
+ 
+     stack.appendChild(this.highlighterContainer);
+ 
+     this.browser.addEventListener("resize", this, true);
+     this.browser.addEventListener("scroll", this, true);
+ 
+     this.handleResize();
+@@ -218,16 +218,17 @@ Highlighter.prototype = {
+     this.browser.removeEventListener("scroll", this, true);
+     this.browser.removeEventListener("resize", this, true);
+     this._highlightRect = null;
+     this._highlighting = false;
+     this.veilTopBox = null;
+     this.veilLeftBox = null;
+     this.veilMiddleBox = null;
+     this.veilTransparentBox = null;
++    this.veilContainer = null;
+     this.node = null;
+     this.highlighterContainer.parentNode.removeChild(this.highlighterContainer);
+     this.highlighterContainer = null;
+     this.win = null
+     this.browser = null;
+     this.toolbar = null;
+   },
+ 
+@@ -920,17 +921,17 @@ var InspectorUI = {
+     // if currently editing an attribute value, starting
+     // "live inspection" mode closes the editor
+     if (this.editingContext)
+       this.closeEditor();
+ 
+     document.getElementById("inspector-inspect-toolbutton").checked = true;
+     this.attachPageListeners();
+     this.inspecting = true;
+-    this.highlighter.veilTransparentBox.removeAttribute("locked");
++    this.highlighter.veilContainer.removeAttribute("locked");
+   },
+ 
+   /**
+    * Stop inspecting webpage, detach page listeners, disable highlighter
+    * event listeners.
+    * @param aPreventScroll
+    *        Prevent scroll in the HTML tree?
+    */
+@@ -943,17 +944,17 @@ var InspectorUI = {
+     document.getElementById("inspector-inspect-toolbutton").checked = false;
+     this.detachPageListeners();
+     this.inspecting = false;
+     if (this.highlighter.node) {
+       this.select(this.highlighter.node, true, true, !aPreventScroll);
+     } else {
+       this.select(null, true, true);
+     }
+-    this.highlighter.veilTransparentBox.setAttribute("locked", true);
++    this.highlighter.veilContainer.setAttribute("locked", true);
+   },
+ 
+   /**
+    * Select an object in the tree view.
+    * @param aNode
+    *        node to inspect
+    * @param forceUpdate
+    *        force an update?
+diff --git a/browser/themes/gnomestripe/browser/browser.css b/browser/themes/gnomestripe/browser/browser.css
+--- a/browser/themes/gnomestripe/browser/browser.css
++++ b/browser/themes/gnomestripe/browser/browser.css
+@@ -1979,12 +1979,12 @@ panel[dimmed="true"] {
+ }
+ 
+ #highlighter-veil-transparentbox {
+   box-shadow: 0 0 0 1px rgba(0,0,0,0.5);
+   outline: 1px dashed rgba(255,255,255,0.5);
+   outline-offset: -1px;
+ }
+ 
+-#highlighter-veil-transparentbox[locked] {
++#highlighter-veil-container[locked] > #highlighter-veil-middlebox > #highlighter-veil-transparentbox {
+   box-shadow: 0 0 0 1px black;
+   outline-color: white;
+ }
+diff --git a/browser/themes/pinstripe/browser/browser.css b/browser/themes/pinstripe/browser/browser.css
+--- a/browser/themes/pinstripe/browser/browser.css
++++ b/browser/themes/pinstripe/browser/browser.css
+@@ -2557,12 +2557,12 @@ panel[dimmed="true"] {
+ }
+ 
+ #highlighter-veil-transparentbox {
+   box-shadow: 0 0 0 1px rgba(0,0,0,0.5);
+   outline: 1px dashed rgba(255,255,255,0.5);
+   outline-offset: -1px;
+ }
+ 
+-#highlighter-veil-transparentbox[locked] {
++#highlighter-veil-container[locked] > #highlighter-veil-middlebox > #highlighter-veil-transparentbox {
+   box-shadow: 0 0 0 1px black;
+   outline-color: white;
+ }
+diff --git a/browser/themes/winstripe/browser/browser.css b/browser/themes/winstripe/browser/browser.css
+--- a/browser/themes/winstripe/browser/browser.css
++++ b/browser/themes/winstripe/browser/browser.css
+@@ -2547,12 +2547,12 @@ panel[dimmed="true"] {
+ }
+ 
+ #highlighter-veil-transparentbox {
+   box-shadow: 0 0 0 1px rgba(0,0,0,0.5);
+   outline: 1px dashed rgba(255,255,255,0.5);
+   outline-offset: -1px;
+ }
+ 
+-#highlighter-veil-transparentbox[locked] {
++#highlighter-veil-container[locked] > #highlighter-veil-middlebox > #highlighter-veil-transparentbox {
+   box-shadow: 0 0 0 1px black;
+   outline-color: white;
+ }

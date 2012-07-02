@@ -1,0 +1,2517 @@
+diff --git a/browser/base/content/csshtmltree.css b/browser/base/content/csshtmltree.css
+--- a/browser/base/content/csshtmltree.css
++++ b/browser/base/content/csshtmltree.css
+@@ -123,17 +123,17 @@ h1 {
+ 
+ .property-name, .property-value, .rule-count {
+   cursor: pointer;
+ }
+ 
+ /* Take away these two :visited rules to get a core dumper */
+ .link { color: #55A;  }
+ .link:visited { color: #55A;  }
+-a.link { text-decoration: none; }
++a.link { text-decoration: none; cursor: pointer }
+ a.link:visited { text-decoration: none; }
+ .rule-count {
+   float: right;
+ }
+ .property-view[open="false"] .rule-count:after {
+   content: " ▶";
+ }
+ .property-view[open="true"] .rule-count:after {
+diff --git a/browser/base/content/csshtmltree.js b/browser/base/content/csshtmltree.js
+--- a/browser/base/content/csshtmltree.js
++++ b/browser/base/content/csshtmltree.js
+@@ -191,20 +191,26 @@ CssHtmlTree.prototype = {
+   /**
+    * Clone the given template node, and process it by resolving ${} references
+    * in the template.
+    *
+    * @param {nsIDOMElement} aTemplate the template note to use.
+    * @param {nsIDOMElement} aDestination the destination node where the
+    * processed nodes will be displayed.
+    * @param {object} aData the data to pass to the template.
++   * @param {boolean} aAppendToDestination should the nodes be appended to the 
++   * destination element?
+    */
+-  _template: function CssHtmlTree_template(aTemplate, aDestination, aData)
++  _template:
++  function CssHtmlTree_template(aTemplate, aDestination, aData, aAppendToDestination)
+   {
+-    aDestination.innerHTML = "";
++    if (!aAppendToDestination) {
++      aDestination.innerHTML = "";
++    }
++
+     // All the templater does is to populate a given DOM tree with the given
+     // values, so we need to clone the template first.
+     let duplicated = aTemplate.cloneNode(true);
+     Templater.processNode(duplicated, aData);
+     while (duplicated.firstChild) {
+       aDestination.appendChild(duplicated.firstChild);
+     }
+   },
+@@ -476,20 +482,16 @@ function PropertyView(aTree, aGroup, aNa
+ 
+   this.closed = true;
+   this.element = null; // Assigned by templating process.
+   this.populated = false;
+ 
+   this.link = "https://developer.mozilla.org/en/CSS/" + aName;
+ };
+ 
+-// How many unmatched rules should be displayed by default when a property view
+-// is expanded?
+-PropertyView.UNMATCHED_RULE_COUNT = 5;
+-
+ PropertyView.prototype = {
+   /**
+    * The click event handler for the property name of the property view
+    * 
+    * @param {Event} aEvent the DOM event
+    */
+   click: function PropertyView_click(aEvent)
+   {
+@@ -512,166 +514,153 @@ PropertyView.prototype = {
+     parent.setAttribute("open", "true");
+     this.closed = false;
+   },
+ 
+   /**
+    * Populate the property view template.
+    *
+    * @private
+-   * @param {boolean} [showAll=false] Should the view include all rules? If not, 
+-   * the number of unmatched rules will be limited to the number given by 
+-   * {PropertyView.UNMATCHED_RULE_COUNT}.
+-   * @return {void}
++   * @param {boolean} [showUnmatched=false] Should display the unmatched rules?
+    */
+-  _populateTemplate: function PropertyView_populateTemplate(showAll)
++  _populateTemplate: function PropertyView_populateTemplate(showUnmatched)
+   {
+     let self = this;
+ 
+-    let cssInfo = this.tree.cssLogic.getCssInfo(this.name);
+-
+-    let rules = [];
++    let propertyInfo = this.tree.cssLogic.getPropertyInfo(this.name);
+ 
+     // TODO: We need a 'RuleView' to contain the view functionality from the
+     // rule template. The implementation of this has been started, but it is
+     // currently incomplete. We need this for the UI improvements that Limi has
+     // suggested. See bug 590649.
+-    cssInfo.rules.forEach(function(cssrule) {
++    /*cssInfo.rules.forEach(function(cssrule) {
+       rules.push(new RuleView(this.tree, cssrule));
+-    }, this);
++    }, this);*/
+ 
+-    let unmatchedRulesShown = 0;
++    let rule = new RuleView(this.tree, {});
+ 
+     let data = {
+-      rules: rules, 
+-
+-      statusText: function(aStatus) {
+-        return RuleView.STATUS_NAMES[aStatus];
++      statusText: function(aSelectorInfo) {
++        return RuleView.STATUS_NAMES[aSelectorInfo.status];
+       },
+ 
+-      selectorText: function(aSelector) {
+-        let result = aSelector;
+-        if (aSelector == "@element.style") {
+-          result = CssHtmlTree.l10n("style.elementSelector");
++      selectorText: function(aSelectorInfo, aElement) {
++        let result = aSelectorInfo.selector.text;
++        if (aSelectorInfo.elementStyle) {
++          if (aSelectorInfo.sourceElement == InspectorUI.selection) {
++            result = "this";
++          } else {
++            result = CssLogic.getShortName(aSelectorInfo.sourceElement);
++            aElement.parentNode.querySelector("td.rule-link > a").
++              addEventListener("click", function(aEvent) {
++                aEvent.preventDefault();
++                InspectorUI.inspectNode(aSelectorInfo.sourceElement);
++              }, false);
++          }
++          result += ".style";
++
+         }
+         return result;
+       },
+ 
+-      specificityTitle: function(aRule) {
+-        let specificity = aRule.specificity;
++      specificityTitle: function(aSelectorInfo) {
++        let specificity = aSelectorInfo.specificity;
+ 
+         let important = "";
+-        if (specificity.important) {
++        if (aSelectorInfo.important) {
+           important += CssHtmlTree.l10n("style.property.important");
+         }
+ 
+         let result = "";
+-        if (specificity.inline) {
++        if (aSelectorInfo.elementStyle) {
+           result = important;
+         } else {
+           let ids = CssHtmlTree.l10n("style.rule.specificity.ids");
+           let classes = CssHtmlTree.l10n("style.rule.specificity.classes");
+           let tags = CssHtmlTree.l10n("style.rule.specificity.tags");
+ 
+-          ids = PluralForm.get(specificity.ids, ids).replace("#1",
+-            specificity.ids);
+-          classes = PluralForm.get(specificity.classes, classes).replace("#1",
+-            specificity.classes);
+-          tags = PluralForm.get(specificity.tags, tags).replace("#1",
+-            specificity.tags);
++          ids = PluralForm.get(specificity.ids, ids).
++            replace("#1", specificity.ids);
++          classes = PluralForm.get(specificity.classes, classes).
++            replace("#1", specificity.classes);
++          tags = PluralForm.get(specificity.tags, tags).
++            replace("#1", specificity.tags);
+ 
+           result = CssHtmlTree._strings.
+             formatStringFromName("style.rule.specificity",
+               [[important, ids, classes, tags].join(" ")], 1);
+         }
+ 
+         return result;
+       },
+ 
+-      shouldShowRule: function(aRule) {
+-        let result = true;
+-        if (!aRule.sheetAllowed) {
+-          result = false;
+-        }
+-
+-        if (result && !showAll && aRule.status == CssLogic.STATUS.UNMATCHED) {
+-          unmatchedRulesShown++;
+-          result = unmatchedRulesShown <= PropertyView.UNMATCHED_RULE_COUNT;
+-        }
+-
+-        return result;
+-      },
+-
+       str: {}
+     };
+ 
+-    data.rules = cssInfo.rules;
+-
+-    if (showAll || cssInfo.filteredUnmatchedRuleCount <=
+-      PropertyView.UNMATCHED_RULE_COUNT) {
++    if (showUnmatched) {
++      data.selectors = propertyInfo.unmatchedSelectors;
++      data.showMoreUnmatchedRules = false;
++    } else {
++      data.selectors = propertyInfo.matchedSelectors;
+       data.showMoreUnmatchedRules = false;
+ 
+-    } else {
+-      data.showMoreUnmatchedRules = true;
++      if (propertyInfo.unmatchedRuleCount > 0) {
++        data.showMoreUnmatchedRules = true;
+ 
+-      let n = cssInfo.filteredUnmatchedRuleCount -
+-        PropertyView.UNMATCHED_RULE_COUNT;
++        let str = CssHtmlTree.l10n("style.rule.showMoreUnmatchedRules");
++        data.str.showMoreUnmatchedRules =
++          PluralForm.get(propertyInfo.unmatchedRuleCount, str).
++            replace("#1", propertyInfo.unmatchedRuleCount);
+ 
+-      let str = CssHtmlTree.l10n("style.rule.showMoreUnmatchedRules");
+-      data.str.showMoreUnmatchedRules = PluralForm.get(n, str).replace("#1", n);
+-
+-      data.showMoreUnmatchedRulesClick =
+-        function showMoreUnmatchedRulesClick(aEvent) {
++        data.showMoreUnmatchedRulesClick = function(aEvent) {
+           aEvent.preventDefault();
++          self.element.removeChild(self.element.lastElementChild);
+           self._populateTemplate(true);
+         };
++      }
+     }
+ 
+-    this.tree._template(this.tree.templateRules, this.element, data);
++    this.tree._template(this.tree.templateRules, this.element, data,
++      showUnmatched);
+     this.populated = true;
+   },
+ 
+   /**
+    * Get the computed style for the current property.
+    *
+    * @return {string} the computed style for the current property of the
+    * currently highlighted element.
+    */
+   get value()
+   {
+-    return this.tree.cssLogic.getCssInfo(this.name).value;
++    return this.tree.cssLogic.getPropertyInfo(this.name).value;
+   },
+ 
+   /**
+    * Compute the title of the property view. The title includes the number of
+    * rules that hold the current property.
+    *
+    * @param {nsIDOMElement} aElement reference to the DOM element where the rule
+    * title needs to be displayed.
+-   * @return {string} "" empty string. The rule title is computed
+-   * asynchronously.
++   * @return {string} The rule title.
+    */
+   ruleTitle: function PropertyView_ruleTitle(aElement)
+   {
+-    Scheduler.addJob(function() {
+-      if (!InspectorUI.isStylePanelOpen) {
+-        return;
+-      }
++    let result = "";
++    let ruleCount = ruleCount = this.tree.cssLogic.getPropertyInfo(this.name).
++      matchedRuleCount;
+ 
+-      let ruleCount = this.tree.cssLogic.getCssInfo(this.name).
+-        filteredRuleCount;
+-      if (ruleCount > 0) {
+-        let str = CssHtmlTree.l10n("style.property.numberOfRules");
+-        aElement.textContent = PluralForm.get(ruleCount, str).
+-          replace("#1", ruleCount);
+-        aElement.classList.add("rule-count");
+-      }
+-    }, this);
++    if (ruleCount > 0) {
++      aElement.classList.add("rule-count");
+ 
+-    return "";
++      let str = CssHtmlTree.l10n("style.property.numberOfRules");
++      result = PluralForm.get(ruleCount, str).replace("#1", ruleCount);
++    }
++
++    return result;
+   },
+ 
+   /**
+    * Close the property view.
+    */
+   close: function PropertyView_close()
+   {
+     if (this.element) {
+@@ -742,66 +731,16 @@ RuleView.prototype = {
+       if (i > -1) {
+         let value = CssHtmlTree.l10n("style.rule.status." + status);
+         RuleView.STATUS_NAMES[i] = value.replace(/ /, '\u00A0');
+       }
+     }
+   },
+ };
+ 
+-/**
+- * A quick job scheduler to allow us to do lots of work without choking the
+- * main thread.
+- * TODO: There must be a better way to not choke the main thread.
+- * @see bug 587760.
+- */
+-let Scheduler = {
+-  jobs: [],
+-  interJobDelay: 100,
+-  _timeout: null,
+-
+-  /**
+-   * Add a job to the scheduler.
+-   *
+-   * @param {function} aFunction the function you want executed.
+-   * @param {object} aScope the scope within which the function will execute.
+-   * The "this" object inside the function.
+-   */
+-  addJob: function Scheduler_addJob(aFunction, aScope)
+-  {
+-    this.jobs.unshift({ func: aFunction, scope: aScope });
+-    this._scheduleNextJob();
+-  },
+-
+-  /**
+-   * Schedule the execution of the next job.
+-   * @private
+-   */
+-  _scheduleNextJob: function Scheduler_scheduleNextJob()
+-  {
+-    let self = this;
+-    if (self._timeout) {
+-      return;
+-    }
+-
+-    self._timeout = setTimeout(function() {
+-      self._timeout = null;
+-      if (!self.jobs.length) {
+-        return;
+-      }
+-
+-      let job = self.jobs.pop();
+-      job.func.apply(job.scope);
+-      self._scheduleNextJob();
+-    }, this.interJobDelay);
+-  },
+-}
+-
+-
+-
+ ////////////////////////////////////////////////////////////////////////////////
+ 
+ /**
+  * A templater that allows one to quickly template DOM nodes.
+  */
+ Templater = {};
+ 
+ /**
+diff --git a/browser/base/content/csshtmltree.xhtml b/browser/base/content/csshtmltree.xhtml
+--- a/browser/base/content/csshtmltree.xhtml
++++ b/browser/base/content/csshtmltree.xhtml
+@@ -127,29 +127,30 @@ To visually debug the templates without 
+         title to use for the given rule.
+     showMoreUnmatchedRules: true / false, // show a "more unmatched rules" link
+     showMoreUnmatchedRulesClick: function() {}, // click event handler for the 
+         "show more unmatched rules"
+   }
+   The table element is only there so the DOM doesn't muck with the tr
+   -->
+   <table id="templateRules">
+-    <tr foreach="rule in ${rules}" if="${shouldShowRule(rule)}">
+-      <td width="100%" class="rule-text status${rule.status}">
+-        ${selectorText(rule.selector)} &#x2192; ${rule.value}
++    <tr foreach="selector in ${selectors}" if="${selector.sheetAllowed}">
++      <td width="100%" class="rule-text status${selector.status}">
++        ${selectorText(selector, __element)} &#x2192; ${selector.value}
+       </td>
+-      <td class="rule-link"><a target="_blank" href="view-source:${rule.href}"
+-          class="link" title="${rule.href}">${rule.source}</a></td>
++      <td class="rule-link"><a target="_blank"
++          href="view-source:${selector.href}"
++          class="link" title="${selector.href}">${selector.source}</a></td>
+       <td class="rule-score">
+-        <span title="${specificityTitle(rule)}">
+-          ${statusText(rule.status)}:${rule.specificity}
++        <span title="${specificityTitle(selector)}">
++          ${statusText(selector)}:${selector.specificityScore}
+         </span>
+       </td>
+     </tr>
+-    <tr if="${showMoreUnmatchedRules}" class="showMoreUnmatchedRules">
++    <tr if="${showMoreUnmatchedRules}">
+       <td colspan="4">
+         <a href="#" onclick="${showMoreUnmatchedRulesClick}"
+           class="link">${str.showMoreUnmatchedRules}</a>
+       </td>
+     </tr>
+   </table>
+ </div>
+ 
+diff --git a/browser/base/content/csslogic.js b/browser/base/content/csslogic.js
+--- a/browser/base/content/csslogic.js
++++ b/browser/base/content/csslogic.js
+@@ -53,32 +53,44 @@
+  */
+ function CssLogic()
+ {
+   // Both setup by highlight().
+   this.viewedElement = null;
+   this.viewedDocument = null;
+ 
+   // The cache of the known sheets.
+-  this.sheets = [];
+-  // Part of the specificity of a rule is its order in the sheet.
++  this._sheets = null;
++
++  // The total number of rules, in all stylesheets, after filtering.
+   this._ruleCount = 0;
+ 
+   // The cache of examined CSS properties.
+-  this._cssInfos = {};
++  this._propertyViews = {};
+   // The computed styles for the viewedElement.
+   this._computedStyle = null;
+ 
+   // Source filter. Only display properties coming from the given source (web
+   // address). Special values:
+   // - "all": will show properties from all style sheets.
+   // - "ua": will show properties from all style sheets, including the browser
+   // styles (user agent ones).
+   this._sourceFilter = "all";
+ 
++  // Used for tracking unique CssSheet/CssRule/CssSelector objects, in a run of
++  // processMatchedSelectors().
++  this._passId = 0;
++
++  // Used for tracking matched CssSelector objects, such that we can skip them
++  // in processUnmatchedSelectors().
++  this._matchId = 0;
++
++  this._matchedSelectors = null;
++  this._unmatchedSelectors = null;
++
+   this.domUtils = Cc["@mozilla.org/inspector/dom-utils;1"].
+     getService(Ci["inIDOMUtils"]);
+ };
+ 
+ /**
+  * Each rule has a status, the bigger the number, the better placed it is to
+  * provide styling information.
+  *
+@@ -101,69 +113,42 @@ CssLogic.prototype = {
+    * in the Inspector.
+    */
+   highlight: function CssLogic_highlight(aViewedElement)
+   {
+     if (!aViewedElement) {
+       this.viewedElement = null;
+       this.viewedDocument = null;
+ 
+-      this.sheets = [];
++      this._sheets = null;
++      this._propertyInfos = {};
+       this._ruleCount = 0;
+-      this._cssInfos = {};
+ 
+       this._computedStyle = null;
++      this._matchedSelectors = null;
++      this._unmatchedSelectors = null;
+       return;
+     }
+ 
+     this.viewedElement = aViewedElement;
+ 
+     let doc = this.viewedElement.ownerDocument;
+     if (doc != this.viewedDocument) {
+       // New document: clear/rebuild the cache.
+       this.viewedDocument = doc;
+ 
+-      this.sheets = [];
+-      this._ruleCount = 0;
+-      this._cssInfos = {};
+-
+       // Hunt down top level stylesheets, and cache them.
+-      let domSheets = this.viewedDocument.styleSheets;
+-      let domSheet;
+-      for (let s = 0, n = domSheets.length; s < n; s++) {
+-        domSheet = domSheets[s];
+-        if (domSheet.disabled) {
+-          continue;
+-        }
+-
+-        // Only show stylesheets for media=screen.
+-        if (domSheet.media.length > 0) {
+-          let foundAllOrScreen = false;
+-          let media = null;
+-          for (m = 0; m < domSheet.media.length; m++) {
+-            media = domSheet.media.item(m).toLowerCase();
+-            if (media == "screen" || media == "all") {
+-              foundAllOrScreen = true;
+-              break;
+-            }
+-          }
+-          if (!foundAllOrScreen) {
+-            continue;
+-          }
+-        }
+-
+-        this._cacheSheet(domSheets[s]);
+-      }
++      this._cacheSheets();
+     } else {
+-      // Same document, new element: clear the match data for this element.
+-      for (let property in this._cssInfos) {
+-        this._cssInfos[property].unmarkMatches();
+-      }
++      // Clear cached data in the CssPropertyInfo objects.
++      this._propertyInfos = {};
+     }
+ 
++    this._matchedSelectors = null;
++    this._unmatchedSelectors = null;
+     let win = this.viewedDocument.defaultView;
+     this._computedStyle = win.getComputedStyle(this.viewedElement, "");
+   },
+ 
+   /**
+    * Get the source filter.
+    * @returns {string} The source filter being used.
+    */
+@@ -174,81 +159,371 @@ CssLogic.prototype = {
+   /**
+    * Source filter. Only display properties coming from the given source (web
+    * address). Special values:
+    *  - "all": will show properties from all style sheets.
+    *  - "ua": will show properties from all style sheets, including the browser
+    *  styles (user agent ones).
+    */
+   set sourceFilter(aValue) {
++    let oldValue = this._sourceFilter;
+     this._sourceFilter = aValue;
+ 
+-    // Update the CssInfo objects.
+-    for (let property in this._cssInfos) {
+-      let cssInfo = this._cssInfos[property];
+-      if (cssInfo._rules) {
+-        cssInfo._findRules();
+-        cssInfo._findElementRules();
+-        if (!cssInfo._uaRules && this.sourceFilter == "ua") {
+-          cssInfo._findUARules();
+-        }
++    let ruleCount = 0;
++
++    // Update the CssSheet objects.
++    this.forEachSheet(function(aSheet) {
++      aSheet._sheetAllowed = -1;
++      if (!aSheet.systemSheet && aSheet.sheetAllowed) {
++        ruleCount += aSheet.ruleCount;
+       }
+-      if (cssInfo._matched) {
+-        cssInfo._markMatches();
++    }, this);
++
++    this._ruleCount = ruleCount;
++
++    // Full update is needed because the this.processMatchedSelectors() method 
++    // skips UA stylesheets if the filter does not allow such sheets.
++    let needFullUpdate = oldValue == "ua" || aValue == "ua";
++
++    if (needFullUpdate) {
++      this._matchedSelectors = null;
++      this._unmatchedSelectors = null;
++      this._propertyInfos = {};
++    } else {
++      // Update the CssPropertyInfo objects.
++      for (let property in this._propertyInfos) {
++        this._propertyInfos[property].needRefilter = true;
+       }
+     }
+   },
+ 
+   /**
+-   * Return a CssInfo data structure for the currently viewed element and
+-   * the specified CSS property. If there is no currently viewed element we
++   * Return a CssPropertyInfo data structure for the currently viewed element
++   * and the specified CSS property. If there is no currently viewed element we
+    * return an empty object.
+    * 
+    * @param {string} aProperty The CSS property to look for.
+-   * @return a CssInfo structure for the given property
++   * @return {CssPropertyInfo} a CssPropertyInfo structure for the given
++   * property.
+    */
+-  getCssInfo: function CssLogic_getCssInfo(aProperty)
++  getPropertyInfo: function CssLogic_getPropertyInfo(aProperty)
+   {
+     if (!this.viewedElement) {
+       return {};
+     }
+ 
+-    let cssInfo = this._cssInfos[aProperty];
+-    if (!cssInfo) {
+-      cssInfo = new CssInfo(this, aProperty);
+-      this._cssInfos[aProperty] = cssInfo;
++    let info = this._propertyInfos[aProperty];
++    if (!info) {
++      info = new CssPropertyInfo(this, aProperty);
++      this._propertyInfos[aProperty] = info;
+     }
+ 
+-    return cssInfo;
++    return info;
+   },
+ 
+   /**
+-   * Cache stylesheets, including at-imported ones.
++   * Cache all the stylesheets in the inspected document
++   * @private
++   */
++  _cacheSheets: function CssLogic_cacheSheets()
++  {
++    this._sheets = {};
++    this._propertyInfos = {};
++    this._matchedSelectors = null;
++    this._unmatchedSelectors = null;
++    this._ruleCount = 0;
++    this._passId++;
++    this._sheetIndex = 0;
++
++    Array.prototype.forEach.call(this.viewedDocument.styleSheets,
++      this._cacheSheet, this);
++  },
++
++  /**
++   * Cache a stylesheet if it falls within the requirements: if it's enabled,
++   * and if the @media is allowed. This method also walks through the stylesheet
++   * cssRules to find @imported rules, to cache the stylesheets of those rules
++   * as well.
+    *
+-   * @param {CSSStyleSheet} aDomSheet reference to a DOM CSSStyleSheet object.
++   * @private
++   * @param {CSSStyleSheet} aDomSheet the CSSStyleSheet object to cache.
+    */
+   _cacheSheet: function CssLogic_cacheSheet(aDomSheet)
+   {
+-    // The rules in a '@import'ed sheet have a document order before the rules
+-    // in the sheet itself. It's a bit like function hoisting in JavaScript.
+-    // So we first look for @import rules.
+-    for (let r = 0, n = aDomSheet.cssRules.length; r < n; r++) {
+-      try {
+-        let domRule = aDomSheet.cssRules[r];
++    if (aDomSheet.disabled) {
++      return;
++    }
+ 
+-        if (domRule.type === CSSRule.IMPORT_RULE) {
+-          this._cacheSheet(domRule.styleSheet);
++    // Only work with stylesheets that have their media allowed.
++    if (!CssLogic.sheetMediaAllowed(aDomSheet)) {
++      return;
++    }
++
++    // Cache the sheet.
++    let cssSheet = this.getCachedSheet(aDomSheet, false, this._sheetIndex++);
++    if (cssSheet._passId != this._passId) {
++      cssSheet._passId = this._passId;
++
++      // Find import rules.
++      Array.prototype.forEach.call(aDomSheet.cssRules, function(aDomRule) {
++        if (aDomRule.type == CSSRule.IMPORT_RULE && aDomRule.styleSheet) {
++          this._cacheSheet(aDomRule.styleSheet);
+         }
+-      } catch (ex) {
+-        Services.console.logStringMessage("Error in cacheSheet for domRule " +
+-          r + ": " + ex);
++      }, this);
++    }
++  },
++
++  /**
++   * Retrieve the list of stylesheets in the document.
++   *
++   * @return {array} the list of stylesheets in the document.
++   */
++  get sheets()
++  {
++    if (!this._sheets) {
++      this._cacheSheets();
++    }
++
++    let sheets = [];
++    this.forEachSheet(function (aSheet) {
++      if (!aSheet.systemSheet) {
++        sheets.push(aSheet);
++      }
++    }, this);
++
++    return sheets;
++  },
++
++  /**
++   * Retrieve a CssSheet object for a given a CSSStyleSheet object. If the
++   * stylesheet is already cached, you get the existing CssSheet object,
++   * otherwise the new CSSStyleSheet object is cached.
++   *
++   * @param {CSSStyleSheet} aDomSheet the CSSStyleSheet object you want.
++   * @param {boolean} aSystemSheet tells if the stylesheet is a browser-provided
++   * sheet or not.
++   * @param {number} aIndex the index, within the document, of the stylesheet.
++   *
++   * @return {CssSheet} the CssSheet object for the given CSSStyleSheet object.
++   */
++  getCachedSheet:
++  function CssLogic_getCachedSheet(aDomSheet, aSystemSheet, aIndex)
++  {
++    let cacheId = aSystemSheet ? "1" : "0";
++
++    if (aDomSheet.href) {
++      cacheId += aDomSheet.href;
++    } else if (aDomSheet.ownerNode && aDomSheet.ownerNode.ownerDocument) {
++      cacheId += aDomSheet.ownerNode.ownerDocument.location;
++    }
++
++    let sheet = null;
++    let sheetFound = false;
++
++    if (cacheId in this._sheets) {
++      for (let i = 0, n = this._sheets[cacheId].length; i < n; i++) {
++        sheet = this._sheets[cacheId][i];
++        if (sheet.domSheet == aDomSheet) {
++          sheet.index = aIndex;
++          sheetFound = true;
++          break;
++        }
+       }
+     }
+ 
+-    this.sheets.push(new CssSheet(aDomSheet));
++    if (!sheetFound) {
++      if (!(cacheId in this._sheets)) {
++        this._sheets[cacheId] = [];
++      }
++
++      sheet = new CssSheet(this, aDomSheet, aSystemSheet, aIndex);
++      if (sheet.sheetAllowed && !aSystemSheet) {
++        this._ruleCount += sheet.ruleCount;
++      }
++
++      this._sheets[cacheId].push(sheet);
++    }
++
++    return sheet;
++  },
++
++  /**
++   * Process each cached stylesheet in the document using your callback.
++   *
++   * @param {function} aCallback the function you want executed for each of the
++   * CssSheet objects cached.
++   * @param {object} aScope the scope you want for the callback function. aScope
++   * will be the this object when aCallback executes.
++   */
++  forEachSheet: function CssLogic_forEachSheet(aCallback, aScope)
++  {
++    for (let cacheId in this._sheets) {
++      this._sheets[cacheId].forEach(aCallback, aScope);
++    }
++  },
++
++  /**
++   * Get the number CSSRule objects in the document, counted from all of the
++   * stylesheets. System sheets are excluded. If a filter is active, this tells
++   * only the number of CSSRule objects inside the selected CSSStyleSheet.
++   *
++   * @return {number} the number of CSSRules (all rules, or from the filtered
++   * stylesheet).
++   */
++  get ruleCount()
++  {
++    if (!this._sheets) {
++      this._cacheSheets();
++    }
++
++    return this._ruleCount;
++  },
++
++  /**
++   * Process the CssSelector objects that match the highlighted element and its
++   * parent elements. Your callback function is executed for each CssSelector
++   * object. You receive two arguments: the CssSelector object and the match
++   * status.
++   *
++   * This method also includes all of the element.style properties, for each 
++   * highlighted element parent and for the highlighted element itself.
++   *
++   * Note that the matched selectors are cached, such that next time your
++   * callback is invoked for the cached list of CssSelector objects.
++   *
++   * @param {function} aCallback the function you want to execute for each of 
++   * the matched selectors.
++   * @param {object} aScope the scope you want for the callback function. aScope
++   * will be the this object when aCallback executes.
++   */
++  processMatchedSelectors: function CssLogic_processMatchedSelectors(aCallback, aScope)
++  {
++    if (this._matchedSelectors) {
++      if (aCallback) {
++        this._passId++;
++        this._matchedSelectors.forEach(function (aValue) {
++          aCallback.call(aScope, aValue[0], aValue[1]);
++          aValue[0]._cssRule._passId = this._passId;
++        }, this);
++      }
++      return;
++    }
++
++    this._matchedSelectors = [];
++    this._unmatchedSelectors = null;
++    this._passId++;
++    this._matchId++;
++
++    let element = this.viewedElement;
++    let filter = this.sourceFilter;
++    let sheetIndex = 0;
++    let domRules = null;
++    do {
++      try {
++        domRules = this.domUtils.getCSSStyleRules(element);
++      } catch (ex) {
++        Services.console.
++          logStringMessage("CssLogic_processMatchedSelectors exception: " + ex);
++        continue;
++      }
++
++      let status = this.viewedElement == element ?
++        CssLogic.STATUS.MATCHED : CssLogic.STATUS.PARENT_MATCH;
++
++      for (let i = 0, n = domRules.Count(); i < n; i++) {
++        let domRule = domRules.GetElementAt(i);
++        if (domRule.type != CSSRule.STYLE_RULE) {
++          continue;
++        }
++
++        let domSheet = domRule.parentStyleSheet;
++        let systemSheet = CssLogic.isSystemStyleSheet(domSheet);
++        if (filter != "ua" && systemSheet) {
++          continue;
++        }
++
++        let sheet = this.getCachedSheet(domSheet, systemSheet, sheetIndex);
++        let rule = sheet.getCachedRule(domRule);
++
++        rule.selectors.forEach(function (aSelector) {
++          if (aSelector._matchId != this._matchId &&
++              element.mozMatchesSelector(aSelector)) {
++            aSelector._matchId = this._matchId;
++            this._matchedSelectors.push([aSelector, status]);
++            if (aCallback) {
++              aCallback.call(aScope, aSelector, status);
++            }
++          }
++        }, this);
++
++        if (sheet._passId != this._passId) {
++          sheetIndex++;
++          sheet._passId = this._passId;
++        }
++
++        if (rule._passId != this._passId) {
++          rule._passId = this._passId;
++        }
++      }
++
++      // Add element.style information.
++      if (element.style.length > 0) {
++        let rule = new CssRule(null, {style: element.style}, element);
++        let selector = rule.selectors[0];
++        selector._matchId = this._matchId;
++
++        this._matchedSelectors.push([selector, status]);
++        if (aCallback) {
++          aCallback.call(aScope, selector, status);
++        }
++        rule._passId = this._passId;
++      }
++    } while ((element = element.parentNode) &&
++      element.nodeType == Node.ELEMENT_NODE);
++  },
++
++  /**
++   * Process the CssSelector object that do not match the highlighted elements, 
++   * nor its parents. Your callback function is invoked for every such 
++   * CssSelector object. You receive one argument: the CssSelector object.
++   *
++   * The list of unmatched selectors is cached.
++   *
++   * @param {function} aCallback the function you want to execute for each of 
++   * the unmatched selectors.
++   * @param {object} aScope the scope you want for the callback function. aScope
++   * will be the this object when aCallback executes.
++   */
++  processUnmatchedSelectors: function CssLogic_processUnmatchedSelectors(aCallback, aScope)
++  {
++    if (!this._matchedSelectors) {
++      this.processMatchedSelectors();
++    }
++
++    if (this._unmatchedSelectors) {
++      if (aCallback) {
++        this._unmatchedSelectors.forEach(aCallback, aScope);
++      }
++      return;
++    }
++
++    this._unmatchedSelectors = [];
++
++    this.forEachSheet(function (aSheet) {
++      aSheet.forEachRule(function (aRule) {
++        aRule.selectors.forEach(function (aSelector) {
++          if (aSelector._matchId != this._matchId) {
++            this._unmatchedSelectors.push(aSelector);
++            if (aCallback) {
++              aCallback.call(aScope, aSelector);
++            }
++          }
++        }, this);
++      }, this);
++    }, this);
+   },
+ };
+ 
+ /**
+  * If the element has an id, return '#id'. Otherwise return 'tagname[n]' where
+  * n is the index of this element in its siblings.
+  * <p>A technically more 'correct' output from the no-id case might be:
+  * 'tagname:nth-of-type(n)' however this is unlikely to be more understood
+@@ -349,90 +624,75 @@ CssLogic.isSystemStyleSheet = function C
+     return true;
+   if (url.substr(0, 6) == "about:")
+     return true;
+ 
+   return false;
+ };
+ 
+ /**
+- * Split a rule.selectorText into an array of simpler selectors, taking into
+- * consideration any nested selectors inside parentheses.
++ * Check if the given CSSStyleSheet/CSSMediaRule holds an allowed media.
++ * Currently we only allow media screen/all.
+  *
+- * @param {string} selector The rule.selectorText you want split.
+- * @return {array} the array of simpler selectors found in rule.selectorText.
++ * @param {CSSStyleSheet|CSSMediaRule} aDomObject the CSSStyleSheet/CSSMediaRule
++ * object you want checked.
++ * @return {boolean} true if the media description is allowed, or false
++ * otherwise.
+  */
+-CssLogic.selectorTextSplit = function CssLogic_selectorTextSplit(selector) {
+-  if (!selector) {
+-    return [];
+-  }
++CssLogic.sheetMediaAllowed = function CssLogic_sheetMediaAllowed(aDomObject)
++{
++  let result = false;
++  let media = aDomObject.media;
+ 
+-  selector = selector.trim();
+-  if (!selector) {
+-    return [];
+-  }
+-
+-  let nesting = 0;
+-  let result = [];
+-  let currentSelector = [];
+-
+-  for (let c, i = 0, n = selector.length; i < n; i++) {
+-    c = selector.charAt(i);
+-    switch (c) {
+-      case ",":
+-        if (nesting == 0 && currentSelector.length > 0) {
+-          let newSelector = currentSelector.join("").trim();
+-          if (newSelector) {
+-            result.push(newSelector);
+-          }
+-          currentSelector = [];
+-        } else {
+-          currentSelector.push(c);
+-        }
++  if (media.length > 0) {
++    let mediaItem = null;
++    for (let m = 0; m < media.length; m++) {
++      mediaItem = media.item(m).toLowerCase();
++      if (mediaItem == "screen" || mediaItem == "all") {
++        result = true;
+         break;
+-      case "(":
+-        nesting++;
+-        currentSelector.push(c);
+-        break;
+-      case ")":
+-        nesting--;
+-        currentSelector.push(c);
+-        break;
+-      default:
+-        currentSelector.push(c);
++      }
+     }
+-  }
+-
+-  // Add the last selector.
+-  if (nesting == 0 && currentSelector.length > 0) {
+-    let newSelector = currentSelector.join("").trim();
+-    if (newSelector) {
+-      result.push(newSelector);
+-    }
++  } else {
++    result = true;
+   }
+ 
+   return result;
+ };
+ 
+ /**
+- * A safe each to access cache of bits of information about a stylesheet.
++ * A safe way to access cached bits of information about a stylesheet.
+  *
+  * @constructor
++ * @param {CssLogic} aCssLogic pointer to the CssLogic instance working with
++ * this CssSheet object.
+  * @param {CSSStyleSheet} aDomSheet reference to a DOM CSSStyleSheet object.
+  * @param {boolean} aSystemSheet tells if the stylesheet is system-provided.
++ * @param {number} aIndex tells the index/position of the stylesheet within the
++ * main document.
+  */
+-function CssSheet(aDomSheet, aSystemSheet)
++function CssSheet(aCssLogic, aDomSheet, aSystemSheet, aIndex)
+ {
++  this._cssLogic = aCssLogic;
+   this.domSheet = aDomSheet;
+   this.systemSheet = aSystemSheet;
++  this.index = this.systemSheet ? -100 * aIndex : aIndex;
+ 
+   // Cache of the sheets href. Cached by the getter.
+   this._href = null;
+   // Short version of href for use in select boxes etc. Cached by getter.
+   this._shortSource = null;
++
++  // -1 for uncached.
++  this._sheetAllowed = -1;
++
++  // Cached CssRules from the given stylesheet.
++  this._rules = {};
++
++  this._ruleCount = -1;
+ };
+ 
+ CssSheet.prototype = {
+   /**
+    * Get a source for a stylesheet, taking into account embedded stylesheets
+    * for which we need to use document.defaultView.location.href rather than
+    * sheet.href
+    *
+@@ -472,552 +732,919 @@ CssSheet.prototype = {
+       if (queryPos > 0) {
+         this._shortSource = this._shortSource.substr(0, queryPos);
+       }
+     }
+ 
+     return this._shortSource;
+   },
+ 
++  /**
++   * Tells if the sheet is allowed or not by the current CssLogic.sourceFilter.
++   *
++   * @return {boolean} true if the stylesheet is allowed by the sourceFilter, or 
++   * false otherwise.
++   */
++  get sheetAllowed()
++  {
++    if (this._sheetAllowed != -1) {
++      return this._sheetAllowed;
++    }
++
++    this._sheetAllowed = true;
++
++    let filter = this._cssLogic.sourceFilter;
++    if (filter == "all" && this.systemSheet) {
++      this._sheetAllowed = false;
++    }
++    if (filter != "all" && filter != "ua") {
++      this._sheetAllowed = filter == this.href;
++    }
++
++    return this._sheetAllowed;
++  },
++
++  /**
++   * Retrieve the number of rules in this stylesheet.
++   *
++   * @return {number} the number of CSSRule objects in this stylesheet.
++   */
++  get ruleCount()
++  {
++    return this._ruleCount > -1 ? this._ruleCount :
++      this.domSheet.cssRules.length;
++  },
++
++  /**
++   * Retrieve a CssRule object for the given CSSStyleRule. The CssRule object is
++   * cached, such that subsequent retrievals return the same CssRule object for
++   * the same CSSStyleRule object.
++   *
++   * @param {CSSStyleRule} aDomRule the CSSStyleRule object for which you want a
++   * CssRule object.
++   * @return {CssRule} the cached CssRule object for the given CSSStyleRule
++   * object. 
++   */
++  getCachedRule: function CssSheet_getCachedRule(aDomRule)
++  {
++    let cacheId = aDomRule.type + aDomRule.selectorText;
++
++    let rule = null;
++    let ruleFound = false;
++
++    if (cacheId in this._rules) {
++      for (let i = 0, n = this._rules[cacheId].length; i < n; i++) {
++        rule = this._rules[cacheId][i];
++        if (rule._domRule == aDomRule) {
++          ruleFound = true;
++          break;
++        }
++      }
++    }
++
++    if (!ruleFound) {
++      if (!(cacheId in this._rules)) {
++        this._rules[cacheId] = [];
++      }
++
++      rule = new CssRule(this, aDomRule);
++      this._rules[cacheId].push(rule);
++    }
++
++    return rule;
++  },
++
++  /**
++   * Process each rule in this stylesheet using your callback function. Your 
++   * function receives one argument: the CssRule object for each CSSStyleRule 
++   * inside the stylesheet.
++   *
++   * Note that this method also iterates through @media rules inside the 
++   * stylesheet.
++   *
++   * @param {function} aCallback the function you want to execute for each of 
++   * the style rules.
++   * @param {object} aScope the scope you want for the callback function. aScope
++   * will be the this object when aCallback executes.
++   */
++  forEachRule: function CssSheet_forEachRule(aCallback, aScope)
++  {
++    let ruleCount = 0;
++    let domRules = this.domSheet.cssRules;
++
++    Array.prototype.forEach.call(domRules, function _iterator(aDomRule) {
++      if (aDomRule.type == CSSRule.STYLE_RULE) {
++        aCallback.call(aScope, this.getCachedRule(aDomRule));
++        ruleCount++;
++      } else if (aDomRule.type == CSSRule.MEDIA_RULE && aDomRule.cssRules &&
++          CssLogic.sheetMediaAllowed(aDomRule)) {
++        Array.prototype.forEach.call(aDomRule.cssRules, _iterator, this);
++      }
++    }, this);
++
++    this._ruleCount = ruleCount;
++  },
++
+   toString: function CssSheet_toString()
+   {
+     return "CssSheet[" + this.shortSource + "]";
+   },
+ };
+ 
+ /**
+- * A cache of information about the rules and values attached to a CSS property.
++ * Information about a single CSSStyleRule.
++ *
++ * @constructor
++ * @param {CSSSheet|null} aCssSheet the CssSheet object of the stylesheet that
++ * holds the CSSStyleRule. If the rule comes from element.style, set this
++ * argument to null.
++ * @param {CSSStyleRule|object} aDomRule the DOM CSSStyleRule for which you want
++ * to cache data. If the rule comes from element.style, then provide
++ * an object of the form: {style: element.style}.
++ * @param {Element} [aElement] If the rule comes from element.style, then this
++ * argument must point to the element.
++ */
++function CssRule(aCssSheet, aDomRule, aElement)
++{
++  this._cssSheet = aCssSheet;
++  this._domRule = aDomRule;
++
++  if (this._cssSheet) {
++    this._selectors = null;
++    this.line = this._cssSheet._cssLogic.domUtils.getRuleLine(this._domRule);
++    this.source = this._cssSheet.shortSource + ":" + this.line;
++    this.href = this._cssSheet.href;
++    this.systemRule = this._cssSheet.systemSheet;
++  } else if (aElement) {
++    this._selectors = [];
++    this._addSelector("@element.style");
++    this.line = -1;
++    this.source = CssLogic.l10n("style.rule.sourceElement");
++    this.href = "#";
++    this.systemRule = false;
++    this.sourceElement = aElement;
++  }
++};
++
++CssRule.prototype = {
++  /**
++   * Check if the parent stylesheet is allowed by the CssLogic.sourceFilter.
++   *
++   * @return {boolean} true if the parent stylesheet is allowed by the current 
++   * sourceFilter, or false otherwise.
++   */
++  get sheetAllowed()
++  {
++    return this._cssSheet ? this._cssSheet.sheetAllowed : true;
++  },
++
++  /**
++   * Retrieve the parent stylesheet index/position in the viewed document.
++   *
++   * @return {number} the parent stylesheet index/position in the viewed 
++   * document.
++   */
++  get sheetIndex()
++  {
++    return this._cssSheet ? this._cssSheet.index : 0;
++  },
++
++  /**
++   * Retrieve the style property value from the current CSSStyleRule.
++   *
++   * @param {string} aProperty the CSS property name for which you want the 
++   * value.
++   * @return {string} the property value.
++   */
++  getPropertyValue: function(aProperty)
++  {
++    return this._domRule.style.getPropertyValue(aProperty);
++  },
++
++  /**
++   * Retrieve the style property priority from the current CSSStyleRule.
++   *
++   * @param {string} aProperty the CSS property name for which you want the 
++   * priority.
++   * @return {string} the property priority.
++   */
++  getPropertyPriority: function(aProperty)
++  {
++    return this._domRule.style.getPropertyPriority(aProperty);
++  },
++
++  /**
++   * Retrieve the list of CssSelector objects for each of the parsed selectors 
++   * of the current CSSStyleRule.
++   *
++   * @return {array} the array hold the CssSelector objects.
++   */
++  get selectors()
++  {
++    if (!this._selectors) {
++      this._selectorTextParser();
++    }
++
++    return this._selectors;
++  },
++
++  /**
++   * Parse the CSSStyleRule.selectorText string.
++   * @private
++   */
++  _selectorTextParser: function CssRule_selectorTextParser()
++  {
++    this._selectors = [];
++
++    if (!this._domRule.selectorText) {
++      return;
++    }
++
++    let selector = this._domRule.selectorText.trim();
++    if (!selector) {
++      return;
++    }
++
++    let nesting = 0;
++    let currentSelector = [];
++
++    for (let c, i = 0, n = selector.length; i < n; i++) {
++      c = selector.charAt(i);
++      switch (c) {
++        case ",":
++          if (nesting == 0 && currentSelector.length > 0) {
++            this._addSelector(currentSelector.join(""));
++            currentSelector = [];
++          } else {
++            currentSelector.push(c);
++          }
++        break;
++        case "(":
++          nesting++;
++        currentSelector.push(c);
++        break;
++        case ")":
++          nesting--;
++        currentSelector.push(c);
++        break;
++        default:
++        currentSelector.push(c);
++      }
++    }
++
++    // Add the last selector.
++    if (nesting == 0 && currentSelector.length > 0) {
++      this._addSelector(currentSelector.join(""));
++    }
++  },
++
++  /**
++   * Add a single selector to the list of selectors for the current CssRule
++   * object.
++   *
++   * @private
++   * @param {string} aSelector the selector string.
++   */
++  _addSelector: function CssRule_addSelector(aSelector)
++  {
++    aSelector = aSelector.trim();
++    if (aSelector) {
++      this._selectors.push(new CssSelector(this, aSelector));
++    }
++  },
++
++  toString: function CssRule_toString()
++  {
++    return "[CssRule " + this._domRule.selectorText + "]";
++  },
++};
++
++/**
++ * The CSS selector class allows us to document the ranking of various CSS
++ * selectors.
++ *
++ * @constructor
++ * @param {CssRule} aCssRule the CssRule instance from where the selector comes.
++ * @param {string} aSelector The selector that we wish to investigate.
++ */
++function CssSelector(aCssRule, aSelector)
++{
++  this._cssRule = aCssRule;
++  this.text = aSelector;
++  this.elementStyle = this.text == "@element.style";
++  this._specificity = null;
++};
++
++CssSelector.prototype = {
++  /**
++   * Retrieve the CssSelector source, which is the source of the CssSheet owning
++   * the selector.
++   *
++   * @return {string} the selector source.
++   */
++  get source()
++  {
++    return this._cssRule.source;
++  },
++
++  /**
++   * Retrieve the CssSelector source element, which is the source of the CssRule
++   * owning the selector. This is only available when the CssSelector comes from
++   * an element.style.
++   *
++   * @return {string} the source element selector.
++   */
++  get sourceElement()
++  {
++    return this._cssRule.sourceElement;
++  },
++
++  /**
++   * Retrieve the address of the CssSelector. This points to the address of the 
++   * CssSheet owning this selector.
++   *
++   * @return {string} the address of the CssSelector.
++   */
++  get href()
++  {
++    return this._cssRule.href;
++  },
++
++  /**
++   * Check if the selector comes from a browser-provided stylesheet.
++   *
++   * @return {boolean} true if the selector comes from a browser-provided 
++   * stylesheet, or false otherwise.
++   */
++  get systemRule()
++  {
++    return this._cssRule.systemRule;
++  },
++
++  /**
++   * Check if the parent stylesheet is allowed by the CssLogic.sourceFilter.
++   *
++   * @return {boolean} true if the parent stylesheet is allowed by the current 
++   * sourceFilter, or false otherwise.
++   */
++  get sheetAllowed()
++  {
++    return this._cssRule.sheetAllowed;
++  },
++
++  /**
++   * Retrieve the parent stylesheet index/position in the viewed document.
++   *
++   * @return {number} the parent stylesheet index/position in the viewed 
++   * document.
++   */
++  get sheetIndex()
++  {
++    return this._cssRule.sheetIndex;
++  },
++
++  /**
++   * Retrieve the line of the parent CSSStyleRule in the parent CSSStyleSheet.
++   *
++   * @return {number} the line of the parent CSSStyleRule in the parent
++   * stylesheet.
++   */
++  get ruleLine()
++  {
++    return this._cssRule.line;
++  },
++
++  /**
++   * Retrieve specificity information for the current selector.
++   *
++   * @see http://www.w3.org/TR/css3-selectors/#specificity
++   * @see http://www.w3.org/TR/CSS2/selector.html
++   *
++   * @return {object} an object holding specificity information for the current
++   * selector.
++   */
++  get specificity()
++  {
++    if (this._specificity) {
++      return this._specificity;
++    }
++
++    let specificity = {};
++
++    specificity.ids = 0;
++    specificity.classes = 0;
++    specificity.tags = 0;
++
++    // Split on CSS combinators (section 5.2).
++    // TODO: We need to properly parse the selector. See bug 590090.
++    if (!this.elementStyle) {
++      this.text.split(/[ >+]/).forEach(function(aSimple) {
++        // The regex leaves empty nodes combinators like ' > '
++        if (!aSimple) {
++          return;
++        }
++        // See http://www.w3.org/TR/css3-selectors/#specificity
++        // We can count the IDs by counting the '#' marks.
++        specificity.ids += (aSimple.match(/#/g) || []).length;
++        // Similar with class names and attribute matchers
++        specificity.classes += (aSimple.match(/\./g) || []).length;
++        specificity.classes += (aSimple.match(/\[/g) || []).length;
++        // Pseudo elements count as elements.
++        specificity.tags += (aSimple.match(/:/g) || []).length;
++        // If we have anything of substance before we get into ids/classes/etc
++        // then it must be a tag if it isn't '*'.
++        let tag = aSimple.split(/[#.[:]/)[0];
++        if (tag && tag != "*") {
++          specificity.tags++;
++        }
++      }, this);
++    }
++
++    this._specificity = specificity;
++
++    return this._specificity;
++  },
++
++  toString: function CssSelector_toString()
++  {
++    return this.text;
++  },
++};
++
++/**
++ * A cache of information about the matched rules, selectors and values attached 
++ * to a CSS property, for the highlighted element.
++ *
++ * This is used by the CssHtmlTree script, inside PropertyView objects. They
++ * retrieve the list of matched and unmatched selectors, which are then
++ * displayed for the user.
+  *
+  * @constructor
+  * @param {CssLogic} aCssLogic reference to the CssLogic instance we are working
+  * with.
+  * @param {string} aProperty the CSS property name we are gathering information
+  * for.
+  */
+-function CssInfo(aCssLogic, aProperty)
++function CssPropertyInfo(aCssLogic, aProperty)
+ {
++  this._cssLogic = aCssLogic;
+   this.property = aProperty;
+-  if (aCssLogic._computedStyle) {
+-    try {
+-      this.value = aCssLogic._computedStyle.getPropertyValue(aProperty);
+-    } catch (ex) {
+-      Services.console.logStringMessage('Error reading computed style for ' + aProperty);
+-      Services.console.logStringMessage(ex.toString());
+-      this.value = "";
+-    }
+-  } else {
+-    this.value = "";
+-  }
++  this._value = "";
+ 
+-  this._matched = false;
+-  this._localRules = false;
+-  this._cssLogic = aCssLogic;
+-  this._filteredRuleCount = 0;
+-  this._unmatchedRuleCount = 0;
+-  this._filteredUnmatchedRuleCount = 0;
++  // The number of matched rules holding the this.property style property.
++  // Additionally, only rules that come from allowed stylesheets are counted.
++  this._matchedRuleCount = 0;
++
++  // An array holding CssSelectorInfo objects for each of the matched selectors
++  // that are inside a CSS rule. Only rules that hold the this.property are
++  // counted. This includes rules that come from filtered stylesheets (those
++  // that have sheetAllowed = false).
++  this._matchedSelectors = null;
+ };
+ 
+-CssInfo.prototype = {
++CssPropertyInfo.prototype = {
+   /**
+-   * ruleCount could be accessed through this.rules.length, however that means
+-   * we need to have sorted them into the correct order, which could take time
+-   * hence we have a separate accessor for the times when you just want to know
+-   * how rules there are without getting access to the rule ordering.
++   * Retrieve the computed style value for the current property, for the 
++   * highlighted element.
+    *
+-   * @return {number} the number of rules.
++   * @return {string} the computed style value for the current property, for the
++   * highlighted element.
+    */
+-  get ruleCount()
++  get value()
+   {
+-    if (!this._rules) {
+-      this._findRules();
+-    }
+-    if (!this._localRules) {
+-      this._findElementRules();
+-    }
+-    if (!this._uaRules && this._cssLogic.sourceFilter == "ua") {
+-      this._findUARules();
++    if (!this._value && this._cssLogic._computedStyle) {
++      try {
++        this._value = this._cssLogic._computedStyle.
++          getPropertyValue(this.property);
++      } catch (ex) {
++        Services.console.logStringMessage('Error reading computed style for ' +
++          this.property);
++        Services.console.logStringMessage(ex);
++      }
+     }
+ 
+-    return this._rules.length;
++    return this._value;
+   },
+ 
+   /**
+-   * Retrieve the number of filtered rules.
++   * Retrieve the number of matched rules holding the this.property style 
++   * property. Only rules that come from allowed stylesheets are counted.
+    *
+-   * ruleCount could be accessed through this.rules.length, however that means
+-   * we need to have sorted them into the correct order, which could take time
+-   * hence we have a separate accessor for the times when you just want to know
+-   * how rules there are without getting access to the rule ordering.
++   * @return {number} the number of matched rules.
++   */
++  get matchedRuleCount()
++  {
++    if (!this._matchedSelectors) {
++      this._findMatchedSelectors();
++    } else if (this.needRefilter) {
++      this._refilterSelectors();
++    }
++
++    return this._matchedRuleCount;
++  },
++
++  /**
++   * Retrieve the array holding CssSelectorInfo objects for each of the matched 
++   * selectors, from each of the matched rules. Only selectors coming from 
++   * allowed stylesheets are included in the array.
+    *
+-   * @return {number} the number of filtered rules.
++   * @return {array} the list of CssSelectorInfo objects of selectors that match
++   * the highlighted element and its parents.
+    */
+-  get filteredRuleCount()
++  get matchedSelectors()
+   {
+-    this.ruleCount; // Force an update.
+-    return this._filteredRuleCount;
++    if (!this._matchedSelectors) {
++      this._findMatchedSelectors();
++    } else if (this.needRefilter) {
++      this._refilterSelectors();
++    }
++
++    return this._matchedSelectors;
++  },
++
++  /**
++   * Retrieve the array holding CssSelectorInfo objects for each of the
++   * unmatched selectors, from each of the unmatched rules. Only selectors
++   * coming from allowed stylesheets are included in the array.
++   *
++   * @return {array} the list of CssSelectorInfo objects of selectors that do
++   * not match the highlighted element or its parents.
++   */
++  get unmatchedSelectors()
++  {
++    if (!this._unmatchedSelectors) {
++      this._findUnmatchedSelectors();
++    } else if (this.needRefilter) {
++      this._refilterSelectors();
++    }
++
++    return this._unmatchedSelectors;
+   },
+ 
+   /**
+    * Retrieve the number of unmatched rules.
+-   * @return {number} the number of unmatched rules.
++   *
++   * @return {number} the number of rules that do not match the highlighted 
++   * element or its parents.
+    */
+   get unmatchedRuleCount()
+   {
+-    this.ruleCount; // Force an update.
+-    if (!this._matched) {
+-      this._markMatches();
++    if (!this._unmatchedSelectors) {
++      this._findUnmatchedSelectors();
++    } else if (this.needRefilter) {
++      this._refilterSelectors();
+     }
+ 
+     return this._unmatchedRuleCount;
+   },
+ 
+   /**
+-   * Retrieve the number of unmatched rules, after filtering.
+-   * @return {number} the number of unmatched rules, after filtering.
++   * Find the selectors that match the highlighted element and its parents.
++   * @private
+    */
+-  get filteredUnmatchedRuleCount()
++  _findMatchedSelectors: function CssPropertyInfo_findMatchedSelectors()
+   {
+-    this.unmatchedRuleCount; // Force an update.
++    this._matchedSelectors = [];
++    this._matchedRuleCount = 0;
++    this.needRefilter = false;
+ 
+-    return this._filteredUnmatchedRuleCount;
++    this._cssLogic.processMatchedSelectors(this._processMatchedSelector, this);
++
++    // Sort the selectors by how well they match the given element.
++    this._matchedSelectors.sort(function(aSelectorInfo1, aSelectorInfo2) {
++      if (aSelectorInfo1.status > aSelectorInfo2.status) {
++        return -1;
++      } else if (aSelectorInfo2.status > aSelectorInfo1.status) {
++        return 1;
++      } else {
++        return aSelectorInfo1.compareTo(aSelectorInfo2);
++      }
++    });
++
++    // Now we know which of the matches is best, we can mark it BEST_MATCH.
++    if (this._matchedSelectors.length > 0 &&
++        this._matchedSelectors[0].status > CssLogic.STATUS.UNMATCHED) {
++      this._matchedSelectors[0].status = CssLogic.STATUS.BEST;
++    }
+   },
+ 
+   /**
+-   * Accessor for a list of rules sorted by their applicability to the current
+-   * element.
++   * Process a matched CssSelector object.
+    *
+-   * @return {array}
++   * @private
++   * @param {CssSelector} aSelector the matched CssSelector object.
++   * @param {CssLogic.STATUS} aStatus the CssSelector match status.
+    */
+-  get rules()
++  _processMatchedSelector:
++  function CssPropertyInfo_processMatchedSelector(aSelector, aStatus)
+   {
+-    if (!this._rules) {
+-      this._findRules();
+-    }
+-    if (!this._localRules) {
+-      this._findElementRules();
+-    }
+-    if (!this._uaRules && this._cssLogic.sourceFilter == "ua") {
+-      this._findUARules();
+-    }
+-
+-    if (!this._matched) {
+-      this._markMatches();
+-    }
+-
+-    return this._rules;
+-  },
+-
+-  /**
+-   * Dig through all the sheets looking for matches for <tt>property</tt> and
+-   * adding the results to <tt>rules</tt>.
+-   */
+-  _findRules: function CssInfo_findRules()
+-  {
+-    this._rules = [];
+-    this._filteredRuleCount = 0;
+-
+-    let filter = this._cssLogic.sourceFilter;
+-
+-    // Loop over all of the filtered stylesheets, rules, and properties.
+-    for (let s = 0; s < this._cssLogic.sheets.length; s++) {
+-      let sheet = this._cssLogic.sheets[s];
+-      let sheetAllowed = false;
+-      if (filter == "all" || filter == "ua" || filter == sheet.href) {
+-        sheetAllowed = true;
+-      }
+-
+-      let domRules = sheet.domSheet.cssRules;
+-      for (let r = 0; r < domRules.length; r++) {
+-        let domRule = domRules[r];
+-        if (domRule.style) {
+-          for (let t = 0; t < domRule.style.length; t++) {
+-            if (domRule.style[t] == this.property) {
+-              if (!domRule.selectorText) {
+-                // See https://bugzilla.mozilla.org/show_bug.cgi?id=591349
+-                Services.console.logStringMessage('Found a domRule with no selectorText. ' + this.property + ' from ' + sheet.href);
+-                // jlog('no selectorText in', domRule);
+-              } else {
+-                let selectors = CssLogic.selectorTextSplit(domRule.selectorText);
+-                selectors.forEach(function(aSelector) {
+-                  let rule = new CssRule(this._cssLogic, domRule, this.property,
+-                      sheet, aSelector.trim());
+-                  rule.sheetAllowed = sheetAllowed;
+-                  this._rules.push(rule);
+-                  if (sheetAllowed) {
+-                    this._filteredRuleCount++;
+-                  }
+-                }, this);
+-              }
+-            }
+-          }
+-        }
++    let cssRule = aSelector._cssRule;
++    let value = cssRule.getPropertyValue(this.property);
++    if (value) {
++      let selectorInfo = new CssSelectorInfo(aSelector, this.property, value,
++        aStatus);
++      this._matchedSelectors.push(selectorInfo);
++      if (this._cssLogic._passId != cssRule._passId &&
++          cssRule.sheetAllowed) {
++        this._matchedRuleCount++;
+       }
+     }
+   },
+ 
+   /**
+-   * Find the element.style rules.
++   * Find the selectors that do not match the highlighted element and its 
++   * parents.
++   * @private
+    */
+-  _findElementRules: function CssInfo_findElementRules()
++  _findUnmatchedSelectors: function CssPropertyInfo_findUnmatchedSelectors()
+   {
+-    let element = this._cssLogic.viewedElement;
+-    if (element.style && element.style.getPropertyValue(this.property) != "") {
+-      let rule = new CssRule(this._cssLogic, {style: element.style},
+-        this.property, null, "@element.style");
+-      this._rules.push(rule);
+-      this._filteredRuleCount++;
+-    }
+-    this._localRules = true;
++    this._unmatchedSelectors = [];
++    this._unmatchedRuleCount = 0;
++    this.needRefilter = false;
++    this._cssLogic._passId++;
++
++    this._cssLogic.processUnmatchedSelectors(this._processUnmatchedSelector,
++      this);
++
++    // Sort the selectors by specificity.
++    this._unmatchedSelectors.sort(function(aSelectorInfo1, aSelectorInfo2) {
++      return aSelectorInfo1.compareTo(aSelectorInfo2);
++    });
+   },
+ 
+   /**
+-   * Find the user-agent rules (Gecko-provided rules).
++   * Process an unmatched CssSelector object.
++   *
++   * @private
++   * @param {CssSelector} aSelector the unmatched CssSelector object.
+    */
+-  _findUARules: function CssInfo_findUARules()
++  _processUnmatchedSelector:
++  function CssPropertyInfo_processUnmatchedSelector(aSelector)
+   {
+-    let cssLogic = this._cssLogic;
+-    let doc = this._cssLogic.viewedDocument;
+-    let element = this._cssLogic.viewedElement;
+-    let sheets = [];
+-    let sheetsMap = {};
++    let cssRule = aSelector._cssRule;
++    if (cssRule.systemRule) {
++      return;
++    }
+ 
+-    // Find the system sheets for the highlighted element.
+-    let matchedRules = cssLogic.domUtils.getCSSStyleRules(element);
+-    for (let i = 0, n = matchedRules.Count(); i < n; i++) {
+-      let domRule = matchedRules.GetElementAt(i);
+-      let domSheet = domRule.parentStyleSheet;
+-      let href = domSheet.href;
+-      if (!(href in sheetsMap) && domRule.style &&
+-        CssLogic.isSystemStyleSheet(domSheet)) {
+-        sheets.push(new CssSheet(domSheet, true));
+-        sheetsMap[href] = true;
++    let value = cssRule.getPropertyValue(this.property);
++    if (value) {
++      let selectorInfo = new CssSelectorInfo(aSelector, this.property, value,
++        CssLogic.STATUS.UNMATCHED);
++      this._unmatchedSelectors.push(selectorInfo);
++      if (this._cssLogic._passId != cssRule._passId) {
++        if (cssRule.sheetAllowed) {
++          this._unmatchedRuleCount++;
++        }
++        cssRule._passId = this._cssLogic._passId;
+       }
+     }
+-
+-    // Find all the rules in each system sheet.
+-    for (let i = 0, n = sheets.length; i < n; i++) {
+-      let sheet = sheets[i];
+-      for (let r = 0, rn = sheet.domSheet.cssRules.length; r < rn; r++) {
+-        let domRule = sheet.domSheet.cssRules[r];
+-        if (!domRule.style) {
+-          continue;
+-        }
+-        for (let t = 0, tn = domRule.style.length; t < tn; t++) {
+-          if (!domRule.selectorText || domRule.style[t] != this.property) {
+-            continue;
+-          }
+-
+-          let selectors = CssLogic.selectorTextSplit(domRule.selectorText);
+-          selectors.forEach(function(aSelector) {
+-            let rule = new CssRule(this._cssLogic, domRule, this.property,
+-              sheet, aSelector.trim(), true);
+-            this._rules.push(rule);
+-            this._filteredRuleCount++;
+-          }, this);
+-        }
+-      }
+-    }
+-
+-    this._uaRules = true;
+   },
+ 
+   /**
+-   * Go through the <tt>rules</tt> member of <tt>cssInfo</tt> and work out
+-   * if each rule applies to <tt>viewedElement</tt>.
++   * Refilter the matched and unmatched selectors arrays when the
++   * CssLogic.sourceFilter changes. This allows for quick filter changes.
++   * @private
+    */
+-  _markMatches: function CssInfo_markMatches()
++  _refilterSelectors: function CssPropertyInfo_refilterSelectors()
+   {
+-    let parents = [];
+-    let element = this._cssLogic.viewedElement;
++    let passId = ++this._cssLogic._passId;
+ 
+-    while ((element = element.parentNode) &&
+-      element.nodeType == Node.ELEMENT_NODE) {
+-      parents.push(element);
++    let ruleCount = 0;
++    let loopFn = function(aSelectorInfo) {
++      let cssRule = aSelectorInfo.selector._cssRule;
++      if (cssRule._passId != passId) {
++        if (cssRule.sheetAllowed) {
++          ruleCount++;
++        }
++        cssRule._passId = passId;
++      }
++    };
++
++    if (this._matchedSelectors) {
++      this._matchedSelectors.forEach(function(aSelectorInfo) {
++        let cssRule = aSelectorInfo.selector._cssRule;
++        if (cssRule._passId != passId) {
++          if (cssRule.sheetAllowed) {
++            ruleCount++;
++          }
++          cssRule._passId = passId;
++        }
++      });
++      this._matchedRuleCount = ruleCount;
+     }
+ 
+-    this._unmatchedRuleCount = 0;
+-    this._filteredUnmatchedRuleCount = 0;
+-
+-    for (let rule, r = 0, n = this._rules.length; r < n; r++) {
+-      rule = this._rules[r];
+-
+-      // Do we have a selector match?
+-      if (rule.selector == "@element.style" ||
+-        this._cssLogic.viewedElement.mozMatchesSelector(rule.selector)) {
+-        rule.status = CssLogic.STATUS.MATCHED;
+-      } else {
+-        // Do we have a parent match?
+-        for (let p = 0, pn = parents.length; p < pn; p++) {
+-          if (parents[p].mozMatchesSelector(rule.selector)) {
+-            rule.status = CssLogic.STATUS.PARENT_MATCH;
+-            break;
++    if (this._unmatchedSelectors) {
++      ruleCount = 0;
++      this._unmatchedSelectors.forEach(function(aSelectorInfo) {
++        let cssRule = aSelectorInfo.selector._cssRule;
++        if (!cssRule.systemRule && cssRule._passId != passId) {
++          if (cssRule.sheetAllowed) {
++            ruleCount++;
+           }
++          cssRule._passId = passId;
+         }
+-
+-        if (rule.status == CssLogic.STATUS.UNKNOWN) {
+-          rule.status = CssLogic.STATUS.UNMATCHED;
+-          this._unmatchedRuleCount++;
+-          if (rule.sheetAllowed) {
+-            this._filteredUnmatchedRuleCount++;
+-          }
+-        }
+-      }
++      });
++      this._unmatchedRuleCount = ruleCount;
+     }
+ 
+-    // Sort the arrays by how well they match the given element.
+-    this._rules.sort(function(aRule1, aRule2) {
+-      if (aRule1.status > aRule2.status) {
+-        return -1;
+-      } else if (aRule2.status > aRule1.status) {
+-        return 1;
+-      } else {
+-        return aRule1.specificity.compareTo(aRule2.specificity);
+-      }
+-    });
+-
+-    // Now we know which of the matches is best, we can mark it BEST_MATCH.
+-    if (this._rules.length > 0) {
+-      if (this._rules[0].status > CssLogic.STATUS.UNMATCHED) {
+-        this._rules[0].status = CssLogic.STATUS.BEST;
+-      }
+-    }
+-
+-    this._matched = true;
++    this.needRefilter = false;
+   },
+ 
+-  /**
+-   * Undoes the changes made by _markMatches().
+-   * For use when <tt>viewedElement</tt> changes (e.g. in highlight())
+-   */
+-  unmarkMatches: function CssInfo_unmarkMatches()
++  toString: function CssPropertyInfo_toString()
+   {
+-    if (this._rules) {
+-      let removeRules = [];
+-
+-      this._rules.forEach(function(aRule, aIndex) {
+-        aRule.status = CssLogic.STATUS.UNKNOWN;
+-        if (aRule.selector == "@element.style" || aRule.systemSheet) {
+-          removeRules.push(aIndex);
+-        }
+-      }, this);
+-
+-      removeRules.forEach(function (aIndex) {
+-        this._rules.splice(aIndex, 1);
+-      }, this);
+-
+-      this._unmatchedRuleCount = 0;
+-      this._filteredUnmatchedRuleCount = 0;
+-    }
+-
+-    this._matched = false;
+-    this._localRules = false;
+-    this._uaRules = false;
+-  },
+-
+-  toString: function CssInfo_toString()
+-  {
+-    return "CssInfo[" + this.property + "]";
++    return "CssPropertyInfo[" + this.property + "]";
+   },
+ };
+ 
+ /**
+- * Information about a single CSS rule, with a simple selector (i.e. no commas)
+- * and a single CSS property to which the rule applies.
++ * A class that holds information about a given CssSelector object.
++ *
++ * Instances of this class are given to CssHtmlTree in the arrays of matched and
++ * unmatched selectors. Each such object represents a displayable row in the
++ * PropertyView objects. The information given by this object blends data coming
++ * from the CssSheet, CssRule and from the CssSelector that own this object.
+  *
+  * @constructor
+- * @param {CssLogic} aCssLogic reference to the CssLogic instance we are working
+- * with.
+- * @param {DOMCSSRule|object} aDomRule the DOM CSSRule from which we have the
+- * selector and the property. If the rule comes from element.style, then provide
+- * an object like this {style: element.style}.
+- * @param {string} aProperty the CSS property name we are gathering information
+- * for.
+- * @param {CSSStyleSheet|null} aSheet reference to the stylesheet where the
+- * property and rule were found. Use null if the rule comes from element.style.
+- * @param {string} aSelector the simple selector rule. If the rule comes from
+- * element.style use "@element.style".
+- * @param {boolean} aSystemSheet tells if the DOMCSSRule comes from a
+- * system-provided stylesheet.
++ * @param {CssSelector} the CssSelector object for which to present information.
++ * @param {string} the property for which information should be retrieved.
++ * @param {string} the property value from the CssRule that owns the selector.
++ * @param {CssLogic.STATUS} the selector match status.
+  */
+-function CssRule(aCssLogic, aDomRule, aProperty, aSheet, aSelector, aSystemSheet)
++function CssSelectorInfo(aSelector, aProperty, aValue, aStatus)
+ {
++  this.selector = aSelector;
+   this.property = aProperty;
+-  this.selector = aSelector;
+-  this.value = aDomRule.style.getPropertyValue(aProperty);
+-  let pri = aDomRule.style.getPropertyPriority(aProperty);
++  this.value = aValue;
++  this.status = aStatus;
+ 
+-  let ruleCount;
+-  if (this.selector == "@element.style") {
+-    ruleCount = 0;
+-  } else {
+-    ruleCount = aCssLogic._ruleCount++;
+-  }
+-
+-  this.systemSheet = aSystemSheet;
+-  this.specificity = new CssSpecificity(this.selector, ruleCount, pri,
+-    this.systemSheet);
+-
+-  // domUtils.getRuleLine fails for @import rules. See bug 591303.
+-  this.line = -1;
+-  if (this.selector != "@element.style") {
+-    try {
+-      this.line = aCssLogic.domUtils.getRuleLine(aDomRule);
+-    } catch (ex) {
+-      Services.console.logStringMessage("domUtils.getRuleLine failed for " +
+-        aDomRule.cssText);
+-    }
+-  }
+-
+-  if (this.selector == "@element.style") {
+-    this.source = CssLogic.l10n("style.rule.sourceElement");
+-    this.href = "#";
+-  } else {
+-    this.source = (this.line == -1) ?
+-        aSheet.shortSource :
+-        aSheet.shortSource + ":" + this.line;
+-    this.href = aSheet.href;
+-  }
+-
+-  this.status = CssLogic.STATUS.UNKNOWN;
+-  this.sheetAllowed = true;
+-};
+-
+-CssRule.prototype = {
+-  toString: function CssInfo_toString()
+-  {
+-    return "CssRule[" + this.selector + "->" + this.value + "]";
+-  },
+-};
+-
+-/**
+- * The CSS specificity class allows us to document the ranking of various CSS
+- * rules.
+- *
+- * @constructor
+- * @param {string} aSelector The selector that we wish to investigate
+- * @param {number} aIndex The index of the rule in the HTML document. Later
+- * rules have higher precedence (i.e. they are 'more specific')
+- * See http://www.w3.org/TR/CSS2/cascade.html#cascade for details.
+- * @param {string} aPriority CSS allows only one priority: 'important'
+- * @param {boolean} aSystemSheet tells if the DOMCSSRule comes from a
+- * system-provided stylesheet.
+- * @see http://www.w3.org/TR/css3-selectors/#specificity
+- * @see http://www.w3.org/TR/CSS2/selector.html
+- */
+-function CssSpecificity(aSelector, aIndex, aPriority, aSystemSheet)
+-{
+-  this.ids = 0;
+-  this.classes = 0;
+-  this.tags = 0;
+-  this.index = aIndex;
+-  this.important = (aPriority == "important");
+-  this.system = aSystemSheet;
+-
+-  // Split on CSS combinators (section 5.2).
+-  if (aSelector != "@element.style") {
+-    this.inline = false;
+-
+-    aSelector.split(/[ >+]/).forEach(function(aSimple) {
+-      // The regex leaves empty nodes combinators like ' > '
+-      if (!aSimple) {
+-        return;
+-      }
+-      // See http://www.w3.org/TR/css3-selectors/#specificity
+-      // We can count the IDs by counting the '#' marks.
+-      this.ids += (aSimple.match(/#/g) || []).length;
+-      // Similar with class names and attribute matchers
+-      this.classes += (aSimple.match(/\./g) || []).length;
+-      this.classes += (aSimple.match(/\[/g) || []).length;
+-      // Pseudo elements count as elements.
+-      this.tags += (aSimple.match(/:/g) || []).length;
+-      // If we have anything of substance before we get into ids/classes/etc
+-      // then it must be a tag if it isn't '*'.
+-      let tag = aSimple.split(/[#.[:]/)[0];
+-      if (tag && tag != "*") {
+-        this.tags++;
+-      }
+-    }, this);
+-  } else {
+-    this.inline = true;
+-  }
+-
+-  this.score = 0;
++  let priority = this.selector._cssRule.getPropertyPriority(this.property);
++  this.important = priority == "important";
+ 
+   /* Score prefix:
+   0 UA normal property
+   1 UA important property
+   2 normal property
+-  3 inline
++  3 inline (element.style)
+   4 important
+   5 inline important
+   */
+-  let scorePrefix = this.system ? 0 : 2;
+-  if (this.inline) {
++  let scorePrefix = this.systemRule ? 0 : 2;
++  if (this.elementStyle) {
+     scorePrefix++;
+   }
+   if (this.important) {
+-    scorePrefix += this.system ? 1 : 2;
++    scorePrefix += this.systemRule ? 1 : 2;
+   }
+ 
+-  this.score = "" + scorePrefix + this.ids + this.classes + this.tags;
++  this.specificityScore = "" + scorePrefix + this.specificity.ids +
++    this.specificity.classes + this.specificity.tags;
+ };
+ 
+-CssSpecificity.prototype = {
++CssSelectorInfo.prototype = {
+   /**
+-   * Compare the current CssSpecificity instance to another instance.
++   * Retrieve the CssSelector source, which is the source of the CssSheet owning
++   * the selector.
+    *
+-   * @param {CssSpecificity} aThat The CssSpecificity instance to compare
+-   * ourselves against.
++   * @return {string} the selector source.
++   */
++  get source()
++  {
++    return this.selector.source;
++  },
++
++  /**
++   * Retrieve the CssSelector source element, which is the source of the CssRule
++   * owning the selector. This is only available when the CssSelector comes from
++   * an element.style.
++   *
++   * @return {string} the source element selector.
++   */
++  get sourceElement()
++  {
++    return this.selector.sourceElement;
++  },
++
++  /**
++   * Retrieve the address of the CssSelector. This points to the address of the
++   * CssSheet owning this selector.
++   *
++   * @return {string} the address of the CssSelector.
++   */
++  get href()
++  {
++    return this.selector.href;
++  },
++
++  /**
++   * Check if the CssSelector comes from element.style or not.
++   *
++   * @return {boolean} true if the CssSelector comes from element.style, or
++   * false otherwise.
++   */
++  get elementStyle()
++  {
++    return this.selector.elementStyle;
++  },
++
++  /**
++   * Retrieve specificity information for the current selector.
++   *
++   * @return {object} an object holding specificity information for the current
++   * selector.
++   */
++  get specificity()
++  {
++    return this.selector.specificity;
++  },
++
++  /**
++   * Retrieve the parent stylesheet index/position in the viewed document.
++   *
++   * @return {number} the parent stylesheet index/position in the viewed 
++   * document.
++   */
++  get sheetIndex()
++  {
++    return this.selector.sheetIndex;
++  },
++
++  /**
++   * Check if the parent stylesheet is allowed by the CssLogic.sourceFilter.
++   *
++   * @return {boolean} true if the parent stylesheet is allowed by the current
++   * sourceFilter, or false otherwise.
++   */
++  get sheetAllowed()
++  {
++    return this.selector.sheetAllowed;
++  },
++
++  /**
++   * Retrieve the line of the parent CSSStyleRule in the parent CSSStyleSheet.
++   *
++   * @return {number} the line of the parent CSSStyleRule in the parent
++   * stylesheet.
++   */
++  get ruleLine()
++  {
++    return this.selector.ruleLine;
++  },
++
++  /**
++   * Check if the selector comes from a browser-provided stylesheet.
++   *
++   * @return {boolean} true if the selector comes from a browser-provided 
++   * stylesheet, or false otherwise.
++   */
++  get systemRule()
++  {
++    return this.selector.systemRule;
++  },
++
++  /**
++   * Compare the current CssSelectorInfo instance to another instance, based on
++   * specificity information.
++   *
++   * @param {CssSelectorInfo} aThat The instance to compare ourselves against.
+    * @return number -1, 0, 1 depending on how aThat compares with this.
+    */
+-  compareTo: function CssSpecificity_compareTo(aThat)
++  compareTo: function CssSelectorInfo_compareTo(aThat)
+   {
+-    if (this.system && !aThat.system) return 1;
+-    if (!this.system && aThat.system) return -1;
++    if (this.systemRule && !aThat.systemRule) return 1;
++    if (!this.systemRule && aThat.systemRule) return -1;
+ 
+-    if (this.inline && !aThat.inline) {
++    if (this.elementStyle && !aThat.elementStyle) {
+       if (!this.important && aThat.important) return 1;
+       else return -1;
+     }
+ 
+-    if (!this.inline && aThat.inline) {
++    if (!this.elementStyle && aThat.elementStyle) {
+       if (this.important && !aThat.important) return -1;
+       else return 1;
+     }
+ 
+     if (this.important && !aThat.important) return -1;
+     if (aThat.important && !this.important) return 1;
+ 
+-    if (this.ids > aThat.ids) return -1;
+-    if (aThat.ids > this.ids) return 1;
++    if (this.specificity.ids > aThat.specificity.ids) return -1;
++    if (aThat.specificity.ids > this.specificity.ids) return 1;
+ 
+-    if (this.classes > aThat.classes) return -1;
+-    if (aThat.classes > this.classes) return 1;
++    if (this.specificity.classes > aThat.specificity.classes) return -1;
++    if (aThat.specificity.classes > this.specificity.classes) return 1;
+ 
+-    if (this.tags > aThat.tags) return -1;
+-    if (aThat.tags > this.tags) return 1;
++    if (this.specificity.tags > aThat.specificity.tags) return -1;
++    if (aThat.specificity.tags > this.specificity.tags) return 1;
+ 
+-    if (this.index > aThat.index) return -1;
+-    if (aThat.index > this.index) return 1;
++    if (this.sheetIndex > aThat.sheetIndex) return -1;
++    if (aThat.sheetIndex > this.sheetIndex) return 1;
++
++    if (this.ruleLine > aThat.ruleLine) return -1;
++    if (aThat.ruleLine > this.ruleLine) return 1;
+ 
+     return 0;
+   },
+ 
+-  /**
+-   * Displayable version of the specificity.
+-   * @return {string}
+-   */
+-  toString: function CssSpecificity_toString()
++  toString: function CssSelectorInfo_toString()
+   {
+-    let result = "";
+-    if (this.score) {
+-      result = this.score;
+-    } else {
+-      if (this.inline) {
+-        let prefix = this.important ? "!," : " ,";
+-        result = prefix + this.ids + "," + this.classes + "," + this.tags;
+-      } else {
+-        result = this.important ? "!" : " ";
+-      }
+-    }
+-    return result;
++    return this.selector + " -> " + this.value;
+   },
+ };
++
+diff --git a/browser/base/content/test/browser_inspector_cssinfo_order.js b/browser/base/content/test/browser_inspector_cssinfo_order.js
+--- a/browser/base/content/test/browser_inspector_cssinfo_order.js
++++ b/browser/base/content/test/browser_inspector_cssinfo_order.js
+@@ -57,31 +57,34 @@ function runInspectorTests()
+   InspectorUI.stopInspecting();
+   ok(!InspectorUI.inspecting, "Inspector is not highlighting");
+ 
+   let div = doc.getElementsByTagName("div")[0];
+   ok(div, "we have the div element");
+ 
+   InspectorUI.inspectNode(div);
+ 
+-  let cssInfo = InspectorUI.cssLogic.getCssInfo("color");
+-  let rules = cssInfo.rules;
++  let propertyInfo = InspectorUI.cssLogic.getPropertyInfo("color");
++  let matchedSelectors = propertyInfo.matchedSelectors;
+ 
+-  ok(cssInfo, "we have cssInfo('color')");
+-  ok(Array.isArray(rules), "cssInfo.rules property is an array");
+-  is(rules.length, 3, "rules.length = 3");
++  ok(propertyInfo, "we have getPropertyInfo('color')");
++  ok(Array.isArray(matchedSelectors), "propertyInfo.matchedSelectors is an array");
++  is(matchedSelectors.length, 2, "matchedSelectors.length = 2");
+ 
+   // Check rules order.
+-  is(rules[0].selector, ".test", "first rule: .test");
+-  is(rules[1].selector, "div", "second rule: div");
+-  is(rules[2].selector, "#test", "third rule: #test");
++  is(matchedSelectors[0].selector.text, ".test", "first selector: .test");
++  is(matchedSelectors[1].selector.text, "div", "second selector: div");
+ 
+-  cssInfo = rules = div = doc = null;
++  let unmatchedSelectors = propertyInfo.unmatchedSelectors;
++  is(unmatchedSelectors.length, 1, "unmatchedSelectors.length = 1");
++  is(unmatchedSelectors[0].selector.text, "#test", "first selector: #test");
+ 
+-  InspectorUI.closeInspectorUI();
++  propertyInfo = matchedSelectors = unmatchedSelectors = div = doc = null;
++
++  InspectorUI.closeInspectorUI(true);
+   gBrowser.removeCurrentTab();
+   finish();
+ }
+ 
+ function test()
+ {
+   waitForExplicitFinish();
+ 
+@@ -91,12 +94,12 @@ function test()
+       true);
+     doc = content.document;
+     waitForFocus(startInspectorTests, content);
+   }, true);
+ 
+   content.location = "data:text/html,<!DOCTYPE html><html><head><style> " +
+     ".test, #test { color: green } div { color: blue } " +
+     "</style></head><body>" +
+-    "<div class='test'>cssInfo.rules order test for Inspector</div>" +
++    "<div class='test'>cssLogic order test for Inspector</div>" +
+     "</body></html>";
+ }
+ 
+diff --git a/browser/base/content/test/browser_inspector_stylePanel.js b/browser/base/content/test/browser_inspector_stylePanel.js
+--- a/browser/base/content/test/browser_inspector_stylePanel.js
++++ b/browser/base/content/test/browser_inspector_stylePanel.js
+@@ -103,25 +103,25 @@ function groupRuleCount(groupId)
+   ok(group.tree, "we have the CssHtmlTree object");
+ 
+   var cssLogic = group.tree.cssLogic;
+ 
+   ok(cssLogic, "we have the CssLogic object");
+   ok(group.properties.length > 0, "the StyleGroupView has properties");
+ 
+   group.properties.forEach(function (property) {
+-    groupRules += cssLogic.getCssInfo(property.name).ruleCount;
++    groupRules += cssLogic.getPropertyInfo(property.name).matchedRuleCount;
+   });
+ 
+   return groupRules;
+ }
+ 
+ function finishUp()
+ {
+-  InspectorUI.closeInspectorUI();
++  InspectorUI.closeInspectorUI(true);
+   gBrowser.removeCurrentTab();
+   finish();
+ }
+ 
+ function test()
+ {
+   waitForExplicitFinish();
+   gBrowser.selectedTab = gBrowser.addTab();
+diff --git a/browser/base/content/test/browser_inspector_stylepanel_groupview.js b/browser/base/content/test/browser_inspector_stylepanel_groupview.js
+--- a/browser/base/content/test/browser_inspector_stylepanel_groupview.js
++++ b/browser/base/content/test/browser_inspector_stylepanel_groupview.js
+@@ -114,17 +114,17 @@ function groupTitleClicked2(evt)
+   ok(properties, "the group view is open for the second time, we found a property");
+ 
+   // We are done!
+   finishUp();
+ }
+ 
+ function finishUp()
+ {
+-  InspectorUI.closeInspectorUI();
++  InspectorUI.closeInspectorUI(true);
+   gBrowser.removeCurrentTab();
+   finish();
+ }
+ 
+ function test()
+ {
+   waitForExplicitFinish();
+ 

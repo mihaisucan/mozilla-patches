@@ -1,0 +1,130 @@
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -49,16 +49,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_HUDServiceTestsAll.js \
+ 	browser_webconsole_bug_585237_line_limit.js \
+ 	browser_webconsole_bug_586388_select_all.js  \
+ 	browser_webconsole_bug_588967_input_expansion.js \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_581231_close_button.js \
++	browser_webconsole_bug_580618.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+ 	testscript.js \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580618.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580618.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580618.js
+@@ -0,0 +1,104 @@
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is DevTools test code.
++ *
++ * The Initial Developer of the Original Code is Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const Ci = Components.interfaces;
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/HUDService.jsm");
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
++
++let windowUtils = window.QueryInterface(Ci.nsIInterfaceRequestor).
++  getInterface(Ci.nsIDOMWindowUtils);
++
++let passes = 0;
++let maxpasses = 2;
++let hudId;
++
++function getBusy() {
++  let arr = [];
++  let str = "a";
++  let end = "";
++  for (let i = 0; i < 200; i++) {
++    str += "a";
++    for (let y = 0; y < 50; y++) {
++      arr.push(str);
++    }
++    end += arr.join("b");
++  }
++  arr = str = end = null;
++}
++
++function tabLoaded() {
++  gBrowser.selectedBrowser.removeEventListener("load", tabLoaded, true);
++
++  waitForFocus(function () {
++    if (passes == 0) {
++      HUDService.activateHUDForContext(gBrowser.selectedTab);
++      hudId = HUDService.getHudIdByWindow(content);
++      let HUD = HUDService.hudWeakReferences[hudId].get();
++      ok(HUD, "we have the HUD object from the weakref");
++      ok(HUD.jsterm, "we have the HUD.jsterm object from the weakref");
++      HUD = null;
++    }
++
++    getBusy();
++    windowUtils.garbageCollect();
++
++    if (passes < maxpasses) {
++      gBrowser.selectedBrowser.addEventListener("load", tabLoaded, true);
++      content.location.reload();
++    }
++    else {
++      let HUD = HUDService.hudWeakReferences[hudId].get();
++      ok(HUD, "we have the HUD object from the weakref");
++      ok(HUD.jsterm, "we have the HUD.jsterm object from the weakref");
++      windowUtils = HUD = null;
++
++      HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++      finish();
++    }
++    passes++;
++  });
++}
++
++function test() {
++  waitForExplicitFinish();
++
++  gBrowser.selectedBrowser.addEventListener("load", tabLoaded, true);
++
++  content.location = TEST_URI;
++}

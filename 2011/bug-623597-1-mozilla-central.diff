@@ -1,0 +1,103 @@
+diff --git a/toolkit/components/console/hudservice/NetworkPanel.xhtml b/toolkit/components/console/hudservice/NetworkPanel.xhtml
+--- a/toolkit/components/console/hudservice/NetworkPanel.xhtml
++++ b/toolkit/components/console/hudservice/NetworkPanel.xhtml
+@@ -47,16 +47,17 @@
+ 
+ 
+ <html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
+ <head>
+   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
+   <link rel="stylesheet" href="chrome://global/skin/webConsole_networkPanel.css" type="text/css"/>
+ </head>
+ <body role="application">
++<div class="table-wrapper">
+ <table id="header">
+   <tr>
+     <th class="property-name"
+         scope="row">&networkPanel.requestURL;:</th>
+     <td class="property-value"
+         id="headUrl"></td>
+   </tr>
+   <tr>
+@@ -67,45 +68,56 @@
+   </tr>
+   <tr>
+     <th class="property-name"
+         scope="row">&networkPanel.statusCode;:</th>
+     <td class="property-value"
+         id="headStatus"></td>
+   </tr>
+ </table>
++</div>
+ 
+ <div class="group">
+   <h1>
+     &networkPanel.requestHeaders;
+     <span id="requestHeadersInfo" class="info"></span>
+   </h1>
++  <div class="table-wrapper">
+   <table class="property-table" id="requestHeadersContent"></table>
++  </div>
+ 
+   <div id="requestCookie" style="display:none">
+     <h1>&networkPanel.requestCookie;</h1>
++    <div class="table-wrapper">
+     <table class="property-table" id="requestCookieContent"></table>
++    </div>
+   </div>
+ 
+   <div id="requestBody" style="display:none">
+     <h1>&networkPanel.requestBody;</h1>
++    <div class="table-wrapper">
+     <table class="property-table" id="requestBodyContent"></table>
++    </div>
+   </div>
+   <div id="requestFormData" style="display:none">
+     <h1>&networkPanel.requestFormData;</h1>
++    <div class="table-wrapper">
+     <table class="property-table" id="requestFormDataContent"></table>
++    </div>
+   </div>
+ </div>
+ 
+ <div class="group" id="responseContainer" style="display:none">
+   <h1>
+     &networkPanel.responseHeaders;
+     <span id="responseHeadersInfo" class="info">&Delta;</span>
+   </h1>
++  <div class="table-wrapper">
+   <table class="property-table" id="responseHeadersContent"></table>
++  </div>
+ 
+   <div id="responseBody" style="display:none">
+     <h1>
+       &networkPanel.responseBody;
+       <span class="info" id="responseBodyInfo">&Delta;</span>
+     </h1>
+     <table class="property-table" id="responseBodyContent"></table>
+   </div>
+diff --git a/toolkit/themes/gnomestripe/global/webConsole_networkPanel.css b/toolkit/themes/gnomestripe/global/webConsole_networkPanel.css
+--- a/toolkit/themes/gnomestripe/global/webConsole_networkPanel.css
++++ b/toolkit/themes/gnomestripe/global/webConsole_networkPanel.css
+@@ -90,16 +90,21 @@ h1 .info {
+ 
+ .property-value {
+   padding-right: 5px;
+   font-size: 11px;
+   word-wrap: break-word;
+   width: 90%;
+ }
+ 
++.table-wrapper {
++  width: 100%;
++  overflow-x: auto;
++}
++
+ div.group {
+   margin-top: 10px;
+ }
+ 
+ div.group,
+ #header {
+   background: #FFF;
+   border-color: #E1E1E1;

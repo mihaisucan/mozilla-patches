@@ -1,0 +1,741 @@
+diff --git a/browser/base/content/inspector.js b/browser/base/content/inspector.js
+--- a/browser/base/content/inspector.js
++++ b/browser/base/content/inspector.js
+@@ -396,32 +396,32 @@ InspectorTreeView.prototype = {
+   getCellText: function ITV_getCellText(aRow, aCol)
+   {
+     return this.view.getCellText(aRow, aCol);
+   },
+ 
+   /**
+    * Get the index of the selected row.
+    *
+-   * @returns number
++   * @returns number -1 if there is no row selected.
+    */
+   get selectionIndex()
+   {
+-    return this.selection.currentIndex;
++    return this.selection ? this.selection.currentIndex : -1;
+   },
+ 
+   /**
+    * Get the corresponding node for the currently-selected row in the tree.
+    *
+-   * @returns DOMNode
++   * @returns DOMNode|null
+    */
+   get selectedNode()
+   {
+     let rowIndex = this.selectionIndex;
+-    return this.view.getNodeFromRowIndex(rowIndex);
++    return rowIndex > -1 ? this.view.getNodeFromRowIndex(rowIndex) : null;
+   },
+ 
+   /**
+    * Set the selected row in the table to the specified index.
+    *
+    * @param anIndex
+    *        The index to set the selection to.
+    */
+@@ -530,17 +530,17 @@ var InspectorUI = {
+    * Toggle the inspector interface elements on or off.
+    *
+    * @param aEvent
+    *        The event that requested the UI change. Toolbar button or menu.
+    */
+   toggleInspectorUI: function IUI_toggleInspectorUI(aEvent)
+   {
+     if (this.isPanelOpen) {
+-      this.closeInspectorUI();
++      this.closeInspectorUI(true);
+     } else {
+       this.openInspectorUI();
+     }
+   },
+ 
+   /**
+    * Toggle the status of the inspector, starting or stopping it. Invoked
+    * from the toolbar's Inspect button.
+@@ -646,23 +646,25 @@ var InspectorUI = {
+ 
+   openDOMPanel: function IUI_openDOMPanel()
+   {
+     // # todo bug 561782
+   },
+ 
+   /**
+    * Open inspector UI. tree, style and DOM panels if enabled. Add listeners for
+-   * document scrolling, resize and tabContainer.TabSelect.
++   * document scrolling, resize, tabContainer.TabSelect and others.
+    */
+   openInspectorUI: function IUI_openInspectorUI()
+   {
+     // initialization
+     this.browser = gBrowser.selectedBrowser;
+     this.win = this.browser.contentWindow;
++    this.winID = this.getWindowID(this.win);
++
+     if (!this.style) {
+       Cu.import("resource:///modules/stylePanel.jsm", this);
+       this.style.initialize();
+     }
+ 
+     // open inspector UI
+     if (this._showTreePanel) {
+       this.openTreePanel();
+@@ -670,57 +672,98 @@ var InspectorUI = {
+     if (this._showStylePanel) {
+       this.styleBox = document.getElementById("inspector-style-listbox");
+       this.clearStylePanel();
+       this.openStylePanel();
+     }
+     if (this._showDOMPanel) {
+       this.openDOMPanel();
+     }
+-    this.inspectorBundle = Services.strings.createBundle("chrome://browser/locale/inspector.properties");
++
++    if (!this.inspectorBundle) {
++      this.inspectorBundle = Services.strings.
++        createBundle("chrome://browser/locale/inspector.properties");
++    }
++
+     this.initializeHighlighter();
+-    this.startInspecting();
++
++    if (!InspectorStore.hasID(this.winID) ||
++      InspectorStore.getValue(this.winID, "inspecting")) {
++      this.startInspecting();
++    }
++
+     this.win.document.addEventListener("scroll", this, false);
+     this.win.addEventListener("resize", this, false);
+-    gBrowser.tabContainer.addEventListener("TabSelect", this, false);
+     this.inspectCmd.setAttribute("checked", true);
++
++    if (!InspectorStore.length) {
++      gBrowser.tabContainer.addEventListener("TabSelect", this, false);
++    }
++
++    if (InspectorStore.hasID(this.winID)) {
++      let selectedNode = InspectorStore.getValue(this.winID, "selectedNode");
++      if (selectedNode) {
++        this.inspectNode(selectedNode);
++      }
++    } else {
++      InspectorStore.addStore(this.winID);
++      InspectorStore.setValue(this.winID, "selectedNode", null);
++      this.win.addEventListener("unload", this, false);
++    }
+   },
+ 
+   /**
+    * Initialize highlighter.
+    */
+   initializeHighlighter: function IUI_initializeHighlighter()
+   {
+     this.highlighter = new PanelHighlighter(this.browser, this.highlightColor,
+       this.highlightThickness, this.highlightOpacity);
+   },
+ 
+   /**
+    * Close inspector UI and associated panels. Unhighlight and stop inspecting.
+-   * Remove event listeners for document scrolling, resize and
+-   * tabContainer.TabSelect.
++   * Remove event listeners for document scrolling, resize,
++   * tabContainer.TabSelect and others.
++   *
++   * @param boolean aClearStore tells if you want the store associated to the
++   * current tab/window to be cleared or not.
+    */
+-  closeInspectorUI: function IUI_closeInspectorUI()
++  closeInspectorUI: function IUI_closeInspectorUI(aClearStore)
+   {
++    if (aClearStore) {
++      InspectorStore.deleteStore(this.winID);
++      this.win.removeEventListener("unload", this, false);
++    } else {
++      // Update the store before closing.
++      InspectorStore.setValue(this.winID, "selectedNode",
++        this.treeView.selectedNode);
++      InspectorStore.setValue(this.winID, "inspecting", this.inspecting);
++    }
++
++    if (!InspectorStore.length) {
++      gBrowser.tabContainer.removeEventListener("TabSelect", this, false);
++    }
++
+     this.win.document.removeEventListener("scroll", this, false);
+     this.win.removeEventListener("resize", this, false);
+-    gBrowser.tabContainer.removeEventListener("TabSelect", this, false);
+     this.stopInspecting();
+     if (this.highlighter && this.highlighter.isHighlighting) {
+       this.highlighter.unhighlight();
+     }
+     if (this.isPanelOpen) {
+       this.treePanel.hidePopup();
+       this.treeView.destroy();
+     }
+     if (this.isStylePanelOpen) {
+       this.stylePanel.hidePopup();
+     }
+     this.inspectCmd.setAttribute("checked", false);
+     this.browser = this.win = null; // null out references to browser and window
++    this.winID = null;
+   },
+ 
+   /**
+    * Begin inspecting webpage, attach page event listeners, activate
+    * highlighter event listeners.
+    */
+   startInspecting: function IUI_startInspecting()
+   {
+@@ -865,19 +908,51 @@ var InspectorUI = {
+   /**
+    * Main callback handler for events.
+    *
+    * @param event
+    *        The event to be handled.
+    */
+   handleEvent: function IUI_handleEvent(event)
+   {
++    let winID = null;
++    let win = null;
++
+     switch (event.type) {
+       case "TabSelect":
+-        this.closeInspectorUI();
++        winID = this.getWindowID(gBrowser.selectedBrowser.contentWindow);
++        if (this.isPanelOpen && winID != this.winID) {
++          this.closeInspectorUI(false);
++        }
++
++        if (winID && InspectorStore.hasID(winID)) {
++          this.openInspectorUI();
++        }
++
++        if (!InspectorStore.length) {
++          gBrowser.tabContainer.removeEventListener("TabSelect", this, false);
++        }
++        break;
++      case "unload":
++        win = event.originalTarget.defaultView;
++        // Skip iframes/frames.
++        if (!win || win.frameElement || win.top != win) {
++          break;
++        }
++
++        win.removeEventListener("unload", this, false);
++
++        winID = this.getWindowID(win);
++        if (winID && winID != this.winID) {
++          InspectorStore.deleteStore(winID);
++        }
++
++        if (!InspectorStore.length) {
++          gBrowser.tabContainer.removeEventListener("TabSelect", this, false);
++        }
+         break;
+       case "keypress":
+         switch (event.keyCode) {
+           case KeyEvent.DOM_VK_RETURN:
+           case KeyEvent.DOM_VK_ESCAPE:
+             this.stopInspecting();
+             break;
+         }
+@@ -945,16 +1020,20 @@ var InspectorUI = {
+    * inspect the given node, highlighting it on the page and selecting the
+    * correct row in the tree panel
+    *
+    * @param aNode
+    *        the element in the document to inspect
+    */
+   inspectNode: function IUI_inspectNode(aNode)
+   {
++    if (!aNode) {
++      return;
++    }
++
+     this.highlighter.highlightNode(aNode);
+     this.selectEventsSuppressed = true;
+     this.treeView.selectedNode = aNode;
+     this.selectEventsSuppressed = false;
+     this.updateStylePanel(aNode);
+   },
+ 
+   /**
+@@ -985,22 +1064,152 @@ var InspectorUI = {
+     }
+     return node;
+   },
+ 
+   ///////////////////////////////////////////////////////////////////////////
+   //// Utility functions
+ 
+   /**
++   * Retrieve the unique ID of a window object.
++   *
++   * @param nsIDOMWindow aWindow
++   * @returns integer ID
++   */
++  getWindowID: function IUI_getWindowID(aWindow)
++  {
++    if (!aWindow) {
++      return null;
++    }
++
++    let util = {};
++
++    try {
++      util = aWindow.QueryInterface(Ci.nsIInterfaceRequestor).
++        getInterface(Ci.nsIDOMWindowUtils);
++    } catch (ex) { }
++
++    return util.currentInnerWindowID;
++  },
++
++  /**
+    * debug logging facility
+    * @param msg
+    *        text message to send to the log
+    */
+   _log: function LOG(msg)
+   {
+     Services.console.logStringMessage(msg);
+   },
+ }
+ 
++/**
++ * The Inspector store is used for storing data specific to each tab window.
++ */
++var InspectorStore = {
++  store: {},
++  length: 0,
++
++  /**
++   * Add a new store.
++   *
++   * @param string aID The Store ID you want created.
++   * @returns boolean True if the store was added successfully, or false
++   * otherwise.
++   */
++  addStore: function IS_addStore(aID)
++  {
++    if (!(aID in this.store)) {
++      this.store[aID] = {};
++      this.length++;
++      return true;
++    } else {
++      return false;
++    }
++  },
++
++  /**
++   * Delete a store by ID.
++   *
++   * @param string aID The store ID you want deleted.
++   * @returns boolean True if the store was removed successfully, or false
++   * otherwise.
++   */
++  deleteStore: function IS_deleteStore(aID)
++  {
++    if (aID in this.store) {
++      delete this.store[aID];
++      this.length--;
++      return true;
++    } else {
++      return false;
++    }
++  },
++
++  /**
++   * Check store existence.
++   *
++   * @param string aID The store ID you want to check.
++   * @returns boolean True if the store ID is registered, or false otherwise.
++   */
++  hasID: function IS_hasID(aID)
++  {
++    return (aID in this.store);
++  },
++
++  /**
++   * Retrieve a value from a store for a given key.
++   *
++   * @param string aID The store ID you want to read the value from.
++   * @param string aKey The key name of the value you want.
++   * @returns mixed the value associated to your store and key.
++   */
++  getValue: function IS_getValue(aID, aKey)
++  {
++    if (aID in this.store) {
++      return this.store[aID][aKey];
++    } else {
++      return null;
++    }
++  },
++
++  /**
++   * Set a value for a given key and store.
++   *
++   * @param string aID The store ID where you want to store the value into.
++   * @param string aKey The key name for which you want to save the value.
++   * @param mixed aValue The value you want stored.
++   * @returns boolean True if the value was stored successfully, or false
++   * otherwise.
++   */
++  setValue: function IS_setValue(aID, aKey, aValue)
++  {
++    if (aID in this.store) {
++      this.store[aID][aKey] = aValue;
++      return true;
++    } else {
++      return false;
++    }
++  },
++
++  /**
++   * Delete a value for a given key and store.
++   *
++   * @param string aID The store ID where you want to store the value into.
++   * @param string aKey The key name for which you want to save the value.
++   * @returns boolean True if the value was removed successfully, or false
++   * otherwise.
++   */
++  deleteValue: function IS_deleteValue(aID, aKey)
++  {
++    if (aID in this.store && aKey in this.store[aID]) {
++      delete this.store[aID][aKey];
++      return true;
++    } else {
++      return false;
++    }
++  }
++};
++
+ XPCOMUtils.defineLazyGetter(InspectorUI, "inspectCmd", function () {
+   return document.getElementById("Tools:Inspect");
+ });
+ 
+diff --git a/browser/base/content/test/Makefile.in b/browser/base/content/test/Makefile.in
+--- a/browser/base/content/test/Makefile.in
++++ b/browser/base/content/test/Makefile.in
+@@ -148,16 +148,18 @@ _BROWSER_FILES = \
+                  browser_gestureSupport.js \
+                  browser_getshortcutoruri.js \
+                  browser_inspector_initialization.js \
+                  browser_inspector_treeSelection.js \
+                  browser_inspector_highlighter.js \
+                  browser_inspector_stylePanel.js \
+                  browser_inspector_iframeTest.js \
+                  browser_inspector_scrolling.js \
++                 browser_inspector_store.js \
++                 browser_inspector_tab_switch.js \
+                  browser_pageInfo.js \
+                  browser_page_style_menu.js \
+                  browser_pinnedTabs.js \
+                  browser_plainTextLinks.js \
+                  browser_pluginnotification.js \
+                  browser_popupUI.js \
+                  browser_relatedTabs.js \
+                  browser_sanitize-passwordDisabledHosts.js \
+diff --git a/browser/base/content/test/browser_inspector_store.js b/browser/base/content/test/browser_inspector_store.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_inspector_store.js
+@@ -0,0 +1,102 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Inspector Initializationa and Shutdown Tests.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++function test()
++{
++  ok(InspectorUI, "InspectorUI variable exists");
++  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++  is(InspectorStore.length, 0, "InspectorStore is empty");
++  is(typeof InspectorStore.store, "object",
++    "InspectorStore.store is an object");
++
++  ok(InspectorStore.addStore("foo"), "addStore('foo') returns true");
++
++  is(InspectorStore.length, 1, "InspectorStore.length = 1");
++  is(typeof InspectorStore.store.foo, "object", "store.foo is an object");
++
++  ok(InspectorStore.addStore("fooBar"), "addStore('fooBar') returns true");
++
++  is(InspectorStore.length, 2, "InspectorStore.length = 2");
++  is(typeof InspectorStore.store.fooBar, "object", "store.fooBar is an object");
++
++  ok(!InspectorStore.addStore("fooBar"), "addStore('fooBar') returns false");
++
++  ok(InspectorStore.deleteStore("fooBar"),
++    "deleteStore('fooBar') returns true");
++
++  is(InspectorStore.length, 1, "InspectorStore.length = 1");
++  ok(!InspectorStore.store.fooBar, "store.fooBar is deleted");
++
++  ok(!InspectorStore.deleteStore("fooBar"),
++    "deleteStore('fooBar') returns false");
++
++  ok(!InspectorStore.hasID("fooBar"), "hasID('fooBar') returns false");
++
++  ok(InspectorStore.hasID("foo"), "hasID('foo') returns true");
++
++  ok(InspectorStore.setValue("foo", "key1", "val1"), "setValue() returns true");
++
++  ok(!InspectorStore.setValue("fooBar", "key1", "val1"),
++    "setValue() returns false");
++
++  is(InspectorStore.getValue("foo", "key1"), "val1",
++    "getValue() returns the correct value");
++
++  is(InspectorStore.store.foo.key1, "val1", "store.foo.key1 = 'val1'");
++
++  ok(!InspectorStore.getValue("fooBar", "key1"),
++    "getValue() returns null for unknown store");
++
++  ok(!InspectorStore.getValue("fooBar", "key1"),
++    "getValue() returns null for unknown store");
++
++  ok(InspectorStore.deleteValue("foo", "key1"),
++    "deleteValue() returns true for known value");
++
++  ok(!InspectorStore.store.foo.key1, "deleteValue() removed the value.");
++
++  ok(!InspectorStore.deleteValue("fooBar", "key1"),
++    "deleteValue() returns false for unknown store.");
++
++  ok(!InspectorStore.deleteValue("foo", "key1"),
++    "deleteValue() returns false for unknown value.");
++
++  ok(InspectorStore.deleteStore("foo"), "deleteStore('foo') returns true");
++}
++
+diff --git a/browser/base/content/test/browser_inspector_tab_switch.js b/browser/base/content/test/browser_inspector_tab_switch.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_inspector_tab_switch.js
+@@ -0,0 +1,188 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Inspector Initializationa and Shutdown Tests.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Rob Campbell <rcampbell@mozilla.com>
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++let div;
++let tab1;
++let tab2;
++let tab1window;
++
++function inspectorTabOpen1()
++{
++  ok(InspectorUI, "InspectorUI variable exists");
++  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++  is(InspectorStore.length, 0, "InspectorStore is empty");
++
++  document.addEventListener("popupshown", inspectorUIOpen1, false);
++  InspectorUI.toggleInspectorUI();
++}
++
++function inspectorUIOpen1(evt)
++{
++  if (evt.target.id != "inspector-style-panel")
++    return true;
++  document.removeEventListener(evt.type, arguments.callee, false);
++
++  // make sure the inspector is open
++  ok(InspectorUI.inspecting, "Inspector is highlighting");
++  ok(InspectorUI.isPanelOpen, "Inspector Tree Panel is open");
++  ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
++  is(InspectorStore.length, 1, "InspectorStore.length = 1");
++
++  // highlight a node
++  div = content.document.getElementsByTagName("div")[0];
++  InspectorUI.inspectNode(div);
++  is(InspectorUI.treeView.selectedNode, div,
++    "selection matches the div element");
++
++  // open the second tab
++  tab2 = gBrowser.addTab();
++  gBrowser.selectedTab = tab2;
++  gBrowser.selectedBrowser.addEventListener("load", function(evt) {
++    gBrowser.selectedBrowser.removeEventListener(evt.type, arguments.callee,
++      true);
++    waitForFocus(inspectorTabOpen2, content);
++  }, true);
++
++  content.location = "data:text/html,tab 2: the inspector should close now";
++}
++
++function inspectorTabOpen2()
++{
++  // make sure the inspector is closed
++  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++  ok(!InspectorUI.isPanelOpen, "Inspector Tree Panel is closed");
++  ok(!InspectorUI.isStylePanelOpen, "Inspector Style Panel is closed");
++  is(InspectorStore.length, 1, "InspectorStore.length = 1");
++
++  // activate the inspector again
++  document.addEventListener("popupshown", inspectorUIOpen2, false);
++  InspectorUI.toggleInspectorUI();
++}
++
++function inspectorUIOpen2(evt)
++{
++  if (evt.target.id != "inspector-style-panel")
++    return true;
++  document.removeEventListener(evt.type, arguments.callee, false);
++
++  // make sure the inspector is open
++  ok(InspectorUI.inspecting, "Inspector is highlighting");
++  ok(InspectorUI.isPanelOpen, "Inspector Tree Panel is open");
++  ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
++  is(InspectorStore.length, 2, "InspectorStore.length = 2");
++
++  // disable highlighting
++  InspectorUI.toggleInspection();
++  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++
++  // switch back to tab 1
++  document.addEventListener("popupshown", inspectorFocusTab1, false);
++  gBrowser.selectedTab = tab1;
++}
++
++function inspectorFocusTab1(evt)
++{
++  if (evt.target.id != "inspector-style-panel")
++    return true;
++  document.removeEventListener(evt.type, arguments.callee, false);
++
++  // make sure the inspector is still open
++  ok(InspectorUI.inspecting, "Inspector is highlighting");
++  ok(InspectorUI.isPanelOpen, "Inspector Tree Panel is open");
++  ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
++  is(InspectorStore.length, 2, "InspectorStore.length = 2");
++  is(InspectorUI.treeView.selectedNode, div,
++    "selection matches the div element");
++
++  // switch back to tab 2
++  document.addEventListener("popupshown", inspectorFocusTab2, false);
++  gBrowser.selectedTab = tab2;
++}
++
++function inspectorFocusTab2(evt)
++{
++  if (evt.target.id != "inspector-style-panel")
++    return true;
++  document.removeEventListener(evt.type, arguments.callee, false);
++
++  // make sure the inspector is still open
++  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++  ok(InspectorUI.isPanelOpen, "Inspector Tree Panel is open");
++  ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
++  is(InspectorStore.length, 2, "InspectorStore.length = 2");
++  isnot(InspectorUI.treeView.selectedNode, div,
++    "selection does not match the div element");
++
++  // remove tab 1
++  tab1window = gBrowser.getBrowserForTab(tab1).contentWindow;
++  tab1window.addEventListener("unload", inspectorTabUnload1, false);
++  gBrowser.removeTab(tab1);
++}
++
++function inspectorTabUnload1(evt)
++{
++  tab1window.removeEventListener(evt.type, arguments.callee, false);
++  tab1window = tab1 = tab2 = div = null;
++
++  // make sure the inspector is still open and that the state is correct
++  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++  ok(InspectorUI.isPanelOpen, "Inspector Tree Panel is open");
++  ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
++  is(InspectorStore.length, 1, "InspectorStore.length = 1");
++
++  gBrowser.removeCurrentTab();
++  finish();
++}
++
++function test()
++{
++  waitForExplicitFinish();
++
++  tab1 = gBrowser.addTab();
++  gBrowser.selectedTab = tab1;
++  gBrowser.selectedBrowser.addEventListener("load", function(evt) {
++    gBrowser.selectedBrowser.removeEventListener(evt.type, arguments.callee,
++      true);
++    waitForFocus(inspectorTabOpen1, content);
++  }, true);
++
++  content.location = "data:text/html,<p>tab switching tests for inspector</p><div>tab 1</div>";
++}
++

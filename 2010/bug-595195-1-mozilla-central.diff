@@ -1,0 +1,145 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -3865,17 +3865,22 @@ JSTerm.prototype = {
+     }
+ 
+     this.writeOutput(aExecuteString, true);
+ 
+     try {
+       var result = this.evalInSandbox(aExecuteString);
+ 
+       if (result || result === false) {
+-        this.writeOutputJS(aExecuteString, result);
++        if (typeof result == "string") {
++          this.writeOutput(result, false);
++        }
++        else {
++          this.writeOutputJS(aExecuteString, result);
++        }
+       }
+       else if (result === undefined) {
+         this.writeOutput("undefined", false);
+       }
+       else if (result === null) {
+         this.writeOutput("null", false);
+       }
+     }
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -49,16 +49,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_HUDServiceTestsAll.js \
+ 	browser_webconsole_bug_585237_line_limit.js \
+ 	browser_webconsole_bug_586388_select_all.js  \
+ 	browser_webconsole_bug_588967_input_expansion.js \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_581231_close_button.js \
++	browser_webconsole_bug_595195_string_output.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+ 	testscript.js \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595195_string_output.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595195_string_output.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595195_string_output.js
+@@ -0,0 +1,92 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/HUDService.jsm");
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
++
++let panelShown = false;
++
++function tabLoad(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  waitForFocus(function () {
++    HUDService.activateHUDForContext(gBrowser.selectedTab);
++
++    let hudId = HUDService.getHudIdByWindow(content);
++    let HUD = HUDService.hudWeakReferences[hudId].get();
++
++    let display = HUDService.getOutputNodeById(hudId);
++    let outputNode = display.querySelector(".hud-output-node");
++
++    HUD.jsterm.setInputValue("'hello from the string world!'");
++    HUD.jsterm.execute();
++
++    let outputItem = outputNode.querySelector(".jsterm-output-line:last-child");
++    ok(outputItem, "found the jsterm output line");
++
++    outputItem.addEventListener("click", function(aEvent) {
++      this.removeEventListener(aEvent.type, arguments.callee, false);
++
++      HUD.jsterm.setInputValue("window.location.href");
++      HUD.jsterm.execute();
++
++      outputItem = outputNode.querySelector(".jsterm-output-line:last-child");
++      ok(outputItem, "found the jsterm output line, again");
++
++      outputItem.addEventListener("click", function(aEvent) {
++        this.removeEventListener(aEvent.type, arguments.callee, false);
++        executeSoon(testEnd);
++      }, false);
++
++      EventUtils.sendMouseEvent({type: "mousedown"}, outputItem);
++      EventUtils.sendMouseEvent({type: "mouseup"}, outputItem);
++      EventUtils.sendMouseEvent({type: "click"}, outputItem);
++    }, false);
++
++    document.addEventListener("popupshown", propertyPanelShowFailure, false);
++
++    // Send the mousedown, mouseup and click events to check if the property
++    // panel opens.
++    EventUtils.sendMouseEvent({type: "mousedown"}, outputItem);
++    EventUtils.sendMouseEvent({type: "mouseup"}, outputItem);
++    EventUtils.sendMouseEvent({type: "click"}, outputItem);
++  }, content);
++}
++
++function propertyPanelShowFailure(aEvent) {
++  panelShown = true;
++  document.removeEventListener(aEvent.type, arguments.callee, false);
++
++  ok(false, "the property panel should not show");
++
++  aEvent.target.hidePopup();
++}
++
++function testEnd() {
++  if (!panelShown) {
++    document.removeEventListener("popupshown", propertyPanelShowFailure, false);
++    ok(true, "the property panel did not show for string output");
++  }
++
++  HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++  finish();
++}
++
++function test() {
++  waitForExplicitFinish();
++
++  gBrowser.selectedBrowser.addEventListener("load", tabLoad, true);
++
++  content.location = TEST_URI;
++}
++

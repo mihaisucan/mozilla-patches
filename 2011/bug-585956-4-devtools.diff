@@ -1,0 +1,579 @@
+# HG changeset patch
+# Date 1302544095 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Parent dd3859ec2227b3bce134c5bfcb657295608e5ee3
+Bug 585956 - Implement console.trace() in web console
+
+diff --git a/dom/base/ConsoleAPI.js b/dom/base/ConsoleAPI.js
+--- a/dom/base/ConsoleAPI.js
++++ b/dom/base/ConsoleAPI.js
+@@ -16,16 +16,17 @@
+  * The Initial Developer of the Original Code is Mozilla Foundation
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *  David Dahl <ddahl@mozilla.com>  (Original Author)
+  *  Ryan Flint <rflint@mozilla.com>
+  *  Rob Campbell <rcampbell@mozilla.com>
++ *  Mihai Sucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -74,37 +75,42 @@ ConsoleAPI.prototype = {
+         self.notifyObservers(id, "warn", arguments);
+       },
+       error: function CA_error() {
+         self.notifyObservers(id, "error", arguments);
+       },
+       debug: function CA_debug() {
+         self.notifyObservers(id, "log", arguments);
+       },
++      trace: function CA_trace() {
++        self.notifyObservers(id, "trace", self.getStackTrace());
++      },
+       __exposedProps__: {
+         log: "r",
+         info: "r",
+         warn: "r",
+         error: "r",
+         debug: "r",
++        trace: "r",
+       }
+     };
+ 
+     // We need to return an actual content object here, instead of a wrapped
+     // chrome object. This allows things like console.log.bind() to work.
+     let sandbox = Cu.Sandbox(aWindow);
+     let contentObject = Cu.evalInSandbox(
+         "(function(x) {\
+           var bind = Function.bind;\
+           var obj = {\
+             log: bind.call(x.log, x),\
+             info: bind.call(x.info, x),\
+             warn: bind.call(x.warn, x),\
+             error: bind.call(x.error, x),\
+             debug: bind.call(x.debug, x),\
++            trace: bind.call(x.trace, x),\
+             __noSuchMethod__: function() {}\
+           };\
+           Object.defineProperty(obj, '__mozillaConsole__', { value: true });\
+           return obj;\
+         })", sandbox)(chromeObject);
+ 
+       return contentObject;
+   },
+@@ -121,12 +127,37 @@ ConsoleAPI.prototype = {
+       level: aLevel,
+       arguments: aArguments
+     };
+ 
+     consoleEvent.wrappedJSObject = consoleEvent;
+ 
+     Services.obs.notifyObservers(consoleEvent,
+                                  "console-api-log-event", aID);
+-  }
++  },
++
++  /**
++   * Build the stacktrace array for the console.trace() call.
++   *
++   * @return array
++   *         Each element is a stack frame that holds the following properties:
++   *         filename, lineNumber, functionName and language.
++   **/
++  getStackTrace: function CA_getStackTrace() {
++    let stack = [];
++    let frame = Components.stack.caller;
++    while (frame = frame.caller) {
++      if (frame.language == Ci.nsIProgrammingLanguage.JAVASCRIPT ||
++          frame.language == Ci.nsIProgrammingLanguage.JAVASCRIPT2) {
++        stack.push({
++          filename: frame.filename,
++          lineNumber: frame.lineNumber,
++          functionName: frame.name,
++          language: frame.language,
++        });
++      }
++    }
++
++    return stack;
++  },
+ };
+ 
+ let NSGetFactory = XPCOMUtils.generateNSGetFactory([ConsoleAPI]);
+diff --git a/dom/tests/browser/browser_ConsoleAPITests.js b/dom/tests/browser/browser_ConsoleAPITests.js
+--- a/dom/tests/browser/browser_ConsoleAPITests.js
++++ b/dom/tests/browser/browser_ConsoleAPITests.js
+@@ -16,16 +16,17 @@
+  *
+  * The Initial Developer of the Original Code is Mozilla Foundation.
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *  David Dahl <ddahl@mozilla.com>
+  *  Rob Campbell <rcampbell@mozilla.com>
++ *  Mihai Sucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -68,25 +69,49 @@ var gWindow;
+ 
+ function testConsoleData(aMessageObject) {
+   let messageWindow = getWindowByWindowId(aMessageObject.ID);
+   is(messageWindow, gWindow, "found correct window by window ID");
+ 
+   is(aMessageObject.level, gLevel, "expected level received");
+   ok(aMessageObject.arguments, "we have arguments");
+   is(aMessageObject.arguments.length, gArgs.length, "arguments.length matches");
+-  gArgs.forEach(function (a, i) {
+-    is(aMessageObject.arguments[i], a, "correct arg " + i);
+-  });
+ 
+-  if (aMessageObject.level == "error") {
++  if (gLevel == "trace") {
++    is(aMessageObject.arguments.toSource(), gArgs.toSource(),
++       "stack trace is correct");
++
+     // Test finished
+     ConsoleObserver.destroy();
+     finish();
+   }
++  else {
++    gArgs.forEach(function (a, i) {
++      is(aMessageObject.arguments[i], a, "correct arg " + i);
++    });
++  }
++
++  if (aMessageObject.level == "error") {
++    // Now test console.trace()
++    startTraceTest();
++  }
++}
++
++function startTraceTest() {
++  gLevel = "trace";
++  gArgs = [
++    {filename: TEST_URI, lineNumber: 6, functionName: null, language: 2},
++    {filename: TEST_URI, lineNumber: 11, functionName: "foobar585956b", language: 2},
++    {filename: TEST_URI, lineNumber: 15, functionName: "foobar585956a", language: 2},
++    {filename: TEST_URI, lineNumber: 1, functionName: "onclick", language: 2}
++  ];
++
++  let button = gWindow.document.getElementById("test-trace");
++  ok(button, "found #test-trace button");
++  EventUtils.synthesizeMouse(button, 2, 2, {}, gWindow);
+ }
+ 
+ var gLevel, gArgs;
+ function expect(level) {
+   gLevel = level;
+   gArgs = Array.slice(arguments, 1);
+ }
+ 
+@@ -109,16 +134,17 @@ function consoleAPISanityTest() {
+   let win = XPCNativeWrapper.unwrap(gWindow);
+   ok(win.console, "we have a console attached");
+   ok(win.console, "we have a console attached, 2nd attempt");
+ 
+   ok(win.console.log, "console.log is here");
+   ok(win.console.info, "console.info is here");
+   ok(win.console.warn, "console.warn is here");
+   ok(win.console.error, "console.error is here");
++  ok(win.console.trace, "console.trace is here");
+ }
+ 
+ var ConsoleObserver = {
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
+ 
+   init: function CO_init() {
+     Services.obs.addObserver(this, "console-api-log-event", false);
+   },
+diff --git a/dom/tests/browser/test-console-api.html b/dom/tests/browser/test-console-api.html
+--- a/dom/tests/browser/test-console-api.html
++++ b/dom/tests/browser/test-console-api.html
+@@ -1,19 +1,33 @@
+ <!DOCTYPE HTML>
+ <html dir="ltr" xml:lang="en-US" lang="en-US"><head>
+     <title>Console API test page</title>
+     <script type="text/javascript">
++      window.foobar585956c = function(a) {
++        console.trace();
++        return a+"c";
++      };
++
++      function foobar585956b(a) {
++        return foobar585956c(a+"b");
++      }
++
++      function foobar585956a(omg) {
++        return foobar585956b(omg + "a");
++      }
++
+       function test() {
+         var str = "Test Message."
+         console.foobar(str); // if this throws, we don't execute following funcs
+         console.log(str);
+         console.info(str);
+         console.warn(str);
+         console.error(str);
+       }
+     </script>
+   </head>
+   <body>
+     <h1>Console API Test Page</h1>
+     <button onclick="test();">Log stuff</button>
++    <button id="test-trace" onclick="foobar585956a('omg');">Test trace</button>
+   </body>
+ </html>
+diff --git a/dom/tests/mochitest/general/test_consoleAPI.html b/dom/tests/mochitest/general/test_consoleAPI.html
+--- a/dom/tests/mochitest/general/test_consoleAPI.html
++++ b/dom/tests/mochitest/general/test_consoleAPI.html
+@@ -21,16 +21,17 @@ function doTest() {
+   }
+ 
+   var expectedProps = {
+     "log": "function",
+     "info": "function",
+     "warn": "function",
+     "error": "function",
+     "debug": "function",
++    "trace": "function",
+     "__noSuchMethod__": "function"
+   };
+ 
+   var foundProps = 0;
+   for (var prop in console) {
+     foundProps++;
+     is(typeof(console[prop]), expectedProps[prop], "expect console prop " + prop + " exists");
+   }
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -140,16 +140,17 @@ const SEVERITY_LOG = 3;
+ 
+ // A mapping from the console API log event levels to the Web Console
+ // severities.
+ const LEVELS = {
+   error: SEVERITY_ERROR,
+   warn: SEVERITY_WARNING,
+   info: SEVERITY_INFO,
+   log: SEVERITY_LOG,
++  trace: SEVERITY_LOG,
+ };
+ 
+ // The lowest HTTP response code (inclusive) that is considered an error.
+ const MIN_HTTP_ERROR_CODE = 400;
+ // The highest HTTP response code (exclusive) that is considered an error.
+ const MAX_HTTP_ERROR_CODE = 600;
+ 
+ // HTTP status codes.
+@@ -1976,22 +1977,99 @@ HUD_SERVICE.prototype =
+                                                          aLevel,
+                                                          aArguments)
+   {
+     // Pipe the message to createMessageNode().
+     let hud = HUDService.hudReferences[aHUDId];
+     function formatResult(x) {
+       return (typeof(x) == "string") ? x : hud.jsterm.formatResult(x);
+     }
+-    let mappedArguments = Array.map(aArguments, formatResult);
+-    let joinedArguments = Array.join(mappedArguments, " ");
++
++    let body = null;
++    let clipboardText = null;
++    let sourceURL = null;
++    let sourceLine = 0;
++
++    switch (aLevel) {
++      case "log":
++      case "info":
++      case "warn":
++      case "error":
++      case "debug":
++        let mappedArguments = Array.map(aArguments, formatResult);
++        body = Array.join(mappedArguments, " ");
++        break;
++
++      case "trace":
++        let filename = ConsoleUtils.abbreviateSourceURL(aArguments[0].filename);
++        let functionName = aArguments[0].functionName ||
++                           this.getStr("stacktrace.anonymousFunction");
++        let lineNumber = aArguments[0].lineNumber;
++
++        body = this.getFormatStr("stacktrace.outputMessage",
++                                 [filename, functionName, lineNumber]);
++
++        sourceURL = aArguments[0].filename;
++        sourceLine = aArguments[0].lineNumber;
++
++        clipboardText = "";
++
++        aArguments.forEach(function(aFrame) {
++          clipboardText += aFrame.filename + " :: " +
++                           aFrame.functionName + " :: " +
++                           aFrame.lineNumber + "\n";
++        });
++
++        clipboardText = clipboardText.trimRight();
++        break;
++
++      default:
++        Cu.reportError("Unknown Console API log level: " + aLevel);
++        return;
++    }
++
+     let node = ConsoleUtils.createMessageNode(hud.outputNode.ownerDocument,
+                                               CATEGORY_WEBDEV,
+                                               LEVELS[aLevel],
+-                                              joinedArguments);
++                                              body,
++                                              sourceURL,
++                                              sourceLine,
++                                              clipboardText);
++
++    // Make the node bring up the property panel, to allow the user to inspect
++    // the stack trace.
++    if (aLevel == "trace") {
++      node._stacktrace = aArguments;
++
++      let linkNode = node.querySelector(".webconsole-msg-body");
++      linkNode.classList.add("hud-clickable");
++      linkNode.setAttribute("aria-haspopup", "true");
++
++      node.addEventListener("mousedown", function(aEvent) {
++        this._startX = aEvent.clientX;
++        this._startY = aEvent.clientY;
++      }, false);
++
++      node.addEventListener("click", function(aEvent) {
++        if (aEvent.detail != 1 || aEvent.button != 0 ||
++            (this._startX != aEvent.clientX &&
++             this._startY != aEvent.clientY)) {
++          return;
++        }
++
++        if (!this._panelOpen) {
++          let propPanel = hud.jsterm.openPropertyPanel(null,
++                                                       node._stacktrace,
++                                                       this);
++          propPanel.panel.setAttribute("hudId", aHUDId);
++          this._panelOpen = true;
++        }
++      }, false);
++    }
++
+     ConsoleUtils.outputMessageNode(node, aHUDId);
+   },
+ 
+   /**
+    * Get OutputNode by Id
+    *
+    * @param string aId
+    * @returns nsIDOMNode (richlistbox)
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -126,16 +126,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_621644_jsterm_dollar.js \
+ 	browser_webconsole_bug_632817.js \
+ 	browser_webconsole_bug_611795.js \
+ 	browser_webconsole_bug_618311_close_panels.js \
+ 	browser_webconsole_bug_618311_private_browsing.js \
+ 	browser_webconsole_bug_632347_iterators_generators.js \
+ 	browser_webconsole_bug_642108_refForOutputNode.js \
+ 	browser_webconsole_bug_642108_pruneTest.js \
++	browser_webconsole_bug_585956_console_trace.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+@@ -194,15 +195,16 @@ _BROWSER_TEST_PAGES = \
+ 	test-console-extras.html \
+ 	test-bug-603750-websocket.html \
+ 	test-bug-603750-websocket.js \
+ 	test-bug-599725-response-headers.sjs \
+ 	test-bug-618078-network-exceptions.html \
+ 	test-bug-630733-response-redirect-headers.sjs \
+ 	test-bug-621644-jsterm-dollar.html \
+ 	test-bug-632347-iterators-generators.html \
++	test-bug-585956-console-trace.html \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_585956_console_trace.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_585956_console_trace.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_585956_console_trace.js
+@@ -0,0 +1,76 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Web Console test suite.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Mihai Sucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-585956-console-trace.html";
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoaded, true);
++}
++
++function tabLoaded() {
++  browser.removeEventListener("load", tabLoaded, true);
++
++  openConsole();
++
++  browser.addEventListener("load", tabReloaded, true);
++  content.location.reload();
++}
++
++function tabReloaded() {
++  browser.removeEventListener("load", tabReloaded, true);
++
++  // The expected stack trace object.
++  let stacktrace = [
++    { filename: TEST_URI, lineNumber: 9, functionName: null, language: 2 },
++    { filename: TEST_URI, lineNumber: 14, functionName: "foobar585956b", language: 2 },
++    { filename: TEST_URI, lineNumber: 18, functionName: "foobar585956a", language: 2 },
++    { filename: TEST_URI, lineNumber: 21, functionName: null, language: 2 }
++  ];
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let HUD = HUDService.hudReferences[hudId];
++
++  let node = HUD.outputNode.querySelector(".hud-log");
++  ok(node, "found trace log node");
++  ok(node._stacktrace, "found stacktrace object");
++  is(node._stacktrace.toSource(), stacktrace.toSource(), "stacktrace is correct");
++  isnot(node.textContent.indexOf("bug-585956"), -1, "found file name");
++
++  finishTest();
++}
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-585956-console-trace.html b/toolkit/components/console/hudservice/tests/browser/test-bug-585956-console-trace.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-585956-console-trace.html
+@@ -0,0 +1,27 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 585956 - console.trace()</title>
++    <!-- Any copyright is dedicated to the Public Domain.
++         http://creativecommons.org/publicdomain/zero/1.0/ -->
++<script type="application/javascript">
++window.foobar585956c = function(a) {
++  console.trace();
++  return a+"c";
++};
++
++function foobar585956b(a) {
++  return foobar585956c(a+"b");
++}
++
++function foobar585956a(omg) {
++  return foobar585956b(omg + "a");
++}
++
++foobar585956a("omg");
++</script>
++  </head>
++  <body>
++    <p>Web Console test for bug 585956 - console.trace().</p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-console-extras.html b/toolkit/components/console/hudservice/tests/browser/test-console-extras.html
+--- a/toolkit/components/console/hudservice/tests/browser/test-console-extras.html
++++ b/toolkit/components/console/hudservice/tests/browser/test-console-extras.html
+@@ -6,17 +6,16 @@
+         console.log("start");
+         console.time();
+         console.timeEnd()
+         console.exception()
+         console.assert()
+         console.clear()
+         console.dir()
+         console.dirxml()
+-        console.trace()
+         console.group()
+         console.groupCollapsed()
+         console.groupEnd()
+         console.profile()
+         console.profileEnd()
+         console.count()
+         console.table()
+         console.log("end");
+diff --git a/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties b/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties
+--- a/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties
++++ b/toolkit/locales/en-US/chrome/global/headsUpDisplay.properties
+@@ -109,8 +109,19 @@ NetworkPanel.imageSizeDeltaDurationMS=%S
+ # NetworkPanel. E.g. any kind of text is easy to display, but some audio or
+ # flash data received from the server can't be displayed.
+ #
+ # The %S is replaced by the content type, that can't be displayed, examples are
+ #  o application/x-shockwave-flash
+ #  o music/crescendo
+ NetworkPanel.responseBodyUnableToDisplay.content=Unable to display responses of type "%S"
+ ConsoleAPIDisabled=The Web Console logging API (console.log, console.info, console.warn, console.error) has been disabled by a script on this page.
++
++# LOCALIZATION NOTE (stacktrace.anonymousFunction):
++# This string is used to display JavaScript functions that have no given name -
++# they are said to be anonymous. See stacktrace.outputMessage.
++stacktrace.anonymousFunction=<anonymous>
++
++# LOCALIZATION NOTE (stacktrace.outputMessage):
++# This string is used in the Web Console output to identify a web developer call
++# to console.trace(). The stack trace of JavaScript function calls is displayed.
++# In this minimal message we only show the last call.
++stacktrace.outputMessage=Stack trace from %S, function %S, line %S.

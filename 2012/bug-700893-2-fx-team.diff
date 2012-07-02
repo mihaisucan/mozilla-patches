@@ -1,0 +1,999 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1328736033 -7200
+# Node ID 0a8e8b941b5641215a47be65b9159fbef294b1eb
+# Parent  cd40a7eee75f5d5078cf17ea9c1b28728952c1a0
+Bug 700893 - API for tracking unsaved/saved state in source editor
+
+diff --git a/browser/devtools/scratchpad/scratchpad.js b/browser/devtools/scratchpad/scratchpad.js
+--- a/browser/devtools/scratchpad/scratchpad.js
++++ b/browser/devtools/scratchpad/scratchpad.js
+@@ -70,16 +70,18 @@ const DEVTOOLS_CHROME_ENABLED = "devtool
+ const BUTTON_POSITION_SAVE = 0;
+ const BUTTON_POSITION_CANCEL = 1;
+ const BUTTON_POSITION_DONT_SAVE = 2;
+ 
+ /**
+  * The scratchpad object handles the Scratchpad window functionality.
+  */
+ var Scratchpad = {
++  _initialWindowTitle: document.title,
++
+   /**
+    * The script execution context. This tells Scratchpad in which context the
+    * script shall execute.
+    *
+    * Possible values:
+    *   - SCRATCHPAD_CONTEXT_CONTENT to execute code in the context of the current
+    *   tab content window object.
+    *   - SCRATCHPAD_CONTEXT_BROWSER to execute code in the context of the
+@@ -146,50 +148,67 @@ var Scratchpad = {
+   /**
+    * Set the filename in the scratchpad UI and object
+    *
+    * @param string aFilename
+    *        The new filename
+    */
+   setFilename: function SP_setFilename(aFilename)
+   {
+-    document.title = this.filename = aFilename;
++    this.filename = aFilename;
++    this._updateTitle();
++  },
++
++  /**
++   * Update the Scratchpad window title based on the current state.
++   * @private
++   */
++  _updateTitle: function SP__updateTitle()
++  {
++    if (this.filename) {
++      document.title = (this.editor && this.editor.dirty ? "*" : "") +
++                       this.filename;
++    } else {
++      document.title = this._initialWindowTitle;
++    }
+   },
+ 
+   /**
+    * Get the current state of the scratchpad. Called by the
+    * Scratchpad Manager for session storing.
+    *
+    * @return object
+    *        An object with 3 properties: filename, text, and
+    *        executionContext.
+    */
+   getState: function SP_getState()
+   {
+     return {
+       filename: this.filename,
+       text: this.getText(),
+       executionContext: this.executionContext,
+-      saved: this.saved
++      saved: !this.editor.dirty,
+     };
+   },
+ 
+   /**
+    * Set the filename and execution context using the given state. Called
+    * when scratchpad is being restored from a previous session.
+    *
+    * @param object aState
+    *        An object with filename and executionContext properties.
+    */
+   setState: function SP_getState(aState)
+   {
+     if (aState.filename) {
+       this.setFilename(aState.filename);
+     }
+-    this.saved = aState.saved;
++    if (this.editor) {
++      this.editor.dirty = !aState.saved;
++    }
+ 
+     if (aState.executionContext == SCRATCHPAD_CONTEXT_BROWSER) {
+       this.setBrowserContext();
+     }
+     else {
+       this.setContentContext();
+     }
+   },
+@@ -632,17 +651,17 @@ var Scratchpad = {
+   openFile: function SP_openFile()
+   {
+     let fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
+     fp.init(window, this.strings.GetStringFromName("openFile.title"),
+             Ci.nsIFilePicker.modeOpen);
+     fp.defaultString = "";
+     if (fp.show() != Ci.nsIFilePicker.returnCancel) {
+       this.setFilename(fp.file.path);
+-      this.importFromFile(fp.file, false, this.onTextSaved.bind(this));
++      this.importFromFile(fp.file, false);
+     }
+   },
+ 
+   /**
+    * Save the textbox content to the currently open file.
+    *
+    * @param function aCallback
+    *        Optional function you want to call when file is saved
+@@ -652,17 +671,19 @@ var Scratchpad = {
+     if (!this.filename) {
+       return this.saveFileAs(aCallback);
+     }
+ 
+     let file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsILocalFile);
+     file.initWithPath(this.filename);
+ 
+     this.exportToFile(file, true, false, function(aStatus) {
+-      this.onTextSaved();
++      if (Components.isSuccessCode(aStatus)) {
++        this.editor.dirty = false;
++      }
+       if (aCallback) {
+         aCallback(aStatus);
+       }
+     });
+   },
+ 
+   /**
+    * Save the textbox content to a new file.
+@@ -675,17 +696,19 @@ var Scratchpad = {
+     let fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
+     fp.init(window, this.strings.GetStringFromName("saveFileAs"),
+             Ci.nsIFilePicker.modeSave);
+     fp.defaultString = "scratchpad.js";
+     if (fp.show() != Ci.nsIFilePicker.returnCancel) {
+       this.setFilename(fp.file.path);
+ 
+       this.exportToFile(fp.file, true, false, function(aStatus) {
+-        this.onTextSaved();
++        if (Components.isSuccessCode(aStatus)) {
++          this.editor.dirty = false;
++        }
+         if (aCallback) {
+           aCallback(aStatus);
+         }
+       });
+     }
+   },
+ 
+   /**
+@@ -777,67 +800,70 @@ var Scratchpad = {
+    *
+    * @param nsIDOMEvent aEvent
+    */
+   onLoad: function SP_onLoad(aEvent)
+   {
+     if (aEvent.target != document) {
+       return;
+     }
+-
+     let chrome = Services.prefs.getBoolPref(DEVTOOLS_CHROME_ENABLED);
+     if (chrome) {
+       let environmentMenu = document.getElementById("sp-environment-menu");
+       let errorConsoleCommand = document.getElementById("sp-cmd-errorConsole");
+       let chromeContextCommand = document.getElementById("sp-cmd-browserContext");
+       environmentMenu.removeAttribute("hidden");
+       chromeContextCommand.removeAttribute("disabled");
+       errorConsoleCommand.removeAttribute("disabled");
+     }
+ 
++    let state = null;
+     let initialText = this.strings.GetStringFromName("scratchpadIntro");
+     if ("arguments" in window &&
+          window.arguments[0] instanceof Ci.nsIDialogParamBlock) {
+-      let state = JSON.parse(window.arguments[0].GetString(0));
++      state = JSON.parse(window.arguments[0].GetString(0));
+       this.setState(state);
+       initialText = state.text;
+     }
+ 
+     this.editor = new SourceEditor();
+ 
+     let config = {
+       mode: SourceEditor.MODES.JAVASCRIPT,
+       showLineNumbers: true,
+       initialText: initialText,
+     };
+ 
+     let editorPlaceholder = document.getElementById("scratchpad-editor");
+-    this.editor.init(editorPlaceholder, config, this.onEditorLoad.bind(this));
++    this.editor.init(editorPlaceholder, config,
++                     this._onEditorLoad.bind(this, state));
+   },
+ 
+   /**
+    * The load event handler for the source editor. This method does post-load
+    * editor initialization.
++   *
++   * @private
++   * @param object aState
++   *        The initial Scratchpad state object.
+    */
+-  onEditorLoad: function SP_onEditorLoad()
++  _onEditorLoad: function SP__onEditorLoad(aState)
+   {
+     this.editor.addEventListener(SourceEditor.EVENTS.CONTEXT_MENU,
+                                  this.onContextMenu);
++    this.editor.addEventListener(SourceEditor.EVENTS.DIRTY_CHANGED,
++                                 this._onDirtyChanged);
+     this.editor.focus();
+     this.editor.setCaretOffset(this.editor.getCharCount());
++    if (aState) {
++      this.editor.dirty = !aState.saved;
++    }
+ 
+     this.initialized = true;
+ 
+-    if (this.filename && !this.saved) {
+-      this.onTextChanged();
+-    }
+-    else if (this.filename && this.saved) {
+-      this.onTextSaved();
+-    }
+-
+     this._triggerObservers("Ready");
+   },
+ 
+   /**
+    * Insert text at the current caret location.
+    *
+    * @param string aText
+    *        The text you want to insert.
+@@ -861,16 +887,30 @@ var Scratchpad = {
+   {
+     let menu = document.getElementById("scratchpad-text-popup");
+     if (menu.state == "closed") {
+       menu.openPopupAtScreen(aEvent.screenX, aEvent.screenY, true);
+     }
+   },
+ 
+   /**
++   * The Source Editor DirtyChanged event handler. This function updates the
++   * Scratchpad window title to show an asterisk when there are unsaved changes.
++   *
++   * @private
++   * @see SourceEditor.EVENTS.DIRTY_CHANGED
++   * @param object aEvent
++   *        The DirtyChanged event object.
++   */
++  _onDirtyChanged: function SP__onDirtyChanged(aEvent)
++  {
++    Scratchpad._updateTitle();
++  },
++
++  /**
+    * The popupshowing event handler for the Edit menu. This method updates the
+    * enabled/disabled state of the Undo and Redo commands, based on the editor
+    * state such that the menu items render correctly for the user when the menu
+    * shows.
+    */
+   onEditPopupShowing: function SP_onEditPopupShowing()
+   {
+     goUpdateGlobalEditMenuItems();
+@@ -894,123 +934,135 @@ var Scratchpad = {
+    * Redo the previously undone action.
+    */
+   redo: function SP_redo()
+   {
+     this.editor.redo();
+   },
+ 
+   /**
+-   * This method adds a listener to the editor for text changes. Called when
+-   * a scratchpad is saved, opened from file, or restored from a saved file.
+-   */
+-  onTextSaved: function SP_onTextSaved(aStatus)
+-  {
+-    if (aStatus && !Components.isSuccessCode(aStatus)) {
+-      return;
+-    }
+-    if (!document || !this.initialized) {
+-      return;  // file saved to disk after window has closed
+-    }
+-    document.title = document.title.replace(/^\*/, "");
+-    this.saved = true;
+-    this.editor.addEventListener(SourceEditor.EVENTS.TEXT_CHANGED,
+-                                 this.onTextChanged);
+-  },
+-
+-  /**
+-   * The scratchpad handler for editor text change events. This handler
+-   * indicates that there are unsaved changes in the UI.
+-   */
+-  onTextChanged: function SP_onTextChanged()
+-  {
+-    document.title = "*" + document.title;
+-    Scratchpad.saved = false;
+-    Scratchpad.editor.removeEventListener(SourceEditor.EVENTS.TEXT_CHANGED,
+-                                          Scratchpad.onTextChanged);
+-  },
+-
+-  /**
+    * The Scratchpad window unload event handler. This method unloads/destroys
+    * the source editor.
+    *
+    * @param nsIDOMEvent aEvent
+    */
+   onUnload: function SP_onUnload(aEvent)
+   {
+     if (aEvent.target != document) {
+       return;
+     }
+ 
+     this.resetContext();
++    this.editor.removeEventListener(SourceEditor.EVENTS.DIRTY_CHANGED,
++                                    this._onDirtyChanged);
+     this.editor.removeEventListener(SourceEditor.EVENTS.CONTEXT_MENU,
+                                     this.onContextMenu);
+     this.editor.destroy();
+     this.editor = null;
+     this.initialized = false;
+   },
+ 
+   /**
+    * Prompt to save scratchpad if it has unsaved changes.
+    *
+    * @param function aCallback
+-   *        Optional function you want to call when file is saved
++   *        Optional function you want to call when file is saved. The callback
++   *        receives three arguments:
++   *          - toClose (boolean) - tells if the window should be closed.
++   *          - saved (boolen) - tells if the file has been saved.
++   *          - status (number) - the file save status result (if the file was
++   *          saved).
+    * @return boolean
+    *         Whether the window should be closed
+    */
+   promptSave: function SP_promptSave(aCallback)
+   {
+-    if (this.filename && !this.saved) {
++    if (this.filename && this.editor.dirty) {
+       let ps = Services.prompt;
+       let flags = ps.BUTTON_POS_0 * ps.BUTTON_TITLE_SAVE +
+                   ps.BUTTON_POS_1 * ps.BUTTON_TITLE_CANCEL +
+                   ps.BUTTON_POS_2 * ps.BUTTON_TITLE_DONT_SAVE;
+ 
+       let button = ps.confirmEx(window,
+                           this.strings.GetStringFromName("confirmClose.title"),
+                           this.strings.GetStringFromName("confirmClose"),
+                           flags, null, null, null, null, {});
+ 
+       if (button == BUTTON_POSITION_CANCEL) {
++        if (aCallback) {
++          aCallback(false, false);
++        }
+         return false;
+       }
++
+       if (button == BUTTON_POSITION_SAVE) {
+-        this.saveFile(aCallback);
++        this.saveFile(function(aStatus) {
++          if (aCallback) {
++            aCallback(true, true, aStatus);
++          }
++        });
++        return true;
+       }
+     }
++
++    if (aCallback) {
++      aCallback(true, false);
++    }
+     return true;
+   },
+ 
+   /**
+    * Handler for window close event. Prompts to save scratchpad if
+    * there are unsaved changes.
+    *
+    * @param nsIDOMEvent aEvent
+    */
+   onClose: function SP_onClose(aEvent)
+   {
+-    let toClose = this.promptSave();
+-    if (!toClose) {
+-      aEvent.preventDefault();
++    if (this._skipClosePrompt) {
++      return;
+     }
++
++    this.promptSave(function(aShouldClose, aSaved, aStatus) {
++      let shouldClose = aShouldClose;
++      if (aSaved && !Components.isSuccessCode(aStatus)) {
++        shouldClose = false;
++      }
++
++      if (shouldClose) {
++        this._skipClosePrompt = true;
++        window.close();
++      }
++    }.bind(this));
++    aEvent.preventDefault();
+   },
+ 
+   /**
+    * Close the scratchpad window. Prompts before closing if the scratchpad
+    * has unsaved changes.
+    *
+    * @param function aCallback
+    *        Optional function you want to call when file is saved
+    */
+   close: function SP_close(aCallback)
+   {
+-    let toClose = this.promptSave(aCallback);
+-    if (toClose) {
+-      window.close();
+-    }
++    this.promptSave(function(aShouldClose, aSaved, aStatus) {
++      let shouldClose = aShouldClose;
++      if (aSaved && !Components.isSuccessCode(aStatus)) {
++        shouldClose = false;
++      }
++
++      if (shouldClose) {
++        this._skipClosePrompt = true;
++        window.close();
++      }
++      if (aCallback) {
++        aCallback();
++      }
++    }.bind(this));
+   },
+ 
+   _observers: [],
+ 
+   /**
+    * Add an observer for Scratchpad events.
+    *
+    * The observer implements IScratchpadObserver := {
+diff --git a/browser/devtools/scratchpad/test/browser_scratchpad_bug_653427_confirm_close.js b/browser/devtools/scratchpad/test/browser_scratchpad_bug_653427_confirm_close.js
+--- a/browser/devtools/scratchpad/test/browser_scratchpad_bug_653427_confirm_close.js
++++ b/browser/devtools/scratchpad/test/browser_scratchpad_bug_653427_confirm_close.js
+@@ -41,94 +41,92 @@ function test()
+   testSavedFile();
+ 
+   content.location = "data:text/html,<p>test scratchpad save file prompt on closing";
+ }
+ 
+ function testNew()
+ {
+   openScratchpad(function(win) {
+-    win.Scratchpad.close();
+-    ok(win.closed, "new scratchpad window should close without prompting")
+-    done();
++    win.Scratchpad.close(function() {
++      ok(win.closed, "new scratchpad window should close without prompting")
++      done();
++    });
+   }, {noFocus: true});
+ }
+ 
+ function testSavedFile()
+ {
+   openScratchpad(function(win) {
+     win.Scratchpad.filename = "test.js";
+-    win.Scratchpad.saved = true;
+-    win.Scratchpad.close();
+-
+-    ok(win.closed, "scratchpad from file with no changes should close")
+-    done();
++    win.Scratchpad.editor.dirty = false;
++    win.Scratchpad.close(function() {
++      ok(win.closed, "scratchpad from file with no changes should close")
++      done();
++    });
+   }, {noFocus: true});
+ }
+ 
+ function testUnsaved()
+ {
+   testUnsavedFileCancel();
+   testUnsavedFileSave();
+   testUnsavedFileDontSave();
+ }
+ 
+ function testUnsavedFileCancel()
+ {
+   openScratchpad(function(win) {
+-    win.Scratchpad.filename = "test.js";
+-    win.Scratchpad.saved = false;
++    win.Scratchpad.setFilename("test.js");
++    win.Scratchpad.editor.dirty = true;
+ 
+     promptButton = win.BUTTON_POSITION_CANCEL;
+ 
+-    win.Scratchpad.close();
+-
+-    ok(!win.closed, "cancelling dialog shouldn't close scratchpad");
+-
+-    win.close();
+-    done();
++    win.Scratchpad.close(function() {
++      ok(!win.closed, "cancelling dialog shouldn't close scratchpad");
++      win.close();
++      done();
++    });
+   }, {noFocus: true});
+ }
+ 
+ function testUnsavedFileSave()
+ {
+   openScratchpad(function(win) {
+     win.Scratchpad.importFromFile(gFile, true, function(status, content) {
+-      win.Scratchpad.filename = gFile.path;
+-      win.Scratchpad.onTextSaved();
++      win.Scratchpad.setFilename(gFile.path);
+ 
+       let text = "new text";
+       win.Scratchpad.setText(text);
+ 
+       promptButton = win.BUTTON_POSITION_SAVE;
+ 
+       win.Scratchpad.close(function() {
++        ok(win.closed, 'pressing "Save" in dialog should close scratchpad');
+         readFile(gFile, function(savedContent) {
+           is(savedContent, text, 'prompted "Save" worked when closing scratchpad');
+           done();
+         });
+       });
+-
+-      ok(win.closed, 'pressing "Save" in dialog should close scratchpad');
+     });
+   }, {noFocus: true});
+ }
+ 
+ function testUnsavedFileDontSave()
+ {
+   openScratchpad(function(win) {
+-    win.Scratchpad.filename = gFile.path;
+-    win.Scratchpad.saved = false;
++    win.Scratchpad.setFilename(gFile.path);
++    win.Scratchpad.editor.dirty = true;
+ 
+     promptButton = win.BUTTON_POSITION_DONT_SAVE;
+ 
+-    win.Scratchpad.close();
+-
+-    ok(win.closed, 'pressing "Don\'t Save" in dialog should close scratchpad');
+-    done();
++    win.Scratchpad.close(function() {
++      ok(win.closed, 'pressing "Don\'t Save" in dialog should close scratchpad');
++      done();
++    });
+   }, {noFocus: true});
+ }
+ 
+ function cleanup()
+ {
+   Services.prompt = oldPrompt;
+   gFile.remove(false);
+   gFile = null;
+diff --git a/browser/devtools/scratchpad/test/browser_scratchpad_bug_669612_unsaved.js b/browser/devtools/scratchpad/test/browser_scratchpad_bug_669612_unsaved.js
+--- a/browser/devtools/scratchpad/test/browser_scratchpad_bug_669612_unsaved.js
++++ b/browser/devtools/scratchpad/test/browser_scratchpad_bug_669612_unsaved.js
+@@ -1,74 +1,67 @@
+ /* vim: set ts=2 et sw=2 tw=80: */
+ /* Any copyright is dedicated to the Public Domain.
+    http://creativecommons.org/publicdomain/zero/1.0/ */  
+ 
+ // only finish() when correct number of tests are done
+-const expected = 5;
++const expected = 4;
+ var count = 0;
+ function done()
+ {
+   if (++count == expected) {
+     finish();
+   }
+ }
+ 
+ var ScratchpadManager = Scratchpad.ScratchpadManager;
+ 
+ 
+ function test()
+ {
+   waitForExplicitFinish();
+   
+   testListeners();
+-  testErrorStatus();
+   testRestoreNotFromFile();
+   testRestoreFromFileSaved();
+   testRestoreFromFileUnsaved();
+ 
+   content.location = "data:text/html,<p>test star* UI for unsaved file changes";
+ }
+ 
+ function testListeners()
+ {
+   openScratchpad(function(aWin, aScratchpad) {
+     aScratchpad.setText("new text");
+     ok(!isStar(aWin), "no star if scratchpad isn't from a file");
+ 
+-    aScratchpad.onTextSaved();
++    aScratchpad.editor.dirty = false;
+     ok(!isStar(aWin), "no star before changing text");
+ 
++    aScratchpad.setFilename("foo.js");
+     aScratchpad.setText("new text2");
+     ok(isStar(aWin), "shows star if scratchpad text changes");
+ 
+-    aScratchpad.onTextSaved();
++    aScratchpad.editor.dirty = false;
+     ok(!isStar(aWin), "no star if scratchpad was just saved");
+ 
++    aScratchpad.setText("new text3");
++    ok(isStar(aWin), "shows star if scratchpad has more changes");
++
+     aScratchpad.undo();
+-    ok(isStar(aWin), "star if scratchpad undo");
++    ok(!isStar(aWin), "no star if scratchpad undo to save point");
++
++    aScratchpad.undo();
++    ok(isStar(aWin), "star if scratchpad undo past save point");
+ 
+     aWin.close();
+     done();
+   }, {noFocus: true});
+ }
+ 
+-function testErrorStatus()
+-{
+-  openScratchpad(function(aWin, aScratchpad) {
+-    aScratchpad.onTextSaved(Components.results.NS_ERROR_FAILURE);
+-    aScratchpad.setText("new text");
+-    ok(!isStar(aWin), "no star if file save failed");
+-
+-    aWin.close();
+-    done();
+-  }, {noFocus: true});
+-}
+-
+-
+ function testRestoreNotFromFile()
+ {
+   let session = [{
+     text: "test1",
+     executionContext: 1
+   }];
+ 
+   let [win] = ScratchpadManager.restoreSession(session);
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -138,16 +138,17 @@ function SourceEditor() {
+   // Update the SourceEditor defaults from user preferences.
+ 
+   SourceEditor.DEFAULTS.tabSize =
+     Services.prefs.getIntPref(SourceEditor.PREFS.TAB_SIZE);
+   SourceEditor.DEFAULTS.expandTab =
+     Services.prefs.getBoolPref(SourceEditor.PREFS.EXPAND_TAB);
+ 
+   this._onOrionSelection = this._onOrionSelection.bind(this);
++  this._onTextChanged = this._onTextChanged.bind(this);
+ 
+   this._eventTarget = {};
+   this._eventListenersQueue = [];
+   this.ui = new SourceEditorUI(this);
+ }
+ 
+ SourceEditor.prototype = {
+   _view: null,
+@@ -164,16 +165,17 @@ SourceEditor.prototype = {
+   _currentLineAnnotation: null,
+   _primarySelectionTimeout: null,
+   _mode: null,
+   _expandTab: null,
+   _tabSize: null,
+   _iframeWindow: null,
+   _eventTarget: null,
+   _eventListenersQueue: null,
++  _dirty: false,
+ 
+   /**
+    * The Source Editor user interface manager.
+    * @type object
+    *       An instance of the SourceEditorUI.
+    */
+   ui: null,
+ 
+@@ -271,18 +273,21 @@ SourceEditor.prototype = {
+ 
+     let onOrionLoad = function() {
+       this._view.removeEventListener("Load", onOrionLoad);
+       this._onOrionLoad();
+     }.bind(this);
+ 
+     this._view.addEventListener("Load", onOrionLoad);
+     if (config.highlightCurrentLine || Services.appinfo.OS == "Linux") {
+-      this._view.addEventListener("Selection", this._onOrionSelection);
++      this.addEventListener(SourceEditor.EVENTS.SELECTION,
++                            this._onOrionSelection);
+     }
++    this.addEventListener(SourceEditor.EVENTS.TEXT_CHANGED,
++                           this._onTextChanged);
+ 
+     let KeyBinding = window.require("orion/textview/keyBinding").KeyBinding;
+     let TextDND = window.require("orion/textview/textDND").TextDND;
+     let Rulers = window.require("orion/textview/rulers");
+     let LineNumberRuler = Rulers.LineNumberRuler;
+     let AnnotationRuler = Rulers.AnnotationRuler;
+     let OverviewRuler = Rulers.OverviewRuler;
+     let UndoStack = window.require("orion/textview/undoStack").UndoStack;
+@@ -580,16 +585,38 @@ SourceEditor.prototype = {
+       }
+       this._primarySelectionTimeout =
+         window.setTimeout(this._updatePrimarySelection.bind(this),
+                           PRIMARY_SELECTION_DELAY);
+     }
+   },
+ 
+   /**
++   * The TextChanged event handler which tracks the dirty state of the editor.
++   *
++   * @see SourceEditor.EVENTS.TEXT_CHANGED
++   * @see SourceEditor.EVENTS.DIRTY_CHANGED
++   * @see SourceEditor.dirty
++   * @private
++   */
++  _onTextChanged: function SE__onTextChanged()
++  {
++    this._updateDirty();
++  },
++
++  /**
++   * Update the dirty state of the editor based on the undo stack.
++   * @private
++   */
++  _updateDirty: function SE__updateDirty()
++  {
++    this.dirty = !this._undoStack.isClean();
++  },
++
++  /**
+    * Update the X11 PRIMARY buffer to hold the current selection.
+    * @private
+    */
+   _updatePrimarySelection: function SE__updatePrimarySelection()
+   {
+     this._primarySelectionTimeout = null;
+ 
+     let text = this.getSelectedText();
+@@ -891,21 +918,63 @@ SourceEditor.prototype = {
+    *         True if there are changes that can be repeated, false otherwise.
+    */
+   canRedo: function SE_canRedo()
+   {
+     return this._undoStack.canRedo();
+   },
+ 
+   /**
+-   * Reset the Undo stack
++   * Reset the Undo stack.
+    */
+   resetUndo: function SE_resetUndo()
+   {
+     this._undoStack.reset();
++    this._updateDirty();
++  },
++
++  /**
++   * Set the "dirty" state of the editor. Set this to false when you save the
++   * text being edited. The dirty state will become true once the user makes
++   * changes to the text.
++   *
++   * @param boolean aNewValue
++   *        The new dirty state: true if the text is not saved, false if you
++   *        just saved the text.
++   */
++  set dirty(aNewValue)
++  {
++    if (aNewValue == this._dirty) {
++      return;
++    }
++
++    let event = {
++      type: SourceEditor.EVENTS.DIRTY_CHANGED,
++      oldValue: this._dirty,
++      newValue: aNewValue,
++    };
++
++    this._dirty = aNewValue;
++    if (!this._dirty && !this._undoStack.isClean()) {
++      this._undoStack.markClean();
++    }
++    this._dispatchEvent(event);
++  },
++
++  /**
++   * Get the editor "dirty" state. This tells if the text is considered saved or
++   * not.
++   *
++   * @see SourceEditor.EVENTS.DIRTY_CHANGED
++   * @return boolean
++   *         True if there are changes which are not saved, false otherwise.
++   */
++  get dirty()
++  {
++    return this._dirty;
+   },
+ 
+   /**
+    * Start a compound change in the editor. Compound changes are grouped into
+    * only one change that you can undo later, after you invoke
+    * endCompoundChange().
+    */
+   startCompoundChange: function SE_startCompoundChange()
+@@ -1314,20 +1383,25 @@ SourceEditor.prototype = {
+   },
+ 
+   /**
+    * Destroy/uninitialize the editor.
+    */
+   destroy: function SE_destroy()
+   {
+     if (this._config.highlightCurrentLine || Services.appinfo.OS == "Linux") {
+-      this._view.removeEventListener("Selection", this._onOrionSelection);
++      this.removeEventListener(SourceEditor.EVENTS.SELECTION,
++                               this._onOrionSelection);
+     }
+     this._onOrionSelection = null;
+ 
++    this.removeEventListener(SourceEditor.EVENTS.TEXT_CHANGED,
++                             this._onTextChanged);
++    this._onTextChanged = null;
++
+     if (this._primarySelectionTimeout) {
+       let window = this.parentElement.ownerDocument.defaultView;
+       window.clearTimeout(this._primarySelectionTimeout);
+       this._primarySelectionTimeout = null;
+     }
+ 
+     this._view.destroy();
+     this.ui.destroy();
+diff --git a/browser/devtools/sourceeditor/source-editor.jsm b/browser/devtools/sourceeditor/source-editor.jsm
+--- a/browser/devtools/sourceeditor/source-editor.jsm
++++ b/browser/devtools/sourceeditor/source-editor.jsm
+@@ -253,16 +253,25 @@ SourceEditor.EVENTS = {
+    * a breakpoint is removed - either through API use or through the editor UI.
+    * Event object properties:
+    *   - added - array that holds the new breakpoints.
+    *   - removed - array that holds the breakpoints that have been removed.
+    * Each object in the added/removed arrays holds two properties: line and
+    * condition.
+    */
+   BREAKPOINT_CHANGE: "BreakpointChange",
++
++  /**
++   * The DirtyChanged event is fired when the dirty state of the editor is
++   * changed. The dirty state of the editor tells if the are text changes that
++   * have not been saved yet. Event object properties: oldValue and newValue.
++   * Both are booleans telling the old dirty state and the new state,
++   * respectively.
++   */
++  DIRTY_CHANGED: "DirtyChanged",
+ };
+ 
+ /**
+  * Extend a destination object with properties from a source object.
+  *
+  * @param object aDestination
+  * @param object aSource
+  */
+diff --git a/browser/devtools/sourceeditor/test/Makefile.in b/browser/devtools/sourceeditor/test/Makefile.in
+--- a/browser/devtools/sourceeditor/test/Makefile.in
++++ b/browser/devtools/sourceeditor/test/Makefile.in
+@@ -52,12 +52,13 @@ include $(topsrcdir)/config/rules.mk
+ 		browser_bug687580_drag_and_drop.js \
+ 		browser_bug684546_reset_undo.js \
+ 		browser_bug695035_middle_click_paste.js \
+ 		browser_bug687160_line_api.js \
+ 		browser_bug650345_find.js \
+ 		browser_bug703692_focus_blur.js \
+ 		browser_bug707987_debugger_breakpoints.js \
+ 		browser_bug712982_line_ruler_click.js \
++		browser_bug700893_dirty_state.js \
+ 		head.js \
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/browser/devtools/sourceeditor/test/browser_bug700893_dirty_state.js b/browser/devtools/sourceeditor/test/browser_bug700893_dirty_state.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/sourceeditor/test/browser_bug700893_dirty_state.js
+@@ -0,0 +1,94 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++"use strict";
++
++function test() {
++
++  let temp = {};
++  Cu.import("resource:///modules/source-editor.jsm", temp);
++  let SourceEditor = temp.SourceEditor;
++
++  let component = Services.prefs.getCharPref(SourceEditor.PREFS.COMPONENT);
++  if (component == "textarea") {
++    ok(true, "skip test for bug 700893: only applicable for non-textarea components");
++    return;
++  }
++
++  waitForExplicitFinish();
++
++  let editor;
++
++  const windowUrl = "data:text/xml,<?xml version='1.0'?>" +
++    "<window xmlns='http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul'" +
++    " title='test for bug 700893' width='600' height='500'><hbox flex='1'/></window>";
++  const windowFeatures = "chrome,titlebar,toolbar,centerscreen,resizable,dialog=no";
++
++  let testWin = Services.ww.openWindow(null, windowUrl, "_blank", windowFeatures, null);
++  testWin.addEventListener("load", function onWindowLoad() {
++    testWin.removeEventListener("load", onWindowLoad, false);
++    waitForFocus(initEditor, testWin);
++  }, false);
++
++  function initEditor()
++  {
++    let hbox = testWin.document.querySelector("hbox");
++    editor = new SourceEditor();
++    editor.init(hbox, {initialText: "foobar"}, editorLoaded);
++  }
++
++  function editorLoaded()
++  {
++    editor.focus();
++
++    is(editor.dirty, false, "editory is not dirty");
++
++    let event = null;
++    let eventHandler = function(aEvent) {
++      event = aEvent;
++    };
++    editor.addEventListener(SourceEditor.EVENTS.DIRTY_CHANGED, eventHandler);
++
++    editor.setText("omg");
++
++    is(editor.dirty, true, "editor is dirty");
++    ok(event, "DirtyChanged event fired")
++    is(event.oldValue, false, "event.oldValue is correct");
++    is(event.newValue, true, "event.newValue is correct");
++
++    event = null;
++    editor.setText("foo 2");
++    ok(!event, "no DirtyChanged event fired");
++
++    editor.dirty = false;
++
++    is(editor.dirty, false, "editor marked as clean");
++    ok(event, "DirtyChanged event fired")
++    is(event.oldValue, true, "event.oldValue is correct");
++    is(event.newValue, false, "event.newValue is correct");
++
++    event = null;
++    editor.setText("foo 3");
++
++    is(editor.dirty, true, "editor is dirty after changes");
++    ok(event, "DirtyChanged event fired")
++    is(event.oldValue, false, "event.oldValue is correct");
++    is(event.newValue, true, "event.newValue is correct");
++
++    editor.undo();
++    is(editor.dirty, false, "editor is not dirty after undo");
++    ok(event, "DirtyChanged event fired")
++    is(event.oldValue, true, "event.oldValue is correct");
++    is(event.newValue, false, "event.newValue is correct");
++
++    editor.removeEventListener(SourceEditor.EVENTS.DIRTY_CHANGED, eventHandler);
++
++    editor.destroy();
++
++    testWin.close();
++    testWin = editor = null;
++
++    waitForFocus(finish, window);
++  }
++}

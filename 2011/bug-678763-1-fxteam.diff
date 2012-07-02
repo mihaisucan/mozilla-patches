@@ -1,0 +1,62 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1313422733 -10800
+# Node ID 014523c7c8b32cccb154d6a154018c90f3e0b569
+# Parent  6137de4b8036d0602f9dee98d889bb42c163b15d
+Bug 678763 - Intermittent browser_sourceeditor_initialization.js | application timed out after 330 seconds with no output
+
+diff --git a/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js b/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js
+--- a/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js
++++ b/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js
+@@ -14,19 +14,26 @@ function test()
+ {
+   waitForExplicitFinish();
+ 
+   const windowUrl = "data:text/xml,<?xml version='1.0'?>" +
+     "<window xmlns='http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul'" +
+     " title='test for bug 660784' width='600' height='500'><hbox flex='1'/></window>";
+   const windowFeatures = "chrome,titlebar,toolbar,centerscreen,resizable,dialog=no";
+ 
+-  testWin = Services.ww.openWindow(null, windowUrl, "_blank", windowFeatures, null);
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function onTabLoad() {
++    gBrowser.selectedBrowser.removeEventListener("load", onTabLoad, true);
+ 
+-  testWin.addEventListener("load", initEditor, false);
++    testWin = Services.ww.openWindow(null, windowUrl, "_blank", windowFeatures, null);
++    testWin.addEventListener("load", initEditor, false);
++  }, true);
++
++  content.location = "data:text/html,<p>bug 660784 - test the SourceEditor";
++
+ }
+ 
+ function initEditor()
+ {
+   testWin.removeEventListener("load", initEditor, false);
+   testDoc = testWin.document;
+ 
+   let hbox = testDoc.querySelector("hbox");
+@@ -314,17 +321,21 @@ function editorLoaded()
+   // Done.
+ 
+   editor.destroy();
+   ok(!editor.parentElement && !editor.editorElement, "destroy() works");
+ 
+   testWin.close();
+ 
+   testWin = testDoc = editor = null;
+-  finish();
++
++  waitForFocus(function() {
++    gBrowser.removeCurrentTab();
++    finish();
++  }, content);
+ }
+ 
+ function testBackspaceKey()
+ {
+   editor.setText("       a\n  b\n c");
+   editor.setCaretOffset(7);
+   EventUtils.synthesizeKey("VK_BACK_SPACE", {}, testWin);
+   is(editor.getText(), "a\n  b\n c", "line outdented (Backspace)");

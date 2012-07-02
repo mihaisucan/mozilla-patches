@@ -1,0 +1,91 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -3743,17 +3743,17 @@ function findCompletionBeginning(aStr)
+           bodyStack.push({
+             token: c,
+             start: start
+           });
+           start = i + 1;
+         }
+         else if (CLOSE_BODY.indexOf(c) != -1) {
+           var last = bodyStack.pop();
+-          if (OPEN_CLOSE_BODY[last.token] != c) {
++          if (!last || OPEN_CLOSE_BODY[last.token] != c) {
+             return {
+               err: "syntax error"
+             };
+           }
+           if (c == '}') {
+             start = i + 1;
+           }
+           else {
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -94,16 +94,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_594477_clickable_output.js \
+ 	browser_webconsole_bug_589162_css_filter.js \
+ 	browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js \
+ 	browser_webconsole_bug_595350_multiple_windows_and_tabs.js \
+ 	browser_webconsole_bug_594497_history_arrow_keys.js \
+ 	browser_webconsole_bug_588342_document_focus.js \
+ 	browser_webconsole_bug_595934_message_categories.js \
+ 	browser_webconsole_bug_601352_scroll.js \
++	browser_webconsole_bug_592442_closing_brackets.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ # compartment-disabled
+ #	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_592442_closing_brackets.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_592442_closing_brackets.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_592442_closing_brackets.js
+@@ -0,0 +1,43 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Julian Viereck <jviereck@mozilla.com>
++ *  Patrick Walton <pcwalton@mozilla.com>
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++// Tests that, when the user types an extraneous closing bracket, no error
++// appears.
++
++function test() {
++  addTab("data:text/html,test for bug 592442");
++  browser.addEventListener("load", testExtraneousClosingBrackets, true);
++}
++
++function testExtraneousClosingBrackets(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++  let hudId = HUDService.displaysIndex()[0];
++  let jsterm = HUDService.hudWeakReferences[hudId].get().jsterm;
++
++  jsterm.setInputValue("document.getElementById)");
++
++  let error = false;
++  try {
++    jsterm.complete(jsterm.COMPLETE_HINT_ONLY);
++  }
++  catch (ex) {
++    error = true;
++  }
++
++  ok(!error, "no error was thrown when an extraneous bracket was inserted");
++
++  HUDService.deactivateHUDForContext(tab);
++  finishTest();
++}
++

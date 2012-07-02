@@ -1,0 +1,411 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -164,31 +164,37 @@ const ERRORS = { LOG_MESSAGE_MISSING_ARG
+ function ResponseListener(aHttpActivity) {
+   this.receivedData = "";
+   this.httpActivity = aHttpActivity;
+ }
+ 
+ ResponseListener.prototype =
+ {
+   /**
+-   * The original listener for this request.
++   * The response will be written into the outputStream of this nsIPipe.
++   * Both ends of the pipe must be blocking.
+    */
+-  originalListener: null,
++  sink: null,
+ 
+   /**
+    * The HttpActivity object associated with this response.
+    */
+   httpActivity: null,
+ 
+   /**
+    * Stores the received data as a string.
+    */
+   receivedData: null,
+ 
+   /**
++   * The nsIRequest we are started for.
++   */
++  request: null,
++
++  /**
+    * Sets the httpActivity object's response header if it isn't set already.
+    *
+    * @param nsIRequest aRequest
+    */
+   setResponseHeader: function RL_setResponseHeader(aRequest)
+   {
+     let httpActivity = this.httpActivity;
+     // Check if the header isn't set yet.
+@@ -209,77 +215,81 @@ ResponseListener.prototype =
+         catch (ex) {
+           delete httpActivity.response.header;
+         }
+       }
+     }
+   },
+ 
+   /**
++   * Set the async listener for the given nsIAsyncInputStream.
++   *
++   * @param nsIAsyncInputStream aStream
++   * @param nsIInputStreamCallback aListener
++   * @returns void
++   */
++  setAsyncListener: function RL_setAsyncListener(aStream, aListener)
++  {
++    try {
++      // Throws NS_BASE_STREAM_CLOSED if the stream is closed normally or at
++      // end-of-file.
++      aStream.available();
++    }
++    catch (ex) {
++      return;
++    }
++
++    try {
++      // Asynchronously wait for the stream to be readable or closed.
++      aStream.asyncWait(aListener, 0, 0, null);
++    }
++    catch (ex) { }
++  },
++
++  /**
+    * See documention at
+    * https://developer.mozilla.org/en/XPCOM_Interface_Reference/nsIStreamListener
+    *
+    * Grabs a copy of the original data and passes it on to the original listener.
+    *
+    * @param nsIRequest aRequest
+    * @param nsISupports aContext
+    * @param nsIInputStream aInputStream
+    * @param unsigned long aOffset
+    * @param unsigned long aCount
+    */
+   onDataAvailable: function RL_onDataAvailable(aRequest, aContext, aInputStream,
+                                                 aOffset, aCount)
+   {
+     this.setResponseHeader(aRequest);
+ 
+-    let StorageStream = Components.Constructor("@mozilla.org/storagestream;1",
+-                                                "nsIStorageStream",
+-                                                "init");
+-    let BinaryOutputStream = Components.Constructor("@mozilla.org/binaryoutputstream;1",
+-                                                      "nsIBinaryOutputStream",
+-                                                      "setOutputStream");
+-
+-    storageStream = new StorageStream(8192, aCount, null);
+-    binaryOutputStream = new BinaryOutputStream(storageStream.getOutputStream(0));
+-
+-    let data = NetUtil.readInputStreamToString(aInputStream, aCount);
++    let bis = Cc["@mozilla.org/binaryinputstream;1"].
++              createInstance(Ci.nsIBinaryInputStream);
++    bis.setInputStream(aInputStream);
++
++    let data = bis.readBytes(aCount);
+ 
+     if (HUDService.saveRequestAndResponseBodies &&
+         this.receivedData.length < RESPONSE_BODY_LIMIT) {
+       this.receivedData += NetworkHelper.
+                            convertToUnicode(data, aRequest.contentCharset);
+     }
+-
+-    binaryOutputStream.writeBytes(data, aCount);
+-
+-    let newInputStream = storageStream.newInputStream(0);
+-    try {
+-    this.originalListener.onDataAvailable(aRequest, aContext,
+-        newInputStream, aOffset, aCount);
+-    }
+-    catch(ex) {
+-      aRequest.cancel(ex);
+-    }
+   },
+ 
+   /**
+    * See documentation at
+    * https://developer.mozilla.org/En/NsIRequestObserver
+    *
+    * @param nsIRequest aRequest
+    * @param nsISupports aContext
+    */
+   onStartRequest: function RL_onStartRequest(aRequest, aContext)
+   {
+-    try {
+-    this.originalListener.onStartRequest(aRequest, aContext);
+-    }
+-    catch(ex) {
+-      aRequest.cancel(ex);
+-    }
++    this.request = aRequest;
++    this.setAsyncListener(this.sink.inputStream, this);
+   },
+ 
+   /**
+    * See documentation at
+    * https://developer.mozilla.org/En/NsIRequestObserver
+    *
+    * If aRequest is an nsIHttpChannel then the response header is stored on the
+    * httpActivity object. Also, the response body is set on the httpActivity
+@@ -287,20 +297,17 @@ ResponseListener.prototype =
+    * HUDService.lastFinishedRequestCallback is called if there is one.
+    *
+    * @param nsIRequest aRequest
+    * @param nsISupports aContext
+    * @param nsresult aStatusCode
+    */
+   onStopRequest: function RL_onStopRequest(aRequest, aContext, aStatusCode)
+   {
+-    try {
+-    this.originalListener.onStopRequest(aRequest, aContext, aStatusCode);
+-    }
+-    catch (ex) { }
++    this.setAsyncListener(this.sink.inputStream, null);
+ 
+     this.setResponseHeader(aRequest);
+ 
+     if (HUDService.saveRequestAndResponseBodies) {
+       this.httpActivity.response.body = this.receivedData;
+     }
+     else {
+       this.httpActivity.response.bodyDiscarded = true;
+@@ -316,21 +323,43 @@ ResponseListener.prototype =
+       if (panel) {
+         panel.update();
+       }
+     });
+     this.httpActivity.response.isDone = true;
+     this.httpActivity.response.listener = null;
+     this.httpActivity = null;
+     this.receivedData = "";
++    this.request = null;
+   },
+ 
++  /**
++   * The nsIInputStreamCallback.
++   *
++   * @param nsIAsyncInputStream aStream
++   * @returns void
++   */
++  onInputStreamReady: function RL_onInputStreamReady(aStream)
++  {
++    if (!(aStream instanceof Ci.nsIAsyncInputStream)) {
++      return;
++    }
++
++    try {
++      let available = aStream.available();
++      this.onDataAvailable(this.request, null, aStream, 0, available);
++    }
++    catch (ex) { }
++
++    this.setAsyncListener(aStream, this);
++  },
++
+   QueryInterface: XPCOMUtils.generateQI([
+-    Ci.nsIStreamListener,
+-    Ci.nsISupports
++    Ci.nsIStreamListener, Ci.nsIInputStreamCallback,
++    Ci.nsIRequestObserver, Ci.nsISupports
+   ])
+ }
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ //// Helper for creating the network panel.
+ 
+ /**
+  * Creates a DOMNode and sets all the attributes of aAttributes on the created
+@@ -2148,19 +2177,36 @@ HUD_SERVICE.prototype =
+             // requested). Don't continue in such a case.
+             if (!loggedNode) {
+               return;
+             }
+ 
+             // Add listener for the response body.
+             let newListener = new ResponseListener(httpActivity);
+             aChannel.QueryInterface(Ci.nsITraceableChannel);
+-            newListener.originalListener = aChannel.setNewListener(newListener);
++
+             httpActivity.response.listener = newListener;
+ 
++            let tee = Cc["@mozilla.org/network/stream-listener-tee;1"].
++                      createInstance(Ci.nsIStreamListenerTee);
++            tee = tee.QueryInterface(Ci.nsIStreamListenerTee);
++
++            // The response will be written into the outputStream of this pipe.
++            // Both ends of the pipe must be blocking.
++            let sink = Cc["@mozilla.org/pipe;1"].createInstance(Ci.nsIPipe);
++            sink.init(false, false, 0x20000, 0x4000, null);
++
++            // Remember the input stream, so it isn't released by GC.
++            newListener.inputStream = sink.inputStream;
++
++            let originalListener = aChannel.setNewListener(tee);
++            newListener.sink = sink;
++
++            tee.init(originalListener, sink.outputStream, newListener);
++
+             // Copy the request header data.
+             aChannel.visitRequestHeaders({
+               visitHeader: function(aName, aValue) {
+                 httpActivity.request.header[aName] = aValue;
+               }
+             });
+ 
+             // Store the loggedNode and the httpActivity object for later reuse.
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -106,16 +106,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_613013_console_api_iframe.js \
+ 	browser_webconsole_bug_597756_reopen_closed_tab.js \
+ 	browser_webconsole_bug_600183_charset.js \
+ 	browser_webconsole_bug_601177_log_levels.js \
+ 	browser_webconsole_bug_587615_lastTimestamp.js \
+ 	browser_webconsole_bug_597460_filter_scroll.js \
+ 	browser_webconsole_console_extras.js \
+ 	browser_webconsole_bug_598357_jsterm_output.js \
++	browser_webconsole_bug_618078_network_exceptions.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+@@ -167,15 +168,16 @@ _BROWSER_TEST_PAGES = \
+ 	test-bug-597136-external-script-errors.js \
+ 	test-bug-613013-console-api-iframe.html \
+ 	test-bug-597756-reopen-closed-tab.html \
+ 	test-bug-600183-charset.html \
+ 	test-bug-600183-charset.html^headers^ \
+ 	test-bug-601177-log-levels.html \
+ 	test-bug-601177-log-levels.js \
+ 	test-console-extras.html \
++	test-bug-618078-network-exceptions.html \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_618078_network_exceptions.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_618078_network_exceptions.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_618078_network_exceptions.js
+@@ -0,0 +1,81 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++// Tests that network log messages bring up the network panel.
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-618078-network-exceptions.html";
++
++let testEnded = false;
++
++let TestObserver = {
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
++
++  observe: function test_observe(aSubject)
++  {
++    if (testEnded || !(aSubject instanceof Ci.nsIScriptError)) {
++      return;
++    }
++
++    is(aSubject.category, "content javascript", "error category");
++
++    if (aSubject.category == "content javascript") {
++      executeSoon(performTest);
++    }
++    else {
++      testEnd();
++    }
++  }
++};
++
++function performTest()
++{
++  if (testEnded) {
++    return;
++  }
++
++  let textContent = hud.outputNode.textContent;
++  isnot(textContent.indexOf("bug618078exception"), -1,
++        "exception message");
++
++  testEnd();
++}
++
++function testEnd()
++{
++  if (testEnded) {
++    return;
++  }
++
++  testEnded = true;
++  Services.console.unregisterListener(TestObserver);
++  finishTest();
++}
++
++function test()
++{
++  addTab("data:text/html,Web Console test for bug 618078");
++
++  browser.addEventListener("load", function() {
++    browser.removeEventListener("load", arguments.callee, true);
++
++    openConsole();
++
++    let hudId = HUDService.getHudIdByWindow(content);
++    hud = HUDService.hudReferences[hudId];
++
++    Services.console.registerListener(TestObserver);
++    registerCleanupFunction(testEnd);
++
++    executeSoon(function() {
++      content.location = TEST_URI;
++    });
++  }, true);
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-618078-network-exceptions.html b/toolkit/components/console/hudservice/tests/browser/test-bug-618078-network-exceptions.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-618078-network-exceptions.html
+@@ -0,0 +1,23 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 618078 - exception in async network request
++      callback</title>
++    <!-- Any copyright is dedicated to the Public Domain.
++         http://creativecommons.org/publicdomain/zero/1.0/ -->
++    <script type="text/javascript">
++      var req = new XMLHttpRequest();
++      req.open('GET', 'http://example.com', true);
++      req.onreadystatechange = function() {
++        if (req.readyState == 4) {
++          bug618078exception();
++        }
++      };
++      req.send(null);
++    </script>
++  </head>
++  <body>
++    <p>Web Console test for bug 618078 - exception in async network request
++    callback.</p>
++  </body>
++</html>

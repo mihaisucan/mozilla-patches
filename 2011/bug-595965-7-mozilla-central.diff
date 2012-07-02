@@ -1,0 +1,678 @@
+diff --git a/browser/base/content/tabview/groupitems.js b/browser/base/content/tabview/groupitems.js
+--- a/browser/base/content/tabview/groupitems.js
++++ b/browser/base/content/tabview/groupitems.js
+@@ -21,16 +21,17 @@
+  * Contributor(s):
+  * Ian Gilman <ian@iangilman.com>
+  * Aza Raskin <aza@mozilla.com>
+  * Michael Yoshitaka Erlewine <mitcho@mitcho.com>
+  * Ehsan Akhgari <ehsan@mozilla.com>
+  * Raymond Lee <raymond@appcoast.com>
+  * Tim Taubert <tim.taubert@gmx.de>
+  * Sean Dunn <seanedunn@yahoo.com>
++ * Mihai Sucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -221,19 +222,22 @@ function GroupItem(listOfEls, options) {
+ 
+   // ___ Stack Expander
+   this.$expander = iQ("<div/>")
+     .addClass("stackExpander")
+     .appendTo($container)
+     .hide();
+ 
+   // ___ app tabs: create app tab tray and populate it
++  let appTabTrayContainer = iQ("<div/>")
++    .addClass("appTabTrayContainer")
++    .appendTo($container);
+   this.$appTabTray = iQ("<div/>")
+     .addClass("appTabTray")
+-    .appendTo($container);
++    .appendTo(appTabTrayContainer);
+ 
+   AllTabs.tabs.forEach(function(xulTab) {
+     if (xulTab.pinned && xulTab.ownerDocument.defaultView == gWindow)
+       self.addAppTab(xulTab);
+   });
+ 
+   // ___ Undo Close
+   this.$undoContainer = null;
+@@ -371,25 +375,97 @@ GroupItem.prototype = Utils.extend(new I
+     // The * 6 multiplier calculation is assuming that characters in the title
+     // are approximately 6 pixels wide. Bug 586545
+     var css = {width: w};
+     this.$title.css(css);
+     this.$titleShield.css(css);
+   },
+ 
+   // ----------
++  // Function: adjustAppTabTray
++  // Used to adjust the appTabTray size, to split the appTabIcons across
++  // multiple columns when needed - if the groupItem size is too small.
++  //
++  // Parameters:
++  //   arrangeGroup - rearrange the groupItem if the number of appTab columns
++  //   changes. If true, then this.arrange() is called, otherwise not.
++  adjustAppTabTray: function GroupItem_adjustAppTabTray(arrangeGroup) {
++    let icons = iQ(".appTabIcon", this.$appTabTray);
++    let container = iQ(this.$appTabTray[0].parentNode);
++    if (!icons.length) {
++      // There are no icons, so hide the appTabTray if needed.
++      if (parseInt(container.css("width")) != 0) {
++        this.$appTabTray.css("-moz-column-count", 0);
++        this.$appTabTray.css("height", 0);
++        container.css("width", 0);
++        container.css("height", 0);
++
++        if (container.hasClass("appTabTrayContainerTruncated"))
++          container.removeClass("appTabTrayContainerTruncated");
++
++        if (arrangeGroup)
++          this.arrange();
++      }
++      return;
++    }
++
++    let iconBounds = iQ(icons[0]).bounds();
++    let boxBounds = this.getBounds();
++    let contentHeight = boxBounds.height -
++                        parseInt(container.css("top")) -
++                        this.$resizer.height();
++    let rows = Math.floor(contentHeight / iconBounds.height);
++    let columns = Math.ceil(icons.length / rows);
++    let columnsGap = parseInt(this.$appTabTray.css("-moz-column-gap"));
++    let iconWidth = iconBounds.width + columnsGap;
++    let maxColumns = Math.floor((boxBounds.width * 0.20) / iconWidth);
++
++    if (columns > maxColumns)
++      container.addClass("appTabTrayContainerTruncated");
++    else if (container.hasClass("appTabTrayContainerTruncated"))
++      container.removeClass("appTabTrayContainerTruncated");
++
++    // Need to drop the -moz- prefix when Gecko makes it obsolete.
++    // See bug 629452.
++    if (parseInt(this.$appTabTray.css("-moz-column-count")) != columns)
++      this.$appTabTray.css("-moz-column-count", columns);
++
++    if (parseInt(this.$appTabTray.css("height")) != contentHeight) {
++      this.$appTabTray.css("height", contentHeight + "px");
++      container.css("height", contentHeight + "px");
++    }
++
++    let fullTrayWidth = iconWidth * columns - columnsGap;
++    if (parseInt(this.$appTabTray.css("width")) != fullTrayWidth)
++      this.$appTabTray.css("width", fullTrayWidth + "px");
++
++    let trayWidth = iconWidth * Math.min(columns, maxColumns) - columnsGap;
++    if (parseInt(container.css("width")) != trayWidth) {
++      container.css("width", trayWidth + "px");
++
++      // Rearrange the groupItem if the width changed.
++      if (arrangeGroup)
++        this.arrange();
++    }
++  },
++
++  // ----------
+   // Function: getContentBounds
+   // Returns a <Rect> for the groupItem's content area (which doesn't include the title, etc).
+   getContentBounds: function GroupItem_getContentBounds() {
+     var box = this.getBounds();
+     var titleHeight = this.$titlebar.height();
+     box.top += titleHeight;
+     box.height -= titleHeight;
+ 
+-    var appTabTrayWidth = this.$appTabTray.width();
++    let appTabTrayContainer = iQ(this.$appTabTray[0].parentNode);
++    var appTabTrayWidth = appTabTrayContainer.width();
++    if (appTabTrayWidth)
++      appTabTrayWidth += parseInt(appTabTrayContainer.css(UI.rtl ? "left" : "right"));
++
+     box.width -= appTabTrayWidth;
+     if (UI.rtl) {
+       box.left += appTabTrayWidth;
+     }
+ 
+     // Make the computed bounds' "padding" and new tab button margin actually be
+     // themeable --OR-- compute this from actual bounds. Bug 586546
+     box.inset(6, 6);
+@@ -448,16 +524,20 @@ GroupItem.prototype = Utils.extend(new I
+     }
+ 
+     if (Utils.isEmptyObject(css))
+       return;
+ 
+     var offset = new Point(rect.left - this.bounds.left, rect.top - this.bounds.top);
+     this.bounds = new Rect(rect);
+ 
++    // Make sure the AppTab icons fit the new groupItem size.
++    if (css.width || css.height)
++      this.adjustAppTabTray();
++
+     // ___ Deal with children
+     if (css.width || css.height) {
+       this.arrange({animate: !immediately}); //(immediately ? 'sometimes' : true)});
+     } else if (css.left || css.top) {
+       this._children.forEach(function(child) {
+         if (!child.getHidden()) {
+           var box = child.getBounds();
+           child.setPosition(box.left + offset.x, box.top + offset.y, immediately);
+@@ -1049,40 +1129,33 @@ GroupItem.prototype = Utils.extend(new I
+         if (!Utils.isLeftClick(event))
+           return;
+ 
+         GroupItems.setActiveGroupItem(self);
+         UI.goToTab(iQ(this).data("xulTab"));
+       });
+ 
+     // adjust the tray
+-    let columnWidth = $appTab.width();
+-    if (parseInt(this.$appTabTray.css("width")) != columnWidth) {
+-      this.$appTabTray.css({width: columnWidth});
+-      this.arrange();
+-    }
++    this.adjustAppTabTray(true);
+   },
+ 
+   // ----------
+   // Removes the given xul:tab as an app tab in this group's apptab tray
+   removeAppTab: function GroupItem_removeAppTab(xulTab) {
+     // remove the icon
+     iQ(".appTabIcon", this.$appTabTray).each(function(icon) {
+       let $icon = iQ(icon);
+       if ($icon.data("xulTab") != xulTab)
+         return;
+         
+       $icon.remove();
+     });
+     
+     // adjust the tray
+-    if (!iQ(".appTabIcon", this.$appTabTray).length) {
+-      this.$appTabTray.css({width: 0});
+-      this.arrange();
+-    }
++    this.adjustAppTabTray(true);
+ 
+     xulTab.removeEventListener("error", this._onAppTabError, false);
+   },
+ 
+   // ----------
+   // Function: hideExpandControl
+   // Hide the control which expands a stacked groupItem into a quick-look view.
+   hideExpandControl: function GroupItem_hideExpandControl() {
+diff --git a/browser/base/content/tabview/tabview.css b/browser/base/content/tabview/tabview.css
+--- a/browser/base/content/tabview/tabview.css
++++ b/browser/base/content/tabview/tabview.css
+@@ -96,17 +96,17 @@ body {
+ 
+ /* Groups
+ ----------------------------------*/
+ 
+ .groupItem {
+   position: absolute;
+ }
+ 
+-.appTabTray {
++.appTabTrayContainer {
+   position: absolute;
+ }
+ 
+ /* Other Items
+ ----------------------------------*/
+ 
+ .undo {
+   position: absolute;
+diff --git a/browser/base/content/test/tabview/Makefile.in b/browser/base/content/test/tabview/Makefile.in
+--- a/browser/base/content/test/tabview/Makefile.in
++++ b/browser/base/content/test/tabview/Makefile.in
+@@ -61,16 +61,17 @@ _BROWSER_FILES = \
+                  browser_tabview_bug595191.js \
+                  browser_tabview_bug595436.js \
+                  browser_tabview_bug595518.js \
+                  browser_tabview_bug595521.js \
+                  browser_tabview_bug595560.js \
+                  browser_tabview_bug595804.js \
+                  browser_tabview_bug595930.js \
+                  browser_tabview_bug595943.js \
++                 browser_tabview_bug595965.js \
+                  browser_tabview_bug596781.js \
+                  browser_tabview_bug597248.js \
+                  browser_tabview_bug597360.js \
+                  browser_tabview_bug597399.js \
+                  browser_tabview_bug598600.js \
+                  browser_tabview_bug599626.js \
+                  browser_tabview_bug600645.js \
+                  browser_tabview_bug600812.js \
+diff --git a/browser/base/content/test/tabview/browser_tabview_bug595965.js b/browser/base/content/test/tabview/browser_tabview_bug595965.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/tabview/browser_tabview_bug595965.js
+@@ -0,0 +1,138 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *   Mihai Sucan <mihai.sucan@gmail.com>
++ *   Raymond Lee <raymond@appcoast.com>
++ *   Ian Gilman <ian@iangilman.com>
++ */
++
++function test() {
++  waitForExplicitFinish();
++
++  newWindowWithTabView(onTabViewShown);
++}
++
++function onTabViewShown(win) {
++  let TabView = win.TabView;
++  let gBrowser = win.gBrowser;
++  let document = win.document;
++
++  ok(TabView.isVisible(), "Tab View is visible");
++
++  let contentWindow = document.getElementById("tab-view").contentWindow;
++  let iQ = contentWindow.iQ;
++
++  // establish initial state
++  is(contentWindow.GroupItems.groupItems.length, 1,
++      "we start with one group (the default)");
++  is(gBrowser.tabs.length, 1, "we start with one tab");
++  let originalTab = gBrowser.tabs[0];
++
++  // create a group
++  let box = new contentWindow.Rect(20, 20, 210, 200);
++  let groupItem = new contentWindow.GroupItem([],
++      { bounds: box, title: "test1" });
++  is(contentWindow.GroupItems.groupItems.length, 2, "we now have two groups");
++  contentWindow.GroupItems.setActiveGroupItem(groupItem);
++
++  // create a tab
++  let xulTabs = [];
++  xulTabs.push(gBrowser.loadOneTab("about:blank"));
++  is(gBrowser.tabs.length, 2, "we now have two tabs");
++  is(groupItem._children.length, 1, "the new tab was added to the group");
++
++  // make sure the group has no app tabs
++  is(appTabCount(groupItem), 0, "there are no app tab icons");
++
++  let tray = groupItem.$appTabTray;
++  let trayContainer = iQ(tray[0].parentNode);
++
++  is(parseInt(trayContainer.css("width")), 0,
++     "$appTabTray container is not visible");
++
++  // pin the tab, make sure the TabItem goes away and the icon comes on
++  gBrowser.pinTab(xulTabs[0]);
++  is(groupItem._children.length, 0,
++     "the app tab's TabItem was removed from the group");
++  is(appTabCount(groupItem), 1, "there's now one app tab icon");
++
++  is(tray.css("-moz-column-count"), 1,
++     "$appTabTray column count is 1");
++  isnot(parseInt(trayContainer.css("width")), 0,
++     "$appTabTray container is visible");
++
++  let iconHeight = iQ(iQ(".appTabIcon", tray)[0]).height();
++  let trayHeight = parseInt(trayContainer.css("height"));
++  let rows = Math.floor(trayHeight / iconHeight);
++  let icons = rows * 2;
++
++  // add enough tabs to have two columns
++  for (let i = 1; i < icons; i++) {
++    xulTabs.push(gBrowser.loadOneTab("about:blank"));
++    gBrowser.pinTab(xulTabs[i]);
++  }
++
++  is(appTabCount(groupItem), icons, "number of app tab icons is correct");
++
++  is(tray.css("-moz-column-count"), 2,
++     "$appTabTray column count is 2");
++
++  ok(!trayContainer.hasClass("appTabTrayContainerTruncated"),
++     "$appTabTray container does not have .appTabTrayContainerTruncated");
++
++  // add one more tab
++  xulTabs.push(gBrowser.loadOneTab("about:blank"));
++  gBrowser.pinTab(xulTabs[xulTabs.length-1]);
++
++  is(tray.css("-moz-column-count"), 3,
++     "$appTabTray column count is 3");
++
++  ok(trayContainer.hasClass("appTabTrayContainerTruncated"),
++     "$appTabTray container hasClass .appTabTrayContainerTruncated");
++
++  // remove all but one app tabs
++  for (let i = 1; i < xulTabs.length; i++)
++    gBrowser.removeTab(xulTabs[i]);
++
++  is(tray.css("-moz-column-count"), 1,
++     "$appTabTray column count is 1");
++
++  is(appTabCount(groupItem), 1, "there's now one app tab icon");
++
++  ok(!trayContainer.hasClass("appTabTrayContainerTruncated"),
++     "$appTabTray container does not have .appTabTrayContainerTruncated");
++
++  // unpin the last remaining tab
++  gBrowser.unpinTab(xulTabs[0]);
++
++  is(parseInt(trayContainer.css("width")), 0,
++     "$appTabTray container is not visible");
++
++  is(appTabCount(groupItem), 0, "there are no app tab icons");
++
++  is(groupItem._children.length, 1, "the normal tab shows in the group");
++
++  gBrowser.removeTab(xulTabs[0]);
++
++  // close the group
++  groupItem.close();
++
++  hideTabView(function() {
++    ok(!TabView.isVisible(), "Tab View is hidden");
++
++    is(contentWindow.GroupItems.groupItems.length, 1,
++       "we finish with one group");
++    is(gBrowser.tabs.length, 1, "we finish with one tab");
++
++    win.close();
++
++    executeSoon(finish);
++  }, win);
++}
++
++function appTabCount(groupItem) {
++  return groupItem.container.getElementsByClassName("appTabIcon").length;
++}
++
+diff --git a/browser/themes/gnomestripe/browser/tabview/tabview.css b/browser/themes/gnomestripe/browser/tabview/tabview.css
+--- a/browser/themes/gnomestripe/browser/tabview/tabview.css
++++ b/browser/themes/gnomestripe/browser/tabview/tabview.css
+@@ -95,17 +95,18 @@ html[dir=rtl] .favicon {
+   background: url("moz-icon://stock/gtk-close?size=menu") no-repeat;
+ }
+ 
+ html[dir=rtl] .close {
+   right: auto;
+   left: 6px;
+ }
+ 
+-.close:hover {
++.close:hover,
++.appTabIcon:hover {
+   opacity: 1.0;
+ }
+ 
+ .expander {
+   bottom: 8px;
+   right: 6px;
+   width: 16px;
+   height: 16px;
+@@ -119,17 +120,18 @@ html[dir=rtl] .expander {
+   -moz-transform: scaleX(-1);
+ }
+ 
+ .expander:hover {
+   opacity: 1.0;
+ }
+ 
+ .close:hover,
+-.expander:hover {
++.expander:hover,
++.appTabIcon:hover {
+   -moz-transition-property: opacity;
+   -moz-transition-duration: 0.5s;
+   -moz-transition-timing-function: ease-out;
+ }
+ 
+ .favicon img:hover, 
+ .close img:hover, 
+ .expander img:hover {
+@@ -240,30 +242,62 @@ html[dir=rtl] .groupItem.activeGroupItem
+   box-shadow: 3px 3px 5.5px rgba(0,0,0,.5);
+   border-radius: 0.4em;
+ }
+ 
+ html[dir=rtl] .overlay {
+   box-shadow: -3px 3px 5.5px rgba(0,0,0,.5);
+ }
+ 
+-.appTabTray {
++.appTabTrayContainer {
+   top: 34px;
+   right: 1px;
++  -moz-border-start: 1px solid #E1E1E1;
++  padding: 0 5px;
++  overflow-x: hidden;
++  text-align: start;
++  line-height: 0;
+ }
+ 
+-html[dir=rtl] .appTabTray {
++html[dir=rtl] .appTabTrayContainer {
+   right: auto;
+   left: 1px;
+ }
+ 
++.appTabTray {
++  display: inline-block;
++  -moz-column-width: 16px;
++  -moz-column-count: 0;
++  -moz-column-gap: 5px;
++}
++
++.appTabTrayContainerTruncated {
++  padding-bottom: 7px;
++}
++
++.appTabTrayContainerTruncated:after {
++  content: "…";
++  position: absolute;
++  bottom: 2px;
++  left: 0;
++  display: block;
++  width: 100%;
++  height: 15px;
++  line-height: 15px;
++  text-align: center;
++  font-size: 15px;
++}
++
+ .appTabIcon {
+   width: 16px;
+   height: 16px;
+   cursor: pointer;
++  opacity: 0.8;
++  padding-bottom: 3px;
++  display: block;
+ }
+ 
+ .undo {
+   background-color: rgba(0,0,0,.2);
+   width: 150px;
+   height: 30px;
+   line-height: 30px;
+   box-shadow: 0 1px 0 rgba(255,255,255,.4), 0 1px 0 rgba(0,0,0,.3) inset;
+diff --git a/browser/themes/pinstripe/browser/tabview/tabview.css b/browser/themes/pinstripe/browser/tabview/tabview.css
+--- a/browser/themes/pinstripe/browser/tabview/tabview.css
++++ b/browser/themes/pinstripe/browser/tabview/tabview.css
+@@ -110,17 +110,18 @@ html[dir=rtl] .close {
+ 
+ html[dir=rtl] .expander {
+   right: auto;
+   left: 6px;
+   -moz-transform: scaleX(-1);
+ }
+ 
+ .close:hover,
+-.expander:hover {
++.expander:hover,
++.appTabIcon:hover {
+   -moz-transition-property: opacity;
+   -moz-transition-duration: 0.5s;
+   -moz-transition-timing-function: ease-out;
+   opacity: 1.0;
+ }
+ 
+ .favicon img:hover, 
+ .close img:hover, 
+@@ -234,30 +235,62 @@ html[dir=rtl] .groupItem.activeGroupItem
+   box-shadow: 3px 3px 5.5px rgba(0,0,0,.5);
+   border-radius: 0.4em;
+ }
+ 
+ html[dir=rtl] .overlay {
+   box-shadow: -3px 3px 5.5px rgba(0,0,0,.5);
+ }
+ 
+-.appTabTray {
++.appTabTrayContainer {
+   top: 34px;
+   right: 1px;
++  -moz-border-start: 1px solid #E1E1E1;
++  padding: 0 5px;
++  overflow-x: hidden;
++  text-align: start;
++  line-height: 0;
+ }
+ 
+-html[dir=rtl] .appTabTray {
++html[dir=rtl] .appTabTrayContainer {
+   right: auto;
+   left: 1px;
+ }
+ 
++.appTabTray {
++  display: inline-block;
++  -moz-column-width: 16px;
++  -moz-column-count: 0;
++  -moz-column-gap: 5px;
++}
++
++.appTabTrayContainerTruncated {
++  padding-bottom: 7px;
++}
++
++.appTabTrayContainerTruncated:after {
++  content: "…";
++  position: absolute;
++  bottom: 2px;
++  left: 0;
++  display: block;
++  width: 100%;
++  height: 15px;
++  line-height: 15px;
++  text-align: center;
++  font-size: 15px;
++}
++
+ .appTabIcon {
+   width: 16px;
+   height: 16px;
+   cursor: pointer;
++  opacity: 0.8;
++  padding-bottom: 3px;
++  display: block;
+ }
+ 
+ .undo {
+   background-color: #A0A0A0;
+   width: 150px;
+   height: 30px;
+   line-height: 30px;
+   box-shadow: 0px 1px 0px rgba(255,255,255,.5), 0px -1px 0px rgba(0,0,0,.24);
+diff --git a/browser/themes/winstripe/browser/tabview/tabview.css b/browser/themes/winstripe/browser/tabview/tabview.css
+--- a/browser/themes/winstripe/browser/tabview/tabview.css
++++ b/browser/themes/winstripe/browser/tabview/tabview.css
+@@ -113,17 +113,18 @@ html[dir=rtl] .close {
+ 
+ html[dir=rtl] .expander {
+   right: auto;
+   left: 6px;
+   -moz-transform: scaleX(-1);
+ }
+ 
+ .close:hover,
+-.expander:hover {
++.expander:hover,
++.appTabIcon:hover {
+   -moz-transition-property: opacity;
+   -moz-transition-duration: 0.5s;
+   -moz-transition-timing-function: ease-out;
+   opacity: 1.0;
+ }
+ 
+ .favicon img:hover, 
+ .close img:hover, 
+@@ -257,30 +258,62 @@ html[dir=rtl] .groupItem.activeGroupItem
+   box-shadow: 3px 3px 5.5px rgba(0,0,0,.5);
+   border-radius: 0.4em;
+ }
+ 
+ html[dir=rtl] .overlay {
+   box-shadow: -3px 3px 5.5px rgba(0,0,0,.5);
+ }
+ 
+-.appTabTray {
++.appTabTrayContainer {
+   top: 34px;
+   right: 1px;
++  -moz-border-start: 1px solid #E1E1E1;
++  padding: 0 5px;
++  overflow-x: hidden;
++  text-align: start;
++  line-height: 0;
+ }
+ 
+-html[dir=rtl] .appTabTray {
++html[dir=rtl] .appTabTrayContainer {
+   right: auto;
+   left: 1px;
+ }
+ 
++.appTabTray {
++  display: inline-block;
++  -moz-column-width: 16px;
++  -moz-column-count: 0;
++  -moz-column-gap: 5px;
++}
++
++.appTabTrayContainerTruncated {
++  padding-bottom: 7px;
++}
++
++.appTabTrayContainerTruncated:after {
++  content: "…";
++  position: absolute;
++  bottom: 2px;
++  left: 0;
++  display: block;
++  width: 100%;
++  height: 15px;
++  line-height: 15px;
++  text-align: center;
++  font-size: 15px;
++}
++
+ .appTabIcon {
+   width: 16px;
+   height: 16px;
+   cursor: pointer;
++  opacity: 0.8;
++  padding-bottom: 3px;
++  display: block;
+ }
+ 
+ .undo {
+   background-color: #A0A0A0;
+   width: 150px;
+   height: 30px;
+   line-height: 30px;
+   box-shadow: 0px 1px 0px rgba(255,255,255,.5), 0px -1px 0px rgba(0,0,0,.24);

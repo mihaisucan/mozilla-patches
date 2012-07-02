@@ -1,0 +1,356 @@
+# HG changeset patch
+# Parent e82f3b67f83ce0e75cc602105c885201a0cbd7be
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1311186341 -10800
+
+Bug 670896 - Part 1 - Add inner window ID and timestamp to nsIScriptError2
+
+diff --git a/content/base/public/nsContentUtils.h b/content/base/public/nsContentUtils.h
+--- a/content/base/public/nsContentUtils.h
++++ b/content/base/public/nsContentUtils.h
+@@ -738,16 +738,18 @@ public:
+    *   @param aSourceLine The text of the line that contains the error (may be
+               empty).
+    *   @param aLineNumber Line number within resource containing error.
+    *   @param aColumnNumber Column number within resource containing error.
+    *   @param aErrorFlags See nsIScriptError.
+    *   @param aCategory Name of module reporting error.
+    *   @param [aWindowId=0] (Optional) The window ID of the outer window the
+    *          message originates from.
++   *   @param [aInnerWindowId=0] (Optional) The window ID of the inner window
++   *          the message originates from.
+    */
+   enum PropertiesFile {
+     eCSS_PROPERTIES,
+     eXBL_PROPERTIES,
+     eXUL_PROPERTIES,
+     eLAYOUT_PROPERTIES,
+     eFORMS_PROPERTIES,
+     ePRINTING_PROPERTIES,
+@@ -762,17 +764,18 @@ public:
+                                   const PRUnichar **aParams,
+                                   PRUint32 aParamsLength,
+                                   nsIURI* aURI,
+                                   const nsAFlatString& aSourceLine,
+                                   PRUint32 aLineNumber,
+                                   PRUint32 aColumnNumber,
+                                   PRUint32 aErrorFlags,
+                                   const char *aCategory,
+-                                  PRUint64 aWindowId = 0);
++                                  PRUint64 aWindowId = 0,
++                                  PRUint64 aInnerWindowId = 0);
+ 
+   /**
+    * Report a localized error message to the error console.
+    *   @param aFile Properties file containing localized message.
+    *   @param aMessageName Name of localized message.
+    *   @param aParams Parameters to be substituted into localized message.
+    *   @param aParamsLength Length of aParams.
+    *   @param aURI URI of resource containing error (may be null).
+diff --git a/content/base/public/nsIDocument.h b/content/base/public/nsIDocument.h
+--- a/content/base/public/nsIDocument.h
++++ b/content/base/public/nsIDocument.h
+@@ -709,16 +709,25 @@ public:
+    */
+   PRUint64 OuterWindowID() const
+   {
+     nsPIDOMWindow *window = GetWindow();
+     return window ? window->WindowID() : 0;
+   }
+ 
+   /**
++   * Return the inner window ID.
++   */
++  PRUint64 InnerWindowID()
++  {
++    nsPIDOMWindow *window = GetInnerWindow();
++    return window ? window->WindowID() : 0;
++  }
++
++  /**
+    * Get the script loader for this document
+    */ 
+   virtual nsScriptLoader* ScriptLoader() = 0;
+ 
+   /**
+    * Add/Remove an element to the document's id and name hashes
+    */
+   virtual void AddToIdTable(Element* aElement, nsIAtom* aId) = 0;
+diff --git a/content/base/src/nsContentUtils.cpp b/content/base/src/nsContentUtils.cpp
+--- a/content/base/src/nsContentUtils.cpp
++++ b/content/base/src/nsContentUtils.cpp
+@@ -2738,17 +2738,18 @@ nsContentUtils::ReportToConsole(Properti
+                                 const PRUnichar **aParams,
+                                 PRUint32 aParamsLength,
+                                 nsIURI* aURI,
+                                 const nsAFlatString& aSourceLine,
+                                 PRUint32 aLineNumber,
+                                 PRUint32 aColumnNumber,
+                                 PRUint32 aErrorFlags,
+                                 const char *aCategory,
+-                                PRUint64 aWindowId)
++                                PRUint64 aWindowId,
++                                PRUint64 aInnerWindowId)
+ {
+   NS_ASSERTION((aParams && aParamsLength) || (!aParams && !aParamsLength),
+                "Supply either both parameters and their number or no"
+                "parameters and 0.");
+ 
+   nsresult rv;
+   if (!sConsoleService) { // only need to bother null-checking here
+     rv = CallGetService(NS_CONSOLESERVICE_CONTRACTID, &sConsoleService);
+@@ -2772,17 +2773,18 @@ nsContentUtils::ReportToConsole(Properti
+   nsCOMPtr<nsIScriptError2> errorObject =
+       do_CreateInstance(NS_SCRIPTERROR_CONTRACTID, &rv);
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   rv = errorObject->InitWithWindowID(errorText.get(),
+                                      NS_ConvertUTF8toUTF16(spec).get(), // file name
+                                      aSourceLine.get(),
+                                      aLineNumber, aColumnNumber,
+-                                     aErrorFlags, aCategory, aWindowId);
++                                     aErrorFlags, aCategory,
++                                     aWindowId, aInnerWindowId);
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   nsCOMPtr<nsIScriptError> logError = do_QueryInterface(errorObject);
+   return sConsoleService->LogMessage(logError);
+ }
+ 
+ /* static */ nsresult
+ nsContentUtils::ReportToConsole(PropertiesFile aFile,
+@@ -2794,26 +2796,28 @@ nsContentUtils::ReportToConsole(Properti
+                                 PRUint32 aLineNumber,
+                                 PRUint32 aColumnNumber,
+                                 PRUint32 aErrorFlags,
+                                 const char *aCategory,
+                                 nsIDocument* aDocument)
+ {
+   nsIURI* uri = aURI;
+   PRUint64 windowID = 0;
++  PRUint64 innerWindowID = 0;
+   if (aDocument) {
+     if (!uri) {
+       uri = aDocument->GetDocumentURI();
+     }
+     windowID = aDocument->OuterWindowID();
++    innerWindowID = aDocument->InnerWindowID();
+   }
+ 
+   return ReportToConsole(aFile, aMessageName, aParams, aParamsLength, uri,
+                          aSourceLine, aLineNumber, aColumnNumber, aErrorFlags,
+-                         aCategory, windowID);
++                         aCategory, windowID, innerWindowID);
+ }
+ 
+ PRBool
+ nsContentUtils::IsChromeDoc(nsIDocument *aDocument)
+ {
+   if (!aDocument) {
+     return PR_FALSE;
+   }
+diff --git a/dom/base/nsJSUtils.cpp b/dom/base/nsJSUtils.cpp
+--- a/dom/base/nsJSUtils.cpp
++++ b/dom/base/nsJSUtils.cpp
+@@ -178,8 +178,33 @@ nsJSUtils::GetCurrentlyRunningCodeWindow
+       if (win)
+         windowID = win->GetOuterWindow()->WindowID();
+     }
+   }
+ 
+   return windowID;
+ }
+ 
++PRUint64
++nsJSUtils::GetCurrentlyRunningCodeInnerWindowID(JSContext *aContext)
++{
++  if (!aContext)
++    return 0;
++
++  PRUint64 innerWindowID = 0;
++
++  JSObject *jsGlobal = JS_GetGlobalForScopeChain(aContext);
++  if (jsGlobal) {
++    nsIScriptGlobalObject *scriptGlobal = GetStaticScriptGlobal(aContext,
++                                                                jsGlobal);
++    if (scriptGlobal) {
++      nsCOMPtr<nsPIDOMWindow> win = do_QueryInterface(scriptGlobal);
++      if (win) {
++        nsCOMPtr<nsPIDOMWindow> innerWin = win->GetCurrentInnerWindow();
++        if (innerWin)
++          innerWindowID = innerWin->WindowID();
++      }
++    }
++  }
++
++  return innerWindowID;
++}
++
+diff --git a/dom/base/nsJSUtils.h b/dom/base/nsJSUtils.h
+--- a/dom/base/nsJSUtils.h
++++ b/dom/base/nsJSUtils.h
+@@ -74,16 +74,26 @@ public:
+    * Retrieve the outer window ID based on the given JSContext.
+    *
+    * @param JSContext aContext
+    *        The JSContext from which you want to find the outer window ID.
+    *
+    * @returns PRUint64 the outer window ID.
+    */
+   static PRUint64 GetCurrentlyRunningCodeWindowID(JSContext *aContext);
++
++  /**
++   * Retrieve the inner window ID based on the given JSContext.
++   *
++   * @param JSContext aContext
++   *        The JSContext from which you want to find the inner window ID.
++   *
++   * @returns PRUint64 the inner window ID.
++   */
++  static PRUint64 GetCurrentlyRunningCodeInnerWindowID(JSContext *aContext);
+ };
+ 
+ 
+ class nsDependentJSString : public nsDependentString
+ {
+ public:
+   /**
+    * In the case of string ids, getting the string's chars is infallible, so
+diff --git a/js/src/xpconnect/idl/nsIScriptError.idl b/js/src/xpconnect/idl/nsIScriptError.idl
+--- a/js/src/xpconnect/idl/nsIScriptError.idl
++++ b/js/src/xpconnect/idl/nsIScriptError.idl
+@@ -91,33 +91,42 @@ interface nsIScriptError : nsIConsoleMes
+ 
+     AUTF8String toString();
+ };
+ 
+ /**
+  * An interface that nsIScriptError objects can implement to allow
+  * them to be initialized with a window id.
+  */
+-[scriptable, uuid(35cd0f6a-f5bb-497a-ba83-9c8d089b52cd)]
++[scriptable, uuid(4472646b-c928-4d76-9e7c-6b91da7f24cc)]
+ interface nsIScriptError2 : nsISupports {
+     /* Get the window id this was initialized with.  Zero will be
+        returned if init() was used instead of initWithWindowId(). */
+     readonly attribute unsigned long long outerWindowID;
+ 
++    /* Elapsed time, in milliseconds, from a platform-specific zero time to the
++       time the message was created. */
++    readonly attribute PRUint64 timeStamp;
++
++    /* Get the inner window id this was initialized with.  Zero will be
++       returned if init() was used instead of initWithWindowId(). */
++    readonly attribute unsigned long long innerWindowID;
++
+     /* This should be called instead of nsIScriptError.init to
+        initialize with a window id.  The window id should be for the
+        outer window associated with this error. */
+     void initWithWindowID(in wstring message,
+                           in wstring sourceName,
+                           in wstring sourceLine,
+                           in PRUint32 lineNumber,
+                           in PRUint32 columnNumber,
+                           in PRUint32 flags,
+                           in string category,
+-                          in unsigned long long windowID);
++                          in unsigned long long windowID,
++                          in unsigned long long innerWindowID);
+ };
+ 
+ %{ C++
+ #define NS_SCRIPTERROR_CLASSNAME "Script Error"
+ 
+ #define NS_SCRIPTERROR_CID \
+ { 0xe38e53b9, 0x5bb0, 0x456a, { 0xb5, 0x53, 0x57, 0x93, 0x70, 0xcb, 0x15, 0x67 }}
+ 
+diff --git a/js/src/xpconnect/src/nsScriptError.cpp b/js/src/xpconnect/src/nsScriptError.cpp
+--- a/js/src/xpconnect/src/nsScriptError.cpp
++++ b/js/src/xpconnect/src/nsScriptError.cpp
+@@ -50,17 +50,19 @@ NS_IMPL_THREADSAFE_ISUPPORTS3(nsScriptEr
+ nsScriptError::nsScriptError()
+     :  mMessage(),
+        mSourceName(),
+        mLineNumber(0),
+        mSourceLine(),
+        mColumnNumber(0),
+        mFlags(0),
+        mCategory(),
+-       mWindowID(0)
++       mWindowID(0),
++       mTimeStamp(0),
++       mInnerWindowID(0)
+ {
+ }
+ 
+ nsScriptError::~nsScriptError() {}
+ 
+ // nsIConsoleMessage methods
+ NS_IMETHODIMP
+ nsScriptError::GetMessageMoz(PRUnichar **result) {
+@@ -126,37 +128,40 @@ nsScriptError::Init(const PRUnichar *mes
+                     const PRUnichar *sourceName,
+                     const PRUnichar *sourceLine,
+                     PRUint32 lineNumber,
+                     PRUint32 columnNumber,
+                     PRUint32 flags,
+                     const char *category)
+ {
+     return InitWithWindowID(message, sourceName, sourceLine, lineNumber,
+-                            columnNumber, flags, category, 0);
++                            columnNumber, flags, category, 0, 0);
+ }
+ 
+ NS_IMETHODIMP
+ nsScriptError::InitWithWindowID(const PRUnichar *message,
+                                 const PRUnichar *sourceName,
+                                 const PRUnichar *sourceLine,
+                                 PRUint32 lineNumber,
+                                 PRUint32 columnNumber,
+                                 PRUint32 flags,
+                                 const char *category,
+-                                PRUint64 aWindowID)
++                                PRUint64 aWindowID,
++                                PRUint64 aInnerWindowID)
+ {
+     mMessage.Assign(message);
+     mSourceName.Assign(sourceName);
+     mLineNumber = lineNumber;
+     mSourceLine.Assign(sourceLine);
+     mColumnNumber = columnNumber;
+     mFlags = flags;
+     mCategory.Assign(category);
+     mWindowID = aWindowID;
++    mTimeStamp = PR_Now();
++    mInnerWindowID = aInnerWindowID;
+ 
+     return NS_OK;
+ }
+ 
+ NS_IMETHODIMP
+ nsScriptError::ToString(nsACString& /*UTF8*/ aResult)
+ {
+     static const char format0[] =
+@@ -218,8 +223,22 @@ nsScriptError::ToString(nsACString& /*UT
+ }
+ 
+ NS_IMETHODIMP
+ nsScriptError::GetOuterWindowID(PRUint64 *aWindowID)
+ {
+     *aWindowID = mWindowID;
+     return NS_OK;
+ }
++
++NS_IMETHODIMP
++nsScriptError::GetTimeStamp(PRUint64 *aTimeStamp)
++{
++    *aTimeStamp = mTimeStamp;
++    return NS_OK;
++}
++
++NS_IMETHODIMP
++nsScriptError::GetInnerWindowID(PRUint64 *aInnerWindowID)
++{
++    *aInnerWindowID = mInnerWindowID;
++    return NS_OK;
++}

@@ -1,0 +1,1033 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1331228255 -7200
+# Node ID 9811adb0a3eda5d3005639902e3ac683d6a9738c
+# Parent  da21339a107009d39e798282e4b666b0eee52e24
+Bug 731394 - Source Editor in read only mode is not entirely read only
+
+diff --git a/browser/devtools/debugger/DebuggerUI.jsm b/browser/devtools/debugger/DebuggerUI.jsm
+--- a/browser/devtools/debugger/DebuggerUI.jsm
++++ b/browser/devtools/debugger/DebuggerUI.jsm
+@@ -563,16 +563,17 @@ DebuggerUI.prototype = {
+    *        The content type of the source script.
+    */
+   _onSourceLoaded: function DebuggerUI__onSourceLoaded(aSourceUrl,
+                                                        aSourceText,
+                                                        aContentType) {
+     let dbg = this.getDebugger(this.aWindow.gBrowser.selectedTab);
+     dbg.debuggerWindow.SourceScripts.setEditorMode(aSourceUrl, aContentType);
+     dbg.editor.setText(aSourceText);
++    dbg.editor.resetUndo();
+     let doc = dbg.frame.contentDocument;
+     let scripts = doc.getElementById("scripts");
+     let elt = scripts.getElementsByAttribute("value", aSourceUrl)[0];
+     let script = elt.getUserData("sourceScript");
+     script.loaded = true;
+     script.text = aSourceText;
+     script.contentType = aContentType;
+     elt.setUserData("sourceScript", script, null);
+diff --git a/browser/devtools/debugger/debugger.js b/browser/devtools/debugger/debugger.js
+--- a/browser/devtools/debugger/debugger.js
++++ b/browser/devtools/debugger/debugger.js
+@@ -609,16 +609,17 @@ var SourceScripts = {
+       var evt = document.createEvent("CustomEvent");
+       evt.initCustomEvent("Debugger:LoadSource", true, false, aScript.url);
+       document.documentElement.dispatchEvent(evt);
+       window.editor.setText(DebuggerView.getStr("loadingText"));
+     } else {
+       window.editor.setText(aScript.text);
+       window.updateEditorBreakpoints();
+     }
++    window.editor.resetUndo();
+   }
+ };
+ 
+ SourceScripts.onPaused = SourceScripts.onPaused.bind(SourceScripts);
+ SourceScripts.onScripts = SourceScripts.onScripts.bind(SourceScripts);
+ SourceScripts.onNewScript = SourceScripts.onNewScript.bind(SourceScripts);
+ SourceScripts.onScriptsCleared = SourceScripts.onScriptsCleared.bind(SourceScripts);
+ SourceScripts.onChange = SourceScripts.onChange.bind(SourceScripts);
+diff --git a/browser/devtools/debugger/debugger.xul b/browser/devtools/debugger/debugger.xul
+--- a/browser/devtools/debugger/debugger.xul
++++ b/browser/devtools/debugger/debugger.xul
+@@ -40,20 +40,39 @@
+ <?xml-stylesheet href="chrome://browser/skin/" type="text/css"?>
+ <?xml-stylesheet href="chrome://browser/content/orion.css" type="text/css"?>
+ <?xml-stylesheet href="chrome://browser/content/debugger.css" type="text/css"?>
+ <?xml-stylesheet href="chrome://browser/skin/devtools/debugger.css" type="text/css"?>
+ <!DOCTYPE window [
+ <!ENTITY % debuggerDTD SYSTEM "chrome://browser/locale/devtools/debugger.dtd" >
+  %debuggerDTD;
+ ]>
++<?xul-overlay href="chrome://global/content/editMenuOverlay.xul"?>
++<?xul-overlay href="chrome://browser/content/source-editor-overlay.xul"?>
+ <xul:window xmlns="http://www.w3.org/1999/xhtml"
+             xmlns:xul="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul">
++    <xul:script type="text/javascript" src="chrome://global/content/globalOverlay.js"/>
+     <xul:script type="text/javascript" src="debugger.js"/>
+     <xul:script type="text/javascript" src="debugger-view.js"/>
++    <xul:popupset id="debugger-popups">
++      <xul:menupopup id="sourceEditorContextMenu"
++                     onpopupshowing="goUpdateSourceEditorMenuItems()">
++        <xul:menuitem id="se-cMenu-copy"/>
++        <xul:menuseparator/>
++        <xul:menuitem id="se-cMenu-selectAll"/>
++        <xul:menuseparator/>
++        <xul:menuitem id="se-cMenu-find"/>
++        <xul:menuitem id="se-cMenu-findAgain"/>
++        <xul:menuseparator/>
++        <xul:menuitem id="se-cMenu-gotoLine"/>
++      </xul:menupopup>
++    </xul:popupset>
++    <xul:commandset id="editMenuCommands"/>
++    <xul:commandset id="sourceEditorCommands"/>
++    <xul:keyset id="sourceEditorKeys"/>
+ 
+     <div id="body" class="vbox flex">
+         <xul:toolbar id="dbg-toolbar">
+             <xul:button id="close">&debuggerUI.closeButton;</xul:button>
+             <xul:button id="resume"/>
+             <xul:menulist id="scripts"/>
+         </xul:toolbar>
+         <div id="dbg-content" class="hbox flex">
+diff --git a/browser/devtools/debugger/test/Makefile.in b/browser/devtools/debugger/test/Makefile.in
+--- a/browser/devtools/debugger/test/Makefile.in
++++ b/browser/devtools/debugger/test/Makefile.in
+@@ -69,16 +69,17 @@ include $(topsrcdir)/config/rules.mk
+ 	browser_dbg_stack-04.js \
+ 	browser_dbg_location-changes.js \
+ 	browser_dbg_script-switching.js \
+ 	browser_dbg_pause-resume.js \
+ 	browser_dbg_update-editor-mode.js \
+ 	browser_dbg_select-line.js \
+ 	browser_dbg_clean-exit.js \
+ 	browser_dbg_bug723069_editor-breakpoints.js \
++	browser_dbg_bug731394_editor-contextmenu.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	browser_dbg_tab1.html \
+ 	browser_dbg_tab2.html \
+ 	browser_dbg_debuggerstatement.html \
+ 	browser_dbg_stack.html \
+diff --git a/browser/devtools/debugger/test/browser_dbg_bug731394_editor-contextmenu.js b/browser/devtools/debugger/test/browser_dbg_bug731394_editor-contextmenu.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/debugger/test/browser_dbg_bug731394_editor-contextmenu.js
+@@ -0,0 +1,102 @@
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++/**
++ * Bug 731394: test the debugger source editor default context menu.
++ */
++
++const TAB_URL = EXAMPLE_URL + "browser_dbg_script-switching.html";
++
++let gPane = null;
++let gTab = null;
++let gDebuggee = null;
++let gDebugger = null;
++
++function test()
++{
++  let tempScope = {};
++  Cu.import("resource:///modules/source-editor.jsm", tempScope);
++  let SourceEditor = tempScope.SourceEditor;
++
++  let contextMenu = null;
++
++  debug_tab_pane(TAB_URL, function(aTab, aDebuggee, aPane) {
++    gTab = aTab;
++    gDebuggee = aDebuggee;
++    gPane = aPane;
++    gDebugger = gPane.debuggerWindow;
++
++    gPane.activeThread.addOneTimeListener("scriptsadded", function() {
++      Services.tm.currentThread.dispatch({ run: onScriptsAdded }, 0);
++    });
++    gDebuggee.firstCall();
++  });
++
++  function onScriptsAdded()
++  {
++    let scripts = gDebugger.DebuggerView.Scripts._scripts;
++
++    is(gDebugger.StackFrames.activeThread.state, "paused",
++      "Should only be getting stack frames while paused.");
++
++    is(scripts.itemCount, 2, "Found the expected number of scripts.");
++
++    let editor = gDebugger.editor;
++
++    isnot(editor.getText().indexOf("debugger"), -1,
++          "The correct script was loaded initially.");
++
++    contextMenu = gDebugger.document.getElementById("sourceEditorContextMenu");
++    ok(contextMenu, "source editor context menupopup");
++    ok(editor.readOnly, "editor is read only");
++
++    editor.focus();
++    editor.setSelection(0, 10);
++
++    contextMenu.addEventListener("popupshown", function onPopupShown() {
++      contextMenu.removeEventListener("popupshown", onPopupShown, false);
++      executeSoon(testContextMenu);
++    }, false);
++    contextMenu.openPopup(editor.editorElement, "overlap", 0, 0, true, false);
++  }
++
++  function testContextMenu()
++  {
++    let document = gDebugger.document;
++
++    ok(document.getElementById("editMenuCommands"),
++       "#editMenuCommands found");
++    ok(!document.getElementById("editMenuKeys"),
++       "#editMenuKeys not found");
++    ok(document.getElementById("sourceEditorCommands"),
++       "#sourceEditorCommands found");
++    ok(document.getElementById("sourceEditorKeys"),
++       "#sourceEditorKeys found");
++
++    // Map command ids to their expected disabled state.
++    let commands = {"se-cmd-undo": true, "se-cmd-redo": true,
++                    "se-cmd-cut": true, "se-cmd-paste": true,
++                    "se-cmd-delete": true, "cmd_findAgain": true,
++                    "cmd_findPrevious": true, "cmd_find": false,
++                    "cmd_gotoLine": false, "cmd_copy": false,
++                    "se-cmd-selectAll": false};
++    for (let id in commands) {
++      let element = document.getElementById(id);
++      is(element.hasAttribute("disabled"), commands[id],
++         id + " hasAttribute('disabled') check");
++    }
++
++    executeSoon(function() {
++      contextMenu.hidePopup();
++      gDebugger.StackFrames.activeThread.resume(finish);
++    });
++  }
++
++  registerCleanupFunction(function() {
++    removeTab(gTab);
++    gPane = null;
++    gTab = null;
++    gDebuggee = null;
++    gDebugger = null;
++  });
++}
+diff --git a/browser/devtools/jar.mn b/browser/devtools/jar.mn
+--- a/browser/devtools/jar.mn
++++ b/browser/devtools/jar.mn
+@@ -5,14 +5,14 @@ browser.jar:
+     content/browser/scratchpad.js                 (scratchpad/scratchpad.js)
+     content/browser/splitview.css                 (shared/splitview.css)
+ *   content/browser/styleeditor.xul               (styleeditor/styleeditor.xul)
+     content/browser/styleeditor.css               (styleeditor/styleeditor.css)
+     content/browser/devtools/csshtmltree.xul      (styleinspector/csshtmltree.xul)
+     content/browser/devtools/cssruleview.xul      (styleinspector/cssruleview.xul)
+     content/browser/devtools/styleinspector.css   (styleinspector/styleinspector.css)
+     content/browser/orion.js                      (sourceeditor/orion/orion.js)
+-    content/browser/source-editor-overlay.xul     (sourceeditor/source-editor-overlay.xul)
++*   content/browser/source-editor-overlay.xul     (sourceeditor/source-editor-overlay.xul)
+ *   content/browser/debugger.xul                  (debugger/debugger.xul)
+     content/browser/debugger.css                  (debugger/debugger.css)
+     content/browser/debugger.js                   (debugger/debugger.js)
+     content/browser/debugger-view.js              (debugger/debugger-view.js)
+ 
+diff --git a/browser/devtools/scratchpad/scratchpad.xul b/browser/devtools/scratchpad/scratchpad.xul
+--- a/browser/devtools/scratchpad/scratchpad.xul
++++ b/browser/devtools/scratchpad/scratchpad.xul
+@@ -79,17 +79,16 @@
+   <command id="sp-cmd-contentContext" oncommand="Scratchpad.setContentContext();"/>
+   <command id="sp-cmd-browserContext" oncommand="Scratchpad.setBrowserContext();" disabled="true"/>
+   <command id="sp-cmd-resetContext" oncommand="Scratchpad.resetContext();"/>
+   <command id="sp-cmd-errorConsole" oncommand="Scratchpad.openErrorConsole();" disabled="true"/>
+   <command id="sp-cmd-webConsole" oncommand="Scratchpad.openWebConsole();"/>
+   <command id="sp-cmd-documentationLink" oncommand="Scratchpad.openDocumentationPage();"/>
+ </commandset>
+ 
+-<keyset id="editMenuKeys"/>
+ <keyset id="sourceEditorKeys"/>
+ 
+ <keyset id="sp-keyset">
+   <key id="sp-key-window"
+        key="&newWindowCmd.commandkey;"
+        command="sp-cmd-newWindow"
+        modifiers="accel"/>
+   <key id="sp-key-open"
+@@ -178,42 +177,30 @@
+                 accesskey="&closeCmd.accesskey;"
+                 command="sp-cmd-close"/>
+     </menupopup>
+   </menu>
+ 
+   <menu id="sp-edit-menu" label="&editMenu.label;"
+         accesskey="&editMenu.accesskey;">
+     <menupopup id="sp-menu_editpopup"
+-               onpopupshowing="goUpdateGlobalEditMenuItems()">
+-      <menuitem id="sp-menu-undo"
+-                label="&undoCmd.label;"
+-                accesskey="&undoCmd.accesskey;"
+-                key="sp-key-undo"
+-                command="se-cmd-undo"/>
+-      <menuitem id="sp-menu-redo"
+-                label="&redoCmd.label;"
+-                accesskey="&redoCmd.accesskey;"
+-                key="sp-key-redo"
+-                command="se-cmd-redo"/>
++               onpopupshowing="goUpdateSourceEditorMenuItems()">
++      <menuitem id="se-menu-undo"/>
++      <menuitem id="se-menu-redo"/>
+       <menuseparator/>
+-      <menuitem id="menu_cut"/>
+-      <menuitem id="menu_copy"/>
+-      <menuitem id="menu_paste"/>
++      <menuitem id="se-menu-cut"/>
++      <menuitem id="se-menu-copy"/>
++      <menuitem id="se-menu-paste"/>
+       <menuseparator/>
+-      <menuitem id="menu_selectAll"/>
++      <menuitem id="se-menu-selectAll"/>
+       <menuseparator/>
+-      <menuitem id="menu_find"/>
+-      <menuitem id="menu_findAgain"/>
++      <menuitem id="se-menu-find"/>
++      <menuitem id="se-menu-findAgain"/>
+       <menuseparator/>
+-      <menuitem id="sp-menu-gotoLine"
+-                label="&gotoLineCmd.label;"
+-                accesskey="&gotoLineCmd.accesskey;"
+-                key="key_gotoLine"
+-                command="cmd_gotoLine"/>
++      <menuitem id="se-menu-gotoLine"/>
+     </menupopup>
+   </menu>
+ 
+   <menu id="sp-execute-menu" label="&executeMenu.label;"
+         accesskey="&executeMenu.accesskey;">
+     <menupopup id="sp-menu_executepopup">
+       <menuitem id="sp-text-run"
+                 label="&run.label;"
+@@ -273,23 +260,23 @@
+                 command="sp-cmd-documentationLink"
+                 key="key_openHelp"/>
+     </menupopup>
+   </menu>
+ </menubar>
+ 
+ <popupset id="scratchpad-popups">
+   <menupopup id="scratchpad-text-popup"
+-             onpopupshowing="goUpdateGlobalEditMenuItems()">
+-    <menuitem id="cMenu_cut" key="key_cut"/>
+-    <menuitem id="cMenu_copy" key="key_copy"/>
+-    <menuitem id="cMenu_paste" key="key_paste"/>
+-    <menuitem id="cMenu_delete" key="key_delete"/>
++             onpopupshowing="goUpdateSourceEditorMenuItems()">
++    <menuitem id="se-cMenu-cut"/>
++    <menuitem id="se-cMenu-copy"/>
++    <menuitem id="se-cMenu-paste"/>
++    <menuitem id="se-cMenu-delete"/>
+     <menuseparator/>
+-    <menuitem id="cMenu_selectAll" key="key_selectAll"/>
++    <menuitem id="se-cMenu-selectAll"/>
+     <menuseparator/>
+     <menuitem id="sp-text-run"
+               label="&run.label;"
+               accesskey="&run.accesskey;"
+               key="sp-key-run"
+               command="sp-cmd-run"/>
+     <menuitem id="sp-text-inspect"
+               label="&inspect.label;"
+@@ -305,12 +292,12 @@
+     <menuitem id="sp-text-resetContext"
+               label="&resetContext2.label;"
+               accesskey="&resetContext2.accesskey;"
+               command="sp-cmd-resetContext"/>
+   </menupopup>
+ </popupset>
+ 
+ <notificationbox id="scratchpad-notificationbox" flex="1">
+-  <hbox id="scratchpad-editor" flex="1" context="scratchpad-text-popup" />
++  <hbox id="scratchpad-editor" flex="1"/>
+ </notificationbox>
+ 
+ </window>
+diff --git a/browser/devtools/scratchpad/test/browser_scratchpad_bug_699130_edit_ui_updates.js b/browser/devtools/scratchpad/test/browser_scratchpad_bug_699130_edit_ui_updates.js
+--- a/browser/devtools/scratchpad/test/browser_scratchpad_bug_699130_edit_ui_updates.js
++++ b/browser/devtools/scratchpad/test/browser_scratchpad_bug_699130_edit_ui_updates.js
+@@ -22,17 +22,17 @@ function test()
+ }
+ 
+ function runTests()
+ {
+   let sp = gScratchpadWindow.Scratchpad;
+   let doc = gScratchpadWindow.document;
+   let winUtils = gScratchpadWindow.QueryInterface(Ci.nsIInterfaceRequestor).
+                  getInterface(Ci.nsIDOMWindowUtils);
+-  let OS = Cc["@mozilla.org/xre/app-info;1"].getService(Ci.nsIXULRuntime).OS;
++  let OS = Services.appinfo.OS;
+ 
+   info("will test the Edit menu");
+ 
+   let pass = 0;
+ 
+   sp.setText("bug 699130: hello world! (edit menu)");
+ 
+   let editMenu = doc.getElementById("sp-edit-menu");
+@@ -46,19 +46,19 @@ function runTests()
+       editMenuIndex = i;
+       break;
+     }
+   }
+   isnot(editMenuIndex, -1, "Edit menu index is correct");
+ 
+   let menuPopup = editMenu.menupopup;
+   ok(menuPopup, "the Edit menupopup");
+-  let cutItem = doc.getElementById("sp-menu-cut");
++  let cutItem = doc.getElementById("se-menu-cut");
+   ok(cutItem, "the Cut menuitem");
+-  let pasteItem = doc.getElementById("sp-menu-paste");
++  let pasteItem = doc.getElementById("se-menu-paste");
+   ok(pasteItem, "the Paste menuitem");
+ 
+   let anchor = doc.documentElement;
+   let isContextMenu = false;
+ 
+   let openMenu = function(aX, aY, aCallback) {
+     if (!editMenu || OS != "Darwin") {
+       menuPopup.addEventListener("popupshown", function onPopupShown() {
+@@ -169,19 +169,19 @@ function runTests()
+   let testContextMenu = function() {
+     info("will test the context menu");
+ 
+     editMenu = null;
+     isContextMenu = true;
+ 
+     menuPopup = doc.getElementById("scratchpad-text-popup");
+     ok(menuPopup, "the context menupopup");
+-    cutItem = doc.getElementById("menu_cut");
++    cutItem = doc.getElementById("se-cMenu-cut");
+     ok(cutItem, "the Cut menuitem");
+-    pasteItem = doc.getElementById("menu_paste");
++    pasteItem = doc.getElementById("se-cMenu-paste");
+     ok(pasteItem, "the Paste menuitem");
+ 
+     sp.setText("bug 699130: hello world! (context menu)");
+     openMenu(10, 10, firstShow);
+   };
+ 
+   openMenu(10, 10, firstShow);
+ }
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -105,16 +105,20 @@ const ORION_ANNOTATION_TYPES = {
+   currentLine: "orion.annotation.currentLine",
+ };
+ 
+ /**
+  * Default key bindings in the Orion editor.
+  */
+ const DEFAULT_KEYBINDINGS = [
+   {
++    action: "enter",
++    code: Ci.nsIDOMKeyEvent.DOM_VK_ENTER,
++  },
++  {
+     action: "undo",
+     code: Ci.nsIDOMKeyEvent.DOM_VK_Z,
+     accel: true,
+   },
+   {
+     action: "redo",
+     code: Ci.nsIDOMKeyEvent.DOM_VK_Z,
+     accel: true,
+@@ -460,16 +464,20 @@ SourceEditor.prototype = {
+ 
+   /**
+    * The "tab" editor action implementation. This adds support for expanded tabs
+    * to spaces, and support for the indentation of multiple lines at once.
+    * @private
+    */
+   _doTab: function SE__doTab()
+   {
++    if (this.readOnly) {
++      return false;
++    }
++
+     let indent = "\t";
+     let selection = this.getSelection();
+     let model = this._model;
+     let firstLine = model.getLineAtOffset(selection.start);
+     let firstLineStart = model.getLineStart(firstLine);
+     let lastLineOffset = selection.end > selection.start ?
+                          selection.end - 1 : selection.end;
+     let lastLine = model.getLineAtOffset(lastLineOffset);
+@@ -510,16 +518,20 @@ SourceEditor.prototype = {
+ 
+   /**
+    * The "Unindent lines" editor action implementation. This method is invoked
+    * when the user presses Shift-Tab.
+    * @private
+    */
+   _doUnindentLines: function SE__doUnindentLines()
+   {
++    if (this.readOnly) {
++      return true;
++    }
++
+     let indent = "\t";
+ 
+     let selection = this.getSelection();
+     let model = this._model;
+     let firstLine = model.getLineAtOffset(selection.start);
+     let lastLineOffset = selection.end > selection.start ?
+                          selection.end - 1 : selection.end;
+     let lastLine = model.getLineAtOffset(lastLineOffset);
+@@ -564,16 +576,20 @@ SourceEditor.prototype = {
+ 
+   /**
+    * The editor Enter action implementation, which adds simple automatic
+    * indentation based on the previous line when the user presses the Enter key.
+    * @private
+    */
+   _doEnter: function SE__doEnter()
+   {
++    if (this.readOnly) {
++      return false;
++    }
++
+     let selection = this.getSelection();
+     if (selection.start != selection.end) {
+       return false;
+     }
+ 
+     let model = this._model;
+     let lineIndex = model.getLineAtOffset(selection.start);
+     let lineText = model.getLine(lineIndex, true);
+diff --git a/browser/devtools/sourceeditor/source-editor-overlay.xul b/browser/devtools/sourceeditor/source-editor-overlay.xul
+--- a/browser/devtools/sourceeditor/source-editor-overlay.xul
++++ b/browser/devtools/sourceeditor/source-editor-overlay.xul
+@@ -30,94 +30,208 @@
+    - under the terms of either the GPL or the LGPL, and not to allow others to
+    - use your version of this file under the terms of the MPL, indicate your
+    - decision by deleting the provisions above and replace them with the notice
+    - and other provisions required by the GPL or the LGPL. If you do not delete
+    - the provisions above, a recipient may use your version of this file under
+    - the terms of any one of the MPL, the GPL or the LGPL.
+    -
+    - ***** END LICENSE BLOCK ***** -->
+-<!DOCTYPE overlay SYSTEM "chrome://browser/locale/devtools/sourceeditor.dtd">
++<!DOCTYPE overlay [
++  <!ENTITY % editMenuStrings SYSTEM "chrome://global/locale/editMenuOverlay.dtd">
++  %editMenuStrings;
++  <!ENTITY % sourceEditorStrings SYSTEM "chrome://browser/locale/devtools/sourceeditor.dtd">
++  %sourceEditorStrings;
++]>
+ <overlay id="sourceEditorOverlay"
+          xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul">
+ 
+   <!-- This Source Editor overlay requires the editMenuOverlay.xul to be loaded.
+        The globalOverlay.js script is also required in the XUL document where
+-       the source-editor-overlay.xul is loaded. -->
++       the source-editor-overlay.xul is loaded. Do not use #editMenuKeys to
++       avoid conflicts! -->
++
++  <script type="application/javascript">
++    function goUpdateSourceEditorMenuItems()
++    {
++      goUpdateGlobalEditMenuItems();
++      let commands = ['se-cmd-undo', 'se-cmd-redo', 'se-cmd-cut', 'se-cmd-paste',
++                      'se-cmd-delete'];
++      commands.forEach(goUpdateCommand);
++    }
++  </script>
+ 
+   <commandset id="sourceEditorCommands">
+     <command id="cmd_find" oncommand="goDoCommand('cmd_find')"/>
+     <command id="cmd_findAgain" oncommand="goDoCommand('cmd_findAgain')" disabled="true"/>
+     <command id="cmd_findPrevious" oncommand="goDoCommand('cmd_findPrevious')" disabled="true"/>
+     <command id="cmd_gotoLine" oncommand="goDoCommand('cmd_gotoLine')"/>
++    <command id="se-cmd-selectAll" oncommand="goDoCommand('se-cmd-selectAll')"/>
++    <command id="se-cmd-cut" oncommand="goDoCommand('se-cmd-cut')" disabled="true"/>
++    <command id="se-cmd-paste" oncommand="goDoCommand('se-cmd-paste')" disabled="true"/>
++    <command id="se-cmd-delete" oncommand="goDoCommand('se-cmd-delete')" disabled="true"/>
+     <command id="se-cmd-undo" oncommand="goDoCommand('se-cmd-undo')" disabled="true"/>
+     <command id="se-cmd-redo" oncommand="goDoCommand('se-cmd-redo')" disabled="true"/>
+   </commandset>
+ 
+   <keyset id="sourceEditorKeys">
+-    <key id="sp-key-undo" key="&undoCmd.key;"
+-         command="se-cmd-undo" modifiers="accel"/>
++    <!-- Do not use both #sourceEditorKeys and #editMenuKeys in the same
++    	 document to avoid conflicts! -->
++    <key id="key_undo"
++         key="&undoCmd.key;"
++         modifiers="accel"
++         command="se-cmd-undo"/>
+ #ifdef XP_UNIX
+-    <key id="sp-key-redo" key="&undoCmd.key;"
+-         command="se-cmd-redo" modifiers="accel,shift"/>
++    <key id="key_redo"
++         key="&undoCmd.key;"
++         modifiers="accel,shift"
++         command="se-cmd-redo"/>
+ #else
+-    <key id="sp-key-redo" key="&redoCmd.key;"
+-         command="se-cmd-redo" modifiers="accel"/>
++    <key id="key_redo"
++         key="&redoCmd.key;"
++         modifiers="accel"
++         command="se-cmd-redo"/>
+ #endif
++    <key id="key_cut"
++         key="&cutCmd.key;"
++         modifiers="accel"
++         command="se-cmd-cut"/>
++    <key id="key_copy"
++         key="&copyCmd.key;"
++         modifiers="accel"
++         command="cmd_copy"/>
++    <key id="key_paste"
++         key="&pasteCmd.key;"
++         modifiers="accel"
++         command="se-cmd-paste"/>
+     <key id="key_gotoLine"
+          key="&gotoLineCmd.key;"
+          command="cmd_gotoLine"
+          modifiers="accel"/>
++    <key id="key_delete"
++         keycode="VK_DELETE"
++         command="se-cmd-delete"/>
++    <key id="key_selectAll"
++         key="&selectAllCmd.key;"
++         modifiers="accel"
++         command="se-cmd-selectAll"/>
++    <key id="key_find"
++         key="&findCmd.key;"
++         modifiers="accel"
++         command="cmd_find"/>
++    <key id="key_findAgain"
++         key="&findAgainCmd.key;"
++         modifiers="accel"
++         command="cmd_findAgain"/>
++    <key id="key_findPrevious"
++         key="&findAgainCmd.key;"
++         modifiers="shift,accel"
++         command="cmd_findPrevious"/>
++    <key id="key_findAgain2"
++         keycode="&findAgainCmd.key2;"
++         command="cmd_findAgain"/>
++    <key id="key_findPrevious2"
++         keycode="&findAgainCmd.key2;"
++         modifiers="shift"
++         command="cmd_findPrevious"/>
+   </keyset>
+ 
+-  <menupopup id="sourceEditorContextMenu"
+-             onpopupshowing="goUpdateGlobalEditMenuItems()">
+-    <menuitem id="se-menu-undo"
+-              label="&undoCmd.label;"
+-              key="key_undo"
+-              accesskey="&undoCmd.accesskey;"
+-              command="se-cmd-undo"/>
+-    <menuseparator/>
+-    <menuitem id="se-menu-cut"
+-              label="&cutCmd.label;"
+-              key="key_cut"
+-              accesskey="&cutCmd.accesskey;"
+-              command="cmd_cut"/>
+-    <menuitem id="se-menu-copy"
+-              label="&copyCmd.label;"
+-              key="key_copy"
+-              accesskey="&copyCmd.accesskey;"
+-              command="cmd_copy"/>
+-    <menuitem id="se-menu-paste"
+-              label="&pasteCmd.label;"
+-              key="key_paste"
+-              accesskey="&pasteCmd.accesskey;"
+-              command="cmd_paste"/>
+-    <menuitem id="se-menu-delete"
+-              label="&deleteCmd.label;"
+-              key="key_delete"
+-              accesskey="&deleteCmd.accesskey;"
+-              command="cmd_delete"/>
+-    <menuseparator/>
+-    <menuitem id="se-menu-selectAll"
+-              label="&selectAllCmd.label;"
+-              key="key_selectAll"
+-              accesskey="&selectAllCmd.accesskey;"
+-              command="cmd_selectAll"/>
+-    <menuseparator/>
+-    <menuitem id="se-menu-find"
+-              label="&findCmd.label;"
+-              accesskey="&findCmd.accesskey;"
+-              key="key_find"
+-              command="cmd_find"/>
+-    <menuitem id="se-menu-findAgain"
+-              label="&findAgainCmd.label;"
+-              accesskey="&findAgainCmd.accesskey;"
+-              key="key_findAgain"
+-              command="cmd_findAgain"/>
+-    <menuseparator/>
+-    <menuitem id="se-menu-gotoLine"
+-              label="&gotoLineCmd.label;"
+-              accesskey="&gotoLineCmd.accesskey;"
+-              key="key_gotoLine"
+-              command="cmd_gotoLine"/>
+-  </menupopup>
++  <!-- Items for the Edit menu -->
++
++  <menuitem id="se-menu-undo"
++            label="&undoCmd.label;"
++            key="key_undo"
++            accesskey="&undoCmd.accesskey;"
++            command="se-cmd-undo"/>
++  <menuitem id="se-menu-redo"
++            label="&redoCmd.label;"
++            key="key_redo"
++            accesskey="&redoCmd.accesskey;"
++            command="se-cmd-redo"/>
++  <menuitem id="se-menu-cut"
++            label="&cutCmd.label;"
++            key="key_cut"
++            accesskey="&cutCmd.accesskey;"
++            command="se-cmd-cut"/>
++  <menuitem id="se-menu-copy"
++            label="&copyCmd.label;"
++            key="key_copy"
++            accesskey="&copyCmd.accesskey;"
++            command="cmd_copy"/>
++  <menuitem id="se-menu-paste"
++            label="&pasteCmd.label;"
++            key="key_paste"
++            accesskey="&pasteCmd.accesskey;"
++            command="se-cmd-paste"/>
++  <menuitem id="se-menu-delete"
++            label="&deleteCmd.label;"
++            key="key_delete"
++            accesskey="&deleteCmd.accesskey;"
++            command="se-cmd-delete"/>
++  <menuitem id="se-menu-selectAll"
++            label="&selectAllCmd.label;"
++            key="key_selectAll"
++            accesskey="&selectAllCmd.accesskey;"
++            command="se-cmd-selectAll"/>
++  <menuitem id="se-menu-find"
++            label="&findCmd.label;"
++            accesskey="&findCmd.accesskey;"
++            key="key_find"
++            command="cmd_find"/>
++  <menuitem id="se-menu-findAgain"
++            label="&findAgainCmd.label;"
++            accesskey="&findAgainCmd.accesskey;"
++            key="key_findAgain"
++            command="cmd_findAgain"/>
++  <menuitem id="se-menu-gotoLine"
++            label="&gotoLineCmd.label;"
++            accesskey="&gotoLineCmd.accesskey;"
++            key="key_gotoLine"
++            command="cmd_gotoLine"/>
++
++  <!-- Items for context menus -->
++
++  <menuitem id="se-cMenu-undo"
++            label="&undoCmd.label;"
++            key="key_undo"
++            accesskey="&undoCmd.accesskey;"
++            command="se-cmd-undo"/>
++  <menuitem id="se-cMenu-cut"
++            label="&cutCmd.label;"
++            key="key_cut"
++            accesskey="&cutCmd.accesskey;"
++            command="se-cmd-cut"/>
++  <menuitem id="se-cMenu-copy"
++            label="&copyCmd.label;"
++            key="key_copy"
++            accesskey="&copyCmd.accesskey;"
++            command="cmd_copy"/>
++  <menuitem id="se-cMenu-paste"
++            label="&pasteCmd.label;"
++            key="key_paste"
++            accesskey="&pasteCmd.accesskey;"
++            command="se-cmd-paste"/>
++  <menuitem id="se-cMenu-delete"
++            label="&deleteCmd.label;"
++            key="key_delete"
++            accesskey="&deleteCmd.accesskey;"
++            command="se-cmd-delete"/>
++  <menuitem id="se-cMenu-selectAll"
++            label="&selectAllCmd.label;"
++            key="key_selectAll"
++            accesskey="&selectAllCmd.accesskey;"
++            command="se-cmd-selectAll"/>
++  <menuitem id="se-cMenu-find"
++            label="&findCmd.label;"
++            accesskey="&findCmd.accesskey;"
++            key="key_find"
++            command="cmd_find"/>
++  <menuitem id="se-cMenu-findAgain"
++            label="&findAgainCmd.label;"
++            accesskey="&findAgainCmd.accesskey;"
++            key="key_findAgain"
++            command="cmd_findAgain"/>
++  <menuitem id="se-cMenu-gotoLine"
++            label="&gotoLineCmd.label;"
++            accesskey="&gotoLineCmd.accesskey;"
++            key="key_gotoLine"
++            command="cmd_gotoLine"/>
+ </overlay>
+diff --git a/browser/devtools/sourceeditor/source-editor-ui.jsm b/browser/devtools/sourceeditor/source-editor-ui.jsm
+--- a/browser/devtools/sourceeditor/source-editor-ui.jsm
++++ b/browser/devtools/sourceeditor/source-editor-ui.jsm
+@@ -248,16 +248,20 @@ SourceEditorController.prototype = {
+ 
+     switch (aCommand) {
+       case "cmd_find":
+       case "cmd_findAgain":
+       case "cmd_findPrevious":
+       case "cmd_gotoLine":
+       case "se-cmd-undo":
+       case "se-cmd-redo":
++      case "se-cmd-cut":
++      case "se-cmd-paste":
++      case "se-cmd-delete":
++      case "se-cmd-selectAll":
+         result = true;
+         break;
+       default:
+         result = false;
+         break;
+     }
+ 
+     return result;
+@@ -273,28 +277,42 @@ SourceEditorController.prototype = {
+    */
+   isCommandEnabled: function SEC_isCommandEnabled(aCommand)
+   {
+     let result;
+ 
+     switch (aCommand) {
+       case "cmd_find":
+       case "cmd_gotoLine":
++      case "se-cmd-selectAll":
+         result = true;
+         break;
+       case "cmd_findAgain":
+       case "cmd_findPrevious":
+         result = this._editor.lastFind && this._editor.lastFind.lastFound != -1;
+         break;
+       case "se-cmd-undo":
+         result = this._editor.canUndo();
+         break;
+       case "se-cmd-redo":
+         result = this._editor.canRedo();
+         break;
++      case "se-cmd-cut":
++      case "se-cmd-delete": {
++        let selection = this._editor.getSelection();
++        result = selection.start != selection.end && !this._editor.readOnly;
++        break;
++      }
++      case "se-cmd-paste": {
++        let window = this._editor._view._frameWindow;
++        let controller = window.controllers.getControllerForCommand("cmd_paste");
++        result = !this._editor.readOnly &&
++                 controller.isCommandEnabled("cmd_paste");
++        break;
++      }
+       default:
+         result = false;
+         break;
+     }
+ 
+     return result;
+   },
+ 
+@@ -315,19 +333,33 @@ SourceEditorController.prototype = {
+         this._editor.ui.findNext();
+         break;
+       case "cmd_findPrevious":
+         this._editor.ui.findPrevious();
+         break;
+       case "cmd_gotoLine":
+         this._editor.ui.gotoLine();
+         break;
++      case "se-cmd-selectAll":
++        this._editor._view.invokeAction("selectAll");
++        break;
+       case "se-cmd-undo":
+         this._editor.undo();
+         break;
+       case "se-cmd-redo":
+         this._editor.redo();
+         break;
++      case "se-cmd-cut":
++        this._editor.ui._ownerWindow.goDoCommand("cmd_cut");
++        break;
++      case "se-cmd-paste":
++        this._editor.ui._ownerWindow.goDoCommand("cmd_paste");
++        break;
++      case "se-cmd-delete": {
++        let selection = this._editor.getSelection();
++        this._editor.setText("", selection.start, selection.end);
++        break;
++      }
+     }
+   },
+ 
+   onEvent: function() { }
+ };
+diff --git a/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js b/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js
+--- a/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js
++++ b/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js
+@@ -196,21 +196,31 @@ function editorLoaded()
+ 
+   editor.readOnly = true;
+   EventUtils.synthesizeKey("b", {}, testWin);
+   is(editor.getText(), "foofoo", "editor is now read-only (keyboard)");
+ 
+   editor.setText("foobar");
+   is(editor.getText(), "foobar", "editor allows programmatic changes (setText)");
+ 
++  EventUtils.synthesizeKey("VK_RETURN", {}, testWin);
++  is(editor.getText(), "foobar", "Enter key does nothing");
++
++  EventUtils.synthesizeKey("VK_TAB", {}, testWin);
++  is(editor.getText(), "foobar", "Tab does nothing");
++
++  editor.setText("      foobar");
++  EventUtils.synthesizeKey("VK_TAB", {shiftKey: true}, testWin);
++  is(editor.getText(), "      foobar", "Shift+Tab does nothing");
++
+   editor.readOnly = false;
+ 
+   editor.setCaretOffset(editor.getCharCount());
+   EventUtils.synthesizeKey("-", {}, testWin);
+-  is(editor.getText(), "foobar-", "editor is now editable again");
++  is(editor.getText(), "      foobar-", "editor is now editable again");
+ 
+   // Test the Selection event.
+ 
+   editor.setText("foobarbaz");
+ 
+   editor.setSelection(1, 4);
+ 
+   let event = null;
+diff --git a/browser/devtools/styleeditor/styleeditor.xul b/browser/devtools/styleeditor/styleeditor.xul
+--- a/browser/devtools/styleeditor/styleeditor.xul
++++ b/browser/devtools/styleeditor/styleeditor.xul
+@@ -52,26 +52,40 @@
+         id="style-editor-chrome-window"
+         title="&window.title;"
+         windowtype="Tools:StyleEditor"
+         width="800" height="280"
+         persist="screenX screenY width height sizemode">
+ <xul:script type="application/javascript" src="chrome://global/content/globalOverlay.js"/>
+ 
+ <xul:popupset id="style-editor-popups">
+-  <xul:menupopup id="sourceEditorContextMenu"/>
++  <xul:menupopup id="sourceEditorContextMenu"
++                 onpopupshowing="goUpdateSourceEditorMenuItems()">
++    <xul:menuitem id="se-cMenu-undo"/>
++    <xul:menuseparator/>
++    <xul:menuitem id="se-cMenu-cut"/>
++    <xul:menuitem id="se-cMenu-copy"/>
++    <xul:menuitem id="se-cMenu-paste"/>
++    <xul:menuitem id="se-cMenu-delete"/>
++    <xul:menuseparator/>
++    <xul:menuitem id="se-cMenu-selectAll"/>
++    <xul:menuseparator/>
++    <xul:menuitem id="se-cMenu-find"/>
++    <xul:menuitem id="se-cMenu-findAgain"/>
++    <xul:menuseparator/>
++    <xul:menuitem id="se-cMenu-gotoLine"/>
++  </xul:menupopup>
+ </xul:popupset>
+ 
+ <xul:commandset id="editMenuCommands"/>
+ <xul:commandset id="sourceEditorCommands"/>
+ <xul:commandset id="style-editor-commandset">
+   <xul:command id="style-editor-cmd-close" oncommand="window.close();"/>
+ </xul:commandset>
+ 
+-<xul:keyset id="editMenuKeys"/>
+ <xul:keyset id="sourceEditorKeys"/>
+ <xul:keyset id="style-editor-keyset">
+   <xul:key id="style-editor-key-close"
+            key="&closeCmd.key;"
+            command="style-editor-cmd-close"
+            modifiers="accel"/>
+ </xul:keyset>
+ 
+diff --git a/browser/locales/en-US/chrome/browser/devtools/scratchpad.dtd b/browser/locales/en-US/chrome/browser/devtools/scratchpad.dtd
+--- a/browser/locales/en-US/chrome/browser/devtools/scratchpad.dtd
++++ b/browser/locales/en-US/chrome/browser/devtools/scratchpad.dtd
+@@ -38,28 +38,16 @@
+ 
+ <!ENTITY closeCmd.label               "Close">
+ <!ENTITY closeCmd.key                 "W">
+ <!ENTITY closeCmd.accesskey           "C">
+ 
+ <!ENTITY editMenu.label               "Edit">
+ <!ENTITY editMenu.accesskey           "E">
+ 
+-<!ENTITY undoCmd.label                "Undo">
+-<!ENTITY undoCmd.key                  "Z">
+-<!ENTITY undoCmd.accesskey            "U">
+-
+-<!ENTITY redoCmd.label                "Redo">
+-<!ENTITY redoCmd.key                  "Y">
+-<!ENTITY redoCmd.accesskey            "R">
+-
+-<!ENTITY gotoLineCmd.label            "Jump to line…">
+-<!ENTITY gotoLineCmd.key              "J">
+-<!ENTITY gotoLineCmd.accesskey        "J">
+-
+ <!ENTITY run.label                    "Run">
+ <!ENTITY run.accesskey                "R">
+ <!ENTITY run.key                      "r">
+ 
+ <!ENTITY inspect.label                "Inspect">
+ <!ENTITY inspect.accesskey            "I">
+ <!ENTITY inspect.key                  "i">
+ 
+diff --git a/browser/locales/en-US/chrome/browser/devtools/sourceeditor.dtd b/browser/locales/en-US/chrome/browser/devtools/sourceeditor.dtd
+--- a/browser/locales/en-US/chrome/browser/devtools/sourceeditor.dtd
++++ b/browser/locales/en-US/chrome/browser/devtools/sourceeditor.dtd
+@@ -5,32 +5,11 @@
+ <!-- LOCALIZATION NOTE : FILE Do not translate commandkeys -->
+ 
+ <!-- LOCALIZATION NOTE : FILE The correct localization of this file might be to
+   - keep it in English, or another language commonly spoken among web developers.
+   - You want to make that choice consistent across the developer tools.
+   - A good criteria is the language in which you'd find the best
+   - documentation on web development on the web. -->
+ 
+-<!ENTITY undoCmd.label             "Undo">
+-<!ENTITY undoCmd.accesskey         "U">
+-<!ENTITY undoCmd.key               "Z">
+-<!ENTITY redoCmd.label             "Redo">
+-<!ENTITY redoCmd.accesskey         "R">
+-<!ENTITY redoCmd.key               "Y">
+-<!ENTITY cutCmd.label              "Cut">
+-<!ENTITY cutCmd.accesskey          "t">
+-<!ENTITY copyCmd.label             "Copy">
+-<!ENTITY copyCmd.accesskey         "C">
+-<!ENTITY pasteCmd.label            "Paste">
+-<!ENTITY pasteCmd.accesskey        "P">
+-<!ENTITY deleteCmd.label           "Delete">
+-<!ENTITY deleteCmd.accesskey       "D">
+-<!ENTITY selectAllCmd.label        "Select All">
+-<!ENTITY selectAllCmd.accesskey    "A">
+-<!ENTITY findCmd.label             "Find…">
+-<!ENTITY findCmd.accesskey         "F">
+-<!ENTITY findAgainCmd.label        "Find Again…">
+-<!ENTITY findAgainCmd.accesskey    "g">
+ <!ENTITY gotoLineCmd.label         "Jump to line…">
+ <!ENTITY gotoLineCmd.key           "J">
+ <!ENTITY gotoLineCmd.accesskey     "J">
+-

@@ -1,0 +1,352 @@
+# HG changeset patch
+# Date 1302897920 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Parent d2d4d2d3b15c9897d82dbbc0f10c2a4e537cd749
+Bug 646524 - Workspace: cache the sandboxes
+
+diff --git a/browser/base/content/test/browser_workspace_bug_646070_chrome_context_pref.js b/browser/base/content/test/browser_workspace_bug_646070_chrome_context_pref.js
+--- a/browser/base/content/test/browser_workspace_bug_646070_chrome_context_pref.js
++++ b/browser/base/content/test/browser_workspace_bug_646070_chrome_context_pref.js
+@@ -30,19 +30,21 @@ function test()
+ 
+ function runTests()
+ {
+   gWorkspaceWindow.removeEventListener("load", arguments.callee, false);
+ 
+   let ws = gWorkspaceWindow.Workspace;
+   ok(ws, "Workspace object exists in new window");
+ 
+-  let contextMenu = gWorkspaceWindow.document.getElementById("ws-context-menu");
+-  ok(contextMenu, "Context menu element exists");
+-  ok(!contextMenu.hasAttribute("hidden"), "Context menu is visible");
++  let chromeContextMenu = gWorkspaceWindow.document.
++                          getElementById("ws-menu-chrome");
++  ok(chromeContextMenu, "Chrome context menuitem element exists");
++  ok(!chromeContextMenu.hasAttribute("hidden"),
++     "Chrome context menuitem is visible");
+ 
+   let errorConsoleCommand = gWorkspaceWindow.document.
+                             getElementById("ws-cmd-errorConsole");
+   ok(errorConsoleCommand, "Error console command element exists");
+   ok(!errorConsoleCommand.hasAttribute("disabled"),
+      "Error console command is enabled");
+ 
+   let errorConsoleMenu = gWorkspaceWindow.document.
+diff --git a/browser/base/content/test/browser_workspace_contexts.js b/browser/base/content/test/browser_workspace_contexts.js
+--- a/browser/base/content/test/browser_workspace_contexts.js
++++ b/browser/base/content/test/browser_workspace_contexts.js
+@@ -50,13 +50,30 @@ function runTests()
+   ws.textbox.value = "window.foobarBug636725 = 'aloha2';";
+ 
+   ok(!window.foobarBug636725, "no window.foobarBug636725");
+ 
+   ws.execute();
+ 
+   is(window.foobarBug636725, "aloha2", "window.foobarBug636725 has been set");
+ 
++  // Check that the sandbox is cached.
++
++  ws.textbox.value = "typeof foobarBug636725cache;";
++  is(ws.execute()[1], "undefined", "global variable does not exist");
++
++  ws.textbox.value = "var foobarBug636725cache = 'foo';";
++  ws.execute();
++
++  ws.textbox.value = "typeof foobarBug636725cache;";
++  is(ws.execute()[1], "string",
++     "global variable exists across two different executions");
++
++  ws.resetContext();
++
++  is(ws.execute()[1], "undefined",
++     "global variable no longer exists after calling resetContext()");
++
+   gWorkspaceWindow.close();
+   gWorkspaceWindow = null;
+   gBrowser.removeCurrentTab();
+   finish();
+ }
+diff --git a/browser/base/content/test/browser_workspace_initialization.js b/browser/base/content/test/browser_workspace_initialization.js
+--- a/browser/base/content/test/browser_workspace_initialization.js
++++ b/browser/base/content/test/browser_workspace_initialization.js
+@@ -27,19 +27,21 @@ function runTests()
+   gWorkspaceWindow.removeEventListener("load", arguments.callee, false);
+ 
+   let ws = gWorkspaceWindow.Workspace;
+   ok(ws, "Workspace object exists in new window");
+   is(typeof ws.execute, "function", "Workspace.execute() exists");
+   is(typeof ws.inspect, "function", "Workspace.inspect() exists");
+   is(typeof ws.print, "function", "Workspace.print() exists");
+ 
+-  let contextMenu = gWorkspaceWindow.document.getElementById("ws-context-menu");
+-  ok(contextMenu, "Context menu element exists");
+-  is(contextMenu.getAttribute("hidden"), "true", "Context menu is hidden");
++  let chromeContextMenu = gWorkspaceWindow.document.
++                          getElementById("ws-menu-chrome");
++  ok(chromeContextMenu, "Chrome context menuitem element exists");
++  is(chromeContextMenu.getAttribute("hidden"), "true",
++     "Chrome context menuitem is hidden");
+ 
+   let errorConsoleCommand = gWorkspaceWindow.document.
+                             getElementById("ws-cmd-errorConsole");
+   ok(errorConsoleCommand, "Error console command element exists");
+   is(errorConsoleCommand.getAttribute("disabled"), "true",
+      "Error console command is disabled");
+ 
+   let errorConsoleMenu = gWorkspaceWindow.document.
+diff --git a/browser/base/content/workspace.js b/browser/base/content/workspace.js
+--- a/browser/base/content/workspace.js
++++ b/browser/base/content/workspace.js
+@@ -97,58 +97,90 @@ var Workspace = {
+   },
+ 
+   /**
+    * Get the most recent chrome window of type navigator:browser.
+    */
+   get browserWindow() Services.wm.getMostRecentWindow("navigator:browser"),
+ 
+   /**
++   * Reference to the last chrome window of type navigator:browser. We use this
++   * to check if the chrome window changed since the last code evaluation.
++   */
++  _previousWindow: null,
++
++  /**
+    * Get the gBrowser object of the most recent browser window.
+    */
+   get gBrowser()
+   {
+     let recentWin = this.browserWindow;
+     return recentWin ? recentWin.gBrowser : null;
+   },
+ 
+   /**
+-   * Get the Cu.Sandbox object for the active tab content window object.
++   * Cached Cu.Sandbox object for the active tab content window object.
++   */
++  _sandbox: null,
++
++  /**
++   * Get the Cu.Sandbox object for the active tab content window object. Note
++   * that the returned object is cached for later reuse. The cached object is
++   * kept only for the current browser window and it is reset for each context
++   * switch or navigator:browser window switch.
+    */
+   get sandbox()
+   {
+     if (!this.browserWindow) {
+       Cu.reportError(this.strings.
+                      GetStringFromName("browserWindow.unavailable"));
+       return;
+     }
+ 
+-    // TODO: bug 646524 - need to cache sandboxes if
+-    // currentBrowser == previousBrowser
+-    let contentWindow = this.gBrowser.selectedBrowser.contentWindow;
+-    return new Cu.Sandbox(contentWindow,
+-                          { sandboxPrototype: contentWindow,
+-                            wantXrays: false });
++    if (!this._sandbox || this.browserWindow != this._previousBrowserWindow) {
++      let contentWindow = this.gBrowser.selectedBrowser.contentWindow;
++      this._sandbox = new Cu.Sandbox(contentWindow,
++                                     { sandboxPrototype: contentWindow,
++                                       wantXrays: false });
++
++      this._previousBrowserWindow = this.browserWindow;
++    }
++
++    return this._sandbox;
+   },
+ 
+   /**
++   * Cached Cu.Sandbox object for the most recently active navigator:browser
++   * chrome window object.
++   */
++  _chromeSandbox: null,
++
++  /**
+    * Get the Cu.Sandbox object for the most recently active navigator:browser
+-   * chrome window object.
++   * chrome window object. Note that the returned object is cached for later
++   * reuse. The cached object is kept only for the current browser window and it
++   * is reset for each context switch or navigator:browser window switch.
+    */
+   get chromeSandbox()
+   {
+     if (!this.browserWindow) {
+       Cu.reportError(this.strings.
+                      GetStringFromName("browserWindow.unavailable"));
+       return;
+     }
+ 
+-    return new Cu.Sandbox(this.browserWindow,
+-                          { sandboxPrototype: this.browserWindow,
+-                            wantXrays: false });
++    if (!this._chromeSandbox ||
++        this.browserWindow != this._previousBrowserWindow) {
++      this._chromeSandbox = new Cu.Sandbox(this.browserWindow,
++        { sandboxPrototype: this.browserWindow, wantXrays: false });
++
++      this._previousBrowserWindow = this.browserWindow;
++    }
++
++    return this._chromeSandbox;
+   },
+ 
+   /**
+    * Drop the textbox selection.
+    */
+   deselect: function WS_deselect()
+   {
+     this.textbox.selectionEnd = this.textbox.selectionStart;
+@@ -516,28 +548,40 @@ var Workspace = {
+    */
+   setContentContext: function WS_setContentContext()
+   {
+     let content = document.getElementById("ws-menu-content");
+     document.getElementById("ws-menu-chrome").removeAttribute("checked");
+     content.setAttribute("checked", true);
+     this.statusbarStatus.label = content.getAttribute("label");
+     this.executionContext = WORKSPACE_CONTEXT_CONTENT;
++    this.resetContext();
+   },
+ 
+   /**
+    * Set the current execution context to be the most recent chrome window.
+    */
+   setChromeContext: function WS_setChromeContext()
+   {
+     let chrome = document.getElementById("ws-menu-chrome");
+     document.getElementById("ws-menu-content").removeAttribute("checked");
+     chrome.setAttribute("checked", true);
+     this.statusbarStatus.label = chrome.getAttribute("label");
+     this.executionContext = WORKSPACE_CONTEXT_CHROME;
++    this.resetContext();
++  },
++
++  /**
++   * Reset the cached Cu.Sandbox object for the current context.
++   */
++  resetContext: function WS_resetContext()
++  {
++    this._chromeSandbox = null;
++    this._sandbox = null;
++    this._previousWindow = null;
+   },
+ 
+   /**
+    * Gets the ID of the outer window of the given DOM window object.
+    *
+    * @param nsIDOMWindow aWindow
+    * @return integer
+    *         the outer window ID
+@@ -548,24 +592,24 @@ var Workspace = {
+            getInterface(Ci.nsIDOMWindowUtils).outerWindowID;
+   },
+ 
+   /**
+    * The Workspace window DOMContentLoaded event handler.
+    */
+   onLoad: function HS_onLoad()
+   {
+-    let contextMenu = document.getElementById("ws-context-menu");
++    let chromeContextMenu = document.getElementById("ws-menu-chrome");
+     let errorConsoleMenu = document.getElementById("ws-menu-errorConsole");
+     let errorConsoleCommand = document.getElementById("ws-cmd-errorConsole");
+     let chromeContextCommand = document.getElementById("ws-cmd-chromeContext");
+ 
+     let chrome = Services.prefs.getBoolPref(DEVTOOLS_CHROME_ENABLED);
+     if (chrome) {
+-      contextMenu.removeAttribute("hidden");
++      chromeContextMenu.removeAttribute("hidden");
+       errorConsoleMenu.removeAttribute("hidden");
+       errorConsoleCommand.removeAttribute("disabled");
+       chromeContextCommand.removeAttribute("disabled");
+     }
+   },
+ };
+ 
+ XPCOMUtils.defineLazyGetter(Workspace, "strings", function () {
+diff --git a/browser/base/content/workspace.xul b/browser/base/content/workspace.xul
+--- a/browser/base/content/workspace.xul
++++ b/browser/base/content/workspace.xul
+@@ -69,16 +69,17 @@
+  -->
+ 
+   <command id="ws-cmd-close" oncommand="window.close();"/>
+   <command id="ws-cmd-execute" oncommand="Workspace.execute();"/>
+   <command id="ws-cmd-inspect" oncommand="Workspace.inspect();"/>
+   <command id="ws-cmd-print" oncommand="Workspace.print();"/>
+   <command id="ws-cmd-contentContext" oncommand="Workspace.setContentContext();"/>
+   <command id="ws-cmd-chromeContext" oncommand="Workspace.setChromeContext();" disabled="true"/>
++  <command id="ws-cmd-resetContext" oncommand="Workspace.resetContext();"/>
+   <command id="ws-cmd-errorConsole" oncommand="Workspace.openErrorConsole();" disabled="true"/>
+   <command id="ws-cmd-webConsole" oncommand="Workspace.openWebConsole();"/>
+ </commandset>
+ 
+ <keyset id="ws-keyset">
+   <key id="ws-key-window"
+        key="&newWindowCmd.commandkey;"
+        command="ws-cmd-newWindow"
+@@ -249,31 +250,36 @@
+       <menuitem id="ws-text-print"
+                 label="&print.label;"
+                 accesskey="&print.accesskey;"
+                 key="ws-key-print"
+                 command="ws-cmd-print"/>
+     </menupopup>
+   </menu>
+ 
+-  <menu id="ws-context-menu" hidden="true"
++  <menu id="ws-context-menu"
+         label="&contextMenu.label;"
+         accesskey="&contextMenu.accesskey;">
+     <menupopup id="ws-menu-context">
+       <menuitem id="ws-menu-content"
+                 label="&contentContext.label;"
+                 accesskey="&contentContext.accesskey;"
+                 command="ws-cmd-contentContext"
+                 checked="true"
+                 type="radio"/>
+-      <menuitem id="ws-menu-chrome"
++      <menuitem id="ws-menu-chrome" hidden="true"
+                 command="ws-cmd-chromeContext"
+                 label="&chromeContext.label;"
+                 accesskey="&chromeContext.accesskey;"
+                 type="radio"/>
++      <menuseparator/>
++      <menuitem id="ws-menu-resetContext"
++                command="ws-cmd-resetContext"
++                label="&resetContext.label;"
++                accesskey="&resetContext.accesskey;"/>
+     </menupopup>
+   </menu>
+ 
+   <menu id="ws-tools-menu"
+         label="&toolsMenu.label;"
+         accesskey="&toolsMenu.accesskey;">
+     <menupopup id="ws-menu-tools">
+       <menuitem id="ws-menu-errorConsole" hidden="true"
+diff --git a/browser/locales/en-US/chrome/browser/workspace.dtd b/browser/locales/en-US/chrome/browser/workspace.dtd
+--- a/browser/locales/en-US/chrome/browser/workspace.dtd
++++ b/browser/locales/en-US/chrome/browser/workspace.dtd
+@@ -68,16 +68,19 @@
+ <!ENTITY contextMenu.accesskey        "C">
+ 
+ <!ENTITY contentContext.label         "Content">
+ <!ENTITY contentContext.accesskey     "C">
+ 
+ <!ENTITY chromeContext.label          "Chrome">
+ <!ENTITY chromeContext.accesskey      "H">
+ 
++<!ENTITY resetContext.label           "Reset the context global object">
++<!ENTITY resetContext.accesskey       "R">
++
+ <!ENTITY toolsMenu.label              "Tools">
+ <!ENTITY toolsMenu.accesskey          "T">
+ 
+ <!ENTITY errorConsoleCmd.label        "Error Console">
+ <!ENTITY errorConsoleCmd.accesskey    "C">
+ <!ENTITY errorConsoleCmd.commandkey   "j">
+ 
+ <!ENTITY webConsoleCmd.label          "Web Console">

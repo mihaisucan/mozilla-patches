@@ -1,0 +1,378 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -608,28 +608,34 @@ function NetworkPanel(aParent, aHttpActi
+ 
+   // Create the browser that displays the NetworkPanel XHTML.
+   this.browser = createAndAppendElement(this.panel, "browser", {
+     src: "chrome://global/content/NetworkPanel.xhtml",
+     disablehistory: "true",
+     flex: "1"
+   });
+ 
++  let self = this;
++
+   // Destroy the panel when it's closed.
+   this.panel.addEventListener("popuphidden", function onPopupHide() {
+     self.panel.removeEventListener("popuphidden", onPopupHide, false);
+     self.panel.parentNode.removeChild(self.panel);
+     self.panel = null;
+     self.browser = null;
+     self.document = null;
+     self.httpActivity = null;
++
++    if (self.linkNode) {
++      self.linkNode._panelOpen = false;
++      self.linkNode = null;
++    }
+   }, false);
+ 
+   // Set the document object and update the content once the panel is loaded.
+-  let self = this;
+   this.panel.addEventListener("load", function onLoad() {
+     self.panel.removeEventListener("load", onLoad, true)
+     self.document = self.browser.contentWindow.document;
+     self.update();
+   }, true);
+ 
+   // Create the footer.
+   let footer = createElement(doc, "hbox", { align: "end" });
+@@ -2110,16 +2116,17 @@ HUD_SERVICE.prototype =
+    *        httpActivity object. The data of this object is displayed in the
+    *        NetworkPanel.
+    * @returns NetworkPanel
+    */
+   openNetworkPanel: function (aNode, aHttpActivity) {
+     let doc = aNode.ownerDocument;
+     let parent = doc.getElementById("mainPopupSet");
+     let netPanel = new NetworkPanel(parent, aHttpActivity);
++    netPanel.linkNode = aNode;
+ 
+     let panel = netPanel.panel;
+     panel.openPopup(aNode, "after_pointer", 0, 0, false, false);
+     panel.sizeTo(350, 400);
+     aHttpActivity.panels.push(Cu.getWeakReference(netPanel));
+     return netPanel;
+   },
+ 
+@@ -2208,19 +2215,33 @@ HUD_SERVICE.prototype =
+ 
+             // Store the loggedNode and the httpActivity object for later reuse.
+             httpActivity.messageObject = loggedNode;
+             self.openRequests[httpActivity.id] = httpActivity;
+ 
+             // Make the network span clickable.
+             let linkNode = loggedNode.messageNode;
+             linkNode.setAttribute("aria-haspopup", "true");
+-            linkNode.onclick = function() {
+-              self.openNetworkPanel(linkNode, httpActivity);
+-            }
++            linkNode.onmousedown = function(aEvent) {
++              this._startX = aEvent.clientX;
++              this._startY = aEvent.clientY;
++            };
++
++            linkNode.onclick = function(aEvent) {
++              if (aEvent.detail != 1 || aEvent.button != 0 ||
++                  (this._startX != aEvent.clientX &&
++                   this._startY != aEvent.clientY)) {
++                return;
++              }
++
++              if (!this._panelOpen) {
++                self.openNetworkPanel(this, httpActivity);
++                this._panelOpen = true;
++              }
++            };
+           }
+           else {
+             // Iterate over all currently ongoing requests. If aChannel can't
+             // be found within them, then exit this function.
+             let httpActivity = null;
+             for each (var item in self.openRequests) {
+               if (item.channel !== aChannel) {
+                 continue;
+@@ -3972,18 +3993,20 @@ JSTerm.prototype = {
+           }
+         }
+       });
+     }
+ 
+     buttons.push({
+       label: HUDService.getStr("close.button"),
+       accesskey: HUDService.getStr("close.accesskey"),
++      class: "jsPropertyPanelCloseButton",
+       oncommand: function () {
+         propPanel.destroy();
++        aAnchor._panelOpen = false;
+       }
+     });
+ 
+     let doc = self.parentNode.ownerDocument;
+     let parent = doc.getElementById("mainPopupSet");
+     let title = (aEvalString
+         ? HUDService.getFormatStr("jsPropertyInspectTitle", [aEvalString])
+         : HUDService.getStr("jsPropertyTitle"));
+@@ -4010,19 +4033,34 @@ JSTerm.prototype = {
+     let lastGroupNode = HUDService.appendGroupIfNecessary(this.outputNode,
+                                                       Date.now());
+ 
+     var self = this;
+     var node = this.xulElementFactory("label");
+     node.setAttribute("class", "jsterm-output-line hud-clickable");
+     node.setAttribute("aria-haspopup", "true");
+     node.setAttribute("crop", "end");
+-    node.onclick = function() {
+-      self.openPropertyPanel(aEvalString, aOutputObject, node);
+-    }
++
++    node.onmousedown = function(aEvent) {
++      this._startX = aEvent.clientX;
++      this._startY = aEvent.clientY;
++    };
++
++    node.onclick = function(aEvent) {
++      if (aEvent.detail != 1 || aEvent.button != 0 ||
++          (this._startX != aEvent.clientX &&
++           this._startY != aEvent.clientY)) {
++        return;
++      }
++
++      if (!this._panelOpen) {
++        self.openPropertyPanel(aEvalString, aOutputObject, this);
++        this._panelOpen = true;
++      }
++    };
+ 
+     // TODO: format the aOutputObject and don't just use the
+     // aOuputObject.toString() function: [object object] -> Object {prop, ...}
+     // See bug 586249.
+     let textNode = this.textFactory(aOutputObject);
+     node.appendChild(textNode);
+ 
+     lastGroupNode.appendChild(node);
+diff --git a/toolkit/components/console/hudservice/PropertyPanel.jsm b/toolkit/components/console/hudservice/PropertyPanel.jsm
+--- a/toolkit/components/console/hudservice/PropertyPanel.jsm
++++ b/toolkit/components/console/hudservice/PropertyPanel.jsm
+@@ -451,17 +451,18 @@ function PropertyPanel(aParent, aDocumen
+   appendChild(aDocument, footer, "spacer", { flex: 1 });
+ 
+   // The footer can have butttons.
+   let self = this;
+   if (aButtons) {
+     aButtons.forEach(function(button) {
+       let buttonNode = appendChild(aDocument, footer, "button", {
+         label: button.label,
+-        accesskey: button.accesskey || ""
++        accesskey: button.accesskey || "",
++        class: button.class || "",
+       });
+       buttonNode.addEventListener("command", button.oncommand, false);
+     });
+   }
+ 
+   appendChild(aDocument, footer, "resizer", { dir: "bottomend" });
+   this.panel.appendChild(footer);
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -51,16 +51,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_585237_line_limit.js \
+ 	browser_webconsole_bug_586388_select_all.js  \
+ 	browser_webconsole_bug_588967_input_expansion.js \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_581231_close_button.js \
+ 	browser_webconsole_consoleonpage.js \
++	browser_webconsole_bug_594477_clickable_output.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+ 	testscript.js \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594477_clickable_output.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594477_clickable_output.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594477_clickable_output.js
+@@ -0,0 +1,176 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/HUDService.jsm");
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
++
++let HUD, outputNode, outputItem;
++
++function tabLoad1(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  waitForFocus(function () {
++    HUDService.activateHUDForContext(gBrowser.selectedTab);
++
++    let hudId = HUDService.getHudIdByWindow(content);
++    HUD = HUDService.hudWeakReferences[hudId].get();
++
++    let display = HUDService.getOutputNodeById(hudId);
++    outputNode = display.querySelector(".hud-output-node");
++
++    gBrowser.selectedBrowser.addEventListener("load", tabLoad2, true);
++
++    // Reload so we get some output in the console.
++    content.location.reload();
++  }, content);
++}
++
++function tabLoad2(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  outputItem = outputNode.querySelector(".hud-network");
++  ok(outputItem, "found a network message");
++
++  document.addEventListener("popupshown", networkPanelShown, false);
++
++  // Send the mousedown and click events such that the network panel opens.
++  EventUtils.sendMouseEvent({type: "mousedown"}, outputItem);
++  EventUtils.sendMouseEvent({type: "click"}, outputItem);
++}
++
++function networkPanelShown(aEvent) {
++  document.removeEventListener(aEvent.type, arguments.callee, false);
++
++  document.addEventListener("popupshown", networkPanelShowFailure, false);
++
++  // The network panel should not open for the second time.
++  EventUtils.sendMouseEvent({type: "mousedown"}, outputItem);
++  EventUtils.sendMouseEvent({type: "click"}, outputItem);
++
++  executeSoon(function() {
++    aEvent.target.addEventListener("popuphidden", networkPanelHidden, false);
++    aEvent.target.hidePopup();
++  });
++}
++
++function networkPanelShowFailure(aEvent) {
++  document.removeEventListener(aEvent.type, arguments.callee, false);
++
++  ok(false, "the network panel should not show");
++}
++
++function networkPanelHidden(aEvent) {
++  this.removeEventListener(aEvent.type, arguments.callee, false);
++
++  // The network panel should not show because this is a mouse event that starts
++  // in a position and ends in another.
++  EventUtils.sendMouseEvent({type: "mousedown", clientX: 3, clientY: 4},
++    outputItem);
++  EventUtils.sendMouseEvent({type: "click", clientX: 5, clientY: 6},
++    outputItem);
++
++  // The network panel should not show because this is a middle-click.
++  EventUtils.sendMouseEvent({type: "mousedown", button: 1},
++    outputItem);
++  EventUtils.sendMouseEvent({type: "click", button: 1},
++    outputItem);
++
++  // The network panel should not show because this is a right-click.
++  EventUtils.sendMouseEvent({type: "mousedown", button: 2},
++    outputItem);
++  EventUtils.sendMouseEvent({type: "click", button: 2},
++    outputItem);
++
++  executeSoon(function() {
++    document.removeEventListener("popupshown", networkPanelShowFailure, false);
++
++    // Done with the network output. Now test the jsterm output and the property
++    // panel.
++    HUD.jsterm.setInputValue("document");
++    HUD.jsterm.execute();
++
++    outputItem = outputNode.querySelector(".jsterm-output-line");
++    ok(outputItem, "found a jsterm output message");
++
++    document.addEventListener("popupshown", properyPanelShown, false);
++
++    // Send the mousedown and click events such that the property panel opens.
++    EventUtils.sendMouseEvent({type: "mousedown"}, outputItem);
++    EventUtils.sendMouseEvent({type: "click"}, outputItem);
++  });
++}
++
++function properyPanelShown(aEvent) {
++  document.removeEventListener(aEvent.type, arguments.callee, false);
++
++  document.addEventListener("popupshown", propertyPanelShowFailure, false);
++
++  // The property panel should not open for the second time.
++  EventUtils.sendMouseEvent({type: "mousedown"}, outputItem);
++  EventUtils.sendMouseEvent({type: "click"}, outputItem);
++
++  executeSoon(function() {
++    aEvent.target.addEventListener("popuphidden", propertyPanelHidden, false);
++    let closeButton = aEvent.target.querySelector(".jsPropertyPanelCloseButton");
++    closeButton.doCommand();
++  });
++}
++
++function propertyPanelShowFailure(aEvent) {
++  document.removeEventListener(aEvent.type, arguments.callee, false);
++
++  ok(false, "the property panel should not show");
++}
++
++function propertyPanelHidden(aEvent) {
++  this.removeEventListener(aEvent.type, arguments.callee, false);
++
++  // The property panel should not show because this is a mouse event that
++  // starts in a position and ends in another.
++  EventUtils.sendMouseEvent({type: "mousedown", clientX: 3, clientY: 4},
++    outputItem);
++  EventUtils.sendMouseEvent({type: "click", clientX: 5, clientY: 6},
++    outputItem);
++
++  // The property panel should not show because this is a middle-click.
++  EventUtils.sendMouseEvent({type: "mousedown", button: 1},
++    outputItem);
++  EventUtils.sendMouseEvent({type: "click", button: 1},
++    outputItem);
++
++  // The property panel should not show because this is a right-click.
++  EventUtils.sendMouseEvent({type: "mousedown", button: 2},
++    outputItem);
++  EventUtils.sendMouseEvent({type: "click", button: 2},
++    outputItem);
++
++  executeSoon(function() {
++    document.removeEventListener("popupshown", propertyPanelShowFailure, false);
++    testEnd();
++  });
++}
++
++function testEnd() {
++  HUD = outputNode = outputItem = null;
++  HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++  executeSoon(finish);
++}
++
++function test() {
++  waitForExplicitFinish();
++
++  gBrowser.selectedBrowser.addEventListener("load", tabLoad1, true);
++
++  content.location = TEST_URI;
++}
++

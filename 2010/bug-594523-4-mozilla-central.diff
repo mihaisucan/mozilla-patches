@@ -1,0 +1,321 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1371,16 +1371,36 @@ HUD_SERVICE.prototype =
+ 
+     if (hudId in this.displayRegistry && displayNode) {
+       this.unregisterActiveContext(hudId);
+       this.unregisterDisplay(displayNode);
+       if (window) {
+         window.focus();
+       }
+     }
++
++    this.removeProgressListener(aContext.ownerDocument.defaultView.gBrowser);
++  },
++
++  /**
++   * Remove the progress listener, if needed.
++   *
++   * @param tabbrowser aGBrowser
++   *        the gBrowser object of the chrome window you want to remove the
++   *        progress listener from.
++   * @returns void
++   */
++  removeProgressListener: function HS_removeProgressListener(aGBrowser)
++  {
++    let foundHuds = Object.keys(this.displayRegistry).length > 0;
++
++    if (!foundHuds && aGBrowser._WebConsoleProgressListenerAttached) {
++      aGBrowser.removeTabsProgressListener(ConsoleProgressListener);
++      delete aGBrowser._WebConsoleProgressListenerAttached;
++    }
+   },
+ 
+   /**
+    * Clear the specified HeadsUpDisplay
+    *
+    * @param string|nsIDOMNode aHUD
+    *        Either the ID of a HUD or the DOM node corresponding to an outer
+    *        HUD box.
+@@ -1701,17 +1721,17 @@ HUD_SERVICE.prototype =
+     else {
+       this.uriRegistry[URISpec] = [aHUDId];
+     }
+ 
+     var windows = this.windowRegistry[aHUDId];
+     if (!windows) {
+       this.windowRegistry[aHUDId] = [aContentWindow];
+     }
+-    else {
++    else if (windows.indexOf(aContentWindow) == -1) {
+       windows.push(aContentWindow);
+     }
+   },
+ 
+   /**
+    * When a display is being destroyed, unregister it first
+    *
+    * @param string|nsIDOMNode aHUD
+@@ -2678,45 +2698,24 @@ HUD_SERVICE.prototype =
+   scriptMsgLogLevel: {
+     0: "typeError",
+     1: "typeWarning",
+     2: "typeException",
+     4: "typeStrict",
+   },
+ 
+   /**
+-   * Closes the Console, if any, that resides on the given tab.
+-   *
+-   * @param nsIDOMNode aTab
+-   *        The tab on which to close the console.
+-   * @returns void
+-   */
+-  closeConsoleOnTab: function HS_closeConsoleOnTab(aTab)
+-  {
+-    let xulDocument = aTab.ownerDocument;
+-    let xulWindow = xulDocument.defaultView;
+-    let gBrowser = xulWindow.gBrowser;
+-    let linkedBrowser = aTab.linkedBrowser;
+-    let notificationBox = gBrowser.getNotificationBox(linkedBrowser);
+-    let hudId = "hud_" + notificationBox.getAttribute("id");
+-    let outputNode = xulDocument.getElementById(hudId);
+-    if (outputNode != null) {
+-      this.unregisterDisplay(outputNode);
+-    }
+-  },
+-
+-  /**
+    * onTabClose event handler function
+    *
+    * @param aEvent
+    * @returns void
+    */
+   onTabClose: function HS_onTabClose(aEvent)
+   {
+-    this.closeConsoleOnTab(aEvent.target);
++    this.deactivateHUDForContext(aEvent.target);
+   },
+ 
+   /**
+    * Called whenever a browser window closes. Cleans up any consoles still
+    * around.
+    *
+    * @param nsIDOMEvent aEvent
+    *        The dispatched event.
+@@ -2724,19 +2723,21 @@ HUD_SERVICE.prototype =
+    */
+   onWindowUnload: function HS_onWindowUnload(aEvent)
+   {
+     let gBrowser = aEvent.target.defaultView.gBrowser;
+     let tabContainer = gBrowser.tabContainer;
+ 
+     let tab = tabContainer.firstChild;
+     while (tab != null) {
+-      this.closeConsoleOnTab(tab);
++      this.deactivateHUDForContext(tab);
+       tab = tab.nextSibling;
+     }
++
++    this.removeProgressListener(gBrowser);
+   },
+ 
+   /**
+    * windowInitializer - checks what Gecko app is running and inits the HUD
+    *
+    * @param nsIDOMWindow aContentWindow
+    * @returns void
+    */
+@@ -2781,16 +2782,21 @@ HUD_SERVICE.prototype =
+     let nBox = gBrowser.getNotificationBox(_browser);
+     let nBoxId = nBox.getAttribute("id");
+     let hudId = "hud_" + nBoxId;
+ 
+     if (!this.canActivateContext(hudId)) {
+       return;
+     }
+ 
++    if (!gBrowser._WebConsoleProgressListenerAttached) {
++      gBrowser.addTabsProgressListener(ConsoleProgressListener);
++      gBrowser._WebConsoleProgressListenerAttached = true;
++    }
++
+     this.registerDisplay(hudId, aContentWindow);
+ 
+     let hudNode;
+     let childNodes = nBox.childNodes;
+ 
+     for (let i = 0; i < childNodes.length; i++) {
+       let id = childNodes[i].getAttribute("id");
+       // `id` is a string with the format "hud_<number>".
+@@ -5237,16 +5243,63 @@ HUDConsoleObserver = {
+         default:
+           HUDService.reportConsoleServiceMessage(aSubject);
+           return;
+       }
+     }
+   }
+ };
+ 
++/**
++ * A WebProgressListener that listens for location changes, to update HUDService
++ * state information on page navigation.
++ */
++var ConsoleProgressListener = {
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIWebProgressListener]),
++
++  onLocationChange:
++  function CPL_onLocationChange(aBrowser, aProgress, aRequest, aLocation)
++  {
++    let history = aBrowser.webNavigation.sessionHistory;
++    if (history.count < 1) {
++      return;
++    }
++
++    let oldIndex = history.index-1;
++    if (oldIndex < 0) {
++      return;
++    }
++
++    let prevEntry = history.getEntryAtIndex(oldIndex, false);
++    let prevURI = prevEntry.URI.spec;
++    let newURI = aLocation.spec;
++
++    let gBrowser = aBrowser.ownerDocument.defaultView.gBrowser;
++    let notificationBox = gBrowser.getNotificationBox(aBrowser);
++    let hudId = "hud_" + notificationBox.getAttribute("id");
++
++    if (!HUDService.canActivateContext(hudId)) {
++      return;
++    }
++
++    if (prevURI in HUDService.uriRegistry) {
++      let huds = HUDService.uriRegistry[prevURI];
++      let pos = huds.indexOf(hudId);
++      if (pos > -1) {
++        huds.splice(pos, 1);
++      }
++    }
++
++    let topLevel = aProgress.DOMWindow == aBrowser.contentWindow;
++    if (topLevel) {
++      HUDService.displayRegistry[hudId] = newURI;
++    }
++  },
++};
++
+ ///////////////////////////////////////////////////////////////////////////
+ // appName
+ ///////////////////////////////////////////////////////////////////////////
+ 
+ /**
+  * Get the app's name so we can properly dispatch app-specific
+  * methods per API call
+  * @returns Gecko application name
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -57,16 +57,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_581231_close_button.js \
+ 	browser_webconsole_bug_595350_multiple_windows_and_tabs.js \
+ 	browser_webconsole_consoleonpage.js \
+ 	browser_webconsole_bug_587617_output_copy.js \
+ 	browser_webconsole_bug_588342_document_focus.js \
+ 	browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js \
++	browser_webconsole_bug_594523_location_change.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+ 	testscript.js \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594523_location_change.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594523_location_change.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594523_location_change.js
+@@ -0,0 +1,80 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/HUDService.jsm");
++
++const TEST_URI_ONE = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
++const TEST_URI_TWO = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-error.html";
++
++let tab1, tab2;
++
++function tab1Loaded(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  waitForFocus(function () {
++    HUDService.activateHUDForContext(gBrowser.selectedTab);
++
++    gBrowser.selectedBrowser.addEventListener("load", tab1Navigated, true);
++    content.location = TEST_URI_ONE;
++  });
++}
++
++function tab1Navigated(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  waitForFocus(function () {
++    tab2 = gBrowser.addTab();
++    gBrowser.selectedTab = tab2;
++    gBrowser.selectedBrowser.addEventListener("load", tab2Loaded, true);
++
++    content.location = TEST_URI_TWO;
++  });
++}
++
++function tab2Loaded(aEvent) {
++  tab2.linkedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  waitForFocus(function () {
++    HUDService.activateHUDForContext(gBrowser.selectedTab);
++
++    let display1 = HUDService.getDisplayByURISpec(TEST_URI_ONE);
++    let outputNode1 = display1.querySelector(".hud-output-node");
++
++    let display2 = HUDService.getDisplayByURISpec(TEST_URI_TWO);
++    let outputNode2 = display2.querySelector(".hud-output-node");
++
++    isnot(display1, display2, "the two HUD displays must be different");
++    isnot(outputNode1, outputNode2,
++      "the two HUD outputNodes must be different");
++
++    HUDService.deactivateHUDForContext(tab1);
++    HUDService.deactivateHUDForContext(tab2);
++
++    tab1 = tab2 = null;
++
++    executeSoon(function() {
++      gBrowser.removeCurrentTab();
++      finish();
++    });
++  });
++}
++
++function test() {
++  waitForExplicitFinish();
++
++  tab1 = gBrowser.selectedTab;
++  gBrowser.selectedBrowser.addEventListener("load", tab1Loaded, true);
++
++  // open tab1: load TEST_URI_TWO then TEST_URI_ONE
++  // open tab2: load TEST_URI_TWO then check using getDisplayByURISpec()
++  content.location = TEST_URI_TWO;
++}

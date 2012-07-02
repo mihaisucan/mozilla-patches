@@ -1,0 +1,274 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -213,17 +213,17 @@ ResponseListener.prototype =
+     let BinaryOutputStream = Components.Constructor("@mozilla.org/binaryoutputstream;1",
+                                                       "nsIBinaryOutputStream",
+                                                       "setOutputStream");
+ 
+     storageStream = new StorageStream(8192, aCount, null);
+     binaryOutputStream = new BinaryOutputStream(storageStream.getOutputStream(0));
+ 
+     let data = NetUtil.readInputStreamToString(aInputStream, aCount);
+-    this.receivedData += data;
++    this.receivedData += NetworkHelper.convertToUnicode(data, aRequest.contentCharset);
+     binaryOutputStream.writeBytes(data, aCount);
+ 
+     let newInputStream = storageStream.newInputStream(0);
+     try {
+     this.originalListener.onDataAvailable(aRequest, aContext,
+         newInputStream, aOffset, aCount);
+     }
+     catch(ex) {
+@@ -367,20 +367,32 @@ var NetworkHelper =
+    *        Text to convert.
+    * @param string aCharset
+    *        Charset to convert the text to.
+    * @returns string
+    *          Converted text.
+    */
+   convertToUnicode: function NH_convertToUnicode(aText, aCharset)
+   {
++    if (!aCharset) {
++      return aText;
++    }
++
+     let conv = Cc["@mozilla.org/intl/scriptableunicodeconverter"].
+                createInstance(Ci.nsIScriptableUnicodeConverter);
+-    conv.charset = aCharset || "UTF-8";
+-    return conv.ConvertToUnicode(aText);
++    conv.charset = aCharset;
++
++    try {
++      return conv.ConvertToUnicode(aText);
++    }
++    catch (ex) {
++      Cu.reportError("NH_convertToUnicode(aText, '" +
++        aCharset + "') exception: " + ex);
++      return aText;
++    }
+   },
+ 
+   /**
+    * Reads all available bytes from aStream and converts them to aCharset.
+    *
+    * @param nsIInputStream aStream
+    * @param string aCharset
+    * @returns string
+@@ -2254,53 +2266,58 @@ HUD_SERVICE.prototype =
+               httpActivity = item;
+               break;
+             }
+ 
+             if (!httpActivity) {
+               return;
+             }
+ 
+-            let msgObject, updatePanel = false;
++            hudId = httpActivity.hudId;
++            let msgObject = httpActivity.messageObject;
++
++            let updatePanel = false;
+             let data, textNode;
+             // Store the time information for this activity subtype.
+             httpActivity.timing[transCodes[aActivitySubtype]] = aTimestamp;
+ 
+             switch (aActivitySubtype) {
+               case activityDistributor.ACTIVITY_SUBTYPE_REQUEST_BODY_SENT:
+                 if (!self.saveRequestAndResponseBodies) {
+                   httpActivity.request.bodyDiscarded = true;
+                   break;
+                 }
+ 
+-                let gBrowser = HUDService.currentContext().gBrowser;
+-
+-                let sentBody = NetworkHelper.readPostTextFromRequest(
+-                                aChannel, gBrowser);
++                let gBrowser = msgObject.messageNode.ownerDocument.
++                  defaultView.gBrowser;
++                let HUD = HUDService.hudWeakReferences[hudId].get();
++                let browser = gBrowser.getBrowserForDocument(HUD.
++                  contentDocument);
++
++                let sentBody = NetworkHelper.
++                  readPostTextFromRequest(aChannel, browser);
+                 if (!sentBody) {
+                   // If the request URL is the same as the current page url, then
+                   // we can try to get the posted text from the page directly.
+                   // This check is necessary as otherwise the
+                   //   NetworkHelper.readPostTextFromPage
+                   // function is called for image requests as well but these
+                   // are not web pages and as such don't store the posted text
+                   // in the cache of the webpage.
+-                  if (httpActivity.url == gBrowser.contentWindow.location.href) {
+-                    sentBody = NetworkHelper.readPostTextFromPage(gBrowser);
++                  if (httpActivity.url == browser.contentWindow.location.href) {
++                    sentBody = NetworkHelper.readPostTextFromPage(browser);
+                   }
+                   if (!sentBody) {
+                     sentBody = "";
+                   }
+                 }
+                 httpActivity.request.body = sentBody;
+                 break;
+ 
+               case activityDistributor.ACTIVITY_SUBTYPE_RESPONSE_HEADER:
+-                msgObject = httpActivity.messageObject;
+-
+                 // aExtraStringData contains the response header. The first line
+                 // contains the response status (e.g. HTTP/1.1 200 OK).
+                 //
+                 // Note: The response header is not saved here. Calling the
+                 //       aChannel.visitResponseHeaders at this point sometimes
+                 //       causes an NS_ERROR_NOT_AVAILABLE exception. Therefore,
+                 //       the response header and response body is stored on the
+                 //       httpActivity object within the RL_onStopRequest function.
+@@ -2318,19 +2335,16 @@ HUD_SERVICE.prototype =
+                 msgObject.messageNode.appendChild(
+                   msgObject.textFactory(
+                     msgObject.prefix +
+                     self.getFormatStr("networkUrlWithStatus", data) + "\n"));
+ 
+                 break;
+ 
+               case activityDistributor.ACTIVITY_SUBTYPE_TRANSACTION_CLOSE:
+-                msgObject = httpActivity.messageObject;
+-
+-
+                 let timing = httpActivity.timing;
+                 let requestDuration =
+                   Math.round((timing.RESPONSE_COMPLETE -
+                                 timing.REQUEST_HEADER) / 1000);
+ 
+                 // Remove the textNode from the messageNode and add a new one
+                 // that contains the request duration.
+                 textNode = msgObject.messageNode.firstChild;
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -56,22 +56,25 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_581231_close_button.js \
+ 	browser_webconsole_bug_595350_multiple_windows_and_tabs.js \
+ 	browser_webconsole_consoleonpage.js \
+ 	browser_webconsole_bug_587617_output_copy.js \
+ 	browser_webconsole_bug_588342_document_focus.js \
++	browser_webconsole_bug_600183_charset.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
++	test-bug-600183-charset.html \
++	test-bug-600183-charset.html^headers^ \
+ 	test-mutation.html \
+ 	testscript.js \
+ 	test-filter.html \
+ 	test-observe-http-ajax.html \
+ 	test-data.json \
+ 	test-property-provider.html \
+ 	test-error.html \
+ 	test-duplicate-error.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_600183_charset.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_600183_charset.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_600183_charset.js
+@@ -0,0 +1,75 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai È˜ucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/HUDService.jsm");
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-600183-charset.html";
++
++let lastFinishedRequest = null;
++
++function requestDoneCallback(aHttpRequest)
++{
++  lastFinishedRequest = aHttpRequest;
++}
++
++function performTest()
++{
++  ok(lastFinishedRequest, "charset test page was loaded and logged");
++
++  let body = lastFinishedRequest.response.body;
++  ok(body, "we have the response body");
++
++  let chars = "\u7684\u95ee\u5019!"; // çš„é—®å€™!
++  isnot(body.indexOf("<p>" + chars + "</p>"), -1,
++    "found the chinese simplified string");
++
++  finishTest();
++}
++
++function finishTest()
++{
++  lastFinishedRequest = null;
++  HUDService.saveRequestAndResponseBodies = false;
++  HUDService.lastFinishedRequestCallback = null;
++  HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++
++  executeSoon(function() {
++    gBrowser.removeCurrentTab();
++    finish();
++  });
++}
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++
++  gBrowser.selectedBrowser.addEventListener("load", function(aEvent) {
++    gBrowser.selectedBrowser.removeEventListener(aEvent.type,
++      arguments.callee, true);
++
++    waitForFocus(function() {
++      HUDService.activateHUDForContext(gBrowser.selectedTab);
++
++      HUDService.saveRequestAndResponseBodies = true;
++      HUDService.lastFinishedRequestCallback = requestDoneCallback;
++
++      gBrowser.selectedBrowser.addEventListener("load", performTest, true);
++
++      content.location = TEST_URI;
++    }, content);
++  }, true);
++
++  content.location = "data:text/html,Web Console - bug 600183 test";
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-600183-charset.html b/toolkit/components/console/hudservice/tests/browser/test-bug-600183-charset.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-600183-charset.html
+@@ -0,0 +1,9 @@
++<!DOCTYPE HTML>
++<html dir="ltr" xml:lang="en-US" lang="en-US"><head>
++    <meta charset="gb2312">
++    <title>Console HTTP test page (chinese)</title>
++  </head>
++  <body>
++    <p>µÄÎÊºò!</p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-600183-charset.html^headers^ b/toolkit/components/console/hudservice/tests/browser/test-bug-600183-charset.html^headers^
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-600183-charset.html^headers^
+@@ -0,0 +1,1 @@
++Content-Type: text/html; charset=gb2312

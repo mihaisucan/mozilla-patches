@@ -1,0 +1,50 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -20,16 +20,17 @@
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   David Dahl <ddahl@mozilla.com> (original author)
+  *   Rob Campbell <rcampbell@mozilla.com>
+  *   Johnathan Nightingale <jnightingale@mozilla.com>
+  *   Patrick Walton <pcwalton@mozilla.com>
++ *   Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -1759,28 +1760,16 @@ HeadsUpDisplay.prototype = {
+    */
+   makeXULNode:
+   function HUD_makeXULNode(aTag)
+   {
+     return this.XULFactory(aTag);
+   },
+ 
+   /**
+-   * Clears the HeadsUpDisplay output node of any log messages
+-   *
+-   * @returns void
+-   */
+-  clearConsoleOutput: function HUD_clearConsoleOutput()
+-  {
+-    for each (var node in this.outputNode.childNodes) {
+-      this.outputNode.removeChild(node);
+-    }
+-  },
+-
+-  /**
+    * Build the UI of each HeadsUpDisplay
+    *
+    * @returns nsIDOMNode
+    */
+   makeHUDNodes: function HUD_makeHUDNodes()
+   {
+     let self = this;
+     this.HUDBox = this.makeXULNode("vbox");

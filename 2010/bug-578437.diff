@@ -1,0 +1,22 @@
+diff -r 025890af247a toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm	Tue Jul 13 19:09:36 2010 +0200
++++ b/toolkit/components/console/hudservice/HUDService.jsm	Tue Jul 13 22:29:40 2010 +0300
+@@ -2021,17 +2021,17 @@ HeadsUpDisplay.prototype = {
+ 
+       let nodes = this.notificationBox.insertBefore(this.HUDBox,
+         this.notificationBox.childNodes[0]);
+ 
+       return this.HUDBox;
+     }
+   },
+ 
+-  get console() { this._console || this.createConsole(); },
++  get console() { return this._console || this.createConsole(); },
+ 
+   getLogCount: function HUD_getLogCount()
+   {
+     return this.outputNode.childNodes.length;
+   },
+ 
+   getLogNodes: function HUD_getLogNodes()
+   {

@@ -1,0 +1,22 @@
+diff --git a/browser/base/content/test/browser_inspector_cssinfo_order.js b/browser/base/content/test/browser_inspector_cssinfo_order.js
+--- a/browser/base/content/test/browser_inspector_cssinfo_order.js
++++ b/browser/base/content/test/browser_inspector_cssinfo_order.js
+@@ -69,16 +69,18 @@ function runInspectorTests()
+   ok(Array.isArray(rules), "cssInfo.rules property is an array");
+   is(rules.length, 3, "rules.length = 3");
+ 
+   // Check rules order.
+   is(rules[0].selector, ".test", "first rule: .test");
+   is(rules[1].selector, "div", "second rule: div");
+   is(rules[2].selector, "#test", "third rule: #test");
+ 
++  cssInfo = rules = div = doc = null;
++
+   InspectorUI.closeInspectorUI();
+   gBrowser.removeCurrentTab();
+   finish();
+ }
+ 
+ function test()
+ {
+   waitForExplicitFinish();

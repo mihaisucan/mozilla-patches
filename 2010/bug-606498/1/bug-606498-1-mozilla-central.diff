@@ -1,0 +1,2671 @@
+diff --git a/content/base/public/nsContentUtils.h b/content/base/public/nsContentUtils.h
+--- a/content/base/public/nsContentUtils.h
++++ b/content/base/public/nsContentUtils.h
+@@ -810,16 +810,18 @@ public:
+    *   @param aParamsLength Length of aParams.
+    *   @param aURI URI of resource containing error (may be null).
+    *   @param aSourceLine The text of the line that contains the error (may be
+               empty).
+    *   @param aLineNumber Line number within resource containing error.
+    *   @param aColumnNumber Column number within resource containing error.
+    *   @param aErrorFlags See nsIScriptError.
+    *   @param aCategory Name of module reporting error.
++   *   @param [aWindowId=0] (Optional) Tells the message origin by the ID of the
++              outer window object.
+    */
+   enum PropertiesFile {
+     eCSS_PROPERTIES,
+     eXBL_PROPERTIES,
+     eXUL_PROPERTIES,
+     eLAYOUT_PROPERTIES,
+     eFORMS_PROPERTIES,
+     ePRINTING_PROPERTIES,
+@@ -835,17 +837,18 @@ public:
+                                   const char *aMessageName,
+                                   const PRUnichar **aParams,
+                                   PRUint32 aParamsLength,
+                                   nsIURI* aURI,
+                                   const nsAFlatString& aSourceLine,
+                                   PRUint32 aLineNumber,
+                                   PRUint32 aColumnNumber,
+                                   PRUint32 aErrorFlags,
+-                                  const char *aCategory);
++                                  const char *aCategory,
++                                  PRUint64 aWindowId = 0);
+ 
+   /**
+    * Get the localized string named |aKey| in properties file |aFile|.
+    */
+   static nsresult GetLocalizedString(PropertiesFile aFile,
+                                      const char* aKey,
+                                      nsXPIDLString& aResult);
+ 
+diff --git a/content/base/src/nsContentUtils.cpp b/content/base/src/nsContentUtils.cpp
+--- a/content/base/src/nsContentUtils.cpp
++++ b/content/base/src/nsContentUtils.cpp
+@@ -3128,17 +3128,18 @@ nsContentUtils::ReportToConsole(Properti
+                                 const char *aMessageName,
+                                 const PRUnichar **aParams,
+                                 PRUint32 aParamsLength,
+                                 nsIURI* aURI,
+                                 const nsAFlatString& aSourceLine,
+                                 PRUint32 aLineNumber,
+                                 PRUint32 aColumnNumber,
+                                 PRUint32 aErrorFlags,
+-                                const char *aCategory)
++                                const char *aCategory,
++                                PRUint64 aWindowId)
+ {
+   NS_ASSERTION((aParams && aParamsLength) || (!aParams && !aParamsLength),
+                "Supply either both parameters and their number or no"
+                "parameters and 0.");
+ 
+   nsresult rv;
+   if (!sConsoleService) { // only need to bother null-checking here
+     rv = CallGetService(NS_CONSOLESERVICE_CONTRACTID, &sConsoleService);
+@@ -3157,21 +3158,31 @@ nsContentUtils::ReportToConsole(Properti
+ 
+   nsCAutoString spec;
+   if (aURI)
+     aURI->GetSpec(spec);
+ 
+   nsCOMPtr<nsIScriptError> errorObject =
+       do_CreateInstance(NS_SCRIPTERROR_CONTRACTID, &rv);
+   NS_ENSURE_SUCCESS(rv, rv);
+-  rv = errorObject->Init(errorText.get(),
+-                         NS_ConvertUTF8toUTF16(spec).get(), // file name
+-                         aSourceLine.get(),
+-                         aLineNumber, aColumnNumber,
+-                         aErrorFlags, aCategory);
++
++  nsCOMPtr<nsIScriptError2> errorObject2 = do_QueryInterface(errorObject);
++  if (errorObject2) {
++    rv = errorObject2->InitWithWindowID(errorText.get(),
++                                        NS_ConvertUTF8toUTF16(spec).get(), // file name
++                                        aSourceLine.get(),
++                                        aLineNumber, aColumnNumber,
++                                        aErrorFlags, aCategory, aWindowId);
++  } else {
++    rv = errorObject->Init(errorText.get(),
++                           NS_ConvertUTF8toUTF16(spec).get(), // file name
++                           aSourceLine.get(),
++                           aLineNumber, aColumnNumber,
++                           aErrorFlags, aCategory);
++  }
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   return sConsoleService->LogMessage(errorObject);
+ }
+ 
+ PRBool
+ nsContentUtils::IsChromeDoc(nsIDocument *aDocument)
+ {
+diff --git a/content/base/src/nsDocument.cpp b/content/base/src/nsDocument.cpp
+--- a/content/base/src/nsDocument.cpp
++++ b/content/base/src/nsDocument.cpp
+@@ -3989,31 +3989,42 @@ nsDocument::BeginLoad()
+     mScriptLoader->BeginDeferringScripts();
+   }
+ 
+   NS_DOCUMENT_NOTIFY_OBSERVERS(BeginLoad, (this));
+ }
+ 
+ // static
+ void
+-nsDocument::ReportEmptyGetElementByIdArg()
+-{
++nsDocument::ReportEmptyGetElementByIdArg(nsDocument* aDoc)
++{
++  nsIURI* uri;
++  PRUint64 windowID = 0;
++  if (aDoc) {
++    nsIDocument* doc = static_cast<nsIDocument*>(aDoc);
++    uri = doc->GetDocumentURI();
++    nsCOMPtr<nsPIDOMWindow> win = doc->GetWindow();
++    if (win) {
++      windowID = win->WindowID();
++    }
++  }
++
+   nsContentUtils::ReportToConsole(nsContentUtils::eDOM_PROPERTIES,
+                                   "EmptyGetElementByIdParam",
+                                   nsnull, 0,
+-                                  nsnull,
++                                  uri,
+                                   EmptyString(), 0, 0,
+                                   nsIScriptError::warningFlag,
+-                                  "DOM");
++                                  "DOM", windowID);
+ }
+ 
+ Element*
+ nsDocument::GetElementById(const nsAString& aElementId)
+ {
+-  if (!CheckGetElementByIdArg(aElementId)) {
++  if (!CheckGetElementByIdArg(aElementId, this)) {
+     return nsnull;
+   }
+ 
+   nsIdentifierMapEntry *entry = mIdentifierMap.GetEntry(aElementId);
+   return entry ? entry->GetIdElement() : nsnull;
+ }
+ 
+ NS_IMETHODIMP
+@@ -4030,33 +4041,33 @@ nsDocument::GetElementById(const nsAStri
+ }
+ 
+ Element*
+ nsDocument::AddIDTargetObserver(nsIAtom* aID, IDTargetObserver aObserver,
+                                 void* aData, PRBool aForImage)
+ {
+   nsDependentAtomString id(aID);
+ 
+-  if (!CheckGetElementByIdArg(id))
++  if (!CheckGetElementByIdArg(id, this))
+     return nsnull;
+ 
+   nsIdentifierMapEntry *entry = mIdentifierMap.PutEntry(id);
+   NS_ENSURE_TRUE(entry, nsnull);
+ 
+   entry->AddContentChangeCallback(aObserver, aData, aForImage);
+   return aForImage ? entry->GetImageIdElement() : entry->GetIdElement();
+ }
+ 
+ void
+ nsDocument::RemoveIDTargetObserver(nsIAtom* aID, IDTargetObserver aObserver,
+                                    void* aData, PRBool aForImage)
+ {
+   nsDependentAtomString id(aID);
+ 
+-  if (!CheckGetElementByIdArg(id))
++  if (!CheckGetElementByIdArg(id, this))
+     return;
+ 
+   nsIdentifierMapEntry *entry = mIdentifierMap.GetEntry(id);
+   if (!entry) {
+     return;
+   }
+ 
+   entry->RemoveContentChangeCallback(aObserver, aData, aForImage);
+@@ -5282,24 +5293,31 @@ nsDocument::GetBoxObjectFor(nsIDOMElemen
+   nsCOMPtr<nsIContent> content(do_QueryInterface(aElement));
+   NS_ENSURE_TRUE(content, NS_ERROR_UNEXPECTED);
+ 
+   nsIDocument* doc = content->GetOwnerDoc();
+   NS_ENSURE_TRUE(doc == this, NS_ERROR_DOM_WRONG_DOCUMENT_ERR);
+ 
+   if (!mHasWarnedAboutBoxObjects && !content->IsXUL()) {
+     mHasWarnedAboutBoxObjects = PR_TRUE;
++
++    nsIDocument* thisDoc = static_cast<nsIDocument*>(this);
++    PRUint64 windowID = 0;
++    nsCOMPtr<nsPIDOMWindow> win = thisDoc->GetWindow();
++    if (win) {
++      windowID = win->WindowID();
++    }
++
+     nsContentUtils::ReportToConsole(nsContentUtils::eDOM_PROPERTIES,
+                                     "UseOfGetBoxObjectForWarning",
+                                     nsnull, 0,
+-                                    static_cast<nsIDocument*>(this)->
+-                                      GetDocumentURI(),
++                                    thisDoc->GetDocumentURI(),
+                                     EmptyString(), 0, 0,
+                                     nsIScriptError::warningFlag,
+-                                    "BoxObjects");
++                                    "BoxObjects", windowID);
+   }
+ 
+   *aResult = nsnull;
+ 
+   if (!mBoxObjectTable) {
+     mBoxObjectTable = new nsInterfaceHashtable<nsVoidPtrHashKey, nsPIBoxObject>;
+     if (mBoxObjectTable && !mBoxObjectTable->Init(12)) {
+       mBoxObjectTable = nsnull;
+diff --git a/content/base/src/nsDocument.h b/content/base/src/nsDocument.h
+--- a/content/base/src/nsDocument.h
++++ b/content/base/src/nsDocument.h
+@@ -982,26 +982,27 @@ public:
+ protected:
+   friend class nsNodeUtils;
+ 
+   /**
+    * Check that aId is not empty and log a message to the console
+    * service if it is.
+    * @returns PR_TRUE if aId looks correct, PR_FALSE otherwise.
+    */
+-  static inline PRBool CheckGetElementByIdArg(const nsAString& aId)
++  static inline PRBool CheckGetElementByIdArg(const nsAString& aId,
++                                              nsDocument* aDoc)
+   {
+     if (aId.IsEmpty()) {
+-      ReportEmptyGetElementByIdArg();
++      ReportEmptyGetElementByIdArg(aDoc);
+       return PR_FALSE;
+     }
+     return PR_TRUE;
+   }
+ 
+-  static void ReportEmptyGetElementByIdArg();
++  static void ReportEmptyGetElementByIdArg(nsDocument* aDoc);
+ 
+   void DispatchContentLoadedEvents();
+ 
+   void RetrieveRelevantHeaders(nsIChannel *aChannel);
+ 
+   static PRBool TryChannelCharset(nsIChannel *aChannel,
+                                   PRInt32& aCharsetSource,
+                                   nsACString& aCharset);
+diff --git a/content/canvas/src/nsCanvasRenderingContext2D.cpp b/content/canvas/src/nsCanvasRenderingContext2D.cpp
+--- a/content/canvas/src/nsCanvasRenderingContext2D.cpp
++++ b/content/canvas/src/nsCanvasRenderingContext2D.cpp
+@@ -1,9 +1,10 @@
+ /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
++/* vim:set ts=4 sw=4 et tw=78: */
+ /* ***** BEGIN LICENSE BLOCK *****
+  * Version: MPL 1.1/GPL 2.0/LGPL 2.1
+  *
+  * The contents of this file are subject to the Mozilla Public License Version
+  * 1.1 (the "License"); you may not use this file except in compliance with
+  * the License. You may obtain a copy of the License at
+  * http://www.mozilla.org/MPL/
+  *
+@@ -951,24 +952,38 @@ nsCanvasRenderingContext2D::SetStyleFrom
+         nsCOMPtr<nsCanvasPattern> pattern(do_QueryInterface(aInterface));
+         if (pattern) {
+             CurrentState().SetPatternStyle(aWhichStyle, pattern);
+             mDirtyStyle[aWhichStyle] = PR_TRUE;
+             return NS_OK;
+         }
+     }
+ 
++    nsIURI* uri = nsnull;
++    PRUint64 windowID = 0;
++    if (mCanvasElement) {
++        nsCOMPtr<nsIContent> content = do_QueryInterface(
++            static_cast<nsIDOMHTMLCanvasElement*>(mCanvasElement));
++        nsCOMPtr<nsIDocument> doc = content->GetOwnerDoc();
++        if (doc) {
++            uri = doc->GetDocumentURI();
++            nsCOMPtr<nsPIDOMWindow> win = doc->GetWindow();
++            if (win)
++                windowID = win->WindowID();
++        }
++    }
++
+     nsContentUtils::ReportToConsole(
+         nsContentUtils::eDOM_PROPERTIES,
+         "UnexpectedCanvasVariantStyle",
+         nsnull, 0,
+-        nsnull,
++        uri,
+         EmptyString(), 0, 0,
+         nsIScriptError::warningFlag,
+-        "Canvas");
++        "Canvas", windowID);
+ 
+     return NS_OK;
+ }
+ 
+ nsresult
+ nsCanvasRenderingContext2D::GetStyleAsStringOrInterface(nsAString& aStr,
+                                                         nsISupports **aInterface,
+                                                         PRInt32 *aType,
+diff --git a/content/events/src/nsDOMEvent.cpp b/content/events/src/nsDOMEvent.cpp
+--- a/content/events/src/nsDOMEvent.cpp
++++ b/content/events/src/nsDOMEvent.cpp
+@@ -431,23 +431,32 @@ static void
+ ReportUseOfDeprecatedMethod(nsEvent* aEvent, nsIDOMEvent* aDOMEvent,
+                             const char* aWarning)
+ {
+   nsCOMPtr<nsIDocument> doc(GetDocumentForReport(aEvent));
+ 
+   nsAutoString type;
+   aDOMEvent->GetType(type);
+   const PRUnichar *strings[] = { type.get() };
++
++  PRUint64 windowID(0);
++  if (doc) {
++    nsCOMPtr<nsPIDOMWindow> win(doc->GetWindow());
++    if (win) {
++      windowID = win->WindowID();
++    }
++  }
++
+   nsContentUtils::ReportToConsole(nsContentUtils::eDOM_PROPERTIES,
+                                   aWarning,
+                                   strings, NS_ARRAY_LENGTH(strings),
+                                   doc ? doc->GetDocumentURI() : nsnull,
+                                   EmptyString(), 0, 0,
+                                   nsIScriptError::warningFlag,
+-                                  "DOM Events");
++                                  "DOM Events", windowID);
+ }
+ 
+ NS_IMETHODIMP
+ nsDOMEvent::PreventBubble()
+ {
+   ReportUseOfDeprecatedMethod(mEvent, this, "UseOfPreventBubbleWarning");
+   return NS_OK;
+ }
+@@ -1360,23 +1369,31 @@ nsDOMEvent::ReportWrongPropertyAccessWar
+ {
+   nsCOMPtr<nsIDocument> doc(GetDocumentForReport(mEvent));
+ 
+   nsAutoString propertyName, type;
+   GetType(type);
+   propertyName.AssignASCII(aPropertyName);
+   const PRUnichar *strings[] = { propertyName.get(), type.get() };
+ 
++  PRUint64 windowID(0);
++  if (doc) {
++    nsCOMPtr<nsPIDOMWindow> win(doc->GetWindow());
++    if (win) {
++      windowID = win->WindowID();
++    }
++  }
++
+   return nsContentUtils::ReportToConsole(nsContentUtils::eDOM_PROPERTIES,
+                                          "WrongEventPropertyAccessWarning",
+                                          strings, NS_ARRAY_LENGTH(strings),
+                                          doc ? doc->GetDocumentURI() : nsnull,
+                                          EmptyString(), 0, 0,
+                                          nsIScriptError::warningFlag,
+-                                         "DOM Events");
++                                         "DOM Events", windowID);
+ }
+ 
+ NS_IMETHODIMP
+ nsDOMEvent::GetPreventDefault(PRBool* aReturn)
+ {
+   NS_ENSURE_ARG_POINTER(aReturn);
+   *aReturn = mEvent && (mEvent->flags & NS_EVENT_FLAG_NO_DEFAULT);
+   return NS_OK;
+diff --git a/content/html/content/src/nsFormSubmission.cpp b/content/html/content/src/nsFormSubmission.cpp
+--- a/content/html/content/src/nsFormSubmission.cpp
++++ b/content/html/content/src/nsFormSubmission.cpp
+@@ -70,24 +70,32 @@
+ #include "nsCExternalHandlerService.h"
+ #include "nsIFileStreams.h"
+ 
+ static void
+ SendJSWarning(nsIDocument* aDocument,
+               const char* aWarningName,
+               const PRUnichar** aWarningArgs, PRUint32 aWarningArgsLen)
+ {
++  PRUint64 windowID = 0;
++  if (aDocument) {
++    nsCOMPtr<nsPIDOMWindow> win = aDocument->GetWindow();
++    if (win) {
++      windowID = win->WindowID();
++    }
++  }
++
+   nsContentUtils::ReportToConsole(nsContentUtils::eFORMS_PROPERTIES,
+                                   aWarningName,
+                                   aWarningArgs, aWarningArgsLen,
+                                   aDocument ? aDocument->GetDocumentURI() :
+                                               nsnull,
+                                   EmptyString(), 0, 0,
+                                   nsIScriptError::warningFlag,
+-                                  "HTML");
++                                  "HTML", windowID);
+ }
+ 
+ // --------------------------------------------------------------------------
+ 
+ class nsFSURLEncoded : public nsEncodingFormSubmission
+ {
+ public:
+   /**
+diff --git a/content/html/document/src/nsHTMLDocument.cpp b/content/html/document/src/nsHTMLDocument.cpp
+--- a/content/html/document/src/nsHTMLDocument.cpp
++++ b/content/html/document/src/nsHTMLDocument.cpp
+@@ -204,24 +204,30 @@ MyPrefChangedCallback(const char*aPrefNa
+ }
+ 
+ // ==================================================================
+ // =
+ // ==================================================================
+ static void
+ ReportUseOfDeprecatedMethod(nsHTMLDocument* aDoc, const char* aWarning)
+ {
++  PRUint64 windowID = 0;
++  nsCOMPtr<nsPIDOMWindow> win = aDoc->GetWindow();
++  if (win) {
++    windowID = win->WindowID();
++  }
++
+   nsContentUtils::ReportToConsole(nsContentUtils::eDOM_PROPERTIES,
+                                   aWarning,
+                                   nsnull, 0,
+                                   static_cast<nsIDocument*>(aDoc)->
+                                     GetDocumentURI(),
+                                   EmptyString(), 0, 0,
+                                   nsIScriptError::warningFlag,
+-                                  "DOM Events");
++                                  "DOM Events", windowID);
+ }
+ 
+ nsresult
+ NS_NewHTMLDocument(nsIDocument** aInstancePtrResult)
+ {
+   nsHTMLDocument* doc = new nsHTMLDocument();
+   NS_ENSURE_TRUE(doc, NS_ERROR_OUT_OF_MEMORY);
+ 
+@@ -2132,49 +2138,55 @@ nsHTMLDocument::WriteCommon(const nsAStr
+   NS_ENSURE_STATE(!mTooDeepWriteRecursion);
+ 
+   if (!IsHTML() || mDisableDocWrite) {
+     // No calling document.write*() on XHTML!
+ 
+     return NS_ERROR_DOM_INVALID_STATE_ERR;
+   }
+ 
++  PRUint64 windowID = 0;
++  nsCOMPtr<nsPIDOMWindow> win = this->GetWindow();
++  if (win) {
++    windowID = win->WindowID();
++  }
++
+   nsresult rv = NS_OK;
+ 
+   void *key = GenerateParserKey();
+   if (mWriteState == eDocumentClosed ||
+       (mWriteState == ePendingClose &&
+        !mPendingScripts.Contains(key)) ||
+       (mParser && !mParser->IsInsertionPointDefined())) {
+     if (mExternalScriptsBeingEvaluated) {
+       // Instead of implying a call to document.open(), ignore the call.
+       nsContentUtils::ReportToConsole(nsContentUtils::eDOM_PROPERTIES,
+                                       "DocumentWriteIgnored",
+                                       nsnull, 0,
+                                       mDocumentURI,
+                                       EmptyString(), 0, 0,
+                                       nsIScriptError::warningFlag,
+-                                      "DOM Events");
++                                      "DOM Events", windowID);
+       return NS_OK;
+     }
+     mWriteState = eDocumentClosed;
+     mParser->Terminate();
+     NS_ASSERTION(!mParser, "mParser should have been null'd out");
+   }
+ 
+   if (!mParser) {
+     if (mExternalScriptsBeingEvaluated) {
+       // Instead of implying a call to document.open(), ignore the call.
+       nsContentUtils::ReportToConsole(nsContentUtils::eDOM_PROPERTIES,
+                                       "DocumentWriteIgnored",
+                                       nsnull, 0,
+                                       mDocumentURI,
+                                       EmptyString(), 0, 0,
+                                       nsIScriptError::warningFlag,
+-                                      "DOM Events");
++                                      "DOM Events", windowID);
+       return NS_OK;
+     }
+     rv = Open();
+ 
+     // If Open() fails, or if it didn't create a parser (as it won't
+     // if the user chose to not discard the current document through
+     // onbeforeunload), don't write anything.
+     if (NS_FAILED(rv) || !mParser) {
+diff --git a/content/xbl/src/nsXBLContentSink.cpp b/content/xbl/src/nsXBLContentSink.cpp
+--- a/content/xbl/src/nsXBLContentSink.cpp
++++ b/content/xbl/src/nsXBLContentSink.cpp
+@@ -239,24 +239,30 @@ nsXBLContentSink::ReportUnexpectedElemen
+   // instead of just letting the XML sink build the content model like
+   // we do...
+   mState = eXBL_Error;
+   nsAutoString elementName;
+   aElementName->ToString(elementName);
+ 
+   const PRUnichar* params[] = { elementName.get() };
+ 
++  PRUint64 windowID = 0;
++  nsCOMPtr<nsPIDOMWindow> win = mDocument->GetWindow();
++  if (win) {
++    windowID = win->WindowID();
++  }
++
+   return nsContentUtils::ReportToConsole(nsContentUtils::eXBL_PROPERTIES,
+                                          "UnexpectedElement",
+                                          params, NS_ARRAY_LENGTH(params),
+                                          mDocumentURI,
+                                          EmptyString() /* source line */,
+                                          aLineNumber, 0 /* column number */,
+                                          nsIScriptError::errorFlag,
+-                                         "XBL Content Sink");
++                                         "XBL Content Sink", windowID);
+ }
+ 
+ void
+ nsXBLContentSink::AddMember(nsXBLProtoImplMember* aMember)
+ {
+   // Add this member to our chain.
+   if (mImplMember)
+     mImplMember->SetNext(aMember); // Already have a chain. Just append to the end.
+@@ -657,23 +663,29 @@ nsXBLContentSink::ConstructHandler(const
+     else if (localName == nsGkAtoms::allowuntrusted)
+       allowuntrusted = aAtts[1];
+   }
+ 
+   if (command && !mIsChromeOrResource) {
+     // Make sure the XBL doc is chrome or resource if we have a command
+     // shorthand syntax.
+     mState = eXBL_Error;
++    PRUint64 windowID = 0;
++    nsCOMPtr<nsPIDOMWindow> win = mDocument->GetWindow();
++    if (win) {
++      windowID = win->WindowID();
++    }
++
+     nsContentUtils::ReportToConsole(nsContentUtils::eXBL_PROPERTIES,
+                                     "CommandNotInChrome", nsnull, 0,
+                                     mDocumentURI,
+                                     EmptyString() /* source line */,
+                                     aLineNumber, 0 /* column number */,
+                                     nsIScriptError::errorFlag,
+-                                    "XBL Content Sink");
++                                    "XBL Content Sink", windowID);
+     return; // Don't even make this handler.
+   }
+ 
+   // All of our pointers are now filled in. Construct our handler with all of
+   // these parameters.
+   nsXBLPrototypeHandler* newHandler;
+   newHandler = new nsXBLPrototypeHandler(event, phase, action, command,
+                                          keycode, charcode, modifiers, button,
+diff --git a/content/xbl/src/nsXBLDocumentInfo.cpp b/content/xbl/src/nsXBLDocumentInfo.cpp
+--- a/content/xbl/src/nsXBLDocumentInfo.cpp
++++ b/content/xbl/src/nsXBLDocumentInfo.cpp
+@@ -51,16 +51,18 @@
+ #include "nsIScriptError.h"
+ #include "nsIChromeRegistry.h"
+ #include "nsIPrincipal.h"
+ #include "nsIScriptSecurityManager.h"
+ #include "nsContentUtils.h"
+ #include "nsDOMJSUtils.h"
+ #include "mozilla/Services.h"
+ #include "xpcpublic.h"
++#include "nsJSUtils.h"
++#include "nsPIDOMWindow.h"
+  
+ static NS_DEFINE_CID(kDOMScriptObjectFactoryCID, NS_DOM_SCRIPT_OBJECT_FACTORY_CID);
+ 
+ // An XBLDocumentInfo object has a special context associated with it which we can use to pre-compile 
+ // properties and methods of XBL bindings against.
+ class nsXBLDocGlobalObject : public nsIScriptGlobalObject,
+                              public nsIScriptObjectPrincipal
+ {
+@@ -228,23 +230,46 @@ XBL_ProtoErrorReporter(JSContext *cx,
+   nsCOMPtr<nsIScriptError>
+     errorObject(do_CreateInstance("@mozilla.org/scripterror;1"));
+   nsCOMPtr<nsIConsoleService>
+     consoleService(do_GetService("@mozilla.org/consoleservice;1"));
+ 
+   if (errorObject && consoleService) {
+     PRUint32 column = report->uctokenptr - report->uclinebuf;
+ 
+-    errorObject->Init
+-         (reinterpret_cast<const PRUnichar*>(report->ucmessage),
+-          NS_ConvertUTF8toUTF16(report->filename).get(),
+-          reinterpret_cast<const PRUnichar*>(report->uclinebuf),
+-          report->lineno, column, report->flags,
+-          "xbl javascript"
+-          );
++    nsCOMPtr<nsIScriptError2> errorObject2(do_QueryInterface(errorObject));
++
++    if (errorObject2) {
++      PRUint64 windowID = 0;
++
++      nsIScriptGlobalObject *globalObject =
++        nsJSUtils::GetDynamicScriptGlobal(cx);
++      if (globalObject) {
++        nsCOMPtr<nsPIDOMWindow> win = do_QueryInterface(globalObject);
++        if (win)
++          windowID = win->WindowID();
++      }
++
++      errorObject2->InitWithWindowID
++           (reinterpret_cast<const PRUnichar*>(report->ucmessage),
++            NS_ConvertUTF8toUTF16(report->filename).get(),
++            reinterpret_cast<const PRUnichar*>(report->uclinebuf),
++            report->lineno, column, report->flags,
++            "xbl javascript", windowID
++            );
++    } else {
++      errorObject->Init
++           (reinterpret_cast<const PRUnichar*>(report->ucmessage),
++            NS_ConvertUTF8toUTF16(report->filename).get(),
++            reinterpret_cast<const PRUnichar*>(report->uclinebuf),
++            report->lineno, column, report->flags,
++            "xbl javascript"
++            );
++    }
++
+     consoleService->LogMessage(errorObject);
+   }
+ }
+ 
+ //----------------------------------------------------------------------
+ //
+ // nsIScriptGlobalObject methods
+ //
+diff --git a/content/xbl/src/nsXBLPrototypeHandler.cpp b/content/xbl/src/nsXBLPrototypeHandler.cpp
+--- a/content/xbl/src/nsXBLPrototypeHandler.cpp
++++ b/content/xbl/src/nsXBLPrototypeHandler.cpp
+@@ -971,23 +971,41 @@ nsXBLPrototypeHandler::ConstructPrototyp
+ }
+ 
+ void
+ nsXBLPrototypeHandler::ReportKeyConflict(const PRUnichar* aKey, const PRUnichar* aModifiers, nsIContent* aKeyElement, const char *aMessageName)
+ {
+   nsIURI* uri = mPrototypeBinding ? mPrototypeBinding->DocURI() :
+                 aKeyElement ? aKeyElement->GetOwnerDoc()->GetDocumentURI() :
+                 nsnull;
++
++  PRUint64 windowID = 0;
++  nsCOMPtr<nsIDocument> doc;
++  if (mPrototypeBinding) {
++    nsXBLDocumentInfo* docInfo = mPrototypeBinding->XBLDocumentInfo();
++    if (docInfo) {
++      doc = docInfo->GetDocument();
++    }
++  } else if (aKeyElement) {
++    doc = aKeyElement->GetOwnerDoc();
++  }
++  if (doc) {
++    nsCOMPtr<nsPIDOMWindow> win = doc->GetWindow();
++    if (win) {
++      windowID = win->WindowID();
++    }
++  }
++
+   const PRUnichar* params[] = { aKey, aModifiers };
+   nsContentUtils::ReportToConsole(nsContentUtils::eXBL_PROPERTIES,
+                                   aMessageName,
+                                   params, NS_ARRAY_LENGTH(params),
+                                   uri, EmptyString(), mLineNumber, 0,
+                                   nsIScriptError::warningFlag,
+-                                  "XBL Prototype Handler");
++                                  "XBL Prototype Handler", windowID);
+ }
+ 
+ PRBool
+ nsXBLPrototypeHandler::ModifiersMatchMask(nsIDOMUIEvent* aEvent,
+                                           PRBool aIgnoreShiftKey)
+ {
+   nsCOMPtr<nsIDOMKeyEvent> key(do_QueryInterface(aEvent));
+   nsCOMPtr<nsIDOMMouseEvent> mouse(do_QueryInterface(aEvent));
+diff --git a/content/xbl/src/nsXBLService.cpp b/content/xbl/src/nsXBLService.cpp
+--- a/content/xbl/src/nsXBLService.cpp
++++ b/content/xbl/src/nsXBLService.cpp
+@@ -126,23 +126,30 @@ IsAncestorBinding(nsIDocument* aDocument
+       ++bindingRecursion;
+       if (bindingRecursion < NS_MAX_XBL_BINDING_RECURSION) {
+         continue;
+       }
+       nsCAutoString spec;
+       aChildBindingURI->GetSpec(spec);
+       NS_ConvertUTF8toUTF16 bindingURI(spec);
+       const PRUnichar* params[] = { bindingURI.get() };
++
++      PRUint64 windowID = 0;
++      nsCOMPtr<nsPIDOMWindow> win = aDocument->GetWindow();
++      if (win) {
++        windowID = win->WindowID();
++      }
++
+       nsContentUtils::ReportToConsole(nsContentUtils::eXBL_PROPERTIES,
+                                       "TooDeepBindingRecursion",
+                                       params, NS_ARRAY_LENGTH(params),
+                                       aDocument->GetDocumentURI(),
+                                       EmptyString(), 0, 0,
+                                       nsIScriptError::warningFlag,
+-                                      "XBL");
++                                      "XBL", windowID);
+       return PR_TRUE;
+     }
+   }
+ 
+   return PR_FALSE;
+ }
+ 
+ PRBool CheckTagNameWhiteList(PRInt32 aNameSpaceID, nsIAtom *aTagName)
+@@ -449,22 +456,29 @@ nsXBLStreamListener::Load(nsIDOMEvent* a
+     nsBindingManager *xblDocBindingManager = bindingDocument->BindingManager();
+     nsRefPtr<nsXBLDocumentInfo> info =
+       xblDocBindingManager->GetXBLDocumentInfo(documentURI);
+     xblDocBindingManager->RemoveXBLDocumentInfo(info); // Break the self-imposed cycle.
+     if (!info) {
+       if (IsChromeOrResourceURI(documentURI)) {
+         NS_WARNING("An XBL file is malformed. Did you forget the XBL namespace on the bindings tag?");
+       }
++
++      PRUint64 windowID = 0;
++      nsCOMPtr<nsPIDOMWindow> win = bindingDocument->GetWindow();
++      if (win) {
++        windowID = win->WindowID();
++      }
++
+       nsContentUtils::ReportToConsole(nsContentUtils::eXBL_PROPERTIES,
+                                       "MalformedXBL",
+                                       nsnull, 0, documentURI,
+                                       EmptyString(), 0, 0,
+                                       nsIScriptError::warningFlag,
+-                                      "XBL");
++                                      "XBL", windowID);
+       return NS_ERROR_FAILURE;
+     }
+ 
+     // If the doc is a chrome URI, then we put it into the XUL cache.
+ #ifdef MOZ_XUL
+     if (IsChromeOrResourceURI(documentURI)) {
+       nsXULPrototypeCache* cache = nsXULPrototypeCache::GetInstance();
+       if (cache && cache->IsEnabled())
+@@ -971,23 +985,29 @@ nsXBLService::GetBinding(nsIContent* aBo
+ 
+             PRInt32 nameSpaceID =
+               nsContentUtils::NameSpaceManager()->GetNameSpaceID(nameSpace);
+ 
+             nsCOMPtr<nsIAtom> tagName = do_GetAtom(display);
+             // Check the white list
+             if (!CheckTagNameWhiteList(nameSpaceID, tagName)) {
+               const PRUnichar* params[] = { display.get() };
++              PRUint64 windowID = 0;
++              nsCOMPtr<nsPIDOMWindow> win = doc->GetWindow();
++              if (win) {
++                windowID = win->WindowID();
++              }
++
+               nsContentUtils::ReportToConsole(nsContentUtils::eXBL_PROPERTIES,
+                                               "InvalidExtendsBinding",
+                                               params, NS_ARRAY_LENGTH(params),
+                                               doc->GetDocumentURI(),
+                                               EmptyString(), 0, 0,
+                                               nsIScriptError::errorFlag,
+-                                              "XBL");
++                                              "XBL", windowID);
+               NS_ASSERTION(!IsChromeOrResourceURI(aURI),
+                            "Invalid extends value");
+               return NS_ERROR_ILLEGAL_VALUE;
+             }
+ 
+             protoBinding->SetBaseTag(nameSpaceID, tagName);
+           }
+         }
+@@ -1007,23 +1027,30 @@ nsXBLService::GetBinding(nsIContent* aBo
+           PRBool equal;
+           rv = aDontExtendURIs[index]->Equals(bindingURI, &equal);
+           NS_ENSURE_SUCCESS(rv, rv);
+           if (equal) {
+             nsCAutoString spec;
+             protoBinding->BindingURI()->GetSpec(spec);
+             NS_ConvertUTF8toUTF16 protoSpec(spec);
+             const PRUnichar* params[] = { protoSpec.get(), value.get() };
++
++            PRUint64 windowID = 0;
++            nsCOMPtr<nsPIDOMWindow> win = boundDocument->GetWindow();
++            if (win) {
++              windowID = win->WindowID();
++            }
++
+             nsContentUtils::ReportToConsole(nsContentUtils::eXBL_PROPERTIES,
+                                             "CircularExtendsBinding",
+                                             params, NS_ARRAY_LENGTH(params),
+                                             boundDocument->GetDocumentURI(),
+                                             EmptyString(), 0, 0,
+                                             nsIScriptError::warningFlag,
+-                                            "XBL");
++                                            "XBL", windowID);
+             return NS_ERROR_ILLEGAL_VALUE;
+           }
+         }
+ 
+         // Use the NodePrincipal() of the <binding> element in question
+         // for the security check.
+         rv = GetBinding(aBoundElement, bindingURI, aPeekOnly,
+                         child->NodePrincipal(), aIsReady,
+diff --git a/content/xml/document/src/nsXMLDocument.cpp b/content/xml/document/src/nsXMLDocument.cpp
+--- a/content/xml/document/src/nsXMLDocument.cpp
++++ b/content/xml/document/src/nsXMLDocument.cpp
+@@ -317,23 +317,28 @@ nsXMLDocument::SetAsync(PRBool aAsync)
+ {
+   mAsync = aAsync;
+   return NS_OK;
+ }
+ 
+ static void
+ ReportUseOfDeprecatedMethod(nsIDocument *aDoc, const char* aWarning)
+ {
++  PRUint64 windowID = 0;
++  nsCOMPtr<nsPIDOMWindow> win = aDoc->GetWindow();
++  if (win)
++    windowID = win->WindowID();
++
+   nsContentUtils::ReportToConsole(nsContentUtils::eDOM_PROPERTIES,
+                                   aWarning,
+                                   nsnull, 0,
+                                   aDoc->GetDocumentURI(),
+                                   EmptyString(), 0, 0,
+                                   nsIScriptError::warningFlag,
+-                                  "DOM3 Load");
++                                  "DOM3 Load", windowID);
+ }
+ 
+ NS_IMETHODIMP
+ nsXMLDocument::Load(const nsAString& aUrl, PRBool *aReturn)
+ {
+   ReportUseOfDeprecatedMethod(this, "UseOfDOM3LoadMethodWarning");
+ 
+   NS_ENSURE_ARG_POINTER(aReturn);
+@@ -396,19 +401,37 @@ nsXMLDocument::Load(const nsAString& aUr
+         mDocumentURI->GetSpec(spec);
+ 
+       nsAutoString error;
+       error.AssignLiteral("Cross site loading using document.load is no "
+                           "longer supported. Use XMLHttpRequest instead.");
+       nsCOMPtr<nsIScriptError> errorObject =
+           do_CreateInstance(NS_SCRIPTERROR_CONTRACTID, &rv);
+       NS_ENSURE_SUCCESS(rv, rv);
+-      rv = errorObject->Init(error.get(), NS_ConvertUTF8toUTF16(spec).get(),
+-                             nsnull, 0, 0, nsIScriptError::warningFlag,
+-                             "DOM");
++
++      nsCOMPtr<nsIScriptError2> errorObject2 = do_QueryInterface(errorObject);
++
++      if (errorObject2) {
++        PRUint64 windowID = 0;
++        nsCOMPtr<nsPIDOMWindow> win = callingDoc ?
++          callingDoc->GetWindow() : this->GetWindow();
++
++        if (win) {
++          windowID = win->WindowID();
++        }
++
++        rv = errorObject2->InitWithWindowID(error.get(), NS_ConvertUTF8toUTF16(spec).get(),
++                                            nsnull, 0, 0, nsIScriptError::warningFlag,
++                                            "DOM", windowID);
++      } else {
++        rv = errorObject->Init(error.get(), NS_ConvertUTF8toUTF16(spec).get(),
++                               nsnull, 0, 0, nsIScriptError::warningFlag,
++                               "DOM");
++      }
++
+       NS_ENSURE_SUCCESS(rv, rv);
+ 
+       nsCOMPtr<nsIConsoleService> consoleService =
+         do_GetService(NS_CONSOLESERVICE_CONTRACTID);
+       if (consoleService) {
+         consoleService->LogMessage(errorObject);
+       }
+ 
+diff --git a/content/xul/document/src/nsXULDocument.cpp b/content/xul/document/src/nsXULDocument.cpp
+--- a/content/xul/document/src/nsXULDocument.cpp
++++ b/content/xul/document/src/nsXULDocument.cpp
+@@ -1635,17 +1635,17 @@ nsXULDocument::GetCommandDispatcher(nsID
+     *aTracker = mCommandDispatcher;
+     NS_IF_ADDREF(*aTracker);
+     return NS_OK;
+ }
+ 
+ Element*
+ nsXULDocument::GetElementById(const nsAString& aId)
+ {
+-    if (!CheckGetElementByIdArg(aId))
++    if (!CheckGetElementByIdArg(aId, static_cast<nsDocument*>(this)))
+         return nsnull;
+ 
+     nsIdentifierMapEntry *entry = mIdentifierMap.GetEntry(aId);
+     if (entry) {
+         Element* element = entry->GetIdElement();
+         if (element)
+             return element;
+     }
+diff --git a/dom/base/nsDOMClassInfo.cpp b/dom/base/nsDOMClassInfo.cpp
+--- a/dom/base/nsDOMClassInfo.cpp
++++ b/dom/base/nsDOMClassInfo.cpp
+@@ -1695,23 +1695,46 @@ PrintWarningOnConsole(JSContext *cx, con
+         CopyUTF8toUTF16(nsDependentCString(filename), sourcefile);
+       }
+       jsbytecode* pc = ::JS_GetFramePC(cx, fp);
+       if (pc) {
+         lineno = ::JS_PCToLineNumber(cx, script, pc);
+       }
+     }
+   }
+-  nsresult rv = scriptError->Init(msg.get(),
+-                                  sourcefile.get(),
+-                                  EmptyString().get(),
+-                                  lineno,
+-                                  0, // column for error is not available
+-                                  nsIScriptError::warningFlag,
+-                                  "DOM:HTML");
++
++  nsCOMPtr<nsIScriptError2> scriptError2 = do_QueryInterface(scriptError);
++  nsresult rv;
++  if (scriptError2) {
++    PRUint64 windowID = 0;
++
++    nsIScriptGlobalObject *globalObject = nsJSUtils::GetDynamicScriptGlobal(cx);
++    if (globalObject) {
++      nsCOMPtr<nsPIDOMWindow> win = do_QueryInterface(globalObject);
++      if (win)
++        windowID = win->WindowID();
++    }
++
++    rv = scriptError2->InitWithWindowID(msg.get(),
++                                        sourcefile.get(),
++                                        EmptyString().get(),
++                                        lineno,
++                                        0, // column for error is not available
++                                        nsIScriptError::warningFlag,
++                                        "DOM:HTML", windowID);
++  } else {
++    rv = scriptError->Init(msg.get(),
++                           sourcefile.get(),
++                           EmptyString().get(),
++                           lineno,
++                           0, // column for error is not available
++                           nsIScriptError::warningFlag,
++                           "DOM:HTML");
++  }
++
+   if (NS_SUCCEEDED(rv)){
+     consoleService->LogMessage(scriptError);
+   }
+ }
+ 
+ static inline JSString *
+ IdToString(JSContext *cx, jsid id)
+ {
+diff --git a/dom/base/nsGlobalWindow.cpp b/dom/base/nsGlobalWindow.cpp
+--- a/dom/base/nsGlobalWindow.cpp
++++ b/dom/base/nsGlobalWindow.cpp
+@@ -5240,23 +5240,26 @@ nsGlobalWindow::SetResizable(PRBool aRes
+ 
+   return NS_OK;
+ }
+ 
+ static void
+ ReportUseOfDeprecatedMethod(nsGlobalWindow* aWindow, const char* aWarning)
+ {
+   nsCOMPtr<nsIDocument> doc = do_QueryInterface(aWindow->GetExtantDocument());
++  nsCOMPtr<nsPIDOMWindow> win = doc->GetWindow();
++  PRUint64 windowID = win ? win->WindowID() : 0;
++
+   nsContentUtils::ReportToConsole(nsContentUtils::eDOM_PROPERTIES,
+                                   aWarning,
+                                   nsnull, 0,
+                                   doc ? doc->GetDocumentURI() : nsnull,
+                                   EmptyString(), 0, 0,
+                                   nsIScriptError::warningFlag,
+-                                  "DOM Events");
++                                  "DOM Events", windowID);
+ }
+ 
+ NS_IMETHODIMP
+ nsGlobalWindow::CaptureEvents(PRInt32 aEventFlags)
+ {
+   ReportUseOfDeprecatedMethod(this, "UseOfCaptureEventsWarning");
+   return NS_OK;
+ }
+@@ -5937,25 +5940,33 @@ nsGlobalWindow::Close()
+   // that were not opened by script
+   if (!mHadOriginalOpener && !nsContentUtils::IsCallerTrustedForWrite()) {
+     PRBool allowClose =
+       nsContentUtils::GetBoolPref("dom.allow_scripts_to_close_windows",
+                                   PR_TRUE);
+     if (!allowClose) {
+       // We're blocking the close operation
+       // report localized error msg in JS console
++      PRUint64 windowID = 0;
++      nsCOMPtr<nsIDocument> doc = do_QueryInterface(this->GetExtantDocument());
++      if (doc) {
++        nsCOMPtr<nsPIDOMWindow> win = doc->GetWindow();
++        if (win) {
++          windowID = win->WindowID();
++        }
++      }
++
+       nsContentUtils::ReportToConsole(
+           nsContentUtils::eDOM_PROPERTIES,
+           "WindowCloseBlockedWarning",
+           nsnull, 0, // No params
+-          nsnull, // No URI.  Not clear which URI we should be using
+-                  // here anyway
++          doc ? doc->GetDocumentURI() : nsnull,
+           EmptyString(), 0, 0, // No source, or column/line number
+           nsIScriptError::warningFlag,
+-          "DOM Window");  // Better name for the category?
++          "DOM Window", windowID);  // Better name for the category?
+ 
+       return NS_OK;
+     }
+   }
+ 
+   if (!mInClose && !mIsClosed && !CanClose())
+     return NS_OK;
+ 
+diff --git a/dom/src/threads/nsDOMThreadService.cpp b/dom/src/threads/nsDOMThreadService.cpp
+--- a/dom/src/threads/nsDOMThreadService.cpp
++++ b/dom/src/threads/nsDOMThreadService.cpp
+@@ -592,16 +592,19 @@ DOMWorkerErrorReporter(JSContext* aCx,
+ 
+     scriptError = do_CreateInstance(NS_SCRIPTERROR_CONTRACTID, &rv);
+   }
+ 
+   if (NS_FAILED(rv)) {
+     return;
+   }
+ 
++  nsCOMPtr<nsIScriptError2> scriptError2(do_QueryInterface(scriptError));
++  PRUint64 windowID = worker->Pool()->GetWindowID();
++
+   nsAutoString message, filename, line;
+   PRUint32 lineNumber, columnNumber, flags, errorNumber;
+ 
+   if (aReport) {
+     if (aReport->ucmessage) {
+       message.Assign(reinterpret_cast<const PRUnichar*>(aReport->ucmessage));
+     }
+     filename.AssignWithConversion(aReport->filename);
+@@ -615,18 +618,27 @@ DOMWorkerErrorReporter(JSContext* aCx,
+     lineNumber = columnNumber = errorNumber = 0;
+     flags = nsIScriptError::errorFlag | nsIScriptError::exceptionFlag;
+   }
+ 
+   if (message.IsEmpty()) {
+     message.AssignWithConversion(aMessage);
+   }
+ 
+-  rv = scriptError->Init(message.get(), filename.get(), line.get(), lineNumber,
+-                         columnNumber, flags, "DOM Worker javascript");
++  if (scriptError2) {
++    rv = scriptError2->InitWithWindowID(message.get(), filename.get(), line.get(),
++                                        lineNumber, columnNumber, flags,
++                                        "DOM Worker javascript", windowID);
++  }
++  else {
++    rv = scriptError->Init(message.get(), filename.get(), line.get(),
++                           lineNumber, columnNumber, flags,
++                           "DOM Worker javascript");
++  }
++
+   if (NS_FAILED(rv)) {
+     return;
+   }
+ 
+   // Don't call the error handler if we're out of stack space.
+   if (errorNumber != JSMSG_SCRIPT_STACK_QUOTA &&
+       errorNumber != JSMSG_OVER_RECURSED) {
+     // Try the onerror handler for the worker's scope.
+diff --git a/dom/src/threads/nsDOMWorkerPool.cpp b/dom/src/threads/nsDOMWorkerPool.cpp
+--- a/dom/src/threads/nsDOMWorkerPool.cpp
++++ b/dom/src/threads/nsDOMWorkerPool.cpp
+@@ -67,16 +67,24 @@ nsDOMWorkerPool::nsDOMWorkerPool(nsIScri
+ : mParentGlobal(aGlobalObject),
+   mParentDocument(aDocument),
+   mMonitor(nsnull),
+   mCanceled(PR_FALSE),
+   mSuspended(PR_FALSE)
+ {
+   NS_ASSERTION(aGlobalObject, "Must have a global object!");
+   NS_ASSERTION(aDocument, "Must have a document!");
++
++  nsCOMPtr<nsPIDOMWindow> win = aDocument->GetWindow();
++  if (win) {
++    mWindowID = win->WindowID();
++  }
++  else {
++    mWindowID = 0;
++  }
+ }
+ 
+ nsDOMWorkerPool::~nsDOMWorkerPool()
+ {
+   nsCOMPtr<nsIThread> mainThread;
+   NS_GetMainThread(getter_AddRefs(mainThread));
+ 
+   nsIScriptGlobalObject* global;
+diff --git a/dom/src/threads/nsDOMWorkerPool.h b/dom/src/threads/nsDOMWorkerPool.h
+--- a/dom/src/threads/nsDOMWorkerPool.h
++++ b/dom/src/threads/nsDOMWorkerPool.h
+@@ -78,16 +78,20 @@ public:
+ 
+   nsresult NoteWorker(nsDOMWorker* aWorker);
+   void NoteDyingWorker(nsDOMWorker* aWorker);
+ 
+   PRMonitor* Monitor() {
+     return mMonitor;
+   }
+ 
++  PRUint64 GetWindowID() {
++    return mWindowID;
++  }
++
+ private:
+   virtual ~nsDOMWorkerPool();
+ 
+   void GetWorkers(nsTArray<nsDOMWorker*>& aArray);
+ 
+   nsAutoRefCnt mRefCnt;
+ 
+   // Reference to the window that created and owns this pool.
+@@ -100,11 +104,13 @@ private:
+   // independently of the owning pool and other workers.
+   nsTArray<nsDOMWorker*> mWorkers;
+ 
+   // Monitor for suspending and resuming workers.
+   PRMonitor* mMonitor;
+ 
+   PRPackedBool mCanceled;
+   PRPackedBool mSuspended;
++
++  PRUint64 mWindowID;
+ };
+ 
+ #endif /* __NSDOMWORKERPOOL_H__ */
+diff --git a/js/src/xpconnect/loader/Makefile.in b/js/src/xpconnect/loader/Makefile.in
+--- a/js/src/xpconnect/loader/Makefile.in
++++ b/js/src/xpconnect/loader/Makefile.in
+@@ -48,9 +48,13 @@ LIBXUL_LIBRARY = 1
+ 
+ 
+ CPPSRCS		= mozJSComponentLoader.cpp mozJSSubScriptLoader.cpp
+ 
+ EXTRA_JS_MODULES = XPCOMUtils.jsm ISO8601DateUtils.jsm
+ 
+ include $(topsrcdir)/config/rules.mk
+ 
++LOCAL_INCLUDES = \
++		-I$(topsrcdir)/dom/base \
++		$(NULL)
++
+ DEFINES		+= -DJSFILE -DJS_THREADSAFE
+diff --git a/js/src/xpconnect/loader/mozJSComponentLoader.cpp b/js/src/xpconnect/loader/mozJSComponentLoader.cpp
+--- a/js/src/xpconnect/loader/mozJSComponentLoader.cpp
++++ b/js/src/xpconnect/loader/mozJSComponentLoader.cpp
+@@ -1,9 +1,10 @@
+ /* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
++ * vim: set ts=8 sw=4 et tw=78:
+  *
+  * ***** BEGIN LICENSE BLOCK *****
+  * Version: MPL 1.1/GPL 2.0/LGPL 2.1
+  *
+  * The contents of this file are subject to the Mozilla Public License Version
+  * 1.1 (the "License"); you may not use this file except in compliance with
+  * the License. You may obtain a copy of the License at
+  * http://www.mozilla.org/MPL/
+@@ -61,16 +62,19 @@
+ #include "nsIJSRuntimeService.h"
+ #include "nsIJSContextStack.h"
+ #include "nsIXPConnect.h"
+ #include "nsCRT.h"
+ #include "nsMemory.h"
+ #include "nsIObserverService.h"
+ #include "nsIXPCScriptable.h"
+ #include "nsString.h"
++#include "nsIScriptGlobalObject.h"
++#include "nsPIDOMWindow.h"
++#include "nsJSUtils.h"
+ #ifndef XPCONNECT_STANDALONE
+ #include "nsIScriptSecurityManager.h"
+ #include "nsIURI.h"
+ #include "nsIFileURL.h"
+ #include "nsIJARURI.h"
+ #include "nsNetUtil.h"
+ #endif
+ #include "jsxdrapi.h"
+@@ -144,32 +148,53 @@ mozJSLoaderErrorReporter(JSContext *cx, 
+      * Make an nsIScriptError, populate it with information from this
+      * error, then log it with the console service.  The UI can then
+      * poll the service to update the Error console.
+      */
+     nsCOMPtr<nsIScriptError> errorObject = 
+         do_CreateInstance(NS_SCRIPTERROR_CONTRACTID);
+     
+     if (consoleService && errorObject) {
++        PRUint64 windowID = 0;
++        nsCOMPtr<nsIScriptError2> errorObject2(do_QueryInterface(errorObject));
++
++        nsIScriptGlobalObject *globalObject = nsJSUtils::GetDynamicScriptGlobal(cx);
++        if (globalObject) {
++            nsCOMPtr<nsPIDOMWindow> win = do_QueryInterface(globalObject);
++            if (win)
++                windowID = win->WindowID();
++        }
++
+         /*
+          * Got an error object; prepare appropriate-width versions of
+          * various arguments to it.
+          */
+         nsAutoString fileUni;
+         fileUni.AssignWithConversion(rep->filename);
+ 
+         PRUint32 column = rep->uctokenptr - rep->uclinebuf;
+ 
+-        rv = errorObject->Init(reinterpret_cast<const PRUnichar*>
+-                                               (rep->ucmessage),
+-                               fileUni.get(),
+-                               reinterpret_cast<const PRUnichar*>
+-                                               (rep->uclinebuf),
+-                               rep->lineno, column, rep->flags,
+-                               "component javascript");
++        if (errorObject2) {
++            rv = errorObject2->InitWithWindowID(reinterpret_cast<const PRUnichar*>
++                                                                (rep->ucmessage),
++                                                fileUni.get(),
++                                                reinterpret_cast<const PRUnichar*>
++                                                                (rep->uclinebuf),
++                                                rep->lineno, column, rep->flags,
++                                                "component javascript", windowID);
++        } else {
++            rv = errorObject->Init(reinterpret_cast<const PRUnichar*>
++                                                   (rep->ucmessage),
++                                   fileUni.get(),
++                                   reinterpret_cast<const PRUnichar*>
++                                                   (rep->uclinebuf),
++                                   rep->lineno, column, rep->flags,
++                                   "component javascript");
++        }
++
+         if (NS_SUCCEEDED(rv)) {
+             rv = consoleService->LogMessage(errorObject);
+             if (NS_SUCCEEDED(rv)) {
+                 // We're done!  Skip return to fall thru to stderr
+                 // printout, for the benefit of those invoking the
+                 // browser with -console
+                 // return;
+             }
+diff --git a/js/src/xpconnect/src/Makefile.in b/js/src/xpconnect/src/Makefile.in
+--- a/js/src/xpconnect/src/Makefile.in
++++ b/js/src/xpconnect/src/Makefile.in
+@@ -118,16 +118,17 @@ LOCAL_INCLUDES = \
+ 		-I$(topsrcdir)/js/src/nanojit \
+ 		-I$(topsrcdir)/caps/include \
+ 		-I$(topsrcdir)/content/base/src \
+ 		-I$(topsrcdir)/content/html/content/src \
+ 		-I$(topsrcdir)/content/html/document/src \
+ 		-I$(topsrcdir)/content/svg/content/src \
+ 		-I$(topsrcdir)/layout/style \
+ 		-I$(topsrcdir)/layout/base \
++		-I$(topsrcdir)/dom/base \
+ 		$(NULL)
+ 
+ EXTRA_DSO_LDOPTS += \
+ 		$(MOZ_COMPONENT_LIBS) \
+ 		$(MOZ_JS_LIBS) \
+ 		$(NULL)
+ 
+ ifdef MOZ_JSLOADER
+diff --git a/js/src/xpconnect/src/xpccomponents.cpp b/js/src/xpconnect/src/xpccomponents.cpp
+--- a/js/src/xpconnect/src/xpccomponents.cpp
++++ b/js/src/xpconnect/src/xpccomponents.cpp
+@@ -48,16 +48,19 @@
+ #include "nsIScriptObjectPrincipal.h"
+ #include "nsIDOMWindow.h"
+ #include "xpcJSWeakReference.h"
+ #include "XPCWrapper.h"
+ #include "jsproxy.h"
+ #include "WrapperFactory.h"
+ #include "XrayWrapper.h"
+ #include "nsNullPrincipal.h"
++#include "nsIScriptGlobalObject.h"
++#include "nsPIDOMWindow.h"
++#include "nsJSUtils.h"
+ 
+ #ifdef MOZ_JSLOADER
+ #include "mozJSComponentLoader.h"
+ #endif
+ 
+ /***************************************************************************/
+ // stuff used by all
+ 
+@@ -2863,16 +2866,17 @@ nsXPCComponents_Utils::ReportError()
+ {
+     // This function shall never fail! Silently eat any failure conditions.
+     nsresult rv;
+ 
+     nsCOMPtr<nsIConsoleService> console(
+       do_GetService(NS_CONSOLESERVICE_CONTRACTID));
+ 
+     nsCOMPtr<nsIScriptError> scripterr(new nsScriptError());
++    nsCOMPtr<nsIScriptError2> scripterr2(do_QueryInterface(scripterr));
+ 
+     nsCOMPtr<nsIXPConnect> xpc(do_GetService(nsIXPConnect::GetCID()));
+     if(!scripterr || !console || !xpc)
+         return NS_OK;
+ 
+     // get the xpconnect native call context
+     nsAXPCNativeCallContext *cc = nsnull;
+     xpc->GetCurrentNativeCallContext(&cc);
+@@ -2911,67 +2915,77 @@ nsXPCComponents_Utils::ReportError()
+     if(argc < 1)
+         return NS_ERROR_XPC_NOT_ENOUGH_ARGS;
+ 
+     jsval* argv;
+     rv = cc->GetArgvPtr(&argv);
+     if(NS_FAILED(rv) || !argv)
+         return NS_OK;
+ 
++    PRUint64 windowID = 0;
++
++    nsIScriptGlobalObject *globalObject = nsJSUtils::GetDynamicScriptGlobal(cx);
++    if(globalObject)
++    {
++        nsCOMPtr<nsPIDOMWindow> win = do_QueryInterface(globalObject);
++        if(win)
++            windowID = win->WindowID();
++    }
++
+     JSErrorReport* err = JS_ErrorFromException(cx, argv[0]);
+     if(err)
+     {
+         // It's a proper JS Error
+         nsAutoString fileUni;
+         CopyUTF8toUTF16(err->filename, fileUni);
+ 
+         PRUint32 column = err->uctokenptr - err->uclinebuf;
+ 
+-        rv = scripterr->Init(reinterpret_cast<const PRUnichar*>
+-                                             (err->ucmessage),
+-                             fileUni.get(),
+-                             reinterpret_cast<const PRUnichar*>
+-                                             (err->uclinebuf),
+-                             err->lineno,
+-                             column,
+-                             err->flags,
+-                             "XPConnect JavaScript");
++        rv = scripterr2->InitWithWindowID(reinterpret_cast<const PRUnichar*>
++                                                        (err->ucmessage),
++                                          fileUni.get(),
++                                          reinterpret_cast<const PRUnichar*>
++                                                          (err->uclinebuf),
++                                          err->lineno,
++                                          column,
++                                          err->flags,
++                                          "XPConnect JavaScript", windowID);
+         if(NS_FAILED(rv))
+             return NS_OK;
+ 
+         console->LogMessage(scripterr);
+         return NS_OK;
+     }
+ 
+     // It's not a JS Error object, so we synthesize as best we're able
+     JSString* msgstr = JS_ValueToString(cx, argv[0]);
+     if(msgstr)
+     {
+-        // Root the string during scripterr->Init
++        // Root the string during scripterr2->Init
+         argv[0] = STRING_TO_JSVAL(msgstr);
+ 
+         nsCOMPtr<nsIStackFrame> frame;
+         nsXPConnect* xpc = nsXPConnect::GetXPConnect();
+         if(xpc)
+             xpc->GetCurrentJSStack(getter_AddRefs(frame));
+ 
+         nsXPIDLCString fileName;
+         PRInt32 lineNo = 0;
+         if(frame)
+         {
+             frame->GetFilename(getter_Copies(fileName));
+             frame->GetLineNumber(&lineNo);
+         }
+ 
+-        rv = scripterr->Init(reinterpret_cast<const PRUnichar*>
+-                                             (JS_GetStringChars(msgstr)),
+-                             NS_ConvertUTF8toUTF16(fileName).get(),
+-                             nsnull,
+-                             lineNo, 0,
+-                             0, "XPConnect JavaScript");
++        rv = scripterr2->InitWithWindowID(reinterpret_cast<const PRUnichar*>
++                                                   (JS_GetStringChars(msgstr)),
++                                          NS_ConvertUTF8toUTF16(fileName).get(),
++                                          nsnull,
++                                          lineNo, 0,
++                                          0, "XPConnect JavaScript", windowID);
+         if(NS_SUCCEEDED(rv))
+             console->LogMessage(scripterr);
+     }
+ 
+     return NS_OK;
+ }
+ 
+ #ifndef XPCONNECT_STANDALONE
+diff --git a/js/src/xpconnect/src/xpcconvert.cpp b/js/src/xpconnect/src/xpcconvert.cpp
+--- a/js/src/xpconnect/src/xpcconvert.cpp
++++ b/js/src/xpconnect/src/xpcconvert.cpp
+@@ -1,9 +1,10 @@
+ /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
++ * vim: set ts=8 sw=4 et tw=78:
+  *
+  * ***** BEGIN LICENSE BLOCK *****
+  * Version: MPL 1.1/GPL 2.0/LGPL 2.1
+  *
+  * The contents of this file are subject to the Mozilla Public License Version
+  * 1.1 (the "License"); you may not use this file except in compliance with
+  * the License. You may obtain a copy of the License at
+  * http://www.mozilla.org/MPL/
+@@ -45,16 +46,19 @@
+ #include "xpcprivate.h"
+ #include "nsString.h"
+ #include "nsIAtom.h"
+ #include "XPCWrapper.h"
+ #include "nsJSPrincipals.h"
+ #include "nsWrapperCache.h"
+ #include "WrapperFactory.h"
+ #include "AccessCheck.h"
++#include "nsIScriptGlobalObject.h"
++#include "nsPIDOMWindow.h"
++#include "nsJSUtils.h"
+ 
+ //#define STRICT_CHECK_OF_UNICODE
+ #ifdef STRICT_CHECK_OF_UNICODE
+ #define ILLEGAL_RANGE(c) (0!=((c) & 0xFF80))
+ #else // STRICT_CHECK_OF_UNICODE
+ #define ILLEGAL_RANGE(c) (0!=((c) & 0xFF00))
+ #endif // STRICT_CHECK_OF_UNICODE
+ 
+@@ -1788,17 +1792,17 @@ nsresult
+ XPCConvert::JSErrorToXPCException(XPCCallContext& ccx,
+                                   const char* message,
+                                   const char* ifaceName,
+                                   const char* methodName,
+                                   const JSErrorReport* report,
+                                   nsIException** exceptn)
+ {
+     nsresult rv = NS_ERROR_FAILURE;
+-    nsScriptError* data;
++    nsRefPtr<nsScriptError> data;
+     if(report)
+     {
+         nsAutoString bestMessage;
+         if(report && report->ucmessage)
+         {
+             bestMessage = (const PRUnichar *)report->ucmessage;
+         }
+         else if(message)
+@@ -1809,37 +1813,45 @@ XPCConvert::JSErrorToXPCException(XPCCal
+         {
+             bestMessage.AssignLiteral("JavaScript Error");
+         }
+ 
+         data = new nsScriptError();
+         if(!data)
+             return NS_ERROR_OUT_OF_MEMORY;
+ 
+-        NS_ADDREF(data);
+-        data->Init(bestMessage.get(),
+-                   NS_ConvertASCIItoUTF16(report->filename).get(),
+-                   (const PRUnichar *)report->uclinebuf, report->lineno,
+-                   report->uctokenptr - report->uclinebuf, report->flags,
+-                   "XPConnect JavaScript");
++        PRUint64 windowID = 0;
++
++        JSContext * cx = ccx.GetJSContext();
++
++        nsIScriptGlobalObject *globalObject =
++            nsJSUtils::GetDynamicScriptGlobal(cx);
++        if(globalObject)
++        {
++            nsCOMPtr<nsPIDOMWindow> win = do_QueryInterface(globalObject);
++            if(win)
++                windowID = win->WindowID();
++        }
++
++        data->InitWithWindowID(bestMessage.get(),
++                               NS_ConvertASCIItoUTF16(report->filename).get(),
++                               (const PRUnichar *)report->uclinebuf, report->lineno,
++                               report->uctokenptr - report->uclinebuf, report->flags,
++                               "XPConnect JavaScript", windowID);
+     }
+-    else
+-        data = nsnull;
+ 
+     if(data)
+     {
+         nsCAutoString formattedMsg;
+         data->ToString(formattedMsg);
+ 
+         rv = ConstructException(NS_ERROR_XPC_JAVASCRIPT_ERROR_WITH_DETAILS,
+                                 formattedMsg.get(), ifaceName, methodName,
+                                 static_cast<nsIScriptError*>(data),
+                                 exceptn, nsnull, nsnull);
+-
+-        NS_RELEASE(data);
+     }
+     else
+     {
+         rv = ConstructException(NS_ERROR_XPC_JAVASCRIPT_ERROR,
+                                 nsnull, ifaceName, methodName, nsnull,
+                                 exceptn, nsnull, nsnull);
+     }
+     return rv;
+diff --git a/js/src/xpconnect/src/xpcwrappedjsclass.cpp b/js/src/xpconnect/src/xpcwrappedjsclass.cpp
+--- a/js/src/xpconnect/src/xpcwrappedjsclass.cpp
++++ b/js/src/xpconnect/src/xpcwrappedjsclass.cpp
+@@ -1,9 +1,10 @@
+ /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
++ * vim: set ts=8 sw=4 et tw=78:
+  *
+  * ***** BEGIN LICENSE BLOCK *****
+  * Version: MPL 1.1/GPL 2.0/LGPL 2.1
+  *
+  * The contents of this file are subject to the Mozilla Public License Version
+  * 1.1 (the "License"); you may not use this file except in compliance with
+  * the License. You may obtain a copy of the License at
+  * http://www.mozilla.org/MPL/
+@@ -41,16 +42,19 @@
+ 
+ /* Sharable code and data for wrapper around JSObjects. */
+ 
+ #include "xpcprivate.h"
+ #include "nsArrayEnumerator.h"
+ #include "nsWrapperCache.h"
+ #include "XPCWrapper.h"
+ #include "AccessCheck.h"
++#include "nsIScriptGlobalObject.h"
++#include "nsPIDOMWindow.h"
++#include "nsJSUtils.h"
+ 
+ NS_IMPL_THREADSAFE_ISUPPORTS1(nsXPCWrappedJSClass, nsIXPCWrappedJSClass)
+ 
+ // the value of this variable is never used - we use its address as a sentinel
+ static uint32 zero_methods_descriptor;
+ 
+ void AutoScriptEvaluate::StartEvaluating(JSErrorReporter errorReporter)
+ {
+@@ -1207,21 +1211,48 @@ nsXPCWrappedJSClass::CheckForException(X
+                                 {
+                                     // Get line number w/o checking; 0 is ok.
+                                     location->GetLineNumber(&lineNumber);
+ 
+                                     // get a filename.
+                                     rv = location->GetFilename(getter_Copies(sourceName));
+                                 }
+ 
+-                                rv = scriptError->Init(newMessage.get(),
+-                                                       NS_ConvertASCIItoUTF16(sourceName).get(),
+-                                                       nsnull,
+-                                                       lineNumber, 0, 0,
+-                                                       "XPConnect JavaScript");
++                                PRUint64 windowID = 0;
++
++                                nsIScriptGlobalObject *globalObject =
++                                    nsJSUtils::GetDynamicScriptGlobal(cx);
++                                if(globalObject)
++                                {
++                                    nsCOMPtr<nsPIDOMWindow> win =
++                                        do_QueryInterface(globalObject);
++                                    if(win)
++                                        windowID = win->WindowID();
++                                }
++
++                                nsCOMPtr<nsIScriptError2> scriptError2 =
++                                    do_QueryInterface(scriptError);
++                                if(scriptError2)
++                                {
++                                    rv = scriptError2->InitWithWindowID(newMessage.get(),
++                                                                        NS_ConvertASCIItoUTF16(sourceName).get(),
++                                                                        nsnull,
++                                                                        lineNumber, 0, 0,
++                                                                        "XPConnect JavaScript",
++                                                                        windowID);
++                                }
++                                else
++                                {
++                                    rv = scriptError->Init(newMessage.get(),
++                                                           NS_ConvertASCIItoUTF16(sourceName).get(),
++                                                           nsnull,
++                                                           lineNumber, 0, 0,
++                                                           "XPConnect JavaScript");
++                                }
++
+                                 if(NS_FAILED(rv))
+                                     scriptError = nsnull;
+                             }
+                         }
+                     }
+                     if(nsnull != scriptError)
+                         consoleService->LogMessage(scriptError);
+                 }
+diff --git a/layout/base/nsCSSFrameConstructor.cpp b/layout/base/nsCSSFrameConstructor.cpp
+--- a/layout/base/nsCSSFrameConstructor.cpp
++++ b/layout/base/nsCSSFrameConstructor.cpp
+@@ -9612,23 +9612,31 @@ nsCSSFrameConstructor::ProcessChildren(n
+     nsIContent *badKid = AnyKidsNeedBlockParent(aFrameItems.FirstChild());
+     nsDependentAtomString parentTag(aContent->Tag()), kidTag(badKid->Tag());
+     const PRUnichar* params[] = { parentTag.get(), kidTag.get() };
+     nsStyleContext *frameStyleContext = aFrame->GetStyleContext();
+     const nsStyleDisplay *display = frameStyleContext->GetStyleDisplay();
+     const char *message =
+       (display->mDisplay == NS_STYLE_DISPLAY_INLINE_BOX)
+         ? "NeededToWrapXULInlineBox" : "NeededToWrapXUL";
++
++
++    PRUint64 windowID = 0;
++    nsCOMPtr<nsPIDOMWindow> win = mDocument->GetWindow();
++    if (win) {
++      windowID = win->WindowID();
++    }
++
+     nsContentUtils::ReportToConsole(nsContentUtils::eXUL_PROPERTIES,
+                                     message,
+                                     params, NS_ARRAY_LENGTH(params),
+                                     mDocument->GetDocumentURI(),
+                                     EmptyString(), 0, 0, // not useful
+                                     nsIScriptError::warningFlag,
+-                                    "FrameConstructor");
++                                    "FrameConstructor", windowID);
+ 
+     nsRefPtr<nsStyleContext> blockSC = mPresShell->StyleSet()->
+       ResolveAnonymousBoxStyle(nsCSSAnonBoxes::mozXULAnonymousBlock,
+                                frameStyleContext);
+     nsIFrame *blockFrame = NS_NewBlockFrame(mPresShell, blockSC);
+     // We might, in theory, want to set NS_BLOCK_FLOAT_MGR and
+     // NS_BLOCK_MARGIN_ROOT, but I think it's a bad idea given that
+     // a real block placed here wouldn't get those set on it.
+diff --git a/layout/generic/nsImageMap.cpp b/layout/generic/nsImageMap.cpp
+--- a/layout/generic/nsImageMap.cpp
++++ b/layout/generic/nsImageMap.cpp
+@@ -121,32 +121,38 @@ is_space(char c)
+ }
+ 
+ static void logMessage(nsIContent*      aContent,
+                        const nsAString& aCoordsSpec,
+                        PRInt32          aFlags,
+                        const char* aMessageName) {
+   nsIURI* documentURI = nsnull;
+   nsIDocument* doc = aContent->GetOwnerDoc();
++  PRUint64 windowID = 0;
+   if (doc) {
+     documentURI = doc->GetDocumentURI();
++    nsPIDOMWindow* win = doc->GetWindow();
++    if (win) {
++      windowID = win->WindowID();
++    }
+   }
++
+   nsContentUtils::ReportToConsole(
+      nsContentUtils::eLAYOUT_PROPERTIES,
+      aMessageName,
+      nsnull,  /* params */
+      0, /* params length */
+      documentURI,
+      PromiseFlatString(NS_LITERAL_STRING("coords=\"") +
+                        aCoordsSpec +
+                        NS_LITERAL_STRING("\"")), /* source line */
+      0, /* line number */
+      0, /* column number */
+      aFlags,
+-     "ImageMap");
++     "ImageMap", windowID);
+ }
+ 
+ void Area::ParseCoords(const nsAString& aSpec)
+ {
+   char* cp = ToNewCString(aSpec);
+   if (cp) {
+     char *tptr;
+     char *n_str;
+diff --git a/layout/style/Loader.cpp b/layout/style/Loader.cpp
+--- a/layout/style/Loader.cpp
++++ b/layout/style/Loader.cpp
+@@ -937,21 +937,30 @@ SheetLoadData::OnStreamComplete(nsIUnich
+     nsCAutoString spec;
+     channelURI->GetSpec(spec);
+ 
+     const nsAFlatString& specUTF16 = NS_ConvertUTF8toUTF16(spec);
+     const nsAFlatString& ctypeUTF16 = NS_ConvertASCIItoUTF16(contentType);
+     const PRUnichar *strings[] = { specUTF16.get(), ctypeUTF16.get() };
+ 
+     nsCOMPtr<nsIURI> referrer = GetReferrerURI();
++
++    PRUint64 windowID = 0;
++    if (mLoader->mDocument) {
++      nsCOMPtr<nsPIDOMWindow> win = mLoader->mDocument->GetWindow();
++      if (win) {
++        windowID = win->WindowID();
++      }
++    }
++
+     nsContentUtils::ReportToConsole(nsContentUtils::eCSS_PROPERTIES,
+                                     errorMessage,
+                                     strings, NS_ARRAY_LENGTH(strings),
+                                     referrer, EmptyString(), 0, 0, errorFlag,
+-                                    "CSS Loader");
++                                    "CSS Loader", windowID);
+ 
+     if (errorFlag == nsIScriptError::errorFlag) {
+       LOG_WARN(("  Ignoring sheet with improper MIME type %s",
+                 contentType.get()));
+       mLoader->SheetComplete(this, NS_ERROR_NOT_AVAILABLE);
+       return NS_OK;
+     }
+   }
+diff --git a/layout/style/Loader.h b/layout/style/Loader.h
+--- a/layout/style/Loader.h
++++ b/layout/style/Loader.h
+@@ -325,16 +325,21 @@ public:
+    * to do so will fail with a return code of
+    * NS_ERROR_NOT_AVAILABLE. Note that this DOES NOT disable
+    * currently loading styles or already processed styles.
+    */
+   PRBool GetEnabled() { return mEnabled; }
+   void SetEnabled(PRBool aEnabled) { mEnabled = aEnabled; }
+ 
+   /**
++   * Get the document we live for. May return null.
++   */
++  nsIDocument* GetDocument() { return mDocument; }
++
++  /**
+    * Return true if this loader has pending loads (ones that would send
+    * notifications to an nsICSSLoaderObserver attached to this loader).
+    * If called from inside nsICSSLoaderObserver::StyleSheetLoaded, this will
+    * return PR_FALSE if and only if that is the last StyleSheetLoaded
+    * notification the CSSLoader knows it's going to send.  In other words, if
+    * two sheets load at once (via load coalescing, e.g.), HasPendingLoads()
+    * will return PR_TRUE during notification for the first one, and PR_FALSE
+    * during notification for the second one.
+diff --git a/layout/style/nsCSSParser.cpp b/layout/style/nsCSSParser.cpp
+--- a/layout/style/nsCSSParser.cpp
++++ b/layout/style/nsCSSParser.cpp
+@@ -84,16 +84,18 @@
+ #include "math.h"
+ #include "nsContentUtils.h"
+ #include "nsDOMError.h"
+ #include "nsAutoPtr.h"
+ #include "nsTArray.h"
+ #include "prlog.h"
+ #include "CSSCalc.h"
+ #include "nsMediaFeatures.h"
++#include "nsIDocument.h"
++#include "nsPIDOMWindow.h"
+ 
+ namespace css = mozilla::css;
+ 
+ // Flags for ParseVariant method
+ #define VARIANT_KEYWORD         0x000001  // K
+ #define VARIANT_LENGTH          0x000002  // L
+ #define VARIANT_PERCENT         0x000004  // P
+ #define VARIANT_COLOR           0x000008  // C eCSSUnit_Color, eCSSUnit_Ident (e.g.  "red")
+@@ -594,16 +596,18 @@ protected:
+   nsCOMPtr<nsIURI> mSheetURI;
+ 
+   // The principal of the sheet involved
+   nsCOMPtr<nsIPrincipal> mSheetPrincipal;
+ 
+   // The sheet we're parsing into
+   nsRefPtr<nsCSSStyleSheet> mSheet;
+ 
++  PRUint64 mWindowID; // for error reporting
++
+   // Used for @import rules
+   mozilla::css::Loader* mChildLoader; // not ref counted, it owns us
+ 
+   // Sheet section we're in.  This is used to enforce correct ordering of the
+   // various rule types (eg the fact that a @charset rule must come before
+   // anything else).  Note that there are checks of similar things in various
+   // places in nsCSSStyleSheet.cpp (e.g in insertRule, RebuildChildList).
+   enum nsCSSSection {
+@@ -723,16 +727,17 @@ CSSParserImpl::CSSParserImpl()
+     mUnsafeRulesEnabled(PR_FALSE),
+     mHTMLMediaMode(PR_FALSE),
+     mParsingCompoundProperty(PR_FALSE),
+     mFoundUnresolvablePrefix(PR_FALSE)
+ #ifdef DEBUG
+     , mScannerInited(PR_FALSE)
+ #endif
+     , mNextFree(nsnull)
++    , mWindowID(0)
+ {
+ }
+ 
+ CSSParserImpl::~CSSParserImpl()
+ {
+   mData.AssertInitialState();
+   mTempData.AssertInitialState();
+ }
+@@ -744,16 +749,28 @@ CSSParserImpl::SetStyleSheet(nsCSSStyleS
+     // Switch to using the new sheet, if any
+     mGroupStack.Clear();
+     mSheet = aSheet;
+     if (mSheet) {
+       mNameSpaceMap = mSheet->GetNameSpaceMap();
+     } else {
+       mNameSpaceMap = nsnull;
+     }
++
++#ifdef CSS_REPORT_PARSE_ERRORS
++    if (mSheet) {
++      nsCOMPtr<nsIDocument> doc = mSheet->GetOwningDocument();
++      if (doc) {
++        nsCOMPtr<nsPIDOMWindow> win = doc->GetWindow();
++        if (win) {
++          mWindowID = win->WindowID();
++        }
++      }
++    }
++#endif
+   }
+ 
+   return NS_OK;
+ }
+ 
+ nsresult
+ CSSParserImpl::SetQuirkMode(PRBool aQuirkMode)
+ {
+@@ -772,16 +789,27 @@ CSSParserImpl::SetSVGMode(PRBool aSVGMod
+   return NS_OK;
+ }
+ #endif
+ 
+ nsresult
+ CSSParserImpl::SetChildLoader(mozilla::css::Loader* aChildLoader)
+ {
+   mChildLoader = aChildLoader;  // not ref counted, it owns us
++#ifdef CSS_REPORT_PARSE_ERRORS
++  if (mChildLoader) {
++    nsCOMPtr<nsIDocument> doc = mChildLoader->GetDocument();
++    if (doc) {
++      nsCOMPtr<nsPIDOMWindow> win = doc->GetWindow();
++      if (win) {
++        mWindowID = win->WindowID();
++      }
++    }
++  }
++#endif
+   return NS_OK;
+ }
+ 
+ void
+ CSSParserImpl::Reset()
+ {
+   NS_ASSERTION(! mScannerInited, "resetting with scanner active");
+   SetStyleSheet(nsnull);
+@@ -794,17 +822,17 @@ CSSParserImpl::Reset()
+ 
+ void
+ CSSParserImpl::InitScanner(nsIUnicharInputStream* aInput, nsIURI* aSheetURI,
+                            PRUint32 aLineNumber, nsIURI* aBaseURI,
+                            nsIPrincipal* aSheetPrincipal)
+ {
+   NS_ASSERTION(! mScannerInited, "already have scanner");
+ 
+-  mScanner.Init(aInput, nsnull, 0, aSheetURI, aLineNumber);
++  mScanner.Init(aInput, nsnull, 0, aSheetURI, aLineNumber, mWindowID);
+ #ifdef DEBUG
+   mScannerInited = PR_TRUE;
+ #endif
+   mBaseURI = aBaseURI;
+   mSheetURI = aSheetURI;
+   mSheetPrincipal = aSheetPrincipal;
+ 
+   mHavePushBack = PR_FALSE;
+@@ -814,17 +842,18 @@ void
+ CSSParserImpl::InitScanner(const nsSubstring& aString, nsIURI* aSheetURI,
+                            PRUint32 aLineNumber, nsIURI* aBaseURI,
+                            nsIPrincipal* aSheetPrincipal)
+ {
+   // Having it not own the string is OK since the caller will hold on to
+   // the stream until we're done parsing.
+   NS_ASSERTION(! mScannerInited, "already have scanner");
+ 
+-  mScanner.Init(nsnull, aString.BeginReading(), aString.Length(), aSheetURI, aLineNumber);
++  mScanner.Init(nsnull, aString.BeginReading(), aString.Length(), aSheetURI,
++                aLineNumber, mWindowID);
+ 
+ #ifdef DEBUG
+   mScannerInited = PR_TRUE;
+ #endif
+   mBaseURI = aBaseURI;
+   mSheetURI = aSheetURI;
+   mSheetPrincipal = aSheetPrincipal;
+ 
+diff --git a/layout/style/nsCSSScanner.cpp b/layout/style/nsCSSScanner.cpp
+--- a/layout/style/nsCSSScanner.cpp
++++ b/layout/style/nsCSSScanner.cpp
+@@ -342,17 +342,17 @@ nsCSSScanner::ReleaseGlobals()
+   NS_IF_RELEASE(gScriptErrorFactory);
+   NS_IF_RELEASE(gStringBundle);
+ #endif
+ }
+ 
+ void
+ nsCSSScanner::Init(nsIUnicharInputStream* aInput, 
+                    const PRUnichar * aBuffer, PRUint32 aCount, 
+-                   nsIURI* aURI, PRUint32 aLineNumber)
++                   nsIURI* aURI, PRUint32 aLineNumber, PRUint64 aWindowId)
+ {
+   NS_PRECONDITION(!mInputStream, "Should not have an existing input stream!");
+   NS_PRECONDITION(!mReadPointer, "Should not have an existing input buffer!");
+ 
+   // Read from stream via my own buffer
+   if (aInput) {
+     NS_PRECONDITION(!aBuffer, "Shouldn't have both input and buffer!");
+     NS_PRECONDITION(aCount == 0, "Shouldn't have count with a stream");
+@@ -383,16 +383,17 @@ nsCSSScanner::Init(nsIUnicharInputStream
+ 
+   // Reset variables that we use to keep track of our progress through the input
+   mOffset = 0;
+   mPushbackCount = 0;
+   mLowLevelError = NS_OK;
+ 
+ #ifdef CSS_REPORT_PARSE_ERRORS
+   mColNumber = 0;
++  mWindowID = aWindowId;
+ #endif
+ }
+ 
+ #ifdef CSS_REPORT_PARSE_ERRORS
+ 
+ // @see REPORT_UNEXPECTED_EOF in nsCSSParser.cpp
+ #define REPORT_UNEXPECTED_EOF(lf_) \
+   ReportUnexpectedEOF(#lf_)
+@@ -421,24 +422,38 @@ nsCSSScanner::OutputError()
+   if (mError.IsEmpty()) return;
+  
+   // Log it to the Error console
+ 
+   if (InitGlobals() && gReportErrors) {
+     nsresult rv;
+     nsCOMPtr<nsIScriptError> errorObject =
+       do_CreateInstance(gScriptErrorFactory, &rv);
++
+     if (NS_SUCCEEDED(rv)) {
+-      rv = errorObject->Init(mError.get(),
+-                             NS_ConvertUTF8toUTF16(mFileName).get(),
+-                             EmptyString().get(),
+-                             mErrorLineNumber,
+-                             mErrorColNumber,
+-                             nsIScriptError::warningFlag,
+-                             "CSS Parser");
++      nsCOMPtr<nsIScriptError2> errorObject2 = do_QueryInterface(errorObject);
++
++      if (errorObject2) {
++        rv = errorObject2->InitWithWindowID(mError.get(),
++                                            NS_ConvertUTF8toUTF16(mFileName).get(),
++                                            EmptyString().get(),
++                                            mErrorLineNumber,
++                                            mErrorColNumber,
++                                            nsIScriptError::warningFlag,
++                                            "CSS Parser", mWindowID);
++      } else {
++        rv = errorObject->Init(mError.get(),
++                               NS_ConvertUTF8toUTF16(mFileName).get(),
++                               EmptyString().get(),
++                               mErrorLineNumber,
++                               mErrorColNumber,
++                               nsIScriptError::warningFlag,
++                               "CSS Parser");
++      }
++
+       if (NS_SUCCEEDED(rv))
+         gConsoleService->LogMessage(errorObject);
+     }
+   }
+   ClearError();
+ }
+ 
+ static PRBool
+diff --git a/layout/style/nsCSSScanner.h b/layout/style/nsCSSScanner.h
+--- a/layout/style/nsCSSScanner.h
++++ b/layout/style/nsCSSScanner.h
+@@ -137,17 +137,17 @@ class nsCSSScanner {
+   ~nsCSSScanner();
+ 
+   // Init the scanner.
+   // |aLineNumber == 1| is the beginning of a file, use |aLineNumber == 0|
+   // when the line number is unknown.
+   // Either aInput or (aBuffer and aCount) must be set.
+   void Init(nsIUnicharInputStream* aInput, 
+             const PRUnichar *aBuffer, PRUint32 aCount,
+-            nsIURI* aURI, PRUint32 aLineNumber);
++            nsIURI* aURI, PRUint32 aLineNumber, PRUint64 aWindowId);
+   void Close();
+ 
+   static PRBool InitGlobals();
+   static void ReleaseGlobals();
+ 
+ #ifdef  MOZ_SVG
+   // Set whether or not we are processing SVG
+   void SetSVGMode(PRBool aSVGMode) {
+@@ -243,12 +243,13 @@ protected:
+   PRPackedBool mSVGMode;
+ #endif
+ #ifdef CSS_REPORT_PARSE_ERRORS
+   nsXPIDLCString mFileName;
+   nsCOMPtr<nsIURI> mURI;  // Cached so we know to not refetch mFileName
+   PRUint32 mErrorLineNumber, mColNumber, mErrorColNumber;
+   nsFixedString mError;
+   PRUnichar mErrorBuf[200];
++  PRUint64 mWindowID;
+ #endif
+ };
+ 
+ #endif /* nsCSSScanner_h___ */
+diff --git a/layout/svg/base/src/nsSVGUtils.cpp b/layout/svg/base/src/nsSVGUtils.cpp
+--- a/layout/svg/base/src/nsSVGUtils.cpp
++++ b/layout/svg/base/src/nsSVGUtils.cpp
+@@ -431,23 +431,31 @@ nsSVGUtils::ConvertImageDataFromLinearRG
+ }
+ 
+ nsresult
+ nsSVGUtils::ReportToConsole(nsIDocument* doc,
+                             const char* aWarning,
+                             const PRUnichar **aParams,
+                             PRUint32 aParamsLength)
+ {
++  PRUint64 windowID = 0;
++  if (doc) {
++    nsCOMPtr<nsPIDOMWindow> win = doc->GetWindow();
++    if (win) {
++      windowID = win->WindowID();
++    }
++  }
++
+   return nsContentUtils::ReportToConsole(nsContentUtils::eSVG_PROPERTIES,
+                                          aWarning,
+                                          aParams, aParamsLength,
+                                          doc ? doc->GetDocumentURI() : nsnull,
+                                          EmptyString(), 0, 0,
+                                          nsIScriptError::warningFlag,
+-                                         "SVG");
++                                         "SVG", windowID);
+ }
+ 
+ float
+ nsSVGUtils::CoordToFloat(nsPresContext *aPresContext,
+                          nsSVGElement *aContent,
+                          const nsStyleCoord &aCoord)
+ {
+   switch (aCoord.GetUnit()) {
+diff --git a/parser/html/nsHtml5StreamParser.cpp b/parser/html/nsHtml5StreamParser.cpp
+--- a/parser/html/nsHtml5StreamParser.cpp
++++ b/parser/html/nsHtml5StreamParser.cpp
+@@ -995,25 +995,32 @@ nsHtml5StreamParser::ContinueAfterScript
+     if (speculationFailed) {
+       // Rewind the stream
+       mAtEOF = PR_FALSE;
+       nsHtml5Speculation* speculation = mSpeculations.ElementAt(0);
+       mFirstBuffer = speculation->GetBuffer();
+       mFirstBuffer->setStart(speculation->GetStart());
+       mTokenizer->setLineNumber(speculation->GetStartLineNumber());
+ 
++      nsCOMPtr<nsIDocument> doc = mExecutor->GetDocument();
++      nsCOMPtr<nsPIDOMWindow> win = doc->GetWindow();
++      PRUint64 windowID = 0;
++      if (win) {
++        windowID = win->WindowID();
++      }
++
+       nsContentUtils::ReportToConsole(nsContentUtils::eDOM_PROPERTIES,
+                                       "SpeculationFailed",
+                                       nsnull, 0,
+-                                      mExecutor->GetDocument()->GetDocumentURI(),
++                                      doc->GetDocumentURI(),
+                                       EmptyString(),
+                                       speculation->GetStartLineNumber(),
+                                       0,
+                                       nsIScriptError::warningFlag,
+-                                      "DOM Events");
++                                      "DOM Events", windowID);
+ 
+       nsHtml5UTF16Buffer* buffer = mFirstBuffer->next;
+       while (buffer) {
+         buffer->setStart(0);
+         buffer = buffer->next;
+       }
+       
+       mSpeculations.Clear(); // potentially a huge number of destructors 
+diff --git a/parser/htmlparser/src/nsExpatDriver.cpp b/parser/htmlparser/src/nsExpatDriver.cpp
+--- a/parser/htmlparser/src/nsExpatDriver.cpp
++++ b/parser/htmlparser/src/nsExpatDriver.cpp
+@@ -938,21 +938,33 @@ nsExpatDriver::HandleError()
+ 
+   nsAutoString sourceText(mLastLine);
+   AppendErrorPointer(colNumber, mLastLine.get(), sourceText);
+ 
+   // Try to create and initialize the script error.
+   nsCOMPtr<nsIScriptError> serr(do_CreateInstance(NS_SCRIPTERROR_CONTRACTID));
+   nsresult rv = NS_ERROR_FAILURE;
+   if (serr) {
+-    rv = serr->Init(description.get(),
+-                    mURISpec.get(),
+-                    mLastLine.get(),
+-                    lineNumber, colNumber,
+-                    nsIScriptError::errorFlag, "malformed-xml");
++    nsCOMPtr<nsIScriptError2> serr2(do_QueryInterface(serr));
++
++    if (serr2) {
++      rv = serr2->InitWithWindowID(description.get(),
++                                   mURISpec.get(),
++                                   mLastLine.get(),
++                                   lineNumber, colNumber,
++                                   nsIScriptError::errorFlag, "malformed-xml",
++                                   mWindowID);
++    }
++    else {
++      rv = serr->Init(description.get(),
++                      mURISpec.get(),
++                      mLastLine.get(),
++                      lineNumber, colNumber,
++                      nsIScriptError::errorFlag, "malformed-xml");
++    }
+   }
+ 
+   // If it didn't initialize, we can't do any logging.
+   PRBool shouldReportError = NS_SUCCEEDED(rv);
+ 
+   if (mSink && shouldReportError) {
+     rv = mSink->ReportError(errorText.get(), 
+                             sourceText.get(), 
+@@ -1228,16 +1240,36 @@ nsExpatDriver::WillBuildModel(const CPar
+ #ifdef XML_DTD
+   XML_SetParamEntityParsing(mExpatParser, XML_PARAM_ENTITY_PARSING_ALWAYS);
+ #endif
+ 
+   mURISpec = aParserContext.mScanner->GetFilename();
+ 
+   XML_SetBase(mExpatParser, mURISpec.get());
+ 
++  mWindowID = 0;
++  nsCOMPtr<nsIDocument> doc = do_QueryInterface(mOriginalSink->GetTarget());
++  if (doc) {
++    nsCOMPtr<nsPIDOMWindow> win = doc->GetWindow();
++    if (!win) {
++      PRBool aHasHadScriptHandlingObject;
++      nsCOMPtr<nsIScriptGlobalObject> global =
++        doc->GetScriptHandlingObject(aHasHadScriptHandlingObject);
++      if (global) {
++        win = do_QueryInterface(global);
++      }
++      if (win && !win->IsOuterWindow()) {
++        win = win->GetOuterWindow();
++      }
++    }
++    if (win) {
++      mWindowID = win->WindowID();
++    }
++  }
++
+   // Set up the callbacks
+   XML_SetXmlDeclHandler(mExpatParser, Driver_HandleXMLDeclaration); 
+   XML_SetElementHandler(mExpatParser, Driver_HandleStartElement,
+                         Driver_HandleEndElement);
+   XML_SetCharacterDataHandler(mExpatParser, Driver_HandleCharacterData);
+   XML_SetProcessingInstructionHandler(mExpatParser,
+                                       Driver_HandleProcessingInstruction);
+   XML_SetDefaultHandlerExpand(mExpatParser, Driver_HandleDefault);
+diff --git a/parser/htmlparser/src/nsExpatDriver.h b/parser/htmlparser/src/nsExpatDriver.h
+--- a/parser/htmlparser/src/nsExpatDriver.h
++++ b/parser/htmlparser/src/nsExpatDriver.h
+@@ -162,11 +162,14 @@ private:
+   // identical with the nsIContentSink* passed to WillBuildModel, and exists
+   // only to avoid QI-ing back to nsIContentSink*.
+   nsCOMPtr<nsIContentSink> mOriginalSink;
+   nsCOMPtr<nsIExpatSink> mSink;
+   nsCOMPtr<nsIExtendedExpatSink> mExtendedSink;
+ 
+   const nsCatalogData* mCatalogData; // weak
+   nsString         mURISpec;
++
++  // Used for error reporting.
++  PRUint64         mWindowID;
+ };
+ 
+ #endif
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -5427,18 +5427,18 @@ HUDConsoleObserver = {
+         case "XBL":
+           // nsXBLService
+         case "XBL Prototype Handler":
+           // nsXBLPrototypeHandler::ReportKeyConflict()
+         case "XBL Content Sink":
+           // nsXBLContentSink
+         case "xbl javascript":
+           // XBL_ProtoErrorReporter in nsXBLDocumentInfo.cpp
+-        case "FrameConstructor":
+-          // nsCSSFrameConstructor::ProcessChildren()
++        case "BoxObjects":
++          // nsDocument::GetBoxObjectFor()
+           return;
+ 
+         // Display the messages from the following categories.
+         case "HUDConsole":
+         case "CSS Parser":
+           // nsCSSScanner::OutputError()
+         case "CSS Loader":
+           // SheetLoadData::OnStreamComplete()
+@@ -5449,51 +5449,41 @@ HUDConsoleObserver = {
+           // ReportUseOfDeprecatedMethod() in nsGlobalWindow.cpp,
+           // nsHTMLDocument.cpp, nsDOMEvent.cpp
+           // nsDOMEvent::ReportWrongPropertyAccessWarning()
+           // nsHTMLDocument::WriteCommon()
+         case "DOM:HTML":
+           // PrintWarningOnConsole() in nsDOMClassInfo.cpp
+         case "DOM Window":
+           // nsGlobalWindow::Close()
+-          // TODO: This message is never displayed because its origin cannot be
+-          // determined, no sourceName is given. See bug 603711.
+         case "SVG":
+           // nsSVGUtils::ReportToConsole()
+           // nsSVGElement::ReportAttributeParseFailure()
+         case "ImageMap":
+           // logMessage() in nsImageMap.cpp
+         case "HTML":
+           // SendJSWarning() in nsFormSubmission.cpp
+         case "Canvas":
+           // nsCanvasRenderingContext2D::SetStyleFromStringOrInterface()
+-          // TODO: This message is never displayed because its origin cannot be
+-          // determined, no sourceName is given. See bug 603714.
+         case "DOM3 Load":
+           // ReportUseOfDeprecatedMethod() in nsXMLDocument.cpp
+           // TODO: This message is generally not displayed because its origin
+           // (sourceName) points to the previous URI of the document object -
+           // not the URI of the page in which the script tries to load the new
+           // URI. See bug 603720.
+         case "DOM":
+           // nsDocument::ReportEmptyGetElementByIdArg()
+-          //   TODO: This message is never displayed because its origin cannot
+-          //   be determined, no sourceName is given. See bug 603723.
+           // nsXMLDocument::Load() - for chrome code.
+         case "malformed-xml":
+           // nsExpatDriver::HandleError()
+-          // TODO: This message is only displayed when its origin (sourceName)
+-          // is the same as the tab location for which a Web Console is open.
+-          // See bug 603727.
+         case "DOM Worker javascript":
+           // nsReportErrorRunnable and DOMWorkerErrorReporter in
+           // nsDOMThreadService.cpp
+-          // TODO: This message is never displayed because its origin
+-          // (sourceName) points us only to the script that thrown the exception
+-          // - no way to associate it to a specific tab. See bug 603730.
++        case "FrameConstructor":
++          // nsCSSFrameConstructor::ProcessChildren()
+         default:
+           for (let i = 0; i < hudIds.length; i++) {
+             HUDService.reportConsoleServiceMessage(hudIds[i], aSubject);
+           }
+           return;
+       }
+     }
+   }
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -126,17 +126,33 @@ _BROWSER_TEST_PAGES = \
+ 	test-bug-595934-css-loader.html \
+ 	test-bug-595934-css-loader.css \
+ 	test-bug-595934-css-loader.css^headers^ \
+ 	test-bug-595934-dom-html.html \
+ 	test-bug-595934-imagemap.html \
+ 	test-bug-595934-html.html \
+ 	test-bug-595934-malformedxml.xhtml \
+ 	test-bug-595934-svg.xhtml \
++	test-bug-595934-workers.html \
++	test-bug-595934-workers.js \
+ 	test-bug-597136-external-script-errors.html \
+ 	test-bug-597136-external-script-errors.js \
++	test-bug-595934-dom-html-external.html \
++	test-bug-595934-dom-html-external.js \
++	test-bug-595934-dom-events-external.html \
++	test-bug-595934-dom-events-external.js \
++	test-bug-595934-dom-events-external2.html \
++	test-bug-595934-dom-events-external2.js \
++	test-bug-595934-canvas.html \
++	test-bug-595934-canvas.js \
++	test-bug-595934-css-parser.html \
++	test-bug-595934-css-parser.css \
++	test-bug-595934-malformedxml-external.html \
++	test-bug-595934-malformedxml-external.xml \
++	test-bug-595934-empty-getelementbyid.html \
++	test-bug-595934-empty-getelementbyid.js \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js
+@@ -44,16 +44,56 @@ const TESTS = [
+     category: "malformed-xml",
+     matchString: "malformed-xml",
+   },
+   { // #6
+     file: "test-bug-595934-svg.xhtml",
+     category: "SVG",
+     matchString: "fooBarSVG",
+   },
++  { // #7
++    file: "test-bug-595934-workers.html",
++    category: "DOM Worker javascript",
++    matchString: "fooBarWorker",
++  },
++  { // #8
++    file: "test-bug-595934-dom-html-external.html",
++    category: "DOM:HTML",
++    matchString: "document.all",
++  },
++  { // #9
++    file: "test-bug-595934-dom-events-external.html",
++    category: "DOM Events",
++    matchString: "clientWidth",
++  },
++  { // #10
++    file: "test-bug-595934-dom-events-external2.html",
++    category: "DOM Events",
++    matchString: "preventBubble()",
++  },
++  { // #11
++    file: "test-bug-595934-canvas.html",
++    category: "Canvas",
++    matchString: "strokeStyle",
++  },
++  { // #12
++    file: "test-bug-595934-css-parser.html",
++    category: "CSS Parser",
++    matchString: "foobarCssParser",
++  },
++  { // #13
++    file: "test-bug-595934-malformedxml-external.html",
++    category: "malformed-xml",
++    matchString: "malformed-xml",
++  },
++  { // #14
++    file: "test-bug-595934-empty-getelementbyid.html",
++    category: "DOM",
++    matchString: "getElementById",
++  },
+ ];
+ 
+ let pos = -1;
+ 
+ let TestObserver = {
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
+ 
+   observe: function test_observe(aSubject)
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-canvas.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-canvas.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-canvas.html
+@@ -0,0 +1,14 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: Canvas</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++    <script type="text/javascript"
++      src="test-bug-595934-canvas.js"></script>
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "Canvas".</p>
++    <p><canvas width="200" height="200">Canvas support is required!</canvas></p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-canvas.js b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-canvas.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-canvas.js
+@@ -0,0 +1,11 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++window.addEventListener("DOMContentLoaded", function() {
++  var canvas = document.querySelector("canvas");
++  var context = canvas.getContext("2d");
++  context.strokeStyle = document;
++}, false);
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-parser.css b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-parser.css
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-parser.css
+@@ -0,0 +1,10 @@
++/*
++ * Any copyright is dedicated to the Public Domain.     
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++p {
++  color: #0f0;
++  foobarCssParser: failure;
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-parser.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-parser.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-css-parser.html
+@@ -0,0 +1,13 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: CSS Parser</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++     <link rel="stylesheet" type="text/css"
++     href="test-bug-595934-css-parser.css">
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "CSS Parser".</p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external.html
+@@ -0,0 +1,15 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: DOM Events.
++      (external script)</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++    <script type="text/javascript"
++      src="test-bug-595934-dom-events-external.js"></script>
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "DOM Events" (external
++    script).</p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external.js b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external.js
+@@ -0,0 +1,9 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++window.addEventListener("DOMContentLoaded", function() {
++  document.width;
++}, false);
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external2.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external2.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external2.html
+@@ -0,0 +1,15 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: DOM Events.
++      (external script 2)</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++    <script type="text/javascript"
++      src="test-bug-595934-dom-events-external2.js"></script>
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "DOM Events" (external
++    script 2).</p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external2.js b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external2.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-events-external2.js
+@@ -0,0 +1,10 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++window.addEventListener("DOMContentLoaded", function(aEvent) {
++  aEvent.preventBubble();
++}, false);
++
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-html-external.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-html-external.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-html-external.html
+@@ -0,0 +1,13 @@
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: DOM:HTML
++      (external script)</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++    <script type="text/javascript" src="test-bug-595934-dom-html-external.js"></script>
++  </head>
++  <body>
++    <p id="foobar">Web Console test for bug 595934 - category "DOM:HTML" 
++    (external script).</p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-html-external.js b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-html-external.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-dom-html-external.js
+@@ -0,0 +1,9 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++window.addEventListener("load", function() {
++  document.all.foobar.style.color = "#00f";
++}, false);
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-empty-getelementbyid.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-empty-getelementbyid.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-empty-getelementbyid.html
+@@ -0,0 +1,15 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: DOM.
++    (empty getElementById())</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++    <script type="text/javascript"
++      src="test-bug-595934-empty-getelementbyid.js"></script>
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "DOM"
++    (empty getElementById()).</p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-empty-getelementbyid.js b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-empty-getelementbyid.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-empty-getelementbyid.js
+@@ -0,0 +1,8 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++window.addEventListener("load", function() {
++  document.getElementById("");
++}, false);
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-malformedxml-external.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-malformedxml-external.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-malformedxml-external.html
+@@ -0,0 +1,18 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: malformed-xml.
++      (external file)</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++     <script type="text/javascript"><!--
++       var req = new XMLHttpRequest();
++       req.open("GET", "test-bug-595934-malformedxml-external.xml", true);
++       req.send(null);
++     // --></script>
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "malformed-xml"
++    (external file).</p>
++  </body>
++</html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-malformedxml-external.xml b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-malformedxml-external.xml
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-malformedxml-external.xml
+@@ -0,0 +1,8 @@
++<!DOCTYPE html>
++<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "malformed-xml".</p>
++  </body>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-workers.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-workers.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-workers.html
+@@ -0,0 +1,17 @@
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: DOM Worker
++      javascript</title>
++    <!-- Any copyright is dedicated to the Public Domain.
++         http://creativecommons.org/publicdomain/zero/1.0/ -->
++  </head>
++  <body>
++    <p id="foobar">Web Console test for bug 595934 - category "DOM Worker
++    javascript".</p>
++    <script type="text/javascript">
++      var myWorker = new Worker("test-bug-595934-workers.js");
++      myWorker.postMessage("hello world");
++    </script>
++  </body>
++</html>
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-workers.js b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-workers.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-workers.js
+@@ -0,0 +1,9 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++onmessage = function() {
++  fooBarWorker();
++}
++

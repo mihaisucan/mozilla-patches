@@ -1,0 +1,146 @@
+# HG changeset patch
+# Parent f18abe7abde94d4eca3d4ea1254fa5cbae3248ef
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1249,42 +1249,31 @@ HUD_SERVICE.prototype =
+     let hudId = "hud_" + nBox.id;
+     let displayNode = nBox.querySelector("#" + hudId);
+ 
+     if (hudId in this.hudReferences && displayNode) {
+       if (!aAnimated) {
+         this.storeHeight(hudId);
+       }
+ 
+-      this.unregisterDisplay(displayNode);
++      this.unregisterDisplay(hudId);
+       window.focus();
+     }
+   },
+ 
+   /**
+    * Clear the specified HeadsUpDisplay
+    *
+-   * @param string|nsIDOMNode aHUD
+-   *        Either the ID of a HUD or the DOM node corresponding to an outer
+-   *        HUD box.
++   * @param string aHUD
++   *        The ID of a HUD.
+    * @returns void
+    */
+   clearDisplay: function HS_clearDisplay(aHUD)
+   {
+-    if (typeof(aHUD) === "string") {
+-      aHUD = this.hudReferences[aHUD].HUDBox;
+-    }
+-
+-    var outputNode = aHUD.querySelector(".hud-output-node");
+-
+-    while (outputNode.firstChild) {
+-      outputNode.removeChild(outputNode.firstChild);
+-    }
+-
+-    aHUD.lastTimestamp = 0;
++    this.hudReferences[aHUD].jsterm.clearOutput();
+   },
+ 
+   /**
+    * get a unique ID from the sequence generator
+    *
+    * @returns integer
+    */
+   sequenceId: function HS_sequencerId()
+@@ -1580,64 +1569,55 @@ HUD_SERVICE.prototype =
+     this.filterPrefs[aHUDId] = this.defaultFilterPrefs;
+     // init storage objects:
+     this.storage.createDisplay(aHUDId);
+   },
+ 
+   /**
+    * When a display is being destroyed, unregister it first
+    *
+-   * @param string|nsIDOMNode aHUD
+-   *        Either the ID of a HUD or the DOM node corresponding to an outer
+-   *        HUD box.
++   * @param string aHUD
++   *        The ID of a HUD.
+    * @returns void
+    */
+   unregisterDisplay: function HS_unregisterDisplay(aHUD)
+   {
+     // Remove children from the output. If the output is not cleared, there can
+     // be leaks as some nodes has node.onclick = function; set and GC can't
+     // remove the nodes then.
+     HUDService.clearDisplay(aHUD);
+ 
+-    var id, outputNode;
+-    if (typeof(aHUD) === "string") {
+-      id = aHUD;
+-      outputNode = this.hudReferences[aHUD].HUDBox;
+-    }
+-    else {
+-      id = aHUD.getAttribute("id");
+-      outputNode = aHUD;
+-    }
++    let hudBox = this.hudReferences[aHUD].HUDBox;
+ 
+     // remove HUD DOM node and
+     // remove display references from local registries get the outputNode
+-    var parent = outputNode.parentNode;
++    let parent = hudBox.parentNode;
+     var splitters = parent.querySelectorAll("splitter");
+     var len = splitters.length;
+     for (var i = 0; i < len; i++) {
+       if (splitters[i].getAttribute("class") == "hud-splitter") {
+         splitters[i].parentNode.removeChild(splitters[i]);
+         break;
+       }
+     }
+     // remove the DOM Nodes
+-    parent.removeChild(outputNode);
++    parent.removeChild(hudBox);
+ 
+     // remove the HeadsUpDisplay object from memory
+-    delete this.hudReferences[id];
++    delete this.hudReferences[aHUD];
+     // remove the related storage object
+-    this.storage.removeDisplay(id);
++    this.storage.removeDisplay(aHUD);
+ 
+     for (let windowID in this.windowIds) {
+-      if (this.windowIds[windowID] == id) {
++      if (this.windowIds[windowID] == aHUD) {
+         delete this.windowIds[windowID];
+       }
+     }
+ 
+-    this.unregisterActiveContext(id);
++    this.unregisterActiveContext(aHUD);
+ 
+     if (Object.keys(this.hudReferences).length == 0) {
+       this.suspend();
+     }
+   },
+ 
+   /**
+    * "Wake up" the Web Console activity. This is called when the first Web
+@@ -2474,17 +2454,17 @@ HUD_SERVICE.prototype =
+     let xulDocument = aTab.ownerDocument;
+     let xulWindow = xulDocument.defaultView;
+     let gBrowser = xulWindow.gBrowser;
+     let linkedBrowser = aTab.linkedBrowser;
+     let notificationBox = gBrowser.getNotificationBox(linkedBrowser);
+     let hudId = "hud_" + notificationBox.getAttribute("id");
+     let outputNode = xulDocument.getElementById(hudId);
+     if (outputNode != null) {
+-      this.unregisterDisplay(outputNode);
++      this.unregisterDisplay(hudId);
+     }
+   },
+ 
+   /**
+    * onTabClose event handler function
+    *
+    * @param aEvent
+    * @returns void

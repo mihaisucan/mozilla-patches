@@ -1,0 +1,331 @@
+# HG changeset patch
+# Parent 553f9e7f33c6ece5bebe6faf3c685a3fa251a61c
+# Date 1301679158 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+
+Bug 595223 - Keep track of file:// url 'loadGroups'
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1433,28 +1433,34 @@ HUD_SERVICE.prototype =
+    * Deactivate a HeadsUpDisplay for the given tab context.
+    *
+    * @param nsIDOMWindow aContext
+    * @param aAnimated animate closing the web console?
+    * @returns void
+    */
+   deactivateHUDForContext: function HS_deactivateHUDForContext(aContext, aAnimated)
+   {
+-    let window = aContext.linkedBrowser.contentWindow;
++    let browser = aContext.linkedBrowser;
++    let window = browser.contentWindow;
+     let nBox = aContext.ownerDocument.defaultView.
+       getNotificationBox(window);
+     let hudId = "hud_" + nBox.id;
+     let displayNode = nBox.querySelector("#" + hudId);
+ 
+     if (hudId in this.hudReferences && displayNode) {
+       if (!aAnimated) {
+         this.storeHeight(hudId);
+       }
+ 
++      let hud = this.hudReferences[hudId];
++      browser.webProgress.removeProgressListener(hud.progressListener);
++      delete hud.progressListener;
++
+       this.unregisterDisplay(displayNode);
++
+       window.focus();
+     }
+   },
+ 
+   /**
+    * Clear the specified HeadsUpDisplay
+    *
+    * @param string|nsIDOMNode aHUD
+@@ -2634,45 +2640,24 @@ HUD_SERVICE.prototype =
+     2: "typeException", // JSREPORT_EXCEPTION
+     4: "typeError", // JSREPORT_STRICT | JSREPORT_ERROR
+     5: "typeStrict", // JSREPORT_STRICT | JSREPORT_WARNING
+     8: "typeError", // JSREPORT_STRICT_MODE_ERROR
+     13: "typeWarning", // JSREPORT_STRICT_MODE_ERROR | JSREPORT_WARNING | JSREPORT_ERROR
+   },
+ 
+   /**
+-   * Closes the Console, if any, that resides on the given tab.
+-   *
+-   * @param nsIDOMNode aTab
+-   *        The tab on which to close the console.
+-   * @returns void
+-   */
+-  closeConsoleOnTab: function HS_closeConsoleOnTab(aTab)
+-  {
+-    let xulDocument = aTab.ownerDocument;
+-    let xulWindow = xulDocument.defaultView;
+-    let gBrowser = xulWindow.gBrowser;
+-    let linkedBrowser = aTab.linkedBrowser;
+-    let notificationBox = gBrowser.getNotificationBox(linkedBrowser);
+-    let hudId = "hud_" + notificationBox.getAttribute("id");
+-    let outputNode = xulDocument.getElementById(hudId);
+-    if (outputNode != null) {
+-      this.unregisterDisplay(outputNode);
+-    }
+-  },
+-
+-  /**
+    * onTabClose event handler function
+    *
+    * @param aEvent
+    * @returns void
+    */
+   onTabClose: function HS_onTabClose(aEvent)
+   {
+-    this.closeConsoleOnTab(aEvent.target);
++    this.deactivateHUDForContext(aEvent.target, false);
+   },
+ 
+   /**
+    * Called whenever a browser window closes. Cleans up any consoles still
+    * around.
+    *
+    * @param nsIDOMEvent aEvent
+    *        The dispatched event.
+@@ -2680,17 +2665,17 @@ HUD_SERVICE.prototype =
+    */
+   onWindowUnload: function HS_onWindowUnload(aEvent)
+   {
+     let gBrowser = aEvent.target.defaultView.gBrowser;
+     let tabContainer = gBrowser.tabContainer;
+ 
+     let tab = tabContainer.firstChild;
+     while (tab != null) {
+-      this.closeConsoleOnTab(tab);
++      this.deactivateHUDForContext(tab, false);
+       tab = tab.nextSibling;
+     }
+   },
+ 
+   /**
+    * windowInitializer - checks what Gecko app is running and inits the HUD
+    *
+    * @param nsIDOMWindow aContentWindow
+@@ -2752,16 +2737,21 @@ HUD_SERVICE.prototype =
+                      contentWindow: aContentWindow
+                    };
+ 
+       hud = new HeadsUpDisplay(config);
+ 
+       HUDService.registerHUDReference(hud);
+       let windowId = this.getWindowId(aContentWindow.top);
+       this.windowIds[windowId] = hudId;
++
++      hud.progressListener = new ConsoleProgressListener(hudId);
++
++      _browser.webProgress.addProgressListener(hud.progressListener,
++        Ci.nsIWebProgress.NOTIFY_STATE_ALL);
+     }
+     else {
+       hud = this.hudReferences[hudId];
+       if (aContentWindow == aContentWindow.top) {
+         // TODO: name change?? doesn't actually re-attach the console
+         hud.reattachConsole(aContentWindow);
+       }
+     }
+@@ -6000,16 +5990,97 @@ HUDConsoleObserver = {
+ 
+       default:
+         HUDService.reportPageError(CATEGORY_JS, aSubject);
+         return;
+     }
+   }
+ };
+ 
++/**
++ * A WebProgressListener that listens for location changes, to update HUDService
++ * state information on page navigation.
++ *
++ * @constructor
++ * @param string aHudId
++ *        The HeadsUpDisplay ID.
++ */
++function ConsoleProgressListener(aHudId)
++{
++  this.hudId = aHudId;
++}
++
++ConsoleProgressListener.prototype = {
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIWebProgressListener,
++                                         Ci.nsISupportsWeakReference]),
++
++  onStateChange: function CPL_onStateChange(aProgress, aRequest, aState,
++                                            aStatus)
++  {
++    if (!(aState & Ci.nsIWebProgressListener.STATE_START)) {
++      return;
++    }
++
++    let uri = null;
++    if (aRequest instanceof Ci.imgIRequest) {
++      let imgIRequest = aRequest.QueryInterface(Ci.imgIRequest);
++      uri = imgIRequest.URI;
++    }
++    else if (aRequest instanceof Ci.nsIChannel) {
++      let nsIChannel = aRequest.QueryInterface(Ci.nsIChannel);
++      uri = nsIChannel.URI;
++    }
++
++    if (!uri || !uri.schemeIs("file") && !uri.schemeIs("ftp")) {
++      return;
++    }
++
++    let outputNode = HUDService.hudReferences[this.hudId].outputNode;
++
++    let chromeDocument = outputNode.ownerDocument;
++    let msgNode = chromeDocument.createElementNS(HTML_NS, "html:span");
++
++    // Create the clickable URL part of the message.
++    let linkNode = chromeDocument.createElementNS(HTML_NS, "html:span");
++    linkNode.appendChild(chromeDocument.createTextNode(uri.spec));
++    linkNode.classList.add("hud-clickable");
++    linkNode.classList.add("webconsole-msg-url");
++
++    linkNode.addEventListener("mousedown", function(aEvent) {
++      this._startX = aEvent.clientX;
++      this._startY = aEvent.clientY;
++    }, false);
++
++    linkNode.addEventListener("click", function(aEvent) {
++      if (aEvent.detail == 1 && aEvent.button == 0 &&
++          this._startX == aEvent.clientX && this._startY == aEvent.clientY) {
++        let viewSourceUtils = chromeDocument.defaultView.gViewSourceUtils;
++        viewSourceUtils.viewSource(uri.spec, null, chromeDocument);
++      }
++    }, false);
++
++    msgNode.appendChild(linkNode);
++
++    let messageNode = ConsoleUtils.createMessageNode(chromeDocument,
++                                                     CATEGORY_NETWORK,
++                                                     SEVERITY_LOG,
++                                                     msgNode,
++                                                     null,
++                                                     null,
++                                                     uri.spec);
++
++    ConsoleUtils.outputMessageNode(messageNode, this.hudId);
++  },
++
++  onLocationChange: function() {},
++  onStatusChange: function() {},
++  onProgressChange: function() {},
++  onSecurityChange: function() {},
++};
++
+ ///////////////////////////////////////////////////////////////////////////
+ // appName
+ ///////////////////////////////////////////////////////////////////////////
+ 
+ /**
+  * Get the app's name so we can properly dispatch app-specific
+  * methods per API call
+  * @returns Gecko application name
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -126,16 +126,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_621644_jsterm_dollar.js \
+ 	browser_webconsole_bug_632817.js \
+ 	browser_webconsole_bug_611795.js \
+ 	browser_webconsole_bug_618311_close_panels.js \
+ 	browser_webconsole_bug_618311_private_browsing.js \
+ 	browser_webconsole_bug_632347_iterators_generators.js \
+ 	browser_webconsole_bug_642108_refForOutputNode.js \
+ 	browser_webconsole_bug_642108_pruneTest.js \
++	browser_webconsole_bug_595223_file_uri.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595223_file_uri.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595223_file_uri.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595223_file_uri.js
+@@ -0,0 +1,73 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Web Console test suite.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Mihai Sucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_FILE = "test-network.html";
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  hud = HUDService.hudReferences[hudId];
++
++  browser.addEventListener("load", tabReload, true);
++
++  content.location.reload();
++}
++
++function tabReload(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  let textContent = hud.outputNode.textContent;
++  isnot(textContent.indexOf("test-network.html"), -1,
++        "found test-network.html");
++  isnot(textContent.indexOf("test-image.png"), -1, "found test-image.png");
++  isnot(textContent.indexOf("testscript.js"), -1, "found testscript.js");
++  isnot(textContent.indexOf("running network console logging tests"), -1,
++        "found the console.log() message from testscript.js");
++
++  finishTest();
++}
++
++function test() {
++  let rootDir = getResolvedURI(getRootDirectory(gTestPath));
++
++  addTab(rootDir.spec + TEST_FILE);
++  browser.addEventListener("load", tabLoad, true);
++}

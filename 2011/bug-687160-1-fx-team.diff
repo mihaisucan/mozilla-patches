@@ -1,0 +1,198 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1323291768 -7200
+# Node ID 625e325e00cd5637f7ca5ecd04757b5f030dad5b
+# Parent  bc5144aa2be59ee18cc533f349e3d9d51d4ba247
+Bug 687160 - Source Editor should provide a line-based API
+
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -670,16 +670,49 @@ SourceEditor.prototype = {
+    *        The new caret offset you want to set.
+    */
+   setCaretOffset: function SE_setCaretOffset(aOffset)
+   {
+     this._view.setCaretOffset(aOffset, true);
+   },
+ 
+   /**
++   * Get the caret line.
++   *
++   * @return number
++   *         The current caret line location.
++   */
++  getCaretLine: function SE_getCaretLine()
++  {
++    return this._model.getLineAtOffset(this.getCaretOffset()) + 1;
++  },
++
++  /**
++   * Set the caret line.
++   *
++   * @param number aLine
++   *        The new caret line location.
++   */
++  setCaretLine: function SE_setCaretLine(aLine)
++  {
++    this.setCaretOffset(this._model.getLineStart(aLine - 1));
++  },
++
++  /**
++   * Get the line count.
++   *
++   * @return number
++   *         The number of lines in the document being edited.
++   */
++  getLineCount: function SE_getLineCount()
++  {
++    return this._model.getLineCount();
++  },
++
++  /**
+    * Get the line delimiter used in the document being edited.
+    *
+    * @return string
+    *         The line delimiter.
+    */
+   getLineDelimiter: function SE_getLineDelimiter()
+   {
+     return this._model.getLineDelimiter();
+diff --git a/browser/devtools/sourceeditor/source-editor-textarea.jsm b/browser/devtools/sourceeditor/source-editor-textarea.jsm
+--- a/browser/devtools/sourceeditor/source-editor-textarea.jsm
++++ b/browser/devtools/sourceeditor/source-editor-textarea.jsm
+@@ -597,16 +597,45 @@ SourceEditor.prototype = {
+    *        The new caret offset you want to set.
+    */
+   setCaretOffset: function SE_setCaretOffset(aOffset)
+   {
+     this.setSelection(aOffset, aOffset);
+   },
+ 
+   /**
++   * Set the caret line.
++   *
++   * @param number aLine
++   *        The new caret line location.
++   */
++  setCaretLine: function SE_setCaretLine(aLine)
++  {
++    if (aLine == 1) {
++      this.setCaretOffset(0);
++      return;
++    }
++
++    let text = this._textbox.value;
++    let i = 0, n = text.length, c0, c1;
++    let lines = text.length > 0 ? 1 : 0;
++    while (i < n) {
++      c1 = text.charAt(i++);
++      if (c1 == "\r" || (c0 != "\r" && c1 == "\n")) {
++        lines++;
++        if (lines == aLine) {
++          this.setCaretOffset(i);
++          return;
++        }
++      }
++      c0 = c1;
++    }
++  },
++
++  /**
+    * Get the line delimiter used in the document being edited.
+    *
+    * @return string
+    *         The line delimiter.
+    */
+   getLineDelimiter: function SE_getLineDelimiter()
+   {
+     return this._lineDelimiter;
+diff --git a/browser/devtools/sourceeditor/test/Makefile.in b/browser/devtools/sourceeditor/test/Makefile.in
+--- a/browser/devtools/sourceeditor/test/Makefile.in
++++ b/browser/devtools/sourceeditor/test/Makefile.in
+@@ -45,11 +45,12 @@ include $(DEPTH)/config/autoconf.mk
+ include $(topsrcdir)/config/rules.mk
+ 
+ _BROWSER_TEST_FILES = \
+ 		browser_sourceeditor_initialization.js \
+ 		browser_bug684862_paste_html.js \
+ 		browser_bug687573_vscroll.js \
+ 		browser_bug687568_pagescroll.js \
+ 		browser_bug687580_drag_and_drop.js \
++		browser_bug687160_line_api.js \
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/browser/devtools/sourceeditor/test/browser_bug687160_line_api.js b/browser/devtools/sourceeditor/test/browser_bug687160_line_api.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/sourceeditor/test/browser_bug687160_line_api.js
+@@ -0,0 +1,68 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++"use strict";
++
++Cu.import("resource:///modules/source-editor.jsm");
++
++let testWin;
++let editor;
++
++function test()
++{
++  waitForExplicitFinish();
++
++  const windowUrl = "data:text/xml,<?xml version='1.0'?>" +
++    "<window xmlns='http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul'" +
++    " title='test for bug 660784' width='600' height='500'><hbox flex='1'/></window>";
++  const windowFeatures = "chrome,titlebar,toolbar,centerscreen,resizable,dialog=no";
++
++  testWin = Services.ww.openWindow(null, windowUrl, "_blank", windowFeatures, null);
++  testWin.addEventListener("load", function onWindowLoad() {
++    testWin.removeEventListener("load", onWindowLoad, false);
++    waitForFocus(initEditor, testWin);
++  }, false);
++}
++
++function initEditor()
++{
++  let hbox = testWin.document.querySelector("hbox");
++  editor = new SourceEditor();
++  editor.init(hbox, {}, editorLoaded);
++}
++
++function editorLoaded()
++{
++  let component = Services.prefs.getCharPref(SourceEditor.PREFS.COMPONENT);
++
++  editor.focus();
++
++  editor.setText("line1\nline2\nline3");
++
++  if (component != "textarea") {
++    is(editor.getLineCount(), 3, "getLineCount() works");
++  }
++
++  editor.setCaretLine(2);
++  is(editor.getCaretOffset(), 6, "setCaretLine() works");
++
++  if (component != "textarea") {
++    is(editor.getCaretLine(), 2, "getCaretLine() works");
++  }
++
++  editor.setCaretLine(3);
++  is(editor.getCaretOffset(), 12, "setCaretLine() works, confirmed");
++
++  if (component != "textarea") {
++    is(editor.getCaretLine(), 3, "setCaretLine() works, again");
++  }
++
++  editor.destroy();
++
++  testWin.close();
++  testWin = editor = null;
++
++  waitForFocus(finish, window);
++}
++

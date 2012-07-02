@@ -1,0 +1,130 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -669,67 +669,16 @@ HUD_SERVICE.prototype =
+    */
+   getFilterTextBox: function HS_getFilterTextBox(aHUDId)
+   {
+     var hud = this.getHeadsUpDisplay(aHUDId);
+     return hud.querySelectorAll(".hud-filter-box")[0];
+   },
+ 
+   /**
+-   * Logs a HUD-generated console message
+-   * @param object aMessage
+-   *        The message to log, which is a JS object, this is the
+-   *        "raw" log message
+-   * @param nsIDOMNode aConsoleNode
+-   *        The output DOM node to log the messageNode to
+-   * @param nsIDOMNode aMessageNode
+-   *        The message DOM Node that will be appended to aConsoleNode
+-   * @returns void
+-   */
+-  logHUDMessage: function HS_logHUDMessage(aMessage,
+-                                           aConsoleNode,
+-                                           aMessageNode,
+-                                           aFilterState,
+-                                           aFilterString)
+-  {
+-    if (!aFilterState) {
+-      // do not log anything
+-      return;
+-    }
+-
+-    if (!aMessage) {
+-      throw new Error(ERRORS.MISSING_ARGS);
+-    }
+-
+-    let lastGroupNode = this.appendGroupIfNecessary(aConsoleNode,
+-                                                    aMessage.timestamp);
+-    if (aFilterString) {
+-      var filtered = this.filterLogMessage(aFilterString, aMessageNode);
+-      if (filtered) {
+-        // we have successfully filtered a message, we need to log it
+-        lastGroupNode.appendChild(aMessageNode);
+-        ConsoleUtils.scrollToVisible(aMessageNode);
+-      }
+-      else {
+-        // we need to ignore this message by changing its css class - we are
+-        // still logging this, it is just hidden
+-        var hiddenMessage = ConsoleUtils.hideLogMessage(aMessageNode);
+-        lastGroupNode.appendChild(hiddenMessage);
+-      }
+-    }
+-    else {
+-      // log everything
+-      lastGroupNode.appendChild(aMessageNode);
+-      ConsoleUtils.scrollToVisible(aMessageNode);
+-    }
+-    // store this message in the storage module:
+-    this.storage.recordEntry(aMessage.hudId, aMessage);
+-  },
+-
+-  /**
+    * logs a message to the Heads Up Display that originates
+    * in the nsIConsoleService
+    *
+    * @param nsIConsoleMessage aMessage
+    * @param nsIDOMNode aConsoleNode
+    * @param nsIDOMNode aMessageNode
+    * @returns void
+    */
+@@ -758,31 +707,48 @@ HUD_SERVICE.prototype =
+    * @returns void
+    */
+   logMessage: function HS_logMessage(aMessage, aConsoleNode, aMessageNode)
+   {
+     if (!aMessage) {
+       throw new Error(ERRORS.MISSING_ARGS);
+     }
+ 
+-    var hud = this.getHeadsUpDisplay(aMessage.hudId);
+     // check filter before logging to the outputNode
+     var filterState = this.getFilterState(aMessage.hudId, aMessage.logLevel);
+     var filterString = this.getFilterStringByHUDId(aMessage.hudId);
+ 
+-    switch (aMessage.origin) {
+-      case "network":
+-      case "HUDConsole":
+-      case "console-listener":
+-        this.logHUDMessage(aMessage, aConsoleNode, aMessageNode, filterState, filterString);
+-        break;
+-      default:
+-        // noop
+-        break;
++    if (!filterState) {
++      // do not log anything
++      return;
+     }
++
++    let lastGroupNode = this.appendGroupIfNecessary(aConsoleNode,
++                                                    aMessage.timestamp);
++    if (filterString) {
++      var filtered = this.filterLogMessage(filterString, aMessageNode);
++      if (filtered) {
++        // we have successfully filtered a message, we need to log it
++        lastGroupNode.appendChild(aMessageNode);
++        ConsoleUtils.scrollToVisible(aMessageNode);
++      }
++      else {
++        // we need to ignore this message by changing its css class - we are
++        // still logging this, it is just hidden
++        var hiddenMessage = ConsoleUtils.hideLogMessage(aMessageNode);
++        lastGroupNode.appendChild(hiddenMessage);
++      }
++    }
++    else {
++      // log everything
++      lastGroupNode.appendChild(aMessageNode);
++      ConsoleUtils.scrollToVisible(aMessageNode);
++    }
++    // store this message in the storage module:
++    this.storage.recordEntry(aMessage.hudId, aMessage);
+   },
+ 
+   /**
+    * report consoleMessages recieved via the HUDConsoleObserver service
+    * @param nsIConsoleMessage aConsoleMessage
+    * @returns void
+    */
+   reportConsoleServiceMessage:

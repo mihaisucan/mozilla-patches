@@ -1,0 +1,109 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1320351147 -7200
+# Node ID f51f9b049348cf3a50b8378f5226cfd7cda043f5
+# Parent  73e8ca9230d61d740d19b2148db2158852a0cfcb
+Bug 699541 - Pasted HTML shows twice in Orion
+
+diff --git a/browser/devtools/sourceeditor/orion/README b/browser/devtools/sourceeditor/orion/README
+--- a/browser/devtools/sourceeditor/orion/README
++++ b/browser/devtools/sourceeditor/orion/README
+@@ -17,16 +17,19 @@ Orion version: git clone from 2011-10-26
+     https://github.com/mihaisucan/orion.client/tree/bug-362286
+       see https://bugs.eclipse.org/bugs/show_bug.cgi?id=362286
+   + patch for Eclipse Bug 362107 - Ctrl-Up/Down failure on Linux:
+     https://github.com/mihaisucan/orion.client/tree/bug-362107
+       see https://bugs.eclipse.org/bugs/show_bug.cgi?id=362107
+   + patch for Eclipse Bug 362428 - _getXToOffset() throws:
+     https://github.com/mihaisucan/orion.client/tree/bug-362428
+       see https://bugs.eclipse.org/bugs/show_bug.cgi?id=362428
++  + patch for Eclipse Bug 362835 - Pasted HTML shows twice:
++    https://github.com/mihaisucan/orion.client/tree/bug-362835
++      see https://bugs.eclipse.org/bugs/show_bug.cgi?id=362835
+ 
+ # License
+ 
+ The following files are licensed according to the contents in the LICENSE
+ file:
+   orion.js
+   orion.css
+ 
+diff --git a/browser/devtools/sourceeditor/orion/orion.js b/browser/devtools/sourceeditor/orion/orion.js
+--- a/browser/devtools/sourceeditor/orion/orion.js
++++ b/browser/devtools/sourceeditor/orion/orion.js
+@@ -1947,17 +1947,17 @@ if (typeof window !== "undefined" && typ
+  * All rights reserved. This program and the accompanying materials are made 
+  * available under the terms of the Eclipse Public License v1.0 
+  * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution 
+  * License v1.0 (http://www.eclipse.org/org/documents/edl-v10.html). 
+  * 
+  * Contributors: 
+  *		Felipe Heidrich (IBM Corporation) - initial API and implementation
+  *		Silenio Quarti (IBM Corporation) - initial API and implementation
+- *		Mihai Sucan (Mozilla Foundation) - fix for Bug#334583 Bug#348471 Bug#349485 Bug#350595 Bug#360726 Bug#361180 Bug#358623 Bug#362286 Bug#362107 Bug#362428
++ *		Mihai Sucan (Mozilla Foundation) - fix for Bug#334583 Bug#348471 Bug#349485 Bug#350595 Bug#360726 Bug#361180 Bug#358623 Bug#362286 Bug#362107 Bug#362428 Bug#362835
+  ******************************************************************************/
+ 
+ /*global window document navigator setTimeout clearTimeout XMLHttpRequest define */
+ 
+ /**
+  * @namespace The global container for Orion APIs.
+  */ 
+ var orion = orion || {};
+@@ -5668,17 +5668,20 @@ orion.textview.TextView = (function() {
+ 					return clipboadText.join("");
+ 				};
+ 				
+ 				/* Try execCommand first. Works on firefox with clipboard permission. */
+ 				var result = false;
+ 				this._ignorePaste = true;
+ 				try {
+ 					result = document.execCommand("paste", false, null);
+-				} catch (ex) {}
++				} catch (ex) {
++					// Firefox can throw even when execCommand() works, see bug 362835
++					result = clipboardDiv.childNodes.length > 1 || clipboardDiv.firstChild && clipboardDiv.firstChild.childNodes.length > 0;
++				}
+ 				this._ignorePaste = false;
+ 				if (!result) {
+ 					/*
+ 					* Try native paste in DOM, works for firefox during the paste event.
+ 					*/
+ 					if (event) {
+ 						setTimeout(function() {
+ 							self.focus();
+diff --git a/browser/devtools/sourceeditor/test/browser_bug684862_paste_html.js b/browser/devtools/sourceeditor/test/browser_bug684862_paste_html.js
+--- a/browser/devtools/sourceeditor/test/browser_bug684862_paste_html.js
++++ b/browser/devtools/sourceeditor/test/browser_bug684862_paste_html.js
+@@ -68,26 +68,29 @@ function editorLoaded()
+   is(editor.getCaretOffset(), 0, "caret location");
+ 
+   let onPaste = function() {
+     editor.removeEventListener(SourceEditor.EVENTS.TEXT_CHANGED, onPaste);
+ 
+     let text = editor.getText();
+     ok(text, "editor has content after paste");
+ 
+-    isnot(text.indexOf("foobarBug684862"), -1, "editor content is correct");
++    let pos = text.indexOf("foobarBug684862");
++    isnot(pos, -1, "editor content is correct");
++    // Test for bug 699541 - Pasted HTML shows twice in Orion.
++    is(text.lastIndexOf("foobarBug684862"), pos, "editor content is correct (no duplicate)");
+ 
+     executeSoon(function() {
+       editor.setCaretOffset(4);
+       EventUtils.synthesizeKey("a", {}, testWin);
+       EventUtils.synthesizeKey("VK_RIGHT", {}, testWin);
+ 
+       text = editor.getText();
+ 
+-      isnot(text.indexOf("foobarBug684862"), -1,
++      is(text.indexOf("foobarBug684862"), pos + 1,
+             "editor content is correct after navigation");
+       is(editor.getCaretOffset(), 6, "caret location");
+ 
+       executeSoon(testEnd);
+     });
+   };
+ 
+   editor.addEventListener(SourceEditor.EVENTS.TEXT_CHANGED, onPaste);

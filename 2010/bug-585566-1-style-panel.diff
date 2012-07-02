@@ -1,0 +1,425 @@
+diff --git a/browser/base/content/csshtmltree.js b/browser/base/content/csshtmltree.js
+--- a/browser/base/content/csshtmltree.js
++++ b/browser/base/content/csshtmltree.js
+@@ -101,21 +101,32 @@ CssHtmlTree.prototype = {
+    * Process the main template.
+    */
+   _populateMainTemplates: function CssHtmlTree_populateMainTemplate()
+   {
+     let self = this;
+     let data = {
+       path_elements: CssLogic.getShortNamePath(this.viewedElement),
+       sheets: this.cssLogic.sheets,
++
+       toggleSpecificity: function CssHtmlTree_toggleSpecificity()
+       {
+         self.styleDocument.getElementById("groups")
+             .classList.toggle("showSpecificity");
+       },
++
++      pathClick: function CssHtmlTree_pathClick(aEvent)
++      {
++        aEvent.preventDefault();
++        if (aEvent.target && aEvent.target.pathElement &&
++          aEvent.target.pathElement != InspectorUI.selection) {
++          InspectorUI.inspectNode(aEvent.target.pathElement);
++        }
++      },
++
+       str: {
+         lookingAtLabel: this.strings.GetStringFromName("style.lookingAtLabel"),
+         specificityLabel: this.strings.GetStringFromName("style.specificityLabel"),
+         specificityHelpLink: this.strings.GetStringFromName("style.specificityHelpLink")
+       }
+     };
+     this._template(this.templateHeader, this.header, data);
+ 
+@@ -629,16 +640,27 @@ Templater.prototype.processNode = functi
+             " to resolve to a function, but got " + typeof func);
+         }
+         aNode.removeAttribute(name);
+         let capture = aNode.hasAttribute("capture" + name.substring(2));
+         aNode.addEventListener(name.substring(2), func, capture);
+         if (capture) {
+           aNode.removeAttribute("capture" + name.substring(2));
+         }
++      } else if (name.substring(0, 2) == "__") {
++        // Register a property on the DOM element.
++        value = self.stripBraces(value);
++        let reply = null;
++        try {
++          reply = self.envEval(value, aData, attrs[i].value);
++        } catch (ex) {
++          self.error("Error with '" + value + "': " + ex);
++        }
++        let property = name.substring(2);
++        aNode[property] = reply;
+       } else {
+         // Replace references in other attributes.
+         let newValue = value.replace(/\$\{[^}]*\}/g, function(aPath) {
+           return self.envEval(aPath.slice(2, -1), aData, value);
+         });
+         // Remove '_' prefix of attribute names so the DOM won't try
+         // to use them before we've processed the template.
+         if (name.charAt(0) == "_") {
+diff --git a/browser/base/content/csshtmltree.xhtml b/browser/base/content/csshtmltree.xhtml
+--- a/browser/base/content/csshtmltree.xhtml
++++ b/browser/base/content/csshtmltree.xhtml
+@@ -9,113 +9,144 @@
+   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
+   <style type="text/css">
+     body {
+       font-family: Lucida Grande, sans-serif;
+       font-size: 11px;
+       background: #EEE;
+     }
+ 
+-    span.path {
++    .clearfix:after {
++      content: ".";
++      display: block;
++      clear: both;
++      height: 0;
++      visibility: hidden;
++      font-size: 0.1em;
++      overflow: hidden;
++    }
++
++    .path {
+       font-size: 11px;
+       word-spacing: -1px;
+     }
+-    span.path_element, span.path_element_link {
+-      -moz-border-radius: 2px;
++    .path ol {
++      list-style: none;
++      margin: 0;
++      padding: 0;
++    }
++    .path li {
++      -moz-border-radius: 3px;
+       padding: 2px 3px;
+       text-shadow: #FFF 0px 1px 0px;
+       font-weight: bold;
+       font-size: 11px;
++      background: -moz-linear-gradient(top, #F6F6FF, #E3E3FF);
++      display: inline-block;
+     }
+-    a.path_element {
+-      background: -moz-linear-gradient(top, #BBE, #99C);
++    .path li:after {
++      content: " > ";
+     }
+-    a.path_element:last-of-type {
++    .path li:last-child {
+       background: -moz-linear-gradient(top, #FFC, #DD8);
+     }
+-    span.path_crumb:last-of-type {
++    .path li:last-child:after {
+       color: red;
++      content: "";
+     }
+-    div#header {
+-      width: 95%;
++
++    .sheet_line input {
++      vertical-align: middle;
++    }
++
++    .sheet_line label {
++      cursor: pointer;
++    }
++
++    #header {
+       padding: 5px;
+     }
+-    td.sheet_line {
+-      text-align: end;
+-    }
+-    td#path_list {
+-      text-align: start;
+-    }
+-    div#header label {
++
++    #header label {
+       font-weight: bold;
+     }
+     #sheets {
+       -moz-margin-end: 10px;
+       margin-top: 5px;
+     }
+     h1 {
+       font-size: 13px;
+       padding: 2px 10px;
+       margin: 0px;
+-      background: -moz-linear-gradient(top, #BBB, #999);
+-      -moz-border-radius: 2px;
++      background: -moz-linear-gradient(top, #CCC, #AAA);
++      -moz-border-radius: 3px;
+       text-shadow: #FFF 0px 1px 0px;
++      cursor: pointer;
+     }
+     h1 .toggle {
+       font-size: 11px;
+       float: right;
+       color: #333;
+     }
+ 
+-    div.property-header {
++    .property-header {
+       padding: 2px 5px;
+       background: -moz-linear-gradient(top, #F8F8F8, #E8E8E8);
+       color: #666;
+     }
++
++    .property-name, .property-value, .rule-count {
++      cursor: pointer;
++    }
++
+     /* Take away these two :visited rules to get a core dumper */
+     .link { color: #55A;  }
+     .link:visited { color: #55A;  }
+     a.link { text-decoration: none; }
+     a.link:visited { text-decoration: none; }
+-    span.rule-count {
++    .rule-count {
+       float: right;
+     }
+     .rule-count .toggle {
+       margin-left: 6px;
+     }
+     span.property-name {
+       font-size: 12px;
+       font-weight: bold;
+       -moz-padding-end: 4px;
+       color: #000;
+     }
+     span.property-value {
+       -moz-padding-end: 5px;
+       font-size: 10px;
+     }
+-    div.group {
++    .group {
+       margin-top: 10px;
+     }
+-    div.group, div#header {
++    .group, #header {
+       background: #FFF;
+       border-color: #E1E1E1;
+       border-style: solid;
+       border-width: 1px;
+       -moz-box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+       -moz-border-radius: 4px 4px 4px 4px;
+     }
+ 
+-    table.rules {
+-      -moz-margin-start: 20px;
++    .rules {
+       max-height: 150px;
+       overflow-y: auto;
+     }
+-    td.rule-text, td.rule-status {
++    .rules td:first-child {
++      -moz-padding-start: 20px;
++    }
++    .rules td:last-child {
++      -moz-padding-end: 10px;
++    }
++    .rule-specificty, .rule-status {
+       white-space: nowrap;
+-      overflow-x: hidden;
+     }
+     .rule-specificity {
+       display: none;
+     }
+     .showSpecificity .rule-specificity {
+       display: table-cell;
+     }
+   </style>
+@@ -139,37 +170,34 @@ To visually debug the templates without 
+   templateHeader needs data like this:
+   {
+     path_elements: [ 'div[0]', '#main', '#content', 'p[4]' ],
+     sheets: [ { source: 'foo.css' }, { source: 'bar.css' }, ... ],
+     toggleSpecificity: function() {} // toggle the display of specificity data
+   }
+   -->
+   <div id="templateHeader">
+-    <table>
+-      <tr>
+-        <td class="path_line">
+-          <!-- TODO: Looking at styling is broken. See bug 585566. -->
+-          <label>${str.lookingAtLabel}</label>
+-          <span class="path" foreach="element in ${path_elements}">
+-            <a href="#" class="path_element">${element}</a>
+-            <span class="path_crumb">&#x27EB;</span>
+-          </span>
+-        </td>
+-      </tr>
+-      <tr>
+-        <td class="sheet_line">
+-          <label for="specificity">${str.specificityLabel}</label>
+-          <input _id="specificity" type="checkbox" save="${specificity}"
+-              onchange="${toggleSpecificity}"/>
+-          <a target="_blank" class="link"
+-              href="https://developer.mozilla.org/en/CSS/Specificity">${str.specificityHelpLink}</a>
+-        </td>
+-      </tr>
+-    </table>
++    <p class="path">
++      <!-- TODO: Looking at styling is broken. See bug 585566. -->
++      <label>${str.lookingAtLabel}</label>
++      <ol>
++        <li foreach="item in ${path_elements}">
++          <a href="#" onclick="${pathClick}" 
++            __pathElement="${item.element}">${item.display}</a>
++        </li>
++      </ol>
++    </p>
++
++    <p class="sheet_line">
++      <label><input type="checkbox" save="${specificity}"
++          onchange="${toggleSpecificity}" />
++      ${str.specificityLabel}</label>
++      <a target="_blank" class="link"
++          href="https://developer.mozilla.org/en/CSS/Specificity">${str.specificityHelpLink}</a>
++    </p>
+   </div>
+ 
+   <!--
+   Template for the top level groups of properties
+   templateGroups needs data like this:
+   {
+     styleGroups: [ // A reference to CssHtmlTree.styleGroups
+       ..., // Instances of StyleGroupView from csshtmltree.js
+@@ -190,17 +218,17 @@ To visually debug the templates without 
+   Inside each group of properties we have the properties themselves
+   templateProperties needs data like this:
+   {
+     property: [ ..., ] // Array of PropertyViews from csshtmltree.js
+   }
+   -->
+   <div id="templateProperties">
+     <div foreach="property in ${properties}">
+-      <div class="property-header open" onclick="${property.click}">
++      <div class="clearfix property-header open" onclick="${property.click}">
+         <span class="property-name">${property.name}</span>
+         <span class="property-value">${property.value}</span>
+         <span class="rule-count link">${property.ruleTitle(__element)}</span>
+       </div>
+       <table class="rules" save="${property.element}"></table>
+     </div>
+   </div>
+ 
+@@ -208,19 +236,19 @@ To visually debug the templates without 
+   Inside each property we have a list of rules that affect that property
+   templateRules needs data like this:
+   {
+     cssInfo: ..., // from cssLogic.getCssInfo(property)
+     statusText: function(status) {}, // convert rule.status to readable text
+   }
+   The table element is only there do the DOM doesn't muck with the tr
+   -->
+-  <table id="templateRules">
++  <table id="templateRules" width="100%">
+     <tr foreach="rule in ${cssInfo.rules}">
+-      <td class="rule-text">${selectorText(rule.selector)} &#x2192;
++      <td width="100%" class="rule-text">${selectorText(rule.selector)} &#x2192;
+         ${rule.value}</td>
+       <td class="rule-specificity"
+         title="${specificityTitle(rule)}">${rule.specificity}</td>
+       <td><a target="_blank" href="view-source:${rule.href}"
+           class="link">${rule.source}</a></td>
+       <td class="rule-status">${statusText(rule.status)}</td>
+     </tr>
+   </table>
+diff --git a/browser/base/content/csslogic.js b/browser/base/content/csslogic.js
+--- a/browser/base/content/csslogic.js
++++ b/browser/base/content/csslogic.js
+@@ -256,16 +256,17 @@ CssLogic.prototype = {
+ /**
+  * If the element has an id, return '#id'. Otherwise return 'tagname[n]' where
+  * n is the index of this element in its siblings.
+  * <p>A technically more 'correct' output from the no-id case might be:
+  * 'tagname:nth-of-type(n)' however this is unlikely to be more understood
+  * and it is longer.
+  *
+  * @param {nsIDOMElement} aElement the element for which you want the short name.
++ * @returns {string} the string to be displayed for aElement.
+  */
+ CssLogic.getShortName = function CssLogic_getShortName(aElement)
+ {
+   if (!aElement) {
+     return "null";
+   }
+   if (aElement.id) {
+     return "#" + aElement.id;
+@@ -278,32 +279,44 @@ CssLogic.getShortName = function CssLogi
+   return aElement.tagName + "[" + priorSiblings + "]";
+ };
+ 
+ /**
+  * Get an array of short names from the given element to document.body.
+  *
+  * @param {nsIDOMElement} aElement the element for which you want the array of
+  * short names.
++ * @returns {array} The array of elements.
++ * <p>Each element is an object of the form:
++ * <ul>
++ * <li>{display: "what to display for the given (parent) element",
++ * <li>element: referenceToTheElement}
++ * </ul>
+  */
+ CssLogic.getShortNamePath = function CssLogic_getShortNamePath(aElement)
+ {
+   let doc = aElement.ownerDocument;
+   let reply = [];
+ 
+   // Work up to document.body, but don't include it.
+   while (aElement && aElement != doc.body && aElement != doc.documentElement) {
+-    reply.unshift(CssLogic.getShortName(aElement));
++    reply.unshift({
++      display: CssLogic.getShortName(aElement),
++      element: aElement
++    });
+     aElement = aElement.parentNode;
+   }
+ 
+   // If we don't have anything then include document.body or whatever element
+   // is.
+   if (aElement && !reply.length) {
+-    reply.unshift(CssLogic.getShortName(aElement));
++    reply.unshift({
++      display: CssLogic.getShortName(aElement),
++      element: aElement
++    });
+   }
+ 
+   return reply;
+ };
+ 
+ /**
+  * A safe each to access cache of bits of information about a stylesheet.
+  *
+diff --git a/browser/locales/en-US/chrome/browser/inspector.properties b/browser/locales/en-US/chrome/browser/inspector.properties
+--- a/browser/locales/en-US/chrome/browser/inspector.properties
++++ b/browser/locales/en-US/chrome/browser/inspector.properties
+@@ -19,17 +19,17 @@ dom.domPanelTitle=DOM
+ # LOCALIZATION NOTE (style.lookingAtLabel): This is used inside the Style panel
+ # of the Inspector tool. This is the label for the path of the highlighted
+ # element in the web page. This path is based on the document tree.
+ style.lookingAtLabel=Looking at:
+ 
+ # LOCALIZATION NOTE (style.specificityLabel): This is used inside the Style
+ # panel of the Inspector tool. This allows the user to enable the showing of the
+ # specificity of the style sheet rules.
+-style.specificityLabel=Show specificity:
++style.specificityLabel=Show specificity.
+ 
+ # LOCALIZATION NOTE (style.specificityHelpLink): This is used inside the Style
+ # panel of the Inspector tool. This allows the user to display additional
+ # information on the specificity of style sheet rules.
+ style.specificityHelpLink=Help!
+ 
+ # LOCALIZATION NOTE (style.group): These strings are used inside the Style
+ # panel of the Inspector tool. Style properties are displayed in groups and

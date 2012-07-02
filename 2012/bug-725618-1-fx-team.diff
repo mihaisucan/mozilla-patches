@@ -1,0 +1,145 @@
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -119,16 +119,26 @@ const DEFAULT_KEYBINDINGS = [
+     accel: true,
+     shift: true,
+   },
+   {
+     action: "Unindent Lines",
+     code: Ci.nsIDOMKeyEvent.DOM_VK_TAB,
+     shift: true,
+   },
++  {
++    action: "Move Lines Up",
++    code: Ci.nsIDOMKeyEvent.DOM_VK_UP,
++    alt: true,
++  },
++  {
++    action: "Move Lines Down",
++    code: Ci.nsIDOMKeyEvent.DOM_VK_DOWN,
++    alt: true,
++  },
+ ];
+ 
+ var EXPORTED_SYMBOLS = ["SourceEditor"];
+ 
+ /**
+  * The SourceEditor object constructor. The SourceEditor component allows you to
+  * provide users with an editor tailored to the specific needs of editing source
+  * code, aimed primarily at web developers.
+@@ -344,23 +354,26 @@ SourceEditor.prototype = {
+       "redo": [this.redo, this],
+       "tab": [this._doTab, this],
+       "Unindent Lines": [this._doUnindentLines, this],
+       "enter": [this._doEnter, this],
+       "Find...": [this.ui.find, this.ui],
+       "Find Next Occurrence": [this.ui.findNext, this.ui],
+       "Find Previous Occurrence": [this.ui.findPrevious, this.ui],
+       "Goto Line...": [this.ui.gotoLine, this.ui],
++      "Move Lines Down": [this._moveLines, this],
+     };
+ 
+     for (let name in actions) {
+       let action = actions[name];
+       this._view.setAction(name, action[0].bind(action[1]));
+     }
+ 
++    this._view.setAction("Move Lines Up", this._moveLines.bind(this, true));
++
+     let keys = (config.keys || []).concat(DEFAULT_KEYBINDINGS);
+     keys.forEach(function(aKey) {
+       let binding = new KeyBinding(aKey.code, aKey.accel, aKey.shift, aKey.alt);
+       this._view.setKeyBinding(binding, aKey.action);
+ 
+       if (aKey.callback) {
+         this._view.setAction(aKey.action, aKey.callback);
+       }
+@@ -860,16 +873,87 @@ SourceEditor.prototype = {
+     } else if (this._eventTarget.removeEventListener) {
+       this._eventTarget.removeEventListener(aEventType, aCallback);
+     } else {
+       this._eventListenersQueue.push(["remove", aEventType, aCallback]);
+     }
+   },
+ 
+   /**
++   * Move lines upwards or downwards, relative to the current caret location.
++   *
++   * @private
++   * @param boolean aLineAbove
++   *        True if moving lines up.
++   */
++  _moveLines: function SE__moveLines(aLineAbove)
++  {
++    let selection = this.getSelection();
++    let firstLine = this._model.getLineAtOffset(selection.start);
++    if (firstLine == 0 && aLineAbove) {
++      return true;
++    }
++
++    let lastLine = this._model.getLineAtOffset(selection.end);
++
++    let firstLineStart = this._model.getLineStart(firstLine);
++    let lastLineStart = this._model.getLineStart(lastLine);
++    if (selection.start != selection.end && lastLineStart == selection.end) {
++      lastLine--;
++    }
++    if (lastLine+1 == this.getLineCount() && !aLineAbove) {
++      return true;
++    }
++
++    let lastLineEnd = this._model.getLineEnd(lastLine, true);
++    let text = this.getText(firstLineStart, lastLineEnd);
++    let lineDelimiter = this.getLineDelimiter();
++
++    if (aLineAbove) {
++      let aboveLine = firstLine - 1;
++      let aboveLineStart = this._model.getLineStart(aboveLine);
++      let aboveLineEnd = this._model.getLineEnd(aboveLine);
++      let aboveText = this.getText(aboveLineStart, aboveLineEnd);
++      
++      this.startCompoundChange();
++      if (lastLine == this.getLineCount() - 1) {
++        text += lineDelimiter;
++        this.setText("", firstLineStart - lineDelimiter.length, lastLineEnd);
++      } else {
++        this.setText("", firstLineStart, lastLineEnd);
++      }
++      this.setText(text,
++                    aboveLineStart, aboveLineStart);
++      this.endCompoundChange();
++      this.setSelection(aboveLineStart, aboveLineStart + text.length);
++    } else {
++      let belowLine = lastLine + 1;
++      let belowLineStart = this._model.getLineStart(belowLine);
++      let belowLineEnd = this._model.getLineEnd(belowLine, true);
++      let belowText = this.getText(belowLineStart, belowLineEnd);
++      
++      this.startCompoundChange();
++      let insertAt = belowLineEnd - lastLineEnd + firstLineStart;
++      let endOfDocument = belowLine == this.getLineCount() - 1;
++      if (endOfDocument) {
++        text = lineDelimiter + text.substr(0, text.length - lineDelimiter.length);
++      }
++      this.setText("", firstLineStart, lastLineEnd);
++      this.setText(text, insertAt, insertAt);
++      this.endCompoundChange();
++      if (endOfDocument) {
++        this.setSelection(insertAt + lineDelimiter.length, insertAt + text.length);
++      } else {
++        this.setSelection(insertAt, insertAt + text.length);
++      }
++    }
++    return true;
++  },
++
++  /**
+    * Undo a change in the editor.
+    */
+   undo: function SE_undo()
+   {
+     return this._undoStack.undo();
+   },
+ 
+   /**

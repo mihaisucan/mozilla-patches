@@ -1,0 +1,291 @@
+# HG changeset patch
+# User Girish Sharma <scrapmachines@gmail.com>
+# Date 1331459401 -7200
+# Node ID 28cf4b50717cef1911d2fedccb87d7aa4fd5772f
+# Parent  310226a5234ab7098ec646c61dc0b26db9c78c44
+Bug 729480 - Link to rule in Style Editor should show the relevant line at the top of the editor's viewport; r=msucan f=msucan
+
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -19,16 +19,17 @@
+  * Portions created by the Initial Developer are Copyright (C) 2011
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Mihai Sucan <mihai.sucan@gmail.com> (original author)
+  *   Kenny Heaton <kennyheaton@gmail.com>
+  *   Spyros Livathinos <livathinos.spyros@gmail.com>
+  *   Allen Eubank <adeubank@gmail.com>
++ *   Girish Sharma <scrapmachines@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -59,16 +60,24 @@ const ORION_IFRAME = "data:text/html;cha
+   " href='chrome://browser/skin/devtools/orion-container.css'></head>" +
+   "<body style='height:100%;margin:0;overflow:hidden'>" +
+   "<div id='editor' style='height:100%'></div>" +
+   "</body></html>";
+ 
+ const XUL_NS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
+ 
+ /**
++ * Maximum allowed vertical offset for the line index when you call
++ * SourceEditor.setCaretPosition().
++ *
++ * @type number
++ */
++const VERTICAL_OFFSET = 3;
++
++/**
+  * The primary selection update delay. On Linux, the X11 primary selection is
+  * updated to hold the currently selected text.
+  *
+  * @type number
+  */
+ const PRIMARY_SELECTION_DELAY = 100;
+ 
+ /**
+@@ -1320,20 +1329,66 @@ SourceEditor.prototype = {
+ 
+   /**
+    * Set the caret position: line and column.
+    *
+    * @param number aLine
+    *        The new caret line location. Line numbers start from 0.
+    * @param number [aColumn=0]
+    *        Optional. The new caret column location. Columns start from 0.
++   * @param number [aAlign=0]
++   *        Optional. Position of the line with respect to viewport.
++   *        Allowed values are:
++   *          SourceEditor.VERTICAL_ALIGN.TOP     target line at top of view.
++   *          SourceEditor.VERTICAL_ALIGN.CENTER  target line at center of view.
++   *          SourceEditor.VERTICAL_ALIGN.BOTTOM  target line at bottom of view.
+    */
+-  setCaretPosition: function SE_setCaretPosition(aLine, aColumn)
++  setCaretPosition: function SE_setCaretPosition(aLine, aColumn, aAlign)
+   {
+-    this.setCaretOffset(this._model.getLineStart(aLine) + (aColumn || 0));
++    let editorHeight = this._view.getClientArea().height;
++    let lineHeight = this._view.getLineHeight();
++    let linesVisible = Math.floor(editorHeight/lineHeight);
++    let halfVisible = Math.round(linesVisible/2);
++    let firstVisible = this.getTopIndex();
++    let lastVisible = this._view.getBottomIndex();
++    let caretOffset = this._model.getLineStart(aLine) + (aColumn || 0);
++
++    this._view.setSelection(caretOffset, caretOffset, false);
++
++    // If the target line is in view, skip the vertical alignment part.
++    if (aLine <= lastVisible && aLine >= firstVisible) {
++      this._view.showSelection();
++      return;
++    }
++
++    // Setting the offset so that the line always falls in the upper half
++    // of visible lines (lower half for BOTTOM aligned).
++    // VERTICAL_OFFSET is the maximum allowed value.
++    let offset = Math.min(halfVisible, VERTICAL_OFFSET);
++
++    let topIndex;
++    switch (aAlign) {
++      case this.VERTICAL_ALIGN.CENTER:
++        topIndex = Math.max(aLine - halfVisible, 0);
++        break;
++
++      case this.VERTICAL_ALIGN.BOTTOM:
++        topIndex = Math.max(aLine - linesVisible + offset, 0);
++        break;
++
++      default: // this.VERTICAL_ALIGN.TOP.
++        topIndex = Math.max(aLine - offset, 0);
++        break;
++    }
++    // Bringing down the topIndex to total lines in the editor if exceeding.
++    topIndex = Math.min(topIndex, this.getLineCount());
++    this.setTopIndex(topIndex);
++
++    let location = this._view.getLocationAtOffset(caretOffset);
++    this._view.setHorizontalPixel(location.x);
+   },
+ 
+   /**
+    * Get the line count.
+    *
+    * @return number
+    *         The number of lines in the document being edited.
+    */
+diff --git a/browser/devtools/sourceeditor/source-editor.jsm b/browser/devtools/sourceeditor/source-editor.jsm
+--- a/browser/devtools/sourceeditor/source-editor.jsm
++++ b/browser/devtools/sourceeditor/source-editor.jsm
+@@ -308,16 +308,26 @@ SourceEditor.EVENTS = {
+    * have not been saved yet. Event object properties: oldValue and newValue.
+    * Both are booleans telling the old dirty state and the new state,
+    * respectively.
+    */
+   DIRTY_CHANGED: "DirtyChanged",
+ };
+ 
+ /**
++ * Allowed vertical alignment options for the line index
++ * when you call SourceEditor.setCaretPosition().
++ */
++SourceEditor.VERTICAL_ALIGN = {
++  TOP: 0,
++  CENTER: 1,
++  BOTTOM: 2,
++};
++
++/**
+  * Extend a destination object with properties from a source object.
+  *
+  * @param object aDestination
+  * @param object aSource
+  */
+ function extend(aDestination, aSource)
+ {
+   for (let name in aSource) {
+@@ -331,16 +341,17 @@ function extend(aDestination, aSource)
+  * Add methods common to all components.
+  */
+ extend(SourceEditor.prototype, {
+   // Expose the static constants on the SourceEditor instances.
+   EVENTS: SourceEditor.EVENTS,
+   MODES: SourceEditor.MODES,
+   THEMES: SourceEditor.THEMES,
+   DEFAULTS: SourceEditor.DEFAULTS,
++  VERTICAL_ALIGN: SourceEditor.VERTICAL_ALIGN,
+ 
+   _lastFind: null,
+ 
+   /**
+    * Find a string in the editor.
+    *
+    * @param string aString
+    *        The string you want to search for. If |aString| is not given the
+diff --git a/browser/devtools/sourceeditor/test/Makefile.in b/browser/devtools/sourceeditor/test/Makefile.in
+--- a/browser/devtools/sourceeditor/test/Makefile.in
++++ b/browser/devtools/sourceeditor/test/Makefile.in
+@@ -55,12 +55,13 @@ include $(topsrcdir)/config/rules.mk
+ 		browser_bug687160_line_api.js \
+ 		browser_bug650345_find.js \
+ 		browser_bug703692_focus_blur.js \
+ 		browser_bug725388_mouse_events.js \
+ 		browser_bug707987_debugger_breakpoints.js \
+ 		browser_bug712982_line_ruler_click.js \
+ 		browser_bug725618_moveLines_shortcut.js \
+ 		browser_bug700893_dirty_state.js \
++		browser_bug729480_line_vertical_align.js \
+ 		head.js \
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/browser/devtools/sourceeditor/test/browser_bug729480_line_vertical_align.js b/browser/devtools/sourceeditor/test/browser_bug729480_line_vertical_align.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/sourceeditor/test/browser_bug729480_line_vertical_align.js
+@@ -0,0 +1,99 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++"use strict";
++
++let tempScope = {};
++Cu.import("resource:///modules/source-editor.jsm", tempScope);
++let SourceEditor = tempScope.SourceEditor;
++
++let testWin;
++let editor;
++const VERTICAL_OFFSET = 3;
++
++function test()
++{
++  waitForExplicitFinish();
++
++  const windowUrl = "data:application/vnd.mozilla.xul+xml,<?xml version='1.0'?>" +
++    "<window xmlns='http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul'" +
++    " title='test for bug 729480 - allow setCaretPosition align the target line" +
++    " vertically in view according to a third argument'" +
++    " width='300' height='300'><box flex='1'/></window>";
++  const windowFeatures = "chrome,titlebar,toolbar,centerscreen,dialog=no";
++
++  testWin = Services.ww.openWindow(null, windowUrl, "_blank", windowFeatures, null);
++  testWin.addEventListener("load", function onWindowLoad() {
++    testWin.removeEventListener("load", onWindowLoad, false);
++    waitForFocus(initEditor, testWin);
++  }, false);
++}
++
++function initEditor()
++{
++  let box = testWin.document.querySelector("box");
++
++  editor = new SourceEditor();
++  editor.init(box, {showLineNumbers: true}, editorLoaded);
++}
++
++function editorLoaded()
++{
++  editor.focus();
++
++  // setting 3 pages of lines containing the line number.
++  let view = editor._view;
++
++  let lineHeight = view.getLineHeight();
++  let editorHeight = view.getClientArea().height;
++  let linesPerPage = Math.floor(editorHeight / lineHeight);
++  let totalLines = 3 * linesPerPage;
++
++  let text = "";
++  for (let i = 0; i < totalLines; i++) {
++    text += "Line " + i + "\n";
++  }
++
++  editor.setText(text);
++  editor.setCaretOffset(0);
++
++  let offset = Math.min(Math.round(linesPerPage/2), VERTICAL_OFFSET);
++  // Building the iterator array.
++  // [line, alignment, topIndex_check]
++  let iterateOn = [
++    [0, "TOP", 0],
++    [25, "TOP", 25 - offset],
++    // Case when the target line is already in view.
++    [27, "TOP", 25 - offset],
++    [0, "BOTTOM", 0],
++    [5, "BOTTOM", 0],
++    [38, "BOTTOM", 38 - linesPerPage + offset],
++    [0, "CENTER", 0],
++    [4, "CENTER", 0],
++    [34, "CENTER", 34 - Math.round(linesPerPage/2)]
++  ];
++
++  function testEnd() {
++    editor.destroy();
++    testWin.close();
++    testWin = editor = null;
++    waitForFocus(finish, window);
++  }
++
++  function testPosition(pos) {
++    is(editor.getTopIndex(), iterateOn[pos][2], "scroll is correct for test #" + pos);
++    iterator(++pos);
++  }
++
++  function iterator(i) {
++    if (i == iterateOn.length) {
++      testEnd();
++    } else {
++      editor.setCaretPosition(iterateOn[i][0], 0,
++                              editor.VERTICAL_ALIGN[iterateOn[i][1]]);
++      executeSoon(testPosition.bind(this, i));
++    }
++  }
++  iterator(0);
++}

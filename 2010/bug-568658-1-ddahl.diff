@@ -1,0 +1,583 @@
+diff -r 9d2e478fd35b toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm	Tue Jul 13 23:15:43 2010 +0300
++++ b/toolkit/components/console/hudservice/HUDService.jsm	Fri Jul 16 22:33:48 2010 +0300
+@@ -175,19 +175,22 @@ HUD_SERVICE.prototype =
+   sequencer: null,
+ 
+   /**
+    * Each HeadsUpDisplay has a set of filter preferences
+    */
+   filterPrefs: {},
+ 
+   /**
+-   * We keep track of all of the DOMMutation event listers in this object
++   * The list of mutation events we track.
+    */
+-  mutationEventFunctions: {},
++  mutationEvents: ['DOMSubtreeModified', 'DOMNodeInserted', 'DOMNodeRemoved',
++    'DOMNodeRemovedFromDocument', 'DOMNodeInsertedIntoDocument',
++    'DOMAttrModified', 'DOMCharacterDataModified', 'DOMElementNameChanged',
++    'DOMAttributeNameChanged'],
+ 
+   /**
+    * Event handler to get window errors
+    * TODO: a bit of a hack but is able to associate
+    * errors thrown in a window's scope we do not know
+    * about because of the nsIConsoleMessages not having a
+    * window reference.
+    * see bug 567165
+@@ -1371,75 +1374,119 @@ HUD_SERVICE.prototype =
+     }
+     throw new Error("HS_getContentWindowFromHUD: Cannot get contentWindow");
+   },
+ 
+   /**
+    * attaches the DOMMutation listeners to a nsIDOMWindow object
+    *
+    * @param nsIDOMWindow aWindow
+-   * @param string aHUDId
+    * @returns void
+    */
+   attachMutationListeners:
+-  function HS_attachMutationListeners(aWindow, aHUDId)
++  function HS_attachMutationListeners(aWindow)
+   {
+-    try {
+-      // remove first in case it is on already
+-      new ConsoleDOMListeners(aWindow, aHUDId, true);
+-      // add mutation listeners
+-      var domListeners = new ConsoleDOMListeners(aWindow, aHUDId);
+-    }
+-    catch (ex) {
+-      Cu.reportError(ex);
++    // remove the event listeners first, in case they are added already.
++    this.removeMutationListeners(aWindow);
++
++    var document = aWindow.document;
++
++    for (let i = 0, n = this.mutationEvents.length; i < n; i++) {
++      document.addEventListener(this.mutationEvents[i],
++        this.mutationEventsHandler, false);
+     }
+   },
+ 
+   /**
+    * removes DOMMutation listeners
+    *
+    * @param nsIDOMWindow aWindow
+-   * @param string aHUDId
+    * @returns void
+    */
+   removeMutationListeners:
+-  function HS_removeMutationListeners(aWindow, aHUDId)
++  function HS_removeMutationListeners(aWindow)
+   {
+-    // turns off the listeners if active
+-    try {
+-      new ConsoleDOMListeners(aWindow, aHUDId, true);
+-    }
+-    catch (ex) {
+-      Cu.reportError(ex);
++    var document = aWindow.document;
++
++    for (let i = 0, n = this.mutationEvents.length; i < n; i++) {
++      document.removeEventListener(this.mutationEvents[i],
++        this.mutationEventsHandler, false);
+     }
+   },
+ 
+   /**
+-   * toggle on and off teh DOMMutation listeners
++   * The DOM mutation events handler.
++   *
++   * @param DOMEvent aEvent
++   * @returns void
++   */
++  mutationEventsHandler:
++  function HS_mutationEventsHandler(aEvent)
++  {
++    var target = aEvent.target;
++    var console = target.ownerDocument.defaultView.wrappedJSObject.console;
++
++    if (!console || !console.info) {
++      // console lost! abort
++      HUDService.removeMutationListeners(target.ownerDocument.defaultView);
++      return;
++    }
++
++    var nodeTag = target.tagName;
++    var nodeClass = target.getAttribute("class");
++    var nodeId = target.getAttribute("id");
++
++    var message = "DOM Mutation Event " + aEvent.type + " on node <" + nodeTag;
++    if (nodeId) {
++      message += ' id="' + nodeId + '"';
++    }
++    if (nodeClass) {
++      message += ' class="' + nodeClass + '"';
++    }
++    message += ">.";
++
++    if (aEvent.type == "DOMAttrModified") {
++      switch (aEvent.attrChange) {
++        case aEvent.ADDITION:
++          message += " New attribute " + aEvent.attrName + '="' +
++            aEvent.newValue + '".';
++          break;
++        case aEvent.MODIFICATION:
++          message += " Modified attribute " + aEvent.attrName + '="' +
++            aEvent.newValue + '". Previous value: "' + aEvent.prevValue + '".';
++          break;
++        case aEvent.REMOVAL:
++          message += " Attribute " + aEvent.attrName + " removed.";
++      }
++    }
++
++    console.info(message);
++  },
++
++  /**
++   * toggle on and off the DOMMutation listeners
+    *
+    * @param string aHUDId
+    * @returns void
+    */
+   toggleMutationListeners: function HS_toggleMutationListeners(aHUDId)
+   {
+     // get the contentWindow from the HUDId
+     var window = this.getContentWindowFromHUDId(aHUDId);
+     var filterState = this.getFilterState(aHUDId, "mutation");
+ 
+     if (!filterState) {
+       // turn it off
+       this.removeMutationListeners(window);
+     }
+     else {
+-      this.attachMutationListeners(window, aHUDId);
++      this.attachMutationListeners(window);
+     }
+   },
+ 
+-  mutationListenerIndex: {},
+-
+   /**
+    * Creates a generator that always returns a unique number for use in the
+    * indexes
+    *
+    * @returns Generator
+    */
+   createSequencer: function HS_createSequencer(aInt)
+   {
+@@ -1539,44 +1586,36 @@ HUD_SERVICE.prototype =
+       for (var i = 0; i < childNodes.length; i++) {
+         let id = childNodes[i].getAttribute("id");
+         if (id.split("_")[0] == "hud") {
+           hudNode = childNodes[i];
+           break;
+         }
+       }
+ 
++      let config;
+       if (!hudNode) {
+         // get nBox object and call new HUD
+-        let config = { parentNode: nBox,
+-                       contentWindow: aContentWindow
+-                     };
+-
+-        let _hud = new HeadsUpDisplay(config);
+-
+-        let hudWeakRef = Cu.getWeakReference(_hud);
+-        HUDService.registerHUDWeakReference(hudWeakRef, hudId);
++        config = { parentNode: nBox, contentWindow: aContentWindow };
+       }
+       else {
+         // only need to attach a console object to the window object
+-        let config = { hudNode: hudNode,
+-                       consoleOnly: true,
+-                       contentWindow: aContentWindow
+-                     };
+-
+-        let _hud = new HeadsUpDisplay(config);
+-
+-        let hudWeakRef = Cu.getWeakReference(_hud);
+-        HUDService.registerHUDWeakReference(hudWeakRef, hudId);
+-
+-        aContentWindow.wrappedJSObject.console = _hud.console;
+-        var mutationFlag = this.getFilterState(this.hudId, "mutation");
+-        if (mutationFlag) {
+-          this.attachMutationListeners(aContentWindow, this.hudId);
+-        }
++        config = { hudNode: hudNode, consoleOnly: true,
++          contentWindow: aContentWindow };
++      }
++
++      let _hud = new HeadsUpDisplay(config);
++
++      let hudWeakRef = Cu.getWeakReference(_hud);
++      HUDService.registerHUDWeakReference(hudWeakRef, hudId);
++
++      aContentWindow.wrappedJSObject.console = _hud.console;
++      var mutationFlag = this.getFilterState(hudId, "mutation");
++      if (mutationFlag) {
++        this.attachMutationListeners(aContentWindow);
+       }
+     }
+     // capture JS Errors
+     this.setOnErrorHandler(aContentWindow);
+   }
+ };
+ 
+ //////////////////////////////////////////////////////////////////////////
+@@ -1706,24 +1745,18 @@ function HeadsUpDisplay(aConfig)
+   splitter.setAttribute("resizeafter", "flex");
+   splitter.setAttribute("class", "hud-splitter");
+ 
+   let grippy = this.chromeDocument.createElement("grippy");
+   this.notificationBox.insertBefore(splitter,
+                                     this.notificationBox.childNodes[1]);
+   splitter.appendChild(grippy);
+ 
+-  let console = this.createConsole();
+-
+-  this.contentWindow.wrappedJSObject.console = console;
+-  // check prefs to see if we should attact mutation listeners
+-  var mutationFlag = HUDService.getFilterState(this.hudId, "mutation");
+-  if (mutationFlag) {
+-    HUDService.attachMutationListeners(this.contentWindow, this.hudId);
+-  }
++  this.createConsole();
++
+   // create the JSTerm input element
+   try {
+     this.createConsoleInput(this.contentWindow, this.consoleWrap, this.outputNode);
+   }
+   catch (ex) {
+     Cu.reportError(ex);
+   }
+ }
+@@ -3088,146 +3121,16 @@ FirefoxApplicationHooks.prototype = {
+    * @returns nsIDOMWindow
+    */
+   getCurrentContext: function FAH_getCurrentContext()
+   {
+     return Services.wm.getMostRecentWindow("navigator:browser");
+   }
+ };
+ 
+-/**
+- * ConsoleDOMListeners
+- *   Attach DOM Mutation listeners to a document
+- * @param nsIDOMWindow aWindow
+- * @param string aHUDId
+- * @param boolean aRemoveBool
+- * @returns void
+- */
+-function ConsoleDOMListeners(aWindow, aHUDId, aRemoveBool)
+-{
+-  this.hudId = aHUDId;
+-  this.window = XPCNativeWrapper.unwrap(aWindow);
+-  this.console = this.window.console;
+-  this.document = this.window.document;
+-  this.trackedEvents = ['DOMSubtreeModified',
+-                        'DOMNodeInserted',
+-                        'DOMNodeRemoved',
+-                        'DOMNodeRemovedFromDocument',
+-                        'DOMNodeInsertedIntoDocument',
+-                        'DOMAttrModified',
+-                        'DOMCharacterDataModified',
+-                        'DOMElementNameChanged',
+-                        'DOMAttributeNameChanged',
+-                       ];
+-  if (aRemoveBool) {
+-    var removeFunc = this.removeAllListeners(aHUDId);
+-    removeFunc();
+-  }
+-  this.init();
+-}
+-
+-ConsoleDOMListeners.prototype = {
+-  init: function CDL_init()
+-  {
+-    for (var event in this.trackedEvents) {
+-      let evt = this.trackedEvents[event];
+-      let callback = this.eventListenerFactory(evt);
+-
+-      this.document.addEventListener(evt, callback, false);
+-      this.storeMutationFunc(this.hudId, callback, evt);
+-    }
+-  },
+-
+-  /**
+-   * function factory that generates an event handler for DOM Mutations
+-   *
+-   * @param string aEventName
+-   * @returns function
+-   */
+-  eventListenerFactory: function CDL_eventListenerFactory(aEventName)
+-  {
+-    var self = this;
+-    function callback(aEvent)
+-    {
+-      var nodeTag = aEvent.target.tagName;
+-      var nodeClass = aEvent.target.getAttribute("class");
+-      if (!nodeClass) {
+-        nodeClass = "null";
+-      }
+-
+-      var nodeId = aEvent.target.getAttribute("id");
+-
+-      if (!nodeId) {
+-        nodeId = "null";
+-      }
+-
+-      var message = "DOM Mutation Event: '"
+-                    + aEventName + "'"
+-                    + " on node. "
+-                    + " id: " + nodeId
+-                    + " class: " + nodeClass
+-                    + " tag: " + nodeTag;
+-
+-      self.console.info(message);
+-    }
+-    return callback;
+-  },
+-
+-  /**
+-   * generates a function that removes all DOM Mutation listeners
+-   * per HeadsUpDisplay
+-   *  TODO: needs some tweaks, see bug 568658
+-   *
+-   * @param string aHUDId
+-   * @returns function
+-   */
+-  removeAllListeners: function CDL_removeAllListeners(aHUDId)
+-  {
+-    var self = this;
+-    function removeListeners()
+-    {
+-      for (var idx in HUDService.mutationEventFunctions[aHUDId]) {
+-        let evtObj = HUDService.mutationEventFunctions[aHUDId][idx];
+-        self.document.removeEventListener(evtObj.name, evtObj.func, false);
+-      }
+-    }
+-    return removeListeners;
+-  },
+-
+-  /**
+-   * store a DOM Mutation function for later retrieval,
+-   * removal and destruction
+-   *
+-   * @param string aHUDId
+-   * @param function aFunc
+-   * @param string aEventName
+-   * @returns void
+-   */
+-  storeMutationFunc:
+-  function CDL_storeMutationFunc(aHUDId, aFunc, aEventName)
+-  {
+-    var evtObj = {func: aFunc, name: aEventName};
+-    if (!HUDService.mutationEventFunctions[aHUDId]) {
+-      HUDService.mutationEventFunctions[aHUDId] = [];
+-    }
+-    HUDService.mutationEventFunctions[aHUDId].push(evtObj);
+-  },
+-
+-  /**
+-   * Removes the stored DOMMutation functions from the storage object
+-   *
+-   * @param string aHUDId
+-   * @returns void
+-   */
+-  removeStoredMutationFuncs:
+-  function CDL_removeStoredMutationFuncs(aHUDId)
+-  {
+-    delete HUDService.mutationEventFunctions[aHUDId];
+-  }
+-};
+ 
+ //////////////////////////////////////////////////////////////////////////////
+ // Utility functions used by multiple callers
+ //////////////////////////////////////////////////////////////////////////////
+ 
+ /**
+  * ConsoleUtils: a collection of globally used functions
+  *
+diff -r 9d2e478fd35b toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Tue Jul 13 23:15:43 2010 +0300
++++ b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Fri Jul 16 22:33:48 2010 +0300
+@@ -229,66 +229,81 @@ function testConsoleLoggingAPI(aMethod)
+   count = outputNode.querySelectorAll(".hud-hidden").length;
+   ok(count == 0, aMethod + " logging tunred off, 0 messages logged");
+   HUDService.clearDisplay(hudId);
+   filterBox.value = "";
+ }
+ 
+ function testLogEntry(aOutputNode, aMatchString, aSuccessErrObj)
+ {
+-  executeSoon(function (){
+-                var msgs = aOutputNode.childNodes;
+-                for (var i = 0; i < msgs.length; i++) {
+-                  var message = msgs[i].innerHTML.indexOf(aMatchString);
+-                  if (message > -1) {
+-                    ok(true, aSuccessErrObj.success);
+-                    return;
+-                  }
+-                  else {
+-                    throw new Error(aSuccessErrObj.err);
+-                  }
+-                }
+-              });
++  var msgs = aOutputNode.childNodes;
++  for (var i = 0; i < msgs.length; i++) {
++    var message = msgs[i].innerHTML.indexOf(aMatchString);
++    if (message > -1) {
++      ok(true, aSuccessErrObj.success);
++      return;
++    }
++    else {
++      throw new Error(aSuccessErrObj.err);
++    }
++  }
+ }
+ 
+ // test network logging
+ function testNet()
+ {
+   HUDService.activateHUDForContext(tab);
+-  content.location = TEST_NETWORK_URI;
+-  executeSoon(function () {
+-    HUDService.setFilterState(hudId, "network", true);
+-    filterBox.value = "";
+-    var successMsg =
+-      "Found the loggged network message referencing a js file";
+-    var errMsg = "Could not get logged network message for js file";
+-    testLogEntry(outputNode,
+-                 "Network:", { success: successMsg, err: errMsg });
+-                 content.location.href = noCacheUriSpec(TEST_NETWORK_URI);
+-  });
++  HUDService.setFilterState(hudId, "network", true);
++  filterBox.value = "";
++
++  browser.addEventListener("DOMContentLoaded",
++    function testNetEventHandler() {
++      browser.removeEventListener("DOMContentLoaded", testNetEventHandler,
++        false);
++
++      var successMsg =
++        "Found the loggged network message referencing a js file";
++      var errMsg = "Could not get logged network message for js file";
++
++      var display = HUDService.getHeadsUpDisplay(hudId);
++      var outputNode = display.querySelectorAll(".hud-output-node")[0];
++
++      testLogEntry(outputNode, "Network:",
++        { success: successMsg, err: errMsg });
++
++      testDOMMutation();
++    }, false);
+ }
+ 
+ // test DOM Mutation logging
+ function testDOMMutation()
+ {
+   HUDService.setFilterState(hudId, "mutation", true);
+-  filterBox.value = "";
++
++  browser.addEventListener("DOMContentLoaded",
++    function testDOMMutationEventHandler() {
++      browser.removeEventListener("DOMContentLoaded",
++        testDOMMutationEventHandler, false);
++
++      var successMsg = "Found Mutation Log Message";
++      var errMsg = "Could NOT find Mutation Log Message";
++
++      var display = HUDService.getHeadsUpDisplay(hudId);
++      var outputNode = display.querySelectorAll(".hud-output-node")[0];
++
++      setTimeout(function () {
++        testLogEntry(outputNode, "Mutation",
++          { success: successMsg, err: errMsg });
++
++        testEnd();
++      }, 800);
++
++    }, false);
++
+   content.location = TEST_MUTATION_URI;
+-  executeSoon(function() {
+-                content.wrappedJSObject.addEventListener("DOMContentLoaded",
+-                function () {
+-                  var successMsg = "Found Mutation Log Message";
+-                  var errMsg = "Could NOT find Mutation Log Message";
+-                  var display = HUDService.getHeadsUpDisplay(hudId);
+-                  var outputNode = display.querySelectorAll(".hud-output-node")[0];
+-                  testLogEntry(outputNode,
+-                  "Mutation", { success: successMsg, err: errMsg });
+-                  }, false);
+-                content.location.href = TEST_NETWORK_URI;
+-              });
+ }
+ 
+ // test property provider
+ function testPropertyProvider() {
+   content.location = TEST_PROPERTY_PROVIDER_URI;
+   executeSoon(function() {
+     var HUD = HUDService.hudWeakReferences[hudId].get();
+     var jsterm = HUD.jsterm;
+@@ -433,16 +448,26 @@ function testIteration() {
+ function testHUDGetters()
+ {
+   var HUD = HUDService.hudWeakReferences[hudId].get();
+   var jsterm = HUD.jsterm;
+   var klass = jsterm.inputNode.getAttribute("class");
+   ok(klass == "jsterm-input-node", "We have the input node.");
+ }
+ 
++function testEnd()
++{
++  // testUnregister();
++  executeSoon(function () {
++    HUDService.deactivateHUDForContext(tab);
++    HUDService.shutdown();
++  });
++  finish();
++}
++
+ let tab, browser, hudId, hud, filterBox, outputNode, cs;
+ 
+ let win = gBrowser.selectedBrowser;
+ tab = gBrowser.selectedTab;
+ browser = gBrowser.getBrowserForTab(tab);
+ 
+ function test() {
+   waitForExplicitFinish();
+@@ -471,28 +496,20 @@ function test() {
+       content.location.href = TEST_FILTER_URI;
+ 
+       testConsoleLoggingAPI("log");
+       testConsoleLoggingAPI("info");
+       testConsoleLoggingAPI("warn");
+       testConsoleLoggingAPI("error");
+       testConsoleLoggingAPI("exception");
+ 
+-      testNet();
+-      // testDOMMutation();
+-
+       // ConsoleStorageTests
+       testCreateDisplay();
+       testRecordEntry();
+       testRecordManyEntries();
+       testIteration();
+       testCompletion();
+       testPropertyProvider();
+ 
+-      // testUnregister();
+-      executeSoon(function () {
+-        HUDService.deactivateHUDForContext(tab);
+-        HUDService.shutdown();
+-      });
+-      finish();
++      testNet();
+     });
+   }, false);
+ }

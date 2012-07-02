@@ -1,0 +1,164 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -4027,17 +4027,41 @@ JSTerm.prototype = {
+    *          The result of the evaluation.
+    */
+   evalInSandbox: function JST_evalInSandbox(aString)
+   {
+     // The help function needs to be easy to guess, so we make the () optional
+     if (aString.trim() === "help" || aString.trim() === "?") {
+       aString = "help()";
+     }
+-    return Cu.evalInSandbox(aString, this.sandbox, "1.8", "Web Console", 1);
++
++    let window = unwrap(this.sandbox.window);
++    let $ = null, $$ = null;
++
++    // We prefer to execute the page-provided implementations for the $() and
++    // $$() functions.
++    if (typeof window.$ == "function") {
++      $ = this.sandbox.$;
++      delete this.sandbox.$;
++    }
++    if (typeof window.$$ == "function") {
++      $$ = this.sandbox.$$;
++      delete this.sandbox.$$;
++    }
++
++    let result = Cu.evalInSandbox(aString, this.sandbox, "1.8", "Web Console", 1);
++
++    if ($) {
++      this.sandbox.$ = $;
++    }
++    if ($$) {
++      this.sandbox.$$ = $$;
++    }
++
++    return result;
+   },
+ 
+ 
+   execute: function JST_execute(aExecuteString)
+   {
+     // attempt to execute the content of the inputNode
+     aExecuteString = aExecuteString || this.inputNode.value;
+     if (!aExecuteString) {
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -116,16 +116,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_602572_log_bodies_checkbox.js \
+ 	browser_webconsole_bug_614793_jsterm_scroll.js \
+ 	browser_webconsole_bug_599725_response_headers.js \
+ 	browser_webconsole_bug_613642_maintain_scroll.js \
+ 	browser_webconsole_bug_613642_prune_scroll.js \
+ 	browser_webconsole_bug_618078_network_exceptions.js \
+ 	browser_webconsole_bug_613280_jsterm_copy.js \
+ 	browser_webconsole_bug_630733_response_redirect_headers.js \
++	browser_webconsole_bug_621644_jsterm_dollar.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+@@ -182,15 +183,16 @@ _BROWSER_TEST_PAGES = \
+ 	test-bug-601177-log-levels.html \
+ 	test-bug-601177-log-levels.js \
+ 	test-console-extras.html \
+ 	test-bug-603750-websocket.html \
+ 	test-bug-603750-websocket.js \
+ 	test-bug-599725-response-headers.sjs \
+ 	test-bug-618078-network-exceptions.html \
+ 	test-bug-630733-response-redirect-headers.sjs \
++	test-bug-621644-jsterm-dollar.html \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_621644_jsterm_dollar.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_621644_jsterm_dollar.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_621644_jsterm_dollar.js
+@@ -0,0 +1,48 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *   Mihai Sucan <mihai.sucan@gmail.com>
++ */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-621644-jsterm-dollar.html";
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  waitForFocus(function () {
++    openConsole();
++
++    let hudId = HUDService.getHudIdByWindow(content);
++    let HUD = HUDService.hudReferences[hudId];
++
++    HUD.jsterm.clearOutput();
++
++    HUD.jsterm.setInputValue("$(document.body)");
++    HUD.jsterm.execute();
++
++    let outputItem = HUD.outputNode.
++                     querySelector(".webconsole-msg-output:last-child");
++    ok(outputItem.textContent.indexOf("<p>") > -1,
++       "jsterm output is correct for $()");
++
++    HUD.jsterm.clearOutput();
++
++    HUD.jsterm.setInputValue("$$(document)");
++    HUD.jsterm.execute();
++
++    outputItem = HUD.outputNode.
++                     querySelector(".webconsole-msg-output:last-child");
++    ok(outputItem.textContent.indexOf("621644") > -1,
++       "jsterm output is correct for $$()");
++
++    executeSoon(finishTest);
++  }, content);
++}
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoad, true);
++}
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-621644-jsterm-dollar.html b/toolkit/components/console/hudservice/tests/browser/test-bug-621644-jsterm-dollar.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-621644-jsterm-dollar.html
+@@ -0,0 +1,22 @@
++<!DOCTYPE html>
++<html dir="ltr" xml:lang="en-US" lang="en-US">
++  <head>
++    <title>Web Console test for bug 621644</title>
++    <script>
++      function $(elem) {
++        return elem.innerHTML;
++      }
++      function $$(doc) {
++        return doc.title;
++      }
++    </script>
++    <!--
++       - Any copyright is dedicated to the Public Domain.
++       - http://creativecommons.org/publicdomain/zero/1.0/
++       -->
++  </head>
++  <body>
++    <h1>Web Console test for bug 621644</h1>
++    <p>hello world!</p>
++  </body>
++</html>

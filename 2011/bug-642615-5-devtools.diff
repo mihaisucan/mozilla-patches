@@ -1,0 +1,386 @@
+# HG changeset patch
+# Parent a99f84efbb20dd1078860980450c8b008634c951
+# Date 1305192211 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+
+Bug 642615 - If I paste over an auto-suggestion in web console, the suggested text remains
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -4126,23 +4126,27 @@ JSTerm.prototype = {
+ 
+   COMPLETE_FORWARD: 0,
+   COMPLETE_BACKWARD: 1,
+   COMPLETE_HINT_ONLY: 2,
+ 
+   init: function JST_init()
+   {
+     this.createSandbox();
++
+     this.inputNode = this.mixins.inputNode;
+-    let eventHandlerKeyDown = this.keyDown();
+-    this.inputNode.addEventListener('keypress', eventHandlerKeyDown, false);
+-    let eventHandlerInput = this.inputEventHandler();
+-    this.inputNode.addEventListener('input', eventHandlerInput, false);
+     this.outputNode = this.mixins.outputNode;
+     this.completeNode = this.mixins.completeNode;
++
++    this.inputNode.addEventListener("keypress",
++      this.keyPress.bind(this), false);
++    this.inputNode.addEventListener("input",
++      this.inputEventHandler.bind(this), false);
++    this.inputNode.addEventListener("keyup",
++      this.inputEventHandler.bind(this), false);
+   },
+ 
+   get codeInputString()
+   {
+     // TODO: filter the input for windows line breaks, conver to unix
+     // see bug 572812
+     return this.inputNode.value;
+   },
+@@ -4554,131 +4558,115 @@ JSTerm.prototype = {
+    */
+   setInputValue: function JST_setInputValue(aNewValue)
+   {
+     this.inputNode.value = aNewValue;
+     this.completeNode.value = "";
+     this.resizeInput();
+   },
+ 
+-  inputEventHandler: function JSTF_inputEventHandler()
+-  {
+-    var self = this;
+-    function handleInputEvent(aEvent) {
+-      self.resizeInput();
+-    }
+-    return handleInputEvent;
+-  },
+-
+-  keyDown: function JSTF_keyDown(aEvent)
+-  {
+-    var self = this;
+-    function handleKeyDown(aEvent) {
+-      // ctrl-a
+-      var setTimeout = aEvent.target.ownerDocument.defaultView.setTimeout;
+-      var target = aEvent.target;
+-      var tmp;
+-
+-      if (aEvent.ctrlKey) {
+-        switch (aEvent.charCode) {
+-          case 97:
+-            // control-a
+-            tmp = self.codeInputString;
+-            setTimeout(function() {
+-              self.setInputValue(tmp);
+-              self.inputNode.setSelectionRange(0, 0);
+-            }, 0);
+-            break;
+-          case 101:
+-            // control-e
+-            tmp = self.codeInputString;
+-            self.setInputValue("");
+-            setTimeout(function(){
+-              self.setInputValue(tmp);
+-            }, 0);
+-            break;
+-          default:
+-            return;
++  /**
++   * The inputNode "input" and "keyup" event handler.
++   *
++   * @param nsIDOMEvent aEvent
++   */
++  inputEventHandler: function JSTF_inputEventHandler(aEvent)
++  {
++    if (this.lastInputValue != this.inputNode.value) {
++      this.resizeInput();
++      this.complete(this.COMPLETE_HINT_ONLY);
++      this.lastInputValue = this.inputNode.value;
++    }
++  },
++
++  /**
++   * The inputNode "keypress" event handler.
++   *
++   * @param nsIDOMEvent aEvent
++   */
++  keyPress: function JSTF_keyPress(aEvent)
++  {
++    if (aEvent.ctrlKey) {
++      switch (aEvent.charCode) {
++        case 97:
++          // control-a
++          this.inputNode.setSelectionRange(0, 0);
++          aEvent.preventDefault();
++          break;
++        case 101:
++          // control-e
++          this.inputNode.setSelectionRange(this.inputNode.value.length,
++                                           this.inputNode.value.length);
++          aEvent.preventDefault();
++          break;
++        default:
++          break;
++      }
++      return;
++    }
++    else if (aEvent.shiftKey &&
++        aEvent.keyCode == Ci.nsIDOMKeyEvent.DOM_VK_RETURN) {
++      // shift return
++      // TODO: expand the inputNode height by one line
++      return;
++    }
++
++    switch(aEvent.keyCode) {
++      case Ci.nsIDOMKeyEvent.DOM_VK_RETURN:
++        this.execute();
++        aEvent.preventDefault();
++        break;
++
++      case Ci.nsIDOMKeyEvent.DOM_VK_UP:
++        // history previous
++        if (this.canCaretGoPrevious()) {
++          let updated = this.historyPeruse(HISTORY_BACK);
++          if (updated && aEvent.cancelable) {
++            aEvent.preventDefault();
++          }
+         }
+-        return;
+-      }
+-      else if (aEvent.shiftKey &&
+-          aEvent.keyCode == Ci.nsIDOMKeyEvent.DOM_VK_RETURN) {
+-        // shift return
+-        // TODO: expand the inputNode height by one line
+-        return;
+-      }
+-      else {
+-        switch(aEvent.keyCode) {
+-          case Ci.nsIDOMKeyEvent.DOM_VK_RETURN:
+-            self.execute();
++        break;
++
++      case Ci.nsIDOMKeyEvent.DOM_VK_DOWN:
++        // history next
++        if (this.canCaretGoNext()) {
++          let updated = this.historyPeruse(HISTORY_FORWARD);
++          if (updated && aEvent.cancelable) {
+             aEvent.preventDefault();
+-            break;
+-
+-          case Ci.nsIDOMKeyEvent.DOM_VK_UP:
+-            // history previous
+-            if (self.canCaretGoPrevious()) {
+-              let updated = self.historyPeruse(HISTORY_BACK);
+-              if (updated && aEvent.cancelable) {
+-                aEvent.preventDefault();
+-              }
+-            }
+-            break;
+-
+-          case Ci.nsIDOMKeyEvent.DOM_VK_DOWN:
+-            // history next
+-            if (self.canCaretGoNext()) {
+-              let updated = self.historyPeruse(HISTORY_FORWARD);
+-              if (updated && aEvent.cancelable) {
+-                aEvent.preventDefault();
+-              }
+-            }
+-            break;
+-
+-          case Ci.nsIDOMKeyEvent.DOM_VK_RIGHT:
+-            // accept proposed completion
+-            self.acceptProposedCompletion();
+-            break;
+-
+-          case Ci.nsIDOMKeyEvent.DOM_VK_TAB:
+-            // If there are more than one possible completion, pressing tab
+-            // means taking the next completion, shift_tab means taking
+-            // the previous completion.
+-            var completionResult;
+-            if (aEvent.shiftKey) {
+-              completionResult = self.complete(self.COMPLETE_BACKWARD);
+-            }
+-            else {
+-              completionResult = self.complete(self.COMPLETE_FORWARD);
+-            }
+-            if (completionResult) {
+-              if (aEvent.cancelable) {
+-                aEvent.preventDefault();
+-              }
+-              aEvent.target.focus();
+-            }
+-            break;
+-
+-          default:
+-            // Store the current inputNode value. If the value is the same
+-            // after keyDown event was handled (after 0ms) then the user
+-            // moved the cursor. If the value changed, then call the complete
+-            // function to show completion on new value.
+-            var value = self.inputNode.value;
+-            setTimeout(function() {
+-              if (self.inputNode.value !== value) {
+-                self.complete(self.COMPLETE_HINT_ONLY);
+-              }
+-            }, 0);
+-            break;
++          }
+         }
+-        return;
+-      }
+-    }
+-    return handleKeyDown;
++        break;
++
++      case Ci.nsIDOMKeyEvent.DOM_VK_RIGHT:
++        // accept proposed completion
++        this.acceptProposedCompletion();
++        break;
++
++      case Ci.nsIDOMKeyEvent.DOM_VK_TAB:
++        // If there are more than one possible completion, pressing tab
++        // means taking the next completion, shift_tab means taking
++        // the previous completion.
++        var completionResult;
++        if (aEvent.shiftKey) {
++          completionResult = this.complete(this.COMPLETE_BACKWARD);
++        }
++        else {
++          completionResult = this.complete(this.COMPLETE_FORWARD);
++        }
++        if (completionResult) {
++          if (aEvent.cancelable) {
++            aEvent.preventDefault();
++          }
++          aEvent.target.focus();
++        }
++        break;
++
++      default:
++        break;
++    }
+   },
+ 
+   /**
+    * Go up/down the history stack of input values.
+    *
+    * @param number aDirection
+    *        History navigation direction: HISTORY_BACK or HISTORY_FORWARD.
+    *
+@@ -4806,16 +4794,17 @@ JSTerm.prototype = {
+    *          or false otherwise.
+    */
+   complete: function JSTF_complete(type)
+   {
+     let inputNode = this.inputNode;
+     let inputValue = inputNode.value;
+     // If the inputNode has no value, then don't try to complete on it.
+     if (!inputValue) {
++      this.lastCompletion = null;
+       this.updateCompleteNode("");
+       return false;
+     }
+ 
+     // Only complete if the selection is empty and at the end of the input.
+     if (inputNode.selectionStart == inputNode.selectionEnd &&
+         inputNode.selectionEnd != inputValue.length) {
+       // TODO: shouldnt we do this in the other 'bail' cases?
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -130,16 +130,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_618311_private_browsing.js \
+ 	browser_webconsole_bug_626484_output_copy_order.js \
+ 	browser_webconsole_bug_632347_iterators_generators.js \
+ 	browser_webconsole_bug_642108_refForOutputNode.js \
+ 	browser_webconsole_bug_642108_pruneTest.js \
+ 	browser_webconsole_bug_585956_console_trace.js \
+ 	browser_webconsole_bug_595223_file_uri.js \
+ 	browser_webconsole_bug_632275_getters_document_width.js \
++	browser_webconsole_bug_642615_autocomplete.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_642615_autocomplete.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_642615_autocomplete.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_642615_autocomplete.js
+@@ -0,0 +1,72 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++const TEST_URI = "data:text/html,<p>test for bug 642615";
++
++XPCOMUtils.defineLazyServiceGetter(this, "clipboardHelper",
++                                   "@mozilla.org/widget/clipboardhelper;1",
++                                   "nsIClipboardHelper");
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let HUD = HUDService.hudReferences[hudId];
++  let jsterm = HUD.jsterm;
++  let stringToCopy = "foobazbarBug642615";
++
++  jsterm.clearOutput();
++
++  ok(!jsterm.completionValue, "no completionValue");
++
++  jsterm.setInputValue("doc");
++
++  // wait for key "u"
++  jsterm.inputNode.addEventListener("keyup", function() {
++    jsterm.inputNode.removeEventListener("keyup", arguments.callee, false);
++
++    let completionValue = jsterm.completionValue;
++    ok(completionValue, "we have a completionValue");
++
++    // wait for paste
++    jsterm.inputNode.addEventListener("input", function() {
++      jsterm.inputNode.removeEventListener("input", arguments.callee, false);
++
++      ok(!jsterm.completionValue, "no completionValue after clipboard paste");
++
++      // wait for undo
++      jsterm.inputNode.addEventListener("input", function() {
++        jsterm.inputNode.removeEventListener("input", arguments.callee, false);
++
++        is(jsterm.completionValue, completionValue,
++           "same completionValue after undo");
++
++        executeSoon(finishTest);
++      }, false);
++
++      goDoCommand("cmd_undo");
++    }, false);
++
++    // Arguments: expected, setup, success, failure.
++    waitForClipboard(
++      stringToCopy,
++      function() {
++        clipboardHelper.copyString(stringToCopy);
++      },
++      function() {
++        updateEditUIVisibility();
++        goDoCommand("cmd_paste");
++      },
++      finish);
++  }, false);
++
++  EventUtils.synthesizeKey("u", {});
++}
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoad, true);
++}

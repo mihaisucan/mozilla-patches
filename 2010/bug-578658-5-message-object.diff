@@ -1,0 +1,833 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -82,17 +82,18 @@ XPCOMUtils.defineLazyGetter(this, "strin
+ });
+ 
+ // The amount of time in milliseconds that must pass between messages to
+ // trigger the display of a new group.
+ const NEW_GROUP_DELAY = 5000;
+ 
+ const ERRORS = { LOG_MESSAGE_MISSING_ARGS:
+                  "Missing arguments: aMessage, aConsoleNode and aMessageNode are required.",
+-                 CANNOT_GET_HUD: "Cannot getHeads Up Display with provided ID",
++                 CANNOT_GET_HUD: "Cannot get WebConsole with provided ID",
++                 HUD_WEAK_REFERENCE_FAIL: "Cannot get WebConsole from weak reference",
+                  MISSING_ARGS: "Missing arguments",
+                  LOG_OUTPUT_FAILED: "Log Failure: Could not append messageNode to outputNode",
+ };
+ 
+ function HUD_SERVICE()
+ {
+   // TODO: provide mixins for FENNEC: bug 568621
+   if (appName() == "FIREFOX") {
+@@ -693,62 +694,41 @@ HUD_SERVICE.prototype =
+       ConsoleUtils.scrollToVisible(aMessageNode);
+     }
+     // store this message in the storage module:
+     this.storage.recordEntry(aMessage.hudId, aMessage);
+   },
+ 
+   /**
+    * Logs a Message.
+-   * @param aMessage
+-   *        The message to log, which is a JS object, this is the
+-   *        "raw" log message
+-   * @param aConsoleNode
+-   *        The output DOM node to log the messageNode to
+-   * @param The message DOM Node that will be appended to aConsoleNode
++   * @param WebConsoleMessage aMessage
++   *        The "raw" message to log.
+    * @returns void
+    */
+-  logMessage: function HS_logMessage(aMessage, aConsoleNode, aMessageNode)
++  logMessage: function HS_logMessage(aMessage)
+   {
+     if (!aMessage) {
+       throw new Error(ERRORS.MISSING_ARGS);
+     }
+ 
+-    // check filter before logging to the outputNode
+-    var filterState = this.getFilterState(aMessage.hudId, aMessage.logLevel);
+-    var filterString = this.getFilterStringByHUDId(aMessage.hudId);
+-
+-    if (!filterState) {
+-      // do not log anything
+-      return;
+-    }
+-
+-    let lastGroupNode = this.appendGroupIfNecessary(aConsoleNode,
+-                                                    aMessage.timestamp);
+-    if (filterString) {
+-      var filtered = this.filterLogMessage(filterString, aMessageNode);
+-      if (filtered) {
+-        // we have successfully filtered a message, we need to log it
+-        lastGroupNode.appendChild(aMessageNode);
+-        ConsoleUtils.scrollToVisible(aMessageNode);
++    // store this message in the storage module:
++    this.storage.recordEntry(aMessage);
++
++    if (aMessage.hudId && aMessage.hudId in this.hudWeakReferences) {
++      let hud = this.hudWeakReferences[aMessage.hudId].get();
++      if (hud) {
++        hud.logMessage(aMessage);
+       }
+       else {
+-        // we need to ignore this message by changing its css class - we are
+-        // still logging this, it is just hidden
+-        var hiddenMessage = ConsoleUtils.hideLogMessage(aMessageNode);
+-        lastGroupNode.appendChild(hiddenMessage);
++        Cu.reportError(ERRORS.HUD_WEAK_REFERENCE_FAIL + ": " + aMessage.hudId);
+       }
+     }
+     else {
+-      // log everything
+-      lastGroupNode.appendChild(aMessageNode);
+-      ConsoleUtils.scrollToVisible(aMessageNode);
++      Cu.reportError(ERRORS.CANNOT_GET_HUD + ": " + aMessage.hudId);
+     }
+-    // store this message in the storage module:
+-    this.storage.recordEntry(aMessage.hudId, aMessage);
+   },
+ 
+   /**
+    * report consoleMessages recieved via the HUDConsoleObserver service
+    * @param nsIConsoleMessage aConsoleMessage
+    * @returns void
+    */
+   reportConsoleServiceMessage:
+@@ -1023,136 +1003,96 @@ HUD_SERVICE.prototype =
+    * Logs network activity
+    *
+    * @param nsIURI aURI
+    * @param object aActivityObject
+    * @returns void
+    */
+   logNetActivity: function HS_logNetActivity(aType, aURI, aActivityObject)
+   {
+-    var displayNode, outputNode, hudId;
+-    try {
+-      displayNode =
+-      this.getDisplayByLoadGroup(aActivityObject.loadGroup,
+-                                 {URI: aURI}, aActivityObject);
+-      if (!displayNode) {
++    var hudId;
++
++    var displayNode = this.getDisplayByLoadGroup(aActivityObject.loadGroup,
++      {URI: aURI}, aActivityObject);
++
++    if (!displayNode) {
++      return;
++    }
++
++    var outputNode = displayNode.querySelector(".hud-output-node");
++
++    if (outputNode) {
++      hudId = displayNode.getAttribute("id");
++    }
++    else {
++      outputNode = this.getOutputNodeFromRequest(aActivityObject.request);
++      if (!outputNode) {
+         return;
+       }
+-      outputNode = displayNode.querySelectorAll(".hud-output-node")[0];
+-      hudId = displayNode.getAttribute("id");
+-
+-      if (!outputNode) {
+-        outputNode = this.getOutputNodeFromRequest(aActivityObject.request);
+-        hudId = outputNode.ownerDocument.querySelectorAll(".hud-box")[0].
+-                getAttribute("id");
++
++      let hudBox = outputNode.ownerDocument.querySelector(".hud-box");
++      if (hudBox) {
++        hudId = hudBox.getAttribute("id");
+       }
+-
+-      // check if network activity logging is "on":
+-      if (!this.getFilterState(hudId, "network")) {
+-        return;
+-      }
+-
+-      // get an id to attach to the dom node for lookup of node
+-      // when updating the log entry with additional http transactions
+-      var domId = "hud-log-node-" + this.sequenceId();
+-
+-      var message = { logLevel: aType,
+-                      activityObj: aActivityObject,
+-                      hudId: hudId,
+-                      origin: "network",
+-                      domId: domId,
+-                    };
+-      var msgType = this.getStr("typeNetwork");
+-      var msg = msgType + " " +
+-        aActivityObject.channel.requestMethod +
+-        " " +
+-        aURI.spec;
+-      message.message = msg;
+-      var messageObject =
+-      this.messageFactory(message, aType, outputNode, aActivityObject);
+-      this.logMessage(messageObject.messageObject, outputNode, messageObject.messageNode);
+     }
+-    catch (ex) {
+-      Cu.reportError(ex);
++
++    if (!hudId) {
++      return;
+     }
++
++    // check if network activity logging is "on":
++    if (!this.getFilterState(hudId, "network")) {
++      return;
++    }
++
++    var messageObject = new WebConsoleMessage(hudId, aType, "network",
++      aActivityObject);
++
++    this.logMessage(messageObject);
+   },
+ 
+   /**
+    * Logs console listener activity
+    *
+    * @param nsIURI aURI
+    * @param object aActivityObject
+    * @returns void
+    */
+   logConsoleActivity: function HS_logConsoleActivity(aURI, aActivityObject)
+   {
+-    var displayNode, outputNode, hudId;
+-    try {
+-        var hudIds = this.uriRegistry[aURI.spec];
+-        hudId = hudIds[0];
++    var hudId;
++
++    if (aURI && aURI.spec && aURI.spec in this.uriRegistry) {
++      hudId = this.uriRegistry[aURI.spec][0];
+     }
+-    catch (ex) {
+-      // TODO: uri spec is not tracked becasue the net request is
+-      // using a different loadGroup
+-      // see bug 568034
+-      if (!displayNode) {
+-        return;
+-      }
++
++    if (!hudId) {
++      // TODO: URI spec is not tracked because the net request is
++      // using a different loadGroup. See bug 568034.
++      return;
+     }
+ 
+-    var _msgLogLevel = this.scriptMsgLogLevel[aActivityObject.flags];
+-    var msgLogLevel = this.getStr(_msgLogLevel);
+-
+     var logLevel = "warn";
+ 
+     if (aActivityObject.flags in this.scriptErrorFlags) {
+       logLevel = this.scriptErrorFlags[aActivityObject.flags];
+     }
+ 
+     // check if we should be logging this message:
+     var filterState = this.getFilterState(hudId, logLevel);
+ 
+     if (!filterState) {
+       // Ignore log message
+       return;
+     }
+ 
+-    // in this case, the "activity object" is the
+-    // nsIScriptError or nsIConsoleMessage
+-    var message = {
+-      activity: aActivityObject,
+-      origin: "console-listener",
+-      hudId: hudId,
+-    };
+-
+-    var lineColSubs = [aActivityObject.columnNumber,
+-                       aActivityObject.lineNumber];
+-    var lineCol = this.getFormatStr("errLineCol", lineColSubs);
+-
+-    var errFileSubs = [aActivityObject.sourceName];
+-    var errFile = this.getFormatStr("errFile", errFileSubs);
+-
+-    var msgCategory = this.getStr("msgCategory");
+-
+-    message.logLevel = logLevel;
+-    message.level = logLevel;
+-
+-    message.message = msgLogLevel + " " +
+-                      aActivityObject.errorMessage + " " +
+-                      errFile + " " +
+-                      lineCol + " " +
+-                      msgCategory + " " + aActivityObject.category;
+-
+-    displayNode = this.getHeadsUpDisplay(hudId);
+-    outputNode = displayNode.querySelectorAll(".hud-output-node")[0];
+-
+-    var messageObject =
+-    this.messageFactory(message, message.level, outputNode, aActivityObject);
+-
+-    this.logMessage(messageObject.messageObject, outputNode, messageObject.messageNode);
++    var messageObject = new WebConsoleMessage(hudId, logLevel,
++      "console-listener", aActivityObject);
++
++    this.logMessage(messageObject);
+   },
+ 
+   /**
+    * Builds and appends a group to the console if enough time has passed since
+    * the last message.
+    *
+    * @param nsIDOMNode aConsoleNode
+    *        The DOM node that holds the output of the console (NB: not the HUD
+@@ -1674,17 +1614,17 @@ HeadsUpDisplay.prototype = {
+   createConsoleInput:
+   function HUD_createConsoleInput(aWindow, aParentNode, aExistingConsole)
+   {
+     var context = Cu.getWeakReference(aWindow);
+ 
+     if (appName() == "FIREFOX") {
+       let outputCSSClassOverride = "hud-msg-node hud-console";
+       let mixin = new JSTermFirefoxMixin(context, aParentNode, aExistingConsole, outputCSSClassOverride);
+-      this.jsterm = new JSTerm(context, aParentNode, mixin);
++      this.jsterm = new JSTerm(context, aParentNode, mixin, this.hudId);
+     }
+     else {
+       throw new Error("Unsupported Gecko Application");
+     }
+   },
+ 
+   /**
+    * Re-attaches a console when the contentWindow is recreated
+@@ -1701,16 +1641,18 @@ HeadsUpDisplay.prototype = {
+         "-output-contextmenu");
+     this.copyOutputMenuItem = this.HUDBox.
+       querySelector("menuitem[command=cmd_copy]");
+ 
+     this.chromeWindow = HUDService.
+       getChromeWindowFromContentWindow(this.contentWindow);
+     this.chromeDocument = this.HUDBox.ownerDocument;
+ 
++    this.filterBox = this.HUDBox.querySelector(".hud-filter-box");
++
+     if (this.outputNode) {
+       // createConsole
+       this.createConsole();
+     }
+     else {
+       throw new Error("Cannot get output node");
+     }
+   },
+@@ -1980,16 +1922,201 @@ HeadsUpDisplay.prototype = {
+    *
+    * @returns console
+    */
+   createConsole: function HUD_createConsole()
+   {
+     return new HUDConsole(this);
+   },
+ 
++  /**
++   * Display a log message object in the current WebConsole.
++   *
++   * @param WebConsoleMessage aMessage
++   * @returns void
++   */
++  logMessage: function HUD_logMessage(aMessage)
++  {
++    var output = {
++      message: "",
++      node: this.makeXULNode("label"),
++      classes: [],
++      timestamp: ConsoleUtils.timestampString(aMessage.timestamp),
++    };
++
++    switch (aMessage.origin) {
++      case "console-listener":
++        this.logConsoleMessage(aMessage, output);
++        break;
++
++      case "network":
++        this.logNetMessage(aMessage, output);
++        break;
++
++      case "consoleAPI":
++        this.logConsoleAPIMessage(aMessage, output);
++        break;
++
++      case "jsterm-input":
++      case "jsterm-output":
++        this.logJSTermMessage(aMessage, output);
++        break;
++
++      default:
++        output.message = output.timestamp + ": " + aMessage.message;
++    }
++
++    if (!output.message) {
++      return;
++    }
++
++    var textNode = this.chromeDocument.createTextNode(output.message);
++
++    // filter messages
++    var filterStr = this.filterBox.value;
++    var hidden = false;
++    if (filterStr) {
++      let nodeValue = textNode.nodeValue.toLowerCase();
++      if (nodeValue.indexOf(filterStr.toLowerCase()) == -1) {
++        output.classes.push("hud-hidden");
++        hidden = true;
++      }
++    }
++
++    output.node.setAttribute("class", output.classes.join(" "));
++    output.node.appendChild(textNode);
++
++    var lastGroupNode = HUDService.appendGroupIfNecessary(this.outputNode,
++      aMessage.timestamp);
++
++    lastGroupNode.appendChild(output.node);
++
++    if (!hidden) {
++      ConsoleUtils.scrollToVisible(output.node);
++    }
++  },
++
++  /**
++   * Display a message originating from a console-listener.
++   *
++   * @private
++   * @param WebConsoleMessage aMessage
++   * @param object aOutput The log message output object given by the
++   * this.logMessage method. This object is used to control the output of the
++   * message we are logging.
++   * @returns string The textual message that needs to be displayed in the
++   * console.
++   */
++  logConsoleMessage: function HUD_logConsoleMessage(aMessage, aOutput)
++  {
++    if (!aMessage.activity) {
++      return;
++    }
++
++    var msgLevel = aMessage.level;
++    if (aMessage.activity.flags in HUDService.scriptMsgLogLevel) {
++      msgLevel = this.getStr(HUDService.scriptMsgLogLevel[aMessage.
++        activity.flags]);
++    }
++
++    var lineColSubs = [aMessage.activity.columnNumber,
++                       aMessage.activity.lineNumber];
++    var lineCol = this.getFormatStr("errLineCol", lineColSubs);
++
++    var errFile = this.getFormatStr("errFile", [aMessage.activity.sourceName]);
++
++    var msgCategory = this.getStr("msgCategory");
++
++    aOutput.message = [aOutput.timestamp + ":", msgLevel,
++      aMessage.activity.errorMessage, errFile, lineCol,
++      msgCategory, aMessage.activity.category].join(" ");
++
++    aOutput.classes.push("hud-msg-node", "hud-" + aMessage.level);
++  },
++
++  /**
++   * Display a message originating from the network.
++   *
++   * @private
++   * @param WebConsoleMessage aMessage The message object that describes the log
++   * event.
++   * @param object aOutput The log message output object given by the
++   * this.logMessage method. This object is used to control the output of the
++   * message we are logging.
++   * @returns string The textual message that needs to be displayed in the
++   * console.
++   */
++  logNetMessage: function HUD_logNetMessage(aMessage, aOutput)
++  {
++    if (!aMessage.activity) {
++      return;
++    }
++
++    aOutput.node.setAttribute("id", "hud-log-node-" + aMessage.id);
++
++    aOutput.message = [aOutput.timestamp + ":", this.getStr("typeNetwork"),
++      aMessage.activity.channel.requestMethod,
++      aMessage.activity.channel.URI.spec].join(" ");
++
++    aOutput.classes.push("hud-msg-node", "hud-" + aMessage.level);
++  },
++
++  /**
++   * Display messages originating from the window.console API.
++   *
++   * @private
++   * @param WebConsoleMessage aMessage The message object that describes the log
++   * event.
++   * @param object aOutput The log message output object given by the
++   * this.logMessage method. This object is used to control the output of the
++   * message we are logging.
++   * @returns string The textual message that needs to be displayed in the
++   * console.
++   */
++  logConsoleAPIMessage: function HUD_logConsoleAPIMessage(aMessage, aOutput)
++  {
++    // TODO: I expect this will grow to include expanded views for objects, not
++    // just each activity.toString(). See bug 573103.
++
++    var argumentArray = [aOutput.timestamp + ":"];
++    for (let i = 0, n = aMessage.activity.length; i < n; i++) {
++      argumentArray.push(aMessage.activity[i]);
++    }
++
++    aOutput.message = argumentArray.join(" ");
++    aOutput.classes.push("hud-msg-node", "hud-" + aMessage.level);
++  },
++
++  /**
++   * Display a message originating from the JSTerm object.
++   *
++   * @private
++   * @param WebConsoleMessage aMessage The message object that describes the log
++   * event.
++   * @param object aOutput The log message output object given by the
++   * this.logMessage method. This object is used to control the output of the
++   * message we are logging.
++   * @returns string The textual message that needs to be displayed in the
++   * console.
++   */
++  logJSTermMessage: function HUD_logJSTermMessage(aMessage, aOutput) {
++    if (appName() == "FIREFOX") {
++      aOutput.classes.push("hud-msg-node", "hud-console");
++    }
++
++    // Origin: jsterm-input or jsterm-output.
++    aOutput.classes.push(aMessage.origin + "-line");
++
++    if (aMessage.origin == "jsterm-input") {
++      aOutput.message = "> " + aMessage.message;
++    } else {
++      aOutput.message = aMessage.message;
++    }
++  },
++
+   ERRORS: {
+     HUD_BOX_DOES_NOT_EXIST: "Heads Up Display does not exist",
+     TAB_ID_REQUIRED: "Tab DOM ID is required",
+     PARENTNODE_NOT_FOUND: "parentNode element not found"
+   }
+ };
+ 
+ 
+@@ -2019,44 +2146,20 @@ function HUDConsole(aHeadsUpDisplay)
+     // check to see if logging is on for this level before logging!
+     var filterState = HUDService.getFilterState(hudId, aLevel);
+ 
+     if (!filterState) {
+       // Ignoring log message
+       return;
+     }
+ 
+-    let ts = ConsoleUtils.timestamp();
+-    let messageNode = hud.makeXULNode("label");
+-
+-    let klass = "hud-msg-node hud-" + aLevel;
+-
+-    messageNode.setAttribute("class", klass);
+-
+-    let argumentArray = [];
+-    for (var i = 0; i < aArguments.length; i++) {
+-      argumentArray.push(aArguments[i]);
+-    }
+-
+-    let message = argumentArray.join(' ');
+-    let timestampedMessage = ConsoleUtils.timestampString(ts) + ": " +
+-      message;
+-
+-    messageNode.appendChild(chromeDocument.createTextNode(timestampedMessage));
+-
+-    // need a constructor here to properly set all attrs
+-    let messageObject = {
+-      logLevel: aLevel,
+-      hudId: hud.hudId,
+-      message: message,
+-      timestamp: ts,
+-      origin: "HUDConsole",
+-    };
+-
+-    HUDService.logMessage(messageObject, hud.outputNode, messageNode);
++    let messageObject = new WebConsoleMessage(hudId, aLevel, "consoleAPI",
++      aArguments);
++
++    HUDService.logMessage(messageObject);
+   }
+ 
+   //////////////////////////////////////////////////////////////////////////////
+   // Console API.
+   this.log = function console_log()
+   {
+     sendToHUDService("log", arguments);
+   },
+@@ -2338,26 +2441,29 @@ function JSPropertyProvider(aScope, aInp
+  *
+  *
+  *
+  * @param object aContext
+  *        Usually nsIDOMWindow, but doesn't have to be
+  * @param nsIDOMNode aParentNode
+  * @param object aMixin
+  *        Gecko-app (or Jetpack) specific utility object
++ * @param string aHudId
++ *        The HeadsUpDisplay object ID
+  * @returns void
+  */
+-function JSTerm(aContext, aParentNode, aMixin)
++function JSTerm(aContext, aParentNode, aMixin, aHudId)
+ {
+   // set the context, attach the UI by appending to aParentNode
+ 
+   this.application = appName();
+   this.context = aContext;
+   this.parentNode = aParentNode;
+   this.mixins = aMixin;
++  this.hudId = aHudId;
+ 
+   this.xulElementFactory =
+     NodeFactory("xul", "xul", aParentNode.ownerDocument);
+ 
+   this.textFactory = NodeFactory("text", "xul", aParentNode.ownerDocument);
+ 
+   this.setTimeout = aParentNode.ownerDocument.defaultView.setTimeout;
+ 
+@@ -2426,32 +2532,35 @@ JSTerm.prototype = {
+   {
+     // attempt to execute the content of the inputNode
+     var str = aExecuteString || this.inputNode.value;
+     if (!str) {
+       this.console.log("no value to execute");
+       return;
+     }
+ 
+-    this.writeOutput(str, true);
++    var messageObject = new WebConsoleMessage(this.hudId, "log",
++      "jsterm-input", null, str);
++    HUDService.logMessage(messageObject);
+ 
+     try {
+       var execStr = "with(window) {" + str + "}";
+       var result =
+         Cu.evalInSandbox(execStr,  this.sandbox, "default", "HUD Console", 1);
+ 
+-      if (result || result === false || result === " ") {
+-        this.writeOutput(result, false);
+-      }
+-      else if (result === undefined) {
+-        this.writeOutput("undefined", false);
++      if (result === undefined) {
++        result = "undefined";
+       }
+       else if (result === null) {
+-        this.writeOutput("null", false);
++        result = "null";
+       }
++
++      messageObject = new WebConsoleMessage(this.hudId, "log",
++        "jsterm-output", null, result);
++      HUDService.logMessage(messageObject);
+     }
+     catch (ex) {
+       if (ex) {
+         this.console.error(ex);
+       }
+     }
+ 
+     this.history.push(str);
+@@ -2954,16 +3063,40 @@ LogMessage.prototype = {
+       origin: self.origin,
+       hudId: self.message.hudId,
+     };
+ 
+     this.messageObject = messageObject;
+   }
+ };
+ 
++/**
++ * WebConsoleMessage represents a single message logged in the WebConsole.
++ *
++ * @param string aWebConsoleId the ID of the HeadsUpDisplay object that this 
++ * message belongs to.
++ * @param string aLevel message level: info, notice, warning, error, etc.
++ * @param string aOrigin message origin: network, console-listener, etc.
++ * @param string [aActivity] the activity object associated to this message.
++ * @param string [aMessage] the message this object holds.
++ */
++function WebConsoleMessage(aWebConsoleId, aLevel, aOrigin, aActivity, aMessage)
++{
++  if (!aOrigin) {
++    throw new Error("Cannot create and log a message without an origin");
++  }
++
++  this.hudId = aWebConsoleId;
++  this.activity = aActivity;
++  this.level = aLevel;
++  this.origin = aOrigin;
++  this.message = aMessage;
++  this.id = HUDService.sequenceId();
++  this.timestamp = ConsoleUtils.timestamp();
++}
+ 
+ /**
+  * Firefox-specific Application Hooks.
+  * Each Gecko-based application will need an object like this in
+  * order to use the Heads Up Display
+  */
+ function FirefoxApplicationHooks()
+ { }
+@@ -3322,43 +3455,44 @@ ConsoleStorage.prototype = {
+         var entry = self.consoleDisplays[id][index];
+         yield entry;
+       }
+     }
+ 
+     return displayStoreGenerator(-1, aLength);
+   },
+ 
+-  recordEntries: function CS_recordEntries(aHUDId, aConfigArray)
++  recordEntries: function CS_recordEntries(aConfigArray)
+   {
+     var len = aConfigArray.length;
+     for (var i = 0; i < len; i++){
+-      this.recordEntry(aHUDId, aConfigArray[i]);
++      this.recordEntry(aConfigArray[i]);
+     }
+   },
+ 
+ 
+-  recordEntry: function CS_recordEntry(aHUDId, aConfig)
++  recordEntry: function CS_recordEntry(aConfig)
+   {
+     var id = this.sequenceId();
+-
+-    this.globalStorageIndex[id] = { hudId: aHUDId };
+-
+-    var displayStorage = this.consoleDisplays[aHUDId];
+-
+-    var displayIndex = this.displayIndexes[aHUDId];
++    var hudId = aConfig.hudId || -1;
++
++    this.globalStorageIndex[id] = { "hudId": hudId };
++
++    var displayStorage = this.consoleDisplays[hudId];
++
++    var displayIndex = this.displayIndexes[hudId];
+ 
+     if (displayStorage && displayIndex) {
+       var entry = new ConsoleEntry(aConfig, id);
+       displayIndex.push(entry.id);
+       displayStorage[entry.id] = entry;
+       return entry;
+     }
+     else {
+-      throw new Error("Cannot get displayStorage or index object for id " + aHUDId);
++      throw new Error("Cannot get displayStorage or index object for id " + hudId);
+     }
+   },
+ 
+   getEntry: function CS_getEntry(aId)
+   {
+     var display = this.globalStorageIndex[aId];
+     var storName = display.hudId;
+     return this.consoleDisplays[storName][aId];
+@@ -3395,29 +3529,29 @@ ConsoleStorage.prototype = {
+  *
+  * @param JSObject aConfig, object literal with ConsolEntry properties
+  * @param integer aId
+  * @returns void
+  */
+ 
+ function ConsoleEntry(aConfig, id)
+ {
+-  if (!aConfig.logLevel && aConfig.message) {
++  if (!aConfig.level && aConfig.message) {
+     throw new Error("Missing Arguments when creating a console entry");
+   }
+ 
+   this.config = aConfig;
+   this.id = id;
+   for (var prop in aConfig) {
+     if (!(typeof aConfig[prop] == "function")){
+       this[prop] = aConfig[prop];
+     }
+   }
+ 
+-  if (aConfig.logLevel == "network") {
++  if (aConfig.level == "network") {
+     this.transactions = { };
+     if (aConfig.activity) {
+       this.transactions[aConfig.activity.stage] = aConfig.activity;
+     }
+   }
+ 
+ }
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+@@ -411,50 +411,52 @@ function testExposedConsoleAPI()
+   }
+ 
+   is(apis.join(" "), "log info warn error exception", "Only console API is exposed on console object");
+ }
+ 
+ 
+ function testRecordEntry() {
+   var config = {
+-    logLevel: "network",
++    level: "network",
++    hudId: "foo",
+     message: "HumminaHummina!",
+     activity: {
+       stage: "barStage",
+       data: "bar bar bar bar"
+     }
+   };
+-  var entry = cs.recordEntry("foo", config);
++  var entry = cs.recordEntry(config);
+   var res = entry.id;
+   ok(entry.id != null, "Entry.id is: " + res);
+   ok(cs.displayIndexes["foo"].length == 1,
+      "We added one entry.");
+   entry = cs.getEntry(res);
+   ok(entry.id > -1,
+      "We got an entry through the global interface");
+ }
+ 
+ function testRecordManyEntries() {
+   var configArr = [];
+ 
+   for (var i = 0; i < 1000; i++){
+     let config = {
+-      logLevel: "network",
++      level: "network",
++      hudId: "foo",
+       message: "HumminaHummina!",
+       activity: {
+         stage: "barStage",
+         data: "bar bar bar bar"
+       }
+     };
+     configArr.push(config);
+   }
+ 
+   var start = Date.now();
+-  cs.recordEntries("foo", configArr);
++  cs.recordEntries(configArr);
+   var end = Date.now();
+   var elapsed = end - start;
+   ok(cs.displayIndexes["foo"].length == 1001,
+      "1001 entries in foo now");
+ }
+ 
+ function testConsoleHistory()
+ {

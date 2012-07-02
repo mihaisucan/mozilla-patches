@@ -1,0 +1,1458 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1326482149 -7200
+# Node ID 6e150bff43cc01c04abc8c8dc985a004e937c280
+# Parent  05f3cb248cc4b500cd8c452314ab48d9838c6bb2
+Bug 650345 - Implement minimal UI for Find in the Source Editor
+
+diff --git a/browser/devtools/jar.mn b/browser/devtools/jar.mn
+--- a/browser/devtools/jar.mn
++++ b/browser/devtools/jar.mn
+@@ -7,9 +7,10 @@ browser.jar:
+     content/browser/splitview.css                 (styleeditor/splitview.css)
+     content/browser/styleeditor.css               (styleeditor/styleeditor.css)
+     content/browser/devtools/csshtmltree.xul      (styleinspector/csshtmltree.xul)
+     content/browser/devtools/cssruleview.xul      (styleinspector/cssruleview.xul)
+     content/browser/devtools/styleinspector.css   (styleinspector/styleinspector.css)
+     content/browser/orion.js                      (sourceeditor/orion/orion.js)
+     content/browser/orion.css                     (sourceeditor/orion/orion.css)
+     content/browser/orion-mozilla.css             (sourceeditor/orion/mozilla.css)
++    content/browser/source-editor-overlay.xul     (sourceeditor/source-editor-overlay.xul)
+ 
+diff --git a/browser/devtools/scratchpad/scratchpad.xul b/browser/devtools/scratchpad/scratchpad.xul
+--- a/browser/devtools/scratchpad/scratchpad.xul
++++ b/browser/devtools/scratchpad/scratchpad.xul
+@@ -40,29 +40,31 @@
+    - ***** END LICENSE BLOCK ***** -->
+ #endif
+ <!DOCTYPE window [
+ <!ENTITY % scratchpadDTD SYSTEM "chrome://browser/locale/devtools/scratchpad.dtd" >
+  %scratchpadDTD;
+ ]>
+ <?xml-stylesheet href="chrome://global/skin/global.css" type="text/css"?>
+ <?xul-overlay href="chrome://global/content/editMenuOverlay.xul"?>
++<?xul-overlay href="chrome://browser/content/source-editor-overlay.xul"?>
+ 
+ <window id="main-window"
+         xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+         title="&window.title;"
+         windowtype="devtools:scratchpad"
+         screenX="4" screenY="4"
+         width="640" height="480"
+         persist="screenX screenY width height sizemode">
+ 
+ <script type="application/javascript" src="chrome://global/content/globalOverlay.js"/>
+ <script type="application/javascript" src="chrome://browser/content/scratchpad.js"/>
+ 
+ <commandset id="editMenuCommands"/>
++<commandset id="sourceEditorCommands"/>
+ 
+ <commandset id="sp-commandset">
+   <command id="sp-cmd-newWindow" oncommand="Scratchpad.openScratchpad();"/>
+   <command id="sp-cmd-openFile" oncommand="Scratchpad.openFile();"/>
+   <command id="sp-cmd-save" oncommand="Scratchpad.saveFile();"/>
+   <command id="sp-cmd-saveas" oncommand="Scratchpad.saveFileAs();"/>
+ 
+   <!-- TODO: bug 650340 - implement printFile()
+@@ -137,16 +139,38 @@
+   <key id="sp-key-errorConsole"
+        key="&errorConsoleCmd.commandkey;"
+        command="sp-cmd-errorConsole"
+        modifiers="accel,shift"/>
+   <key id="sp-key-webConsole"
+        key="&webConsoleCmd.commandkey;"
+        command="sp-cmd-webConsole"
+        modifiers="accel,shift"/>
++  <key id="key_find"
++       key="&findCmd.key;"
++       command="cmd_find"
++       modifiers="accel"/>
++#ifdef XP_MACOSX
++  <key id="key_findAgain"
++       key="&findAgainCmd.key;"
++       command="cmd_findAgain"
++       modifiers="accel"/>
++  <key id="key_findPrevious"
++       key="&findPreviousCmd.key;"
++       command="cmd_findPrevious"
++       modifiers="accel"/>
++#else
++  <key id="key_findAgain"
++       keycode="VK_F3"
++       command="cmd_findAgain"/>
++  <key id="key_findPrevious"
++       keycode="VK_F3"
++       command="cmd_findPrevious"
++       modifiers="shift"/>
++#endif
+ </keyset>
+ 
+ 
+ <menubar id="sp-menubar">
+   <menu id="sp-file-menu" label="&fileMenu.label;"
+         accesskey="&fileMenu.accesskey;">
+     <menupopup id="sp-menu-filepopup">
+       <menuitem id="sp-menu-newscratchpad"
+@@ -218,33 +242,27 @@
+                 accesskey="&pasteCmd.accesskey;"
+                 command="cmd_paste"/>
+       <menuseparator/>
+       <menuitem id="sp-menu-selectAll"
+                 label="&selectAllCmd.label;"
+                 key="key_selectAll"
+                 accesskey="&selectAllCmd.accesskey;"
+                 command="cmd_selectAll"/>
+-
+-      <!-- TODO: bug 650345 - implement search and replace
++      <menuseparator/>
+       <menuitem id="sp-menu-find"
+-                label="&findOnCmd.label;"
+-                accesskey="&findOnCmd.accesskey;"
++                label="&findCmd.label;"
++                accesskey="&findCmd.accesskey;"
+                 key="key_find"
+-                disabled="true"
+                 command="cmd_find"/>
+       <menuitem id="sp-menu-findAgain"
+                 label="&findAgainCmd.label;"
+                 accesskey="&findAgainCmd.accesskey;"
+                 key="key_findAgain"
+-                disabled="true"
+                 command="cmd_findAgain"/>
+-      <menuseparator id="sp-execute-separator"/>
+-      -->
+-
+     </menupopup>
+   </menu>
+ 
+   <menu id="sp-execute-menu" label="&executeMenu.label;"
+         accesskey="&executeMenu.accesskey;">
+     <menupopup id="sp-menu_executepopup">
+       <menuitem id="sp-text-run"
+                 label="&run.label;"
+diff --git a/browser/devtools/scratchpad/test/Makefile.in b/browser/devtools/scratchpad/test/Makefile.in
+--- a/browser/devtools/scratchpad/test/Makefile.in
++++ b/browser/devtools/scratchpad/test/Makefile.in
+@@ -57,11 +57,12 @@ include $(topsrcdir)/config/rules.mk
+ 		browser_scratchpad_restore.js \
+ 		browser_scratchpad_bug_679467_falsy.js \
+ 		browser_scratchpad_bug_699130_edit_ui_updates.js \
+ 		browser_scratchpad_bug_669612_unsaved.js \
+ 		head.js \
+ 		browser_scratchpad_bug_653427_confirm_close.js \
+ 		browser_scratchpad_bug684546_reset_undo.js \
+ 		browser_scratchpad_bug690552_display_outputs_errors.js \
++		browser_scratchpad_bug650345_find_ui.js \
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/browser/devtools/scratchpad/test/browser_scratchpad_bug650345_find_ui.js b/browser/devtools/scratchpad/test/browser_scratchpad_bug650345_find_ui.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/scratchpad/test/browser_scratchpad_bug650345_find_ui.js
+@@ -0,0 +1,97 @@
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function browserLoad() {
++    gBrowser.selectedBrowser.removeEventListener("load", browserLoad, true);
++    openScratchpad(runTests);
++  }, true);
++
++  content.location = "data:text/html,<p>test the Find feature in Scratchpad";
++}
++
++function runTests(aWindow, aScratchpad)
++{
++  let editor = aScratchpad.editor;
++  let text = "foobar bug650345\nBug650345 bazbaz\nfoobar omg\ntest";
++  editor.setText(text);
++
++  let needle = "foobar";
++  editor.setSelection(0, needle.length);
++
++  let oldPrompt = Services.prompt;
++  Services.prompt = {
++    prompt: function() { return true; },
++  };
++
++  let findKey = "F";
++  info("test Ctrl/Cmd-" + findKey + " (find)");
++  EventUtils.synthesizeKey(findKey, {accelKey: true}, aWindow);
++  let selection = editor.getSelection();
++  let newIndex = text.indexOf(needle, needle.length);
++  is(selection.start, newIndex, "selection.start is correct");
++  is(selection.end, newIndex + needle.length, "selection.end is correct");
++
++  info("test cmd_find");
++  aWindow.goDoCommand("cmd_find");
++  selection = editor.getSelection();
++  is(selection.start, 0, "selection.start is correct");
++  is(selection.end, needle.length, "selection.end is correct");
++
++  let findNextKey = Services.appinfo.OS == "Darwin" ? "G" : "VK_F3";
++  let findNextKeyOptions = Services.appinfo.OS == "Darwin" ?
++                           {accelKey: true} : {};
++
++  info("test " + findNextKey + " (findNext)");
++  EventUtils.synthesizeKey(findNextKey, findNextKeyOptions, aWindow);
++  selection = editor.getSelection();
++  is(selection.start, newIndex, "selection.start is correct");
++  is(selection.end, newIndex + needle.length, "selection.end is correct");
++
++  info("test cmd_findAgain");
++  aWindow.goDoCommand("cmd_findAgain");
++  selection = editor.getSelection();
++  is(selection.start, 0, "selection.start is correct");
++  is(selection.end, needle.length, "selection.end is correct");
++
++  let findPreviousKey = Services.appinfo.OS == "Darwin" ? "G" : "VK_F3";
++  let findPreviousKeyOptions = Services.appinfo.OS == "Darwin" ?
++                           {accelKey: true, shiftKey: true} : {shiftKey: true};
++
++  info("test " + findPreviousKey + " (findPrevious)");
++  EventUtils.synthesizeKey(findPreviousKey, findPreviousKeyOptions, aWindow);
++  selection = editor.getSelection();
++  is(selection.start, newIndex, "selection.start is correct");
++  is(selection.end, newIndex + needle.length, "selection.end is correct");
++
++  info("test cmd_findPrevious");
++  aWindow.goDoCommand("cmd_findPrevious");
++  selection = editor.getSelection();
++  is(selection.start, 0, "selection.start is correct");
++  is(selection.end, needle.length, "selection.end is correct");
++
++  needle = "BAZbaz";
++  newIndex = text.toLowerCase().indexOf(needle.toLowerCase());
++
++  Services.prompt = {
++    prompt: function(aWindow, aTitle, aMessage, aValue) {
++      aValue.value = needle;
++      return true;
++    },
++  };
++
++  info("test Ctrl/Cmd-" + findKey + " (find) with a custom value");
++  EventUtils.synthesizeKey(findKey, {accelKey: true}, aWindow);
++  selection = editor.getSelection();
++  is(selection.start, newIndex, "selection.start is correct");
++  is(selection.end, newIndex + needle.length, "selection.end is correct");
++
++  Services.prompt = oldPrompt;
++
++  finish();
++}
++
+diff --git a/browser/devtools/sourceeditor/Makefile.in b/browser/devtools/sourceeditor/Makefile.in
+--- a/browser/devtools/sourceeditor/Makefile.in
++++ b/browser/devtools/sourceeditor/Makefile.in
+@@ -47,11 +47,12 @@ include $(DEPTH)/config/autoconf.mk
+ ifdef ENABLE_TESTS
+ 	DIRS += test
+ endif
+ 
+ EXTRA_JS_MODULES = \
+ 	source-editor.jsm \
+ 	source-editor-orion.jsm \
+ 	source-editor-textarea.jsm \
++	source-editor-ui.jsm \
+ 	$(NULL)
+ 
+ include $(topsrcdir)/config/rules.mk
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -39,16 +39,17 @@
+ 
+ "use strict";
+ 
+ const Cu = Components.utils;
+ const Ci = Components.interfaces;
+ 
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++Cu.import("resource:///modules/source-editor-ui.jsm");
+ 
+ XPCOMUtils.defineLazyServiceGetter(this, "clipboardHelper",
+                                    "@mozilla.org/widget/clipboardhelper;1",
+                                    "nsIClipboardHelper");
+ 
+ const ORION_SCRIPT = "chrome://browser/content/orion.js";
+ const ORION_IFRAME = "data:text/html;charset=utf8,<!DOCTYPE html>" +
+   "<html style='height:100%' dir='ltr'>" +
+@@ -121,16 +122,18 @@ function SourceEditor() {
+   // Update the SourceEditor defaults from user preferences.
+ 
+   SourceEditor.DEFAULTS.TAB_SIZE =
+     Services.prefs.getIntPref(SourceEditor.PREFS.TAB_SIZE);
+   SourceEditor.DEFAULTS.EXPAND_TAB =
+     Services.prefs.getBoolPref(SourceEditor.PREFS.EXPAND_TAB);
+ 
+   this._onOrionSelection = this._onOrionSelection.bind(this);
++
++  this.ui = new SourceEditorUI(this);
+ }
+ 
+ SourceEditor.prototype = {
+   _view: null,
+   _iframe: null,
+   _model: null,
+   _undoStack: null,
+   _linesRuler: null,
+@@ -139,16 +142,23 @@ SourceEditor.prototype = {
+   _annotationModel: null,
+   _dragAndDrop: null,
+   _mode: null,
+   _expandTab: null,
+   _tabSize: null,
+   _iframeWindow: null,
+ 
+   /**
++   * The Source Editor user interface manager.
++   * @type object
++   *       An instance of the SourceEditorUI.
++   */
++  ui: null,
++
++  /**
+    * The editor container element.
+    * @type nsIDOMElement
+    */
+   parentElement: null,
+ 
+   /**
+    * Initialize the editor.
+    *
+@@ -199,16 +209,17 @@ SourceEditor.prototype = {
+     this._iframe.addEventListener("load", onIframeLoad, true);
+ 
+     this._iframe.setAttribute("src", ORION_IFRAME);
+ 
+     aElement.appendChild(this._iframe);
+     this.parentElement = aElement;
+     this._config = aConfig;
+     this._onReadyCallback = aCallback;
++    this.ui.init();
+   },
+ 
+   /**
+    * The editor iframe load event handler.
+    * @private
+    */
+   _onIframeLoad: function SE__onIframeLoad()
+   {
+@@ -267,21 +278,31 @@ SourceEditor.prototype = {
+ 
+     this.setMode(config.mode || SourceEditor.DEFAULTS.MODE);
+ 
+     this._undoStack = new UndoStack(this._view,
+       config.undoLimit || SourceEditor.DEFAULTS.UNDO_LIMIT);
+ 
+     this._dragAndDrop = new TextDND(this._view, this._undoStack);
+ 
+-    this._view.setAction("undo", this.undo.bind(this));
+-    this._view.setAction("redo", this.redo.bind(this));
+-    this._view.setAction("tab", this._doTab.bind(this));
+-    this._view.setAction("Unindent Lines", this._doUnindentLines.bind(this));
+-    this._view.setAction("enter", this._doEnter.bind(this));
++    let actions = {
++      "undo": [this.undo, this],
++      "redo": [this.redo, this],
++      "tab": [this._doTab, this],
++      "Unindent Lines": [this._doUnindentLines, this],
++      "enter": [this._doEnter, this],
++      "Find...": [this.ui.find, this.ui],
++      "Find Next Occurrence": [this.ui.findNext, this.ui],
++      "Find Previous Occurrence": [this.ui.findPrevious, this.ui],
++    };
++
++    for (let name in actions) {
++      let action = actions[name];
++      this._view.setAction(name, action[0].bind(action[1]));
++    }
+ 
+     let keys = (config.keys || []).concat(DEFAULT_KEYBINDINGS);
+     keys.forEach(function(aKey) {
+       let binding = new KeyBinding(aKey.code, aKey.accel, aKey.shift, aKey.alt);
+       this._view.setKeyBinding(binding, aKey.action);
+ 
+       if (aKey.callback) {
+         this._view.setAction(aKey.action, aKey.callback);
+@@ -291,16 +312,17 @@ SourceEditor.prototype = {
+ 
+   /**
+    * The Orion "Load" event handler. This is called when the Orion editor
+    * completes the initialization.
+    * @private
+    */
+   _onOrionLoad: function SE__onOrionLoad()
+   {
++    this.ui.onReady();
+     if (this._onReadyCallback) {
+       this._onReadyCallback(this);
+       this._onReadyCallback = null;
+     }
+   },
+ 
+   /**
+    * The "tab" editor action implementation. This adds support for expanded tabs
+@@ -878,23 +900,27 @@ SourceEditor.prototype = {
+   destroy: function SE_destroy()
+   {
+     if (Services.appinfo.OS == "Linux") {
+       this._view.removeEventListener("Selection", this._onOrionSelection);
+     }
+     this._onOrionSelection = null;
+ 
+     this._view.destroy();
++    this.ui.destroy();
++    this.ui = null;
++
+     this.parentElement.removeChild(this._iframe);
+     this.parentElement = null;
+     this._iframeWindow = null;
+     this._iframe = null;
+     this._undoStack = null;
+     this._styler = null;
+     this._linesRuler = null;
+     this._dragAndDrop = null;
+     this._annotationModel = null;
+     this._annotationStyler = null;
+     this._view = null;
+     this._model = null;
+     this._config = null;
++    this._lastFind = null;
+   },
+ };
+diff --git a/browser/devtools/sourceeditor/source-editor-overlay.xul b/browser/devtools/sourceeditor/source-editor-overlay.xul
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/sourceeditor/source-editor-overlay.xul
+@@ -0,0 +1,46 @@
++<?xml version="1.0"?>
++<!-- ***** BEGIN LICENSE BLOCK *****
++   - Version: MPL 1.1/GPL 2.0/LGPL 2.1
++   -
++   - The contents of this file are subject to the Mozilla Public License Version
++   - 1.1 (the "License"); you may not use this file except in compliance with
++   - the License. You may obtain a copy of the License at
++   - http://www.mozilla.org/MPL/
++   -
++   - Software distributed under the License is distributed on an "AS IS" basis,
++   - WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++   - for the specific language governing rights and limitations under the
++   - License.
++   -
++   - The Original Code is Source Editor.
++   -
++   - The Initial Developer of the Original Code is
++   - The Mozilla Foundation.
++   - Portions created by the Initial Developer are Copyright (C) 2012
++   - the Initial Developer. All Rights Reserved.
++   -
++   - Contributor(s):
++   -   Mihai Sucan <mihai.sucan@gmail.com> (original author)
++   -
++   - Alternatively, the contents of this file may be used under the terms of
++   - either the GNU General Public License Version 2 or later (the "GPL"), or
++   - the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++   - in which case the provisions of the GPL or the LGPL are applicable instead
++   - of those above. If you wish to allow use of your version of this file only
++   - under the terms of either the GPL or the LGPL, and not to allow others to
++   - use your version of this file under the terms of the MPL, indicate your
++   - decision by deleting the provisions above and replace them with the notice
++   - and other provisions required by the GPL or the LGPL. If you do not delete
++   - the provisions above, a recipient may use your version of this file under
++   - the terms of any one of the MPL, the GPL or the LGPL.
++   -
++   - ***** END LICENSE BLOCK ***** -->
++
++<overlay id="sourceEditorOverlay"
++         xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul">
++  <commandset id="sourceEditorCommands">
++    <command id="cmd_find" oncommand="goDoCommand('cmd_find')"/>
++    <command id="cmd_findAgain" oncommand="goDoCommand('cmd_findAgain')" disabled="true"/>
++    <command id="cmd_findPrevious" oncommand="goDoCommand('cmd_findPrevious')" disabled="true"/>
++  </commandset>
++</overlay>
+diff --git a/browser/devtools/sourceeditor/source-editor-textarea.jsm b/browser/devtools/sourceeditor/source-editor-textarea.jsm
+--- a/browser/devtools/sourceeditor/source-editor-textarea.jsm
++++ b/browser/devtools/sourceeditor/source-editor-textarea.jsm
+@@ -39,19 +39,33 @@
+ 
+ "use strict";
+ 
+ const Cu = Components.utils;
+ const Ci = Components.interfaces;
+ 
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++Cu.import("resource:///modules/source-editor-ui.jsm");
+ 
+ const XUL_NS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
+ 
++/**
++ * Default key bindings in the textarea editor.
++ */
++const DEFAULT_KEYBINDINGS = [
++  {
++    _action: "_doTab",
++    keyCode: Ci.nsIDOMKeyEvent.DOM_VK_TAB,
++    shiftKey: false,
++    accelKey: false,
++    altKey: false,
++  },
++];
++
+ var EXPORTED_SYMBOLS = ["SourceEditor"];
+ 
+ /**
+  * The SourceEditor object constructor. The SourceEditor component allows you to
+  * provide users with an editor tailored to the specific needs of editing source
+  * code, aimed primarily at web developers.
+  *
+  * The editor used here is a simple textarea. This is used as a fallback
+@@ -64,28 +78,37 @@ function SourceEditor() {
+ 
+   SourceEditor.DEFAULTS.TAB_SIZE =
+     Services.prefs.getIntPref(SourceEditor.PREFS.TAB_SIZE);
+   SourceEditor.DEFAULTS.EXPAND_TAB =
+     Services.prefs.getBoolPref(SourceEditor.PREFS.EXPAND_TAB);
+ 
+   this._listeners = {};
+   this._lastSelection = {};
++
++  this.ui = new SourceEditorUI(this);
+ }
+ 
+ SourceEditor.prototype = {
+   _textbox: null,
+   _editor: null,
+   _listeners: null,
+   _lineDelimiter: null,
+   _editActionListener: null,
+   _expandTab: null,
+   _tabSize: null,
+ 
+   /**
++   * The Source Editor user interface manager.
++   * @type object
++   *       An instance of the SourceEditorUI.
++   */
++  ui: null,
++
++  /**
+    * The editor container element.
+    * @type nsIDOMElement
+    */
+   parentElement: null,
+ 
+   /**
+    * Initialize the editor.
+    *
+@@ -131,17 +154,17 @@ SourceEditor.prototype = {
+     this._textbox.style.MozTabSize = this._tabSize;
+ 
+     this._textbox.setAttribute("value", aConfig.placeholderText || "");
+     this._textbox.setAttribute("class", "monospace");
+     this._textbox.style.direction = "ltr";
+     this._textbox.readOnly = aConfig.readOnly;
+ 
+     // Make sure that the SourceEditor Selection events are fired properly.
+-    // Also make sure that the Tab key inserts spaces when expandTab is true.
++    // Also make sure that the configured keyboard bindings work.
+     this._textbox.addEventListener("select", this._onSelect.bind(this), false);
+     this._textbox.addEventListener("keypress", this._onKeyPress.bind(this), false);
+     this._textbox.addEventListener("keyup", this._onSelect.bind(this), false);
+     this._textbox.addEventListener("click", this._onSelect.bind(this), false);
+ 
+     // Mimic the mode change.
+     this.setMode(aConfig.mode || SourceEditor.DEFAULTS.MODE);
+ 
+@@ -156,39 +179,71 @@ SourceEditor.prototype = {
+     this._editActionListener = new EditActionListener(this);
+     this._editor.addEditActionListener(this._editActionListener);
+ 
+     this._lineDelimiter = win.navigator.platform.indexOf("Win") > -1 ?
+                           "\r\n" : "\n";
+ 
+     this._config = aConfig;
+ 
++    for each (let key in DEFAULT_KEYBINDINGS) {
++      for (let prop in key) {
++        if (prop == "accelKey") {
++          let newProp = Services.appinfo.OS == "Darwin" ? "metaKey" : "ctrlKey";
++          key[newProp] = key[prop];
++          delete key[prop];
++          break;
++        }
++      }
++    }
++
++    this.ui.init();
++    this.ui.onReady();
++
+     if (aCallback) {
+       aCallback(this);
+     }
+   },
+ 
+   /**
+-   * The textbox keypress event handler allows users to indent code using the
+-   * Tab key.
++   * The textbox keypress event handler calls the configured action for keyboard
++   * event.
+    *
+    * @private
+    * @param nsIDOMEvent aEvent
+    *        The DOM object for the event.
++   * @see DEFAULT_KEYBINDINGS
+    */
+   _onKeyPress: function SE__onKeyPress(aEvent)
+   {
+-    if (aEvent.keyCode != aEvent.DOM_VK_TAB || aEvent.shiftKey ||
+-        aEvent.metaKey || aEvent.ctrlKey || aEvent.altKey) {
+-      return;
++    for each (let key in DEFAULT_KEYBINDINGS) {
++      let matched = true;
++      for (let prop in key) {
++        if (prop.charAt(0) != "_" && aEvent[prop] !== key[prop]) {
++          matched = false;
++          break;
++        }
++      }
++      if (matched) {
++        let context = key._context ? this[key._context] : this;
++        context[key._action].call(context);
++        aEvent.preventDefault();
++        break;
++      }
+     }
++  },
+ 
+-    aEvent.preventDefault();
+-
+-    let caret = this.getCaretOffset();
++  /**
++   * The Tab keypress event handler. This allows the user to indent the code
++   * with spaces, when expandTab is true.
++   */
++  _doTab: function SE__doTab()
++  {
++    let selection = this.getSelection();
++    let caret = selection.start;
+     let indent = "\t";
+ 
+     if (this._expandTab) {
+       let text = this._textbox.value;
+       let lineStart = caret;
+       while (lineStart > 0) {
+         let c = text.charAt(lineStart - 1);
+         if (c == "\r" || c == "\n") {
+@@ -196,18 +251,18 @@ SourceEditor.prototype = {
+         }
+         lineStart--;
+       }
+       let offset = caret - lineStart;
+       let spaces = this._tabSize - (offset % this._tabSize);
+       indent = (new Array(spaces + 1)).join(" ");
+     }
+ 
+-    this.setText(indent, caret, caret);
+-    this.setCaretOffset(caret + indent.length);
++    this.setText(indent, selection.start, selection.end);
++    this.setCaretOffset(selection.start + indent.length);
+   },
+ 
+   /**
+    * The textbox keyup, click and select event handler tracks selection
+    * changes. This method invokes the SourceEditor Selection event handlers.
+    *
+    * @see SourceEditor.EVENTS.SELECTION
+    * @private
+@@ -611,18 +666,18 @@ SourceEditor.prototype = {
+    * @param number [aColumn=0]
+    *        Optional. The new caret column location. Columns start from 0.
+    */
+   setCaretPosition: function SE_setCaretPosition(aLine, aColumn)
+   {
+     aColumn = aColumn || 0;
+ 
+     let text = this._textbox.value;
+-    let i = 0, n = text.length, c0, c1;
+-    let line = 0, col = 0;
++    let i = -1, n = text.length, c0, c1;
++    let line = 0, col = -1;
+     while (i < n) {
+       c1 = text.charAt(i++);
+       if (line < aLine && (c1 == "\r" || (c0 != "\r" && c1 == "\n"))) {
+         // Count lines and reset the column only until we reach the desired line
+         // such that if the desired column is out of boundaries we will stop
+         // after the given number of characters from the line start.
+         line++;
+         col = 0;
+@@ -704,24 +759,29 @@ SourceEditor.prototype = {
+         if (aListener.domType) {
+           aListener.target.removeEventListener(aListener.domType,
+                                                aListener.handler, false);
+         }
+       }, this);
+     }
+ 
+     this._editor.removeEditActionListener(this._editActionListener);
++
++    this.ui.destroy();
++    this.ui = null;
++
+     this.parentElement.removeChild(this._textbox);
+     this.parentElement = null;
+     this._editor = null;
+     this._textbox = null;
+     this._config = null;
+     this._listeners = null;
+     this._lastSelection = null;
+     this._editActionListener = null;
++    this._lastFind = null;
+   },
+ };
+ 
+ /**
+  * The nsIEditActionListener for the nsIEditor of the xul:textbox used by the
+  * SourceEditor. This listener traces text changes such that SourceEditor
+  * TextChanged event handlers get their events.
+  *
+diff --git a/browser/devtools/sourceeditor/source-editor-ui.jsm b/browser/devtools/sourceeditor/source-editor-ui.jsm
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/sourceeditor/source-editor-ui.jsm
+@@ -0,0 +1,254 @@
++/* vim:set ts=2 sw=2 sts=2 et tw=80:
++ * ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is the Source Editor component.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Mihai Sucan <mihai.sucan@gmail.com> (original author)
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK *****/
++
++"use strict";
++
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/Services.jsm");
++
++var EXPORTED_SYMBOLS = ["SourceEditorUI"];
++
++/**
++ * The Source Editor component user interface.
++ */
++function SourceEditorUI(aEditor)
++{
++  this.editor = aEditor;
++}
++
++SourceEditorUI.prototype = {
++  /**
++   * Initialize the user interface. This is called by the SourceEditor.init()
++   * method.
++   */
++  init: function SEU_init()
++  {
++    this._ownerWindow = this.editor.parentElement.ownerDocument.defaultView;
++  },
++
++  /**
++   * The UI onReady function is executed once the Source Editor completes
++   * initialization and it is ready for usage. Currently this code sets up the
++   * nsIController.
++   */
++  onReady: function SEU_onReady()
++  {
++    if (this._ownerWindow.controllers) {
++      this._controller = new SourceEditorController(this.editor);
++      this._ownerWindow.controllers.insertControllerAt(0, this._controller);
++    }
++  },
++
++  /**
++   * The "find" command UI. This displays a prompt that allows the user to input
++   * the string to search for in the code. By default the current selection is
++   * used as a search string, or the last search string.
++   */
++  find: function SEU_find()
++  {
++    let str = {value: this.editor.getSelectedText()};
++    if (!str.value && this.editor.lastFind) {
++      str.value = this.editor.lastFind.str;
++    }
++
++    let result = Services.prompt.prompt(this._ownerWindow,
++      SourceEditorUI.strings.GetStringFromName("findCmd.promptTitle"),
++      SourceEditorUI.strings.GetStringFromName("findCmd.promptMessage"),
++      str, null, {});
++
++    if (result && str.value) {
++      let start = this.editor.getSelection().end;
++      let pos = this.editor.find(str.value, {ignoreCase: true, start: start});
++      if (pos == -1) {
++        this.editor.find(str.value, {ignoreCase: true});
++      }
++      this._onFind();
++    }
++
++    return true;
++  },
++
++  /**
++   * Find the next occurrence of the last search string.
++   */
++  findNext: function SEU_findNext()
++  {
++    let lastFind = this.editor.lastFind;
++    if (lastFind) {
++      this.editor.findNext(true);
++      this._onFind();
++    }
++
++    return true;
++  },
++
++  /**
++   * Find the previous occurrence of the last search string.
++   */
++  findPrevious: function SEU_findPrevious()
++  {
++    let lastFind = this.editor.lastFind;
++    if (lastFind) {
++      this.editor.findPrevious(true);
++      this._onFind();
++    }
++
++    return true;
++  },
++
++  /**
++   * This executed after each find/findNext/findPrevious operation.
++   * @private
++   */
++  _onFind: function SEU__onFind()
++  {
++    let lastFind = this.editor.lastFind;
++    if (lastFind && lastFind.index > -1) {
++      this.editor.setSelection(lastFind.index, lastFind.index + lastFind.str.length);
++    }
++
++    if (this._ownerWindow.goUpdateCommand) {
++      this._ownerWindow.goUpdateCommand("cmd_findAgain");
++      this._ownerWindow.goUpdateCommand("cmd_findPrevious");
++    }
++  },
++
++  /**
++   * Destroy the SourceEditorUI instance. This is called by the
++   * SourceEditor.destroy() method.
++   */
++  destroy: function SEU_destroy()
++  {
++    this._ownerWindow = null;
++    this.editor = null;
++    this._controller = null;
++  },
++};
++
++/**
++ * The Source Editor nsIController implements features that need to be available
++ * from XUL commands.
++ *
++ * @constructor
++ * @param object aEditor
++ *        SourceEditor object instance for which the controller is instanced.
++ */
++function SourceEditorController(aEditor)
++{
++  this._editor = aEditor;
++}
++
++SourceEditorController.prototype = {
++  /**
++   * Check if a command is supported by the controller.
++   *
++   * @param string aCommand
++   *        The command name you want to check support for.
++   * @return boolean
++   *         True if the command is supported, false otherwise.
++   */
++  supportsCommand: function SEC_supportsCommand(aCommand)
++  {
++    let result;
++
++    switch (aCommand) {
++      case "cmd_find":
++      case "cmd_findAgain":
++      case "cmd_findPrevious":
++        result = true;
++        break;
++      default:
++        result = false;
++        break;
++    }
++
++    return result;
++  },
++
++  /**
++   * Check if a command is enabled or not.
++   *
++   * @param string aCommand
++   *        The command name you want to check if it is enabled or not.
++   * @return boolean
++   *         True if the command is enabled, false otherwise.
++   */
++  isCommandEnabled: function SEC_isCommandEnabled(aCommand)
++  {
++    let result;
++
++    switch (aCommand) {
++      case "cmd_find":
++        result = true;
++        break;
++      case "cmd_findAgain":
++      case "cmd_findPrevious":
++        result = this._editor.lastFind && this._editor.lastFind.lastFound != -1;
++        break;
++      default:
++        result = false;
++    }
++
++    return result;
++  },
++
++  /**
++   * Perform a command.
++   *
++   * @param string aCommand
++   *        The command name you want to execute.
++   * @return void
++   */
++  doCommand: function SEC_doCommand(aCommand)
++  {
++    switch (aCommand) {
++      case "cmd_find":
++        this._editor.ui.find();
++        break;
++      case "cmd_findAgain":
++        this._editor.ui.findNext();
++        break;
++      case "cmd_findPrevious":
++        this._editor.ui.findPrevious();
++        break;
++    }
++  },
++
++  onEvent: function() { }
++};
+diff --git a/browser/devtools/sourceeditor/source-editor.jsm b/browser/devtools/sourceeditor/source-editor.jsm
+--- a/browser/devtools/sourceeditor/source-editor.jsm
++++ b/browser/devtools/sourceeditor/source-editor.jsm
+@@ -36,22 +36,28 @@
+  *
+  * ***** END LICENSE BLOCK *****/
+ 
+ "use strict";
+ 
+ const Cu = Components.utils;
+ 
+ Cu.import("resource://gre/modules/Services.jsm");
++Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++Cu.import("resource:///modules/source-editor-ui.jsm");
+ 
+ const PREF_EDITOR_COMPONENT = "devtools.editor.component";
++const SOURCEEDITOR_L10N = "chrome://browser/locale/devtools/sourceeditor.properties";
+ 
+ var component = Services.prefs.getCharPref(PREF_EDITOR_COMPONENT);
+ var obj = {};
+ try {
++  if (component == "ui") {
++    throw new Error("The UI editor component is not available.");
++  }
+   Cu.import("resource:///modules/source-editor-" + component + ".jsm", obj);
+ } catch (ex) {
+   Cu.reportError(ex);
+   Cu.reportError("SourceEditor component failed to load: " + component);
+ 
+   // If the component does not exist, clear the user pref back to the default.
+   Services.prefs.clearUserPref(PREF_EDITOR_COMPONENT);
+ 
+@@ -61,16 +67,20 @@ try {
+ }
+ 
+ // Export the SourceEditor.
+ var SourceEditor = obj.SourceEditor;
+ var EXPORTED_SYMBOLS = ["SourceEditor"];
+ 
+ // Add the constants used by all SourceEditors.
+ 
++XPCOMUtils.defineLazyGetter(SourceEditorUI, "strings", function() {
++  return Services.strings.createBundle(SOURCEEDITOR_L10N);
++});
++
+ /**
+  * Known SourceEditor preferences.
+  */
+ SourceEditor.PREFS = {
+   TAB_SIZE: "devtools.editor.tabsize",
+   EXPAND_TAB: "devtools.editor.expandtab",
+   COMPONENT: PREF_EDITOR_COMPONENT,
+ };
+@@ -137,8 +147,166 @@ SourceEditor.EVENTS = {
+    * object properties:
+    *   - oldValue - the old selection range.
+    *   - newValue - the new selection range.
+    * Both ranges are objects which hold two properties: start and end.
+    */
+   SELECTION: "Selection",
+ };
+ 
++/**
++ * Extend a destination object with properties from a source object.
++ *
++ * @param object aDestination
++ * @param object aSource
++ */
++function extend(aDestination, aSource)
++{
++  for (let name in aSource) {
++    if (!aDestination.hasOwnProperty(name)) {
++      aDestination[name] = aSource[name];
++    }
++  }
++}
++
++/**
++ * Add methods common to all components.
++ */
++extend(SourceEditor.prototype, {
++  _lastFind: null,
++
++  /**
++   * Find a string in the editor.
++   *
++   * @param string aString
++   *        The string you want to search for. If |aString| is not given the
++   *        currently selected text is used.
++   * @param object [aOptions]
++   *        Optional find options:
++   *        - start: (integer) offset to start searching from. Default: 0 if
++   *        backwards is false. If backwards is true then start = text.length.
++   *        - ignoreCase: (boolean) tells if you want the search to be case
++   *        insensitive or not. Default: false.
++   *        - backwards: (boolean) tells if you want the search to go backwards
++   *        from the given |start| offset. Default: false.
++   * @return integer
++   *        The offset where the string was found.
++   */
++  find: function SE_find(aString, aOptions)
++  {
++    if (typeof(aString) != "string") {
++      return -1;
++    }
++
++    aOptions = aOptions || {};
++
++    let str = aOptions.ignoreCase ? aString.toLowerCase() : aString;
++
++    let text = this.getText();
++    if (aOptions.ignoreCase) {
++      text = text.toLowerCase();
++    }
++
++    let index = aOptions.backwards ?
++                text.lastIndexOf(str, aOptions.start) :
++                text.indexOf(str, aOptions.start);
++
++    let lastFoundIndex = index;
++    if (index == -1 && this.lastFind && this.lastFind.index > -1 &&
++        this.lastFind.str === aString &&
++        this.lastFind.ignoreCase === !!aOptions.ignoreCase) {
++      lastFoundIndex = this.lastFind.index;
++    }
++
++    this._lastFind = {
++      str: aString,
++      index: index,
++      lastFound: lastFoundIndex,
++      ignoreCase: !!aOptions.ignoreCase,
++    };
++
++    return index;
++  },
++
++  /**
++   * Find the next occurrence of the last search operation.
++   *
++   * @param boolean aWrap
++   *        Tells if you want to restart the search from the beginning of the
++   *        document if the string is not found.
++   * @return integer
++   *        The offset where the string was found.
++   */
++  findNext: function SE_findNext(aWrap)
++  {
++    if (!this.lastFind && this.lastFind.lastFound == -1) {
++      return -1;
++    }
++
++    let options = {
++      start: this.lastFind.lastFound + this.lastFind.str.length,
++      ignoreCase: this.lastFind.ignoreCase,
++    };
++
++    let index = this.find(this.lastFind.str, options);
++    if (index == -1 && aWrap) {
++      options.start = 0;
++      index = this.find(this.lastFind.str, options);
++    }
++
++    return index;
++  },
++
++  /**
++   * Find the previous occurrence of the last search operation.
++   *
++   * @param boolean aWrap
++   *        Tells if you want to restart the search from the end of the
++   *        document if the string is not found.
++   * @return integer
++   *        The offset where the string was found.
++   */
++  findPrevious: function SE_findPrevious(aWrap)
++  {
++    if (!this.lastFind && this.lastFind.lastFound == -1) {
++      return -1;
++    }
++
++    let options = {
++      start: this.lastFind.lastFound - this.lastFind.str.length,
++      ignoreCase: this.lastFind.ignoreCase,
++      backwards: true,
++    };
++
++    let index;
++    if (options.start > 0) {
++      index = this.find(this.lastFind.str, options);
++    } else {
++      index = this._lastFind.index = -1;
++    }
++
++    if (index == -1 && aWrap) {
++      options.start = this.getCharCount() - 1;
++      index = this.find(this.lastFind.str, options);
++    }
++
++    return index;
++  },
++});
++
++/**
++ * Retrieve the last find operation result. This object holds the following
++ * properties:
++ *   - str: the last search string.
++ *   - index: stores the result of the most recent find operation. This is the
++ *   index in the text where |str| was found or -1 otherwise.
++ *   - lastFound: tracks the index where |str| was last found, throughout
++ *   multiple find operations. This can be -1 if |str| was never found in the
++ *   document.
++ *   - ignoreCase: tells if the search was case insensitive or not.
++ * @type object
++ */
++Object.defineProperty(SourceEditor.prototype, "lastFind", {
++  get: function() { return this._lastFind; },
++  enumerable: true,
++  configurable: true,
++});
++
+diff --git a/browser/devtools/sourceeditor/test/Makefile.in b/browser/devtools/sourceeditor/test/Makefile.in
+--- a/browser/devtools/sourceeditor/test/Makefile.in
++++ b/browser/devtools/sourceeditor/test/Makefile.in
+@@ -48,12 +48,13 @@ include $(topsrcdir)/config/rules.mk
+ 		browser_sourceeditor_initialization.js \
+ 		browser_bug684862_paste_html.js \
+ 		browser_bug687573_vscroll.js \
+ 		browser_bug687568_pagescroll.js \
+ 		browser_bug687580_drag_and_drop.js \
+ 		browser_bug684546_reset_undo.js \
+ 		browser_bug695035_middle_click_paste.js \
+ 		browser_bug687160_line_api.js \
++		browser_bug650345_find.js \
+ 		head.js \
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/browser/devtools/sourceeditor/test/browser_bug650345_find.js b/browser/devtools/sourceeditor/test/browser_bug650345_find.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/sourceeditor/test/browser_bug650345_find.js
+@@ -0,0 +1,147 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++"use strict";
++
++Cu.import("resource:///modules/source-editor.jsm");
++
++let testWin;
++let editor;
++
++function test()
++{
++  waitForExplicitFinish();
++
++  const windowUrl = "data:text/xml,<?xml version='1.0'?>" +
++    "<window xmlns='http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul'" +
++    " title='test for bug 650345' width='600' height='500'><hbox flex='1'/></window>";
++  const windowFeatures = "chrome,titlebar,toolbar,centerscreen,resizable,dialog=no";
++
++  testWin = Services.ww.openWindow(null, windowUrl, "_blank", windowFeatures, null);
++  testWin.addEventListener("load", function onWindowLoad() {
++    testWin.removeEventListener("load", onWindowLoad, false);
++    waitForFocus(initEditor, testWin);
++  }, false);
++}
++
++function initEditor()
++{
++  let hbox = testWin.document.querySelector("hbox");
++  editor = new SourceEditor();
++  editor.init(hbox, {}, editorLoaded);
++}
++
++function editorLoaded()
++{
++  editor.focus();
++
++  let text = "foobar bug650345\nBug650345 bazbaz\nfoobar omg\ntest";
++  editor.setText(text);
++
++  let needle = "foobar";
++  is(editor.find(), -1, "find() works");
++  ok(!editor.lastFind, "no editor.lastFind yet");
++
++  is(editor.find(needle), 0, "find('" + needle + "') works");
++  is(editor.lastFind.str, needle, "lastFind.str is correct");
++  is(editor.lastFind.index, 0, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, 0, "lastFind.lastFound is correct");
++  is(editor.lastFind.ignoreCase, false, "lastFind.ignoreCase is correct");
++
++  let newIndex = text.indexOf(needle, needle.length);
++  is(editor.findNext(), newIndex, "findNext() works");
++  is(editor.lastFind.str, needle, "lastFind.str is correct");
++  is(editor.lastFind.index, newIndex, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, newIndex, "lastFind.lastFound is correct");
++  is(editor.lastFind.ignoreCase, false, "lastFind.ignoreCase is correct");
++
++  is(editor.findNext(), -1, "findNext() works again");
++  is(editor.lastFind.index, -1, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, newIndex, "lastFind.lastFound is correct");
++
++  is(editor.findPrevious(), 0, "findPrevious() works");
++  is(editor.lastFind.index, 0, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, 0, "lastFind.lastFound is correct");
++
++  is(editor.findPrevious(), -1, "findPrevious() works again");
++  is(editor.lastFind.index, -1, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, 0, "lastFind.lastFound is correct");
++
++  is(editor.findNext(), newIndex, "findNext() works");
++  is(editor.lastFind.index, newIndex, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, newIndex, "lastFind.lastFound is correct");
++
++  is(editor.findNext(true), 0, "findNext(true) works");
++  is(editor.lastFind.index, 0, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, 0, "lastFind.lastFound is correct");
++
++  is(editor.findNext(true), newIndex, "findNext(true) works again");
++  is(editor.lastFind.index, newIndex, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, newIndex, "lastFind.lastFound is correct");
++
++  is(editor.findPrevious(true), 0, "findPrevious(true) works");
++  is(editor.lastFind.index, 0, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, 0, "lastFind.lastFound is correct");
++
++  is(editor.findPrevious(true), newIndex, "findPrevious(true) works again");
++  is(editor.lastFind.index, newIndex, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, newIndex, "lastFind.lastFound is correct");
++
++  needle = "error";
++  is(editor.find(needle), -1, "find('" + needle + "') works");
++  is(editor.lastFind.str, needle, "lastFind.str is correct");
++  is(editor.lastFind.index, -1, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, -1, "lastFind.lastFound is correct");
++  is(editor.lastFind.ignoreCase, false, "lastFind.ignoreCase is correct");
++
++  is(editor.findNext(), -1, "findNext() works");
++  is(editor.lastFind.str, needle, "lastFind.str is correct");
++  is(editor.lastFind.index, -1, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, -1, "lastFind.lastFound is correct");
++  is(editor.findNext(true), -1, "findNext(true) works");
++
++  is(editor.findPrevious(), -1, "findPrevious() works");
++  is(editor.findPrevious(true), -1, "findPrevious(true) works");
++
++  needle = "bug650345";
++  newIndex = text.indexOf(needle);
++
++  is(editor.find(needle), newIndex, "find('" + needle + "') works");
++  is(editor.findNext(), -1, "findNext() works");
++  is(editor.findNext(true), newIndex, "findNext(true) works");
++  is(editor.findPrevious(), -1, "findPrevious() works");
++  is(editor.findPrevious(true), newIndex, "findPrevious(true) works");
++  is(editor.lastFind.index, newIndex, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, newIndex, "lastFind.lastFound is correct");
++
++  is(editor.find(needle, {ignoreCase: 1}), newIndex,
++     "find('" + needle + "', {ignoreCase: 1}) works");
++  is(editor.lastFind.ignoreCase, true, "lastFind.ignoreCase is correct");
++
++  let newIndex2 = text.toLowerCase().indexOf(needle, newIndex + needle.length);
++  is(editor.findNext(), newIndex2, "findNext() works");
++  is(editor.findNext(), -1, "findNext() works");
++  is(editor.lastFind.index, -1, "lastFind.index is correct");
++  is(editor.lastFind.lastFound, newIndex2, "lastFind.lastFound is correct");
++
++  is(editor.findNext(true), newIndex, "findNext(true) works");
++
++  is(editor.findPrevious(), -1, "findPrevious() works");
++  is(editor.findPrevious(true), newIndex2, "findPrevious(true) works");
++  is(editor.findPrevious(), newIndex, "findPrevious() works again");
++
++  needle = "foobar";
++  newIndex = text.indexOf(needle, 2);
++  is(editor.find(needle, {start: 2}), newIndex,
++     "find('" + needle + "', {start:2}) works");
++  is(editor.findNext(), -1, "findNext() works");
++  is(editor.findNext(true), 0, "findNext(true) works");
++
++  editor.destroy();
++
++  testWin.close();
++  testWin = editor = null;
++
++  waitForFocus(finish, window);
++}
+diff --git a/browser/locales/en-US/chrome/browser/devtools/scratchpad.dtd b/browser/locales/en-US/chrome/browser/devtools/scratchpad.dtd
+--- a/browser/locales/en-US/chrome/browser/devtools/scratchpad.dtd
++++ b/browser/locales/en-US/chrome/browser/devtools/scratchpad.dtd
+@@ -62,16 +62,32 @@
+ <!ENTITY pasteCmd.label               "Paste">
+ <!ENTITY pasteCmd.key                 "V">
+ <!ENTITY pasteCmd.accesskey           "P">
+ 
+ <!ENTITY selectAllCmd.label           "Select All">
+ <!ENTITY selectAllCmd.key             "A">
+ <!ENTITY selectAllCmd.accesskey       "A">
+ 
++<!ENTITY findCmd.label                "Find…">
++<!ENTITY findCmd.key                  "F">
++<!ENTITY findCmd.accesskey            "F">
++
++<!ENTITY findAgainCmd.label            "Find Again…">
++<!-- LOCALIZATION NOTE (findAgainCmd.key): This key is used only on Macs.
++  -  Windows and Linux builds use the F3 key which is not localizable on purpose.
++  -->
++<!ENTITY findAgainCmd.key              "G">
++<!ENTITY findAgainCmd.accesskey        "g">
++<!-- LOCALIZATION NOTE (findPreviousCmd.key): This key is used only on Macs.
++  -  Windows and Linux builds use the Shift-F3 key which is not localizable on
++  -  purpose.
++  -->
++<!ENTITY findPreviousCmd.key          "G">
++
+ <!ENTITY run.label                    "Run">
+ <!ENTITY run.accesskey                "R">
+ <!ENTITY run.key                      "r">
+ 
+ <!ENTITY inspect.label                "Inspect">
+ <!ENTITY inspect.accesskey            "I">
+ <!ENTITY inspect.key                  "i">
+ 
+diff --git a/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties b/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties
+new file mode 100644
+--- /dev/null
++++ b/browser/locales/en-US/chrome/browser/devtools/sourceeditor.properties
+@@ -0,0 +1,20 @@
++# LOCALIZATION NOTE These strings are used inside the Source Editor component.
++# This component is used whenever source code is displayed for the purpose of
++# being edited, inside the Firefox developer tools - current examples are the
++# Scratchpad and the Style Editor tools.
++
++# LOCALIZATION NOTE The correct localization of this file might be to keep it
++# in English, or another language commonly spoken among web developers.
++# You want to make that choice consistent across the developer tools.
++# A good criteria is the language in which you'd find the best documentation
++# on web development on the web.
++
++# LOCALIZATION NOTE  (findCmd.promptTitle): This is the dialog title used
++# when the user wants to search for a string in the code. You can
++# access this feature by pressing Ctrl-F on Windows/Linux or Cmd-F on Mac.
++findCmd.promptTitle=Find…
++
++# LOCALIZATION NOTE  (gotoLineCmd.promptMessage): This is the message shown when
++# the user wants to search for a string in the code. You can
++# access this feature by pressing Ctrl-F on Windows/Linux or Cmd-F on Mac.
++findCmd.promptMessage=Search for:
+diff --git a/browser/locales/jar.mn b/browser/locales/jar.mn
+--- a/browser/locales/jar.mn
++++ b/browser/locales/jar.mn
+@@ -22,16 +22,17 @@
+     locale/browser/devtools/tilt.properties           (%chrome/browser/devtools/tilt.properties)
+     locale/browser/devtools/scratchpad.properties     (%chrome/browser/devtools/scratchpad.properties)
+     locale/browser/devtools/scratchpad.dtd            (%chrome/browser/devtools/scratchpad.dtd)
+     locale/browser/devtools/styleeditor.properties    (%chrome/browser/devtools/styleeditor.properties)
+     locale/browser/devtools/styleeditor.dtd           (%chrome/browser/devtools/styleeditor.dtd)
+     locale/browser/devtools/styleinspector.properties (%chrome/browser/devtools/styleinspector.properties)
+     locale/browser/devtools/styleinspector.dtd        (%chrome/browser/devtools/styleinspector.dtd)
+     locale/browser/devtools/webConsole.dtd            (%chrome/browser/devtools/webConsole.dtd)
++    locale/browser/devtools/sourceeditor.properties   (%chrome/browser/devtools/sourceeditor.properties)
+     locale/browser/openLocation.dtd                (%chrome/browser/openLocation.dtd)
+     locale/browser/openLocation.properties         (%chrome/browser/openLocation.properties)
+ *   locale/browser/pageInfo.dtd                    (%chrome/browser/pageInfo.dtd)
+     locale/browser/pageInfo.properties             (%chrome/browser/pageInfo.properties)
+     locale/browser/quitDialog.properties           (%chrome/browser/quitDialog.properties)
+ *   locale/browser/safeMode.dtd                    (%chrome/browser/safeMode.dtd)
+     locale/browser/sanitize.dtd                    (%chrome/browser/sanitize.dtd)
+     locale/browser/search.properties               (%chrome/browser/search.properties)

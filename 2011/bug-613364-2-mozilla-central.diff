@@ -1,0 +1,113 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -2357,33 +2357,39 @@ HUD_SERVICE.prototype =
+       while(1) {
+         aInt++;
+         yield aInt;
+       }
+     }
+     return sequencer(aInt);
+   },
+ 
++  // See jsapi.h (JSErrorReport flags):
++  // http://mxr.mozilla.org/mozilla-central/source/js/src/jsapi.h#3429
+   scriptErrorFlags: {
+-    0: "error",
+-    1: "warn",
+-    2: "exception",
+-    4: "error", // strict error
+-    5: "warn", // strict warning
++    0: "error", // JSREPORT_ERROR
++    1: "warn", // JSREPORT_WARNING
++    2: "exception", // JSREPORT_EXCEPTION
++    4: "error", // JSREPORT_STRICT | JSREPORT_ERROR
++    5: "warn", // JSREPORT_STRICT | JSREPORT_WARNING
++    8: "error", // JSREPORT_STRICT_MODE_ERROR
++    13: "warn", // JSREPORT_STRICT_MODE_ERROR | JSREPORT_WARNING | JSREPORT_ERROR
+   },
+ 
+   /**
+    * replacement strings (L10N)
+    */
+   scriptMsgLogLevel: {
+-    0: "typeError",
+-    1: "typeWarning",
+-    2: "typeException",
+-    4: "typeError", // strict error
+-    5: "typeStrict", // strict warning
++    0: "typeError", // JSREPORT_ERROR
++    1: "typeWarning", // JSREPORT_WARNING
++    2: "typeException", // JSREPORT_EXCEPTION
++    4: "typeError", // JSREPORT_STRICT | JSREPORT_ERROR
++    5: "typeStrict", // JSREPORT_STRICT | JSREPORT_WARNING
++    8: "typeError", // JSREPORT_STRICT_MODE_ERROR
++    13: "typeWarning", // JSREPORT_STRICT_MODE_ERROR | JSREPORT_WARNING | JSREPORT_ERROR
+   },
+ 
+   /**
+    * Closes the Console, if any, that resides on the given tab.
+    *
+    * @param nsIDOMNode aTab
+    *        The tab on which to close the console.
+    * @returns void
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601177_log_levels.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601177_log_levels.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601177_log_levels.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601177_log_levels.js
+@@ -31,16 +31,19 @@ function onContentLoaded()
+     "found foobar-known-to-fail.png");
+ 
+   ok(findEntry("hud-exception", "foobarBug601177exception"),
+     "found exception");
+ 
+   ok(findEntry("hud-jswarn", "undefinedPropertyBug601177"),
+     "found strict warning");
+ 
++  ok(findEntry("hud-jswarn", "foobarBug601177strictError"),
++    "found strict error");
++
+   msgs = null;
+   Services.prefs.setBoolPref("javascript.options.strict", false);
+   finishTest();
+ }
+ 
+ function findEntry(aClass, aString)
+ {
+   for (let i = 0, n = msgs.length; i < n; i++) {
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-601177-log-levels.html b/toolkit/components/console/hudservice/tests/browser/test-bug-601177-log-levels.html
+--- a/toolkit/components/console/hudservice/tests/browser/test-bug-601177-log-levels.html
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-601177-log-levels.html
+@@ -1,19 +1,19 @@
+ <!DOCTYPE HTML>
+ <html dir="ltr" xml:lang="en-US" lang="en-US">
+   <head>
+-    <title>Web Console test for bug 601177: network messages</title>
++    <title>Web Console test for bug 601177: log levels</title>
+     <script src="test-bug-601177-log-levels.js" type="text/javascript"></script>
+     <script type="text/javascript"><!--
+       window.undefinedPropertyBug601177;
+     // --></script>
+     <!--
+        - Any copyright is dedicated to the Public Domain.
+        - http://creativecommons.org/publicdomain/zero/1.0/
+        -->
+   </head>
+   <body>
+-    <h1>Web Console test for bug 601177: network messages</h1>
++    <h1>Web Console test for bug 601177: log levels</h1>
+     <img src="test-image.png?bug601177">
+     <img src="foobar-known-to-fail.png?bug601177">
+   </body>
+ </html>
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-601177-log-levels.js b/toolkit/components/console/hudservice/tests/browser/test-bug-601177-log-levels.js
+--- a/toolkit/components/console/hudservice/tests/browser/test-bug-601177-log-levels.js
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-601177-log-levels.js
+@@ -1,6 +1,8 @@
+ /*
+  * Any copyright is dedicated to the Public Domain.
+  * http://creativecommons.org/publicdomain/zero/1.0/
+  */
+ 
++foobarBug601177strictError = "strict error";
++
+ window.foobarBug601177exception();

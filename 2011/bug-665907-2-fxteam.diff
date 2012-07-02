@@ -1,0 +1,188 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1314723662 -10800
+# Node ID ae3d1a8a7ba581c6e6be3d1c3587d58f15d9e8a9
+# Parent  2470993f6287d3b594a542023ce1cb077fda9bff
+Bug 665907 - [highlighter] Bounding boxes update are slow while the page is scrolling.
+
+diff --git a/browser/base/content/highlighter.css b/browser/base/content/highlighter.css
+--- a/browser/base/content/highlighter.css
++++ b/browser/base/content/highlighter.css
+@@ -7,19 +7,19 @@
+   top: 0;
+   left: 0;
+ }
+ 
+ #highlighter-veil-container {
+   overflow: hidden;
+ }
+ 
+-.highlighter-veil,
+-#highlighter-veil-middlebox,
+-#highlighter-veil-transparentbox {
++.highlighter-veil:not([locked]),
++#highlighter-veil-middlebox:not([locked]),
++#highlighter-veil-transparentbox:not([locked]) {
+   -moz-transition-property: width, height;
+   -moz-transition-duration: 0.1s;
+   -moz-transition-timing-function: linear;
+ }
+ 
+ #highlighter-veil-bottombox,
+ #highlighter-veil-rightbox {
+   -moz-box-flex: 1;
+diff --git a/browser/base/content/inspector.js b/browser/base/content/inspector.js
+--- a/browser/base/content/inspector.js
++++ b/browser/base/content/inspector.js
+@@ -166,34 +166,57 @@ Highlighter.prototype = {
+ 
+     this.veilLeftBox = document.createElement("box");
+     this.veilLeftBox.id = "highlighter-veil-leftbox";
+     this.veilLeftBox.className = "highlighter-veil";
+ 
+     this.veilTransparentBox = document.createElement("box");
+     this.veilTransparentBox.id = "highlighter-veil-transparentbox";
+ 
+-    // We don't need any references to veilRightBox and veilBottomBox.
+-    // These boxes are automatically resized (flex=1)
++    this.veilRightBox = document.createElement("box");
++    this.veilRightBox.id = "highlighter-veil-rightbox";
++    this.veilRightBox.className = "highlighter-veil";
+ 
+-    let veilRightBox = document.createElement("box");
+-    veilRightBox.id = "highlighter-veil-rightbox";
+-    veilRightBox.className = "highlighter-veil";
+-
+-    let veilBottomBox = document.createElement("box");
+-    veilBottomBox.id = "highlighter-veil-bottombox";
+-    veilBottomBox.className = "highlighter-veil";
++    this.veilBottomBox = document.createElement("box");
++    this.veilBottomBox.id = "highlighter-veil-bottombox";
++    this.veilBottomBox.className = "highlighter-veil";
+ 
+     this.veilMiddleBox.appendChild(this.veilLeftBox);
+     this.veilMiddleBox.appendChild(this.veilTransparentBox);
+-    this.veilMiddleBox.appendChild(veilRightBox);
++    this.veilMiddleBox.appendChild(this.veilRightBox);
+ 
+     aParent.appendChild(this.veilTopBox);
+     aParent.appendChild(this.veilMiddleBox);
+-    aParent.appendChild(veilBottomBox);
++    aParent.appendChild(this.veilBottomBox);
++  },
++
++  /**
++   * Update the veil state to be locked.
++   */
++  lockVeil: function Highlighter_lockVeil()
++  {
++    this.veilTopBox.setAttribute("locked", true);
++    this.veilLeftBox.setAttribute("locked", true);
++    this.veilMiddleBox.setAttribute("locked", true);
++    this.veilRightBox.setAttribute("locked", true);
++    this.veilBottomBox.setAttribute("locked", true);
++    this.veilTransparentBox.setAttribute("locked", true);
++  },
++
++  /**
++   * Update the veil state to be unlocked.
++   */
++  unlockVeil: function Highlighter_unlockVeil()
++  {
++    this.veilTopBox.removeAttribute("locked");
++    this.veilLeftBox.removeAttribute("locked");
++    this.veilMiddleBox.removeAttribute("locked");
++    this.veilRightBox.removeAttribute("locked");
++    this.veilBottomBox.removeAttribute("locked");
++    this.veilTransparentBox.removeAttribute("locked");
+   },
+ 
+   /**
+    * Build the controls:
+    *
+    * <box id="highlighter-close-button"/>
+    *
+    * @param nsIDOMNode aParent
+@@ -217,16 +240,18 @@ Highlighter.prototype = {
+   {
+     this.browser.removeEventListener("scroll", this, true);
+     this.browser.removeEventListener("resize", this, true);
+     this._highlightRect = null;
+     this._highlighting = false;
+     this.veilTopBox = null;
+     this.veilLeftBox = null;
+     this.veilMiddleBox = null;
++    this.veilRightBox = null;
++    this.veilBottomBox = null;
+     this.veilTransparentBox = null;
+     this.node = null;
+     this.highlighterContainer.parentNode.removeChild(this.highlighterContainer);
+     this.highlighterContainer = null;
+     this.win = null
+     this.browser = null;
+     this.toolbar = null;
+   },
+@@ -438,25 +463,27 @@ Highlighter.prototype = {
+ 
+   attachInspectListeners: function Highlighter_attachInspectListeners()
+   {
+     this.browser.addEventListener("mousemove", this, true);
+     this.browser.addEventListener("click", this, true);
+     this.browser.addEventListener("dblclick", this, true);
+     this.browser.addEventListener("mousedown", this, true);
+     this.browser.addEventListener("mouseup", this, true);
++    this.unlockVeil();
+   },
+ 
+   detachInspectListeners: function Highlighter_detachInspectListeners()
+   {
+     this.browser.removeEventListener("mousemove", this, true);
+     this.browser.removeEventListener("click", this, true);
+     this.browser.removeEventListener("dblclick", this, true);
+     this.browser.removeEventListener("mousedown", this, true);
+     this.browser.removeEventListener("mouseup", this, true);
++    this.lockVeil();
+   },
+ 
+ 
+   /**
+    * Generic event handler.
+    *
+    * @param nsIDOMEvent aEvent
+    *        The DOM event object.
+@@ -920,17 +947,16 @@ var InspectorUI = {
+     // if currently editing an attribute value, starting
+     // "live inspection" mode closes the editor
+     if (this.editingContext)
+       this.closeEditor();
+ 
+     document.getElementById("inspector-inspect-toolbutton").checked = true;
+     this.attachPageListeners();
+     this.inspecting = true;
+-    this.highlighter.veilTransparentBox.removeAttribute("locked");
+   },
+ 
+   /**
+    * Stop inspecting webpage, detach page listeners, disable highlighter
+    * event listeners.
+    * @param aPreventScroll
+    *        Prevent scroll in the HTML tree?
+    */
+@@ -943,17 +969,16 @@ var InspectorUI = {
+     document.getElementById("inspector-inspect-toolbutton").checked = false;
+     this.detachPageListeners();
+     this.inspecting = false;
+     if (this.highlighter.node) {
+       this.select(this.highlighter.node, true, true, !aPreventScroll);
+     } else {
+       this.select(null, true, true);
+     }
+-    this.highlighter.veilTransparentBox.setAttribute("locked", true);
+   },
+ 
+   /**
+    * Select an object in the tree view.
+    * @param aNode
+    *        node to inspect
+    * @param forceUpdate
+    *        force an update?

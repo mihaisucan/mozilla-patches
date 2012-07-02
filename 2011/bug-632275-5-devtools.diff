@@ -1,0 +1,208 @@
+# HG changeset patch
+# Parent 66021ffa6c09300c432778764254fb9346d11a50
+# Date 1302717915 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+
+Bug 632275 - Web Console: Error message when click on an object to create an inspect window
+
+diff --git a/toolkit/components/console/hudservice/PropertyPanel.jsm b/toolkit/components/console/hudservice/PropertyPanel.jsm
+--- a/toolkit/components/console/hudservice/PropertyPanel.jsm
++++ b/toolkit/components/console/hudservice/PropertyPanel.jsm
+@@ -130,35 +130,66 @@ function presentableValueFor(aObject)
+       return {
+         type: TYPE_OBJECT,
+         display: m ? m[1] : "Object"
+       };
+   }
+ }
+ 
+ /**
++ * Tells if the given function is native or not.
++ *
++ * @param function aFunction
++ *        The function you want to check if it is native or not.
++ *
++ * @return boolean
++ *         True if the given function is native, false otherwise.
++ */
++function isNativeFunction(aFunction)
++{
++  return typeof aFunction == "function" && !("prototype" in aFunction);
++}
++
++/**
+  * Get an array of property name value pairs for the tree.
+  *
+  * @param object aObject
+  *        The object to get properties for.
+  * @returns array of object
+  *          Objects have the name, value, display, type, children properties.
+  */
+ function namesAndValuesOf(aObject)
+ {
+   let pairs = [];
+-  let value, presentable;
++  let value, presentable, getter;
++
++  let isDOMDocument = aObject instanceof Ci.nsIDOMDocument;
+ 
+   for (var propName in aObject) {
+-    try {
+-      value = aObject[propName];
+-      presentable = presentableValueFor(value);
++    // See bug 632275: skip deprecated width and height properties.
++    if (isDOMDocument && (propName == "width" || propName == "height")) {
++      continue;
+     }
+-    catch (ex) {
+-      continue;
++
++    // Also skip non-native getters.
++    // TODO: implement a safer way to skip non-native getters. See bug 647235.
++    getter = aObject.__lookupGetter__ ?
++             aObject.__lookupGetter__(propName) : null;
++    if (getter && !isNativeFunction(getter)) {
++      value = ""; // Value is never displayed.
++      presentable = {type: TYPE_OTHER, display: "Getter"};
++    }
++    else {
++      try {
++        value = aObject[propName];
++        presentable = presentableValueFor(value);
++      }
++      catch (ex) {
++        continue;
++      }
+     }
+ 
+     let pair = {};
+     pair.name = propName;
+     pair.display = propName + ": " + presentable.display;
+     pair.type = presentable.type;
+     pair.value = value;
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -127,16 +127,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_632817.js \
+ 	browser_webconsole_bug_611795.js \
+ 	browser_webconsole_bug_618311_close_panels.js \
+ 	browser_webconsole_bug_618311_private_browsing.js \
+ 	browser_webconsole_bug_632347_iterators_generators.js \
+ 	browser_webconsole_bug_642108_refForOutputNode.js \
+ 	browser_webconsole_bug_642108_pruneTest.js \
+ 	browser_webconsole_bug_585956_console_trace.js \
++	browser_webconsole_bug_632275_getters_document_width.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+@@ -196,15 +197,16 @@ _BROWSER_TEST_PAGES = \
+ 	test-bug-603750-websocket.html \
+ 	test-bug-603750-websocket.js \
+ 	test-bug-599725-response-headers.sjs \
+ 	test-bug-618078-network-exceptions.html \
+ 	test-bug-630733-response-redirect-headers.sjs \
+ 	test-bug-621644-jsterm-dollar.html \
+ 	test-bug-632347-iterators-generators.html \
+ 	test-bug-585956-console-trace.html \
++	test-bug-632275-getters.html \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_632275_getters_document_width.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_632275_getters_document_width.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_632275_getters_document_width.js
+@@ -0,0 +1,58 @@
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-632275-getters.html";
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoaded, true);
++}
++
++function tabLoaded() {
++  browser.removeEventListener("load", tabLoaded, true);
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let HUD = HUDService.hudReferences[hudId];
++  let jsterm = HUD.jsterm;
++
++  let doc = content.wrappedJSObject.document;
++
++  let panel = jsterm.openPropertyPanel("Test1", doc);
++
++  let rows = panel.treeView._rows;
++  let find = function(regex) {
++    return rows.some(function(row) {
++      return regex.test(row.display);
++    });
++  };
++
++  ok(!find(/^(width|height):/), "no document.width/height");
++
++  panel.destroy();
++
++  let getterValue = doc.foobar._val;
++
++  panel = jsterm.openPropertyPanel("Test2", doc.foobar);
++  rows = panel.treeView._rows;
++
++  is(getterValue, doc.foobar._val, "getter did not execute");
++  is(getterValue+1, doc.foobar.val, "getter executed");
++  is(getterValue+1, doc.foobar._val, "getter executed (recheck)");
++
++  ok(find(/^val: Getter$/),
++     "getter is properly displayed");
++
++  ok(find(new RegExp("^_val: " + getterValue + "$")),
++     "getter _val is properly displayed");
++
++  panel.destroy();
++
++  executeSoon(function() {
++    let textContent = HUD.outputNode.textContent;
++    is(textContent.indexOf("document.body.client"), -1,
++       "no document.width/height warning displayed");
++
++    finishTest();
++  });
++}
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-632275-getters.html b/toolkit/components/console/hudservice/tests/browser/test-bug-632275-getters.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-632275-getters.html
+@@ -0,0 +1,19 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 632275 - getters</title>
++    <!-- Any copyright is dedicated to the Public Domain.
++         http://creativecommons.org/publicdomain/zero/1.0/ -->
++
++<script type="application/javascript;version=1.8">
++  document.foobar = {
++    _val: 5,
++    get val() { return ++this._val; }
++  };
++</script>
++
++  </head>
++  <body>
++    <p>Web Console test for bug 632275 - getters.</p>
++  </body>
++</html>

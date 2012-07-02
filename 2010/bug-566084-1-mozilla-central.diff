@@ -1,0 +1,379 @@
+diff -r 609d101acf8e browser/app/profile/firefox.js
+--- a/browser/app/profile/firefox.js	Sat Jun 19 09:38:41 2010 +0300
++++ b/browser/app/profile/firefox.js	Wed Jul 28 23:39:02 2010 +0300
+@@ -350,16 +350,22 @@ pref("browser.ctrlTab.recentlyUsedLimit"
+ pref("browser.bookmarks.autoExportHTML",          false);
+ 
+ // The maximum number of daily bookmark backups to 
+ // keep in {PROFILEDIR}/bookmarkbackups. Special values:
+ // -1: unlimited
+ //  0: no backups created (and deletes all existing backups)
+ pref("browser.bookmarks.max_backups",             10);
+ 
++// Page navigation behaviour when the Inspector tool is enabled:
++// 0  ask the user to confirm page navigation.
++// 1  always allow page navigation.
++// 2  never allow page navigation.
++pref("browser.inspector.pageNavigation", 0);
++
+ // Scripts & Windows prefs
+ pref("dom.disable_open_during_load",              true);
+ #ifdef DEBUG
+ pref("javascript.options.showInConsole",          true);
+ pref("general.warnOnAboutConfig",                 false);
+ #else
+ pref("javascript.options.showInConsole",          false);
+ #endif
+diff -r 609d101acf8e browser/base/content/inspector.js
+--- a/browser/base/content/inspector.js	Sat Jun 19 09:38:41 2010 +0300
++++ b/browser/base/content/inspector.js	Wed Jul 28 23:39:02 2010 +0300
+@@ -18,16 +18,17 @@
+  *
+  * The Initial Developer of the Original Code is
+  * The Mozilla Foundation.
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Rob Campbell <rcampbell@mozilla.com> (original author)
++ *   Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -651,16 +652,19 @@ var InspectorUI = {
+     }
+     this.inspectorBundle = Services.strings.createBundle("chrome://browser/locale/inspector.properties");
+     this.initializeHighlighter();
+     this.startInspecting();
+     this.win.document.addEventListener("scroll", this, false);
+     this.win.addEventListener("resize", this, false);
+     gBrowser.tabContainer.addEventListener("TabSelect", this, false);
+     this.inspectCmd.setAttribute("checked", true);
++
++    gBrowser.addProgressListener(InspectorProgressListener,
++        Ci.nsIWebProgress.NOTIFY_STATE_DOCUMENT);
+   },
+ 
+   /**
+    * Initialize highlighter.
+    */
+   initializeHighlighter: function IUI_initializeHighlighter()
+   {
+     this.highlighter = new PanelHighlighter(this.browser, this.highlightColor,
+@@ -669,16 +673,18 @@ var InspectorUI = {
+ 
+   /**
+    * Close inspector UI and associated panels. Unhighlight and stop inspecting.
+    * Remove event listeners for document scrolling, resize and
+    * tabContainer.TabSelect.
+    */
+   closeInspectorUI: function IUI_closeInspectorUI()
+   {
++    gBrowser.removeProgressListener(InspectorProgressListener);
++
+     this.win.document.removeEventListener("scroll", this, false);
+     this.win.removeEventListener("resize", this, false);
+     gBrowser.tabContainer.removeEventListener("TabSelect", this, false);
+     this.stopInspecting();
+     if (this.highlighter && this.highlighter.isHighlighting) {
+       this.highlighter.unhighlight();
+     }
+     if (this.isPanelOpen) {
+@@ -940,12 +946,96 @@ var InspectorUI = {
+    *        text message to send to the log
+    */
+   _log: function LOG(msg)
+   {
+     Services.console.logStringMessage(msg);
+   },
+ }
+ 
++var InspectorProgressListener = {
++  QueryInterface: function IPL_QueryInterface(aIID)
++  {
++   if (aIID.equals(Ci.nsIWebProgressListener) ||
++       aIID.equals(Ci.nsISupportsWeakReference) ||
++       aIID.equals(Ci.nsISupports))
++     return this;
++   throw Components.results.NS_NOINTERFACE;
++  },
++
++  onStateChange: function IPL_onStateChange(aProgress, aRequest, aFlag, aStatus) {
++    // remove myself if the Inspector is no longer open.
++    if (!InspectorUI.isPanelOpen) {
++      gBrowser.removeProgressListener(InspectorProgressListener);
++      return;
++    }
++
++    let win = aProgress.DOMWindow;
++
++    // Skip child windows, like frames.
++    if (win.parent != win) {
++      return;
++    }
++
++    // Skip non-start states.
++    if (!(aFlag & Ci.nsIWebProgressListener.STATE_START)) {
++      return;
++    }
++
++    // if the request is about to happen in a new window, we are not concerned 
++    // about the request.
++    if (win != InspectorUI.win) {
++      return;
++    }
++
++    let pref = null;
++
++    // Read user pref.
++    try {
++      pref = gPrefService.getIntPref("browser.inspector.pageNavigation");
++    } catch (ex) { }
++
++    // Unknown values are considered 0.
++    if (!pref || (pref != 1 && pref != 2)) {
++      // Ask the user what to do with the page navigation request.
++      let prompts = Cc["@mozilla.org/embedcomp/prompt-service;1"].
++          getService(Ci.nsIPromptService);
++
++      let rememberCheckbox = {value: false};
++
++      let strTitle = InspectorUI.inspectorBundle.
++        GetStringFromName("confirmNavigationAway.title");
++
++      let strMessage = InspectorUI.inspectorBundle.
++        GetStringFromName("confirmNavigationAway.message");
++
++      let strRemember = InspectorUI.inspectorBundle.
++        GetStringFromName("confirmNavigationAway.rememberChoice");
++
++      let result = prompts.confirmCheck(null, strTitle, strMessage,
++        strRemember, rememberCheckbox);
++
++      pref = result ? 1 : 2;
++
++      if (rememberCheckbox.value) {
++        gPrefService.setIntPref("browser.inspector.pageNavigation", pref);
++      }
++    }
++
++    if (pref == 1) {
++      // The pref is set to always confirm page navigation.
++      InspectorUI.closeInspectorUI();
++    } else if (pref == 2) {
++      // The pref is set to never confirm page navigation.
++      BrowserStop();
++    }
++  },
++
++  onLocationChange: function() {},  
++  onProgressChange: function() {},
++  onStatusChange: function() {},
++  onSecurityChange: function() {}
++};
++
+ XPCOMUtils.defineLazyGetter(InspectorUI, "inspectCmd", function () {
+   return document.getElementById("Tools:Inspect");
+ });
+ 
+diff -r 609d101acf8e browser/base/content/test/Makefile.in
+--- a/browser/base/content/test/Makefile.in	Sat Jun 19 09:38:41 2010 +0300
++++ b/browser/base/content/test/Makefile.in	Wed Jul 28 23:39:02 2010 +0300
+@@ -139,16 +139,17 @@ _BROWSER_FILES = \
+                  browser_bug577121.js \
+                  browser_contextSearchTabPosition.js \
+                  browser_ctrlTab.js \
+                  browser_discovery.js \
+                  browser_drag.js \
+                  browser_gestureSupport.js \
+                  browser_getshortcutoruri.js \
+                  browser_inspector_initialization.js \
++                 browser_inspector_location_changed.js \
+                  browser_inspector_treeSelection.js \
+                  browser_inspector_highlighter.js \
+                  browser_inspector_stylePanel.js \
+                  browser_pageInfo.js \
+                  browser_page_style_menu.js \
+                  browser_pinnedTabs.js \
+                  browser_plainTextLinks.js \
+                  browser_pluginnotification.js \
+diff -r 609d101acf8e browser/base/content/test/browser_inspector_location_changed.js
+--- /dev/null	Thu Jan 01 00:00:00 1970 +0000
++++ b/browser/base/content/test/browser_inspector_location_changed.js	Wed Jul 28 23:39:02 2010 +0300
+@@ -0,0 +1,152 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Inspector Location Changed Tests.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Rob Campbell <rcampbell@mozilla.com>
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++function startLocationTests()
++{
++  ok(InspectorUI, "InspectorUI variable exists");
++  document.addEventListener("popupshown", runInspectorTests, false);
++  InspectorUI.toggleInspectorUI();
++}
++
++function runInspectorTests()
++{
++  document.removeEventListener("popupshown", runInspectorTests, false);
++
++  let para = content.document.getElementsByTagName("p")[0];
++  ok(para, "found the paragraph element");
++  is(para.textContent, "init", "paragraph content is correct");
++
++  ok(InspectorUI.inspecting, "Inspector is highlighting");
++  ok(InspectorUI.isPanelOpen, "Inspector Panel is open");
++  ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
++
++  // It is expected that page navigation is not allowed.
++  Services.prefs.setIntPref("browser.inspector.pageNavigation", 2);
++
++  gBrowser.addProgressListener(TestProgressListener,
++    Ci.nsIWebProgress.NOTIFY_STATE_DOCUMENT |
++    Ci.nsIWebProgress.NOTIFY_LOCATION);
++
++  content.location = "data:text/html,<div>location change test 1 for inspector</div><p>test1</p>";
++}
++
++function locationTest1()
++{
++  let para = content.document.getElementsByTagName("p")[0];
++  ok(para, "found the paragraph element, second time");
++  is(para.textContent, "init", "paragraph content is correct");
++
++  ok(InspectorUI.inspecting, "Inspector is highlighting");
++  ok(InspectorUI.isPanelOpen, "Inspector Panel is open");
++  ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
++
++  // It is expected that page navigation is now allowed.
++  Services.prefs.setIntPref("browser.inspector.pageNavigation", 1);
++
++  gBrowser.selectedBrowser.addEventListener("load", locationTest2, true);
++  content.location = "data:text/html,<div>location change test 2 for inspector</div><p>test2</p>";
++}
++
++function locationTest2()
++{
++  gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++
++  let para = content.document.getElementsByTagName("p")[0];
++  ok(para, "found the paragraph element, third time");
++  is(para.textContent, "test2", "paragraph content is correct");
++
++  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++  ok(!InspectorUI.isPanelOpen, "Inspector Panel is not open");
++  ok(!InspectorUI.isStylePanelOpen, "Inspector Style Panel is not open");
++
++  testEnd();
++}
++
++function testEnd()
++{
++  gBrowser.removeCurrentTab();
++  finish();
++}
++
++let TestProgressListener = {
++  QueryInterface: function TPL_QueryInterface(aIID)
++  {
++   if (aIID.equals(Ci.nsIWebProgressListener) ||
++       aIID.equals(Ci.nsISupportsWeakReference) ||
++       aIID.equals(Ci.nsISupports))
++     return this;
++   throw Components.results.NS_NOINTERFACE;
++  },
++
++  onLocationChange: function TPL_onLocationChange(aProgress, aRequest, aURI) {
++    gBrowser.removeProgressListener(TestProgressListener);
++    ok(false, "navigation was not cancelled");
++    testEnd();
++  },
++
++  onStateChange: function TPL_onStateChange(aProgress, aRequest, aFlag, aStatus) {
++    let win = aProgress.DOMWindow;
++    let uri = win.location.href;
++
++    // continue to the next test
++    if (aFlag & Ci.nsIWebProgressListener.STATE_STOP &&
++      uri.indexOf("init") > 1) {
++      gBrowser.removeProgressListener(TestProgressListener);
++      locationTest1();
++    }
++  },
++
++  onProgressChange: function() {},
++  onStatusChange: function() {},
++  onSecurityChange: function() {}
++};
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++    waitForFocus(startLocationTests, content);
++  }, true);
++  
++  content.location = "data:text/html,<div>location change tests for inspector.</div><p>init</p>";
++}
+diff -r 609d101acf8e browser/locales/en-US/chrome/browser/inspector.properties
+--- a/browser/locales/en-US/chrome/browser/inspector.properties	Sat Jun 19 09:38:41 2010 +0300
++++ b/browser/locales/en-US/chrome/browser/inspector.properties	Wed Jul 28 23:39:02 2010 +0300
+@@ -4,8 +4,15 @@ style.selectorLabel=Selector
+ 
+ # LOCALIZATION NOTE  (style.inheritedFrom): used in Style panel in
+ #  inspector. Describes which tagname[#id] the properties are inherited from.
+ style.inheritedFrom=Inherited from: #1
+ 
+ # LOCALIZATION NOTE (style.styleItemLabel: used in Style panel in inspector.
+ #  Used for construction of list items, #1 = label, #2 = content.
+ style.styleItemLabel=#1: #2
++
++# LOCALIZATION NOTE (confirmNavigationAway): Used in the Inspector tool, when 
++# the user tries to navigate away from a web page, to confirm the change of 
++# page.
++confirmNavigationAway.title=Inspector: page navigation
++confirmNavigationAway.message=You are about to leave the current page, losing the current DOM. Are you sure you want to continue?
++confirmNavigationAway.rememberChoice=Remember my choice.

@@ -1,0 +1,169 @@
+diff --git a/browser/base/content/csshtmltree.js b/browser/base/content/csshtmltree.js
+--- a/browser/base/content/csshtmltree.js
++++ b/browser/base/content/csshtmltree.js
+@@ -101,25 +101,18 @@ CssHtmlTree.prototype = {
+    * Process the main template.
+    */
+   _populateMainTemplates: function CssHtmlTree_populateMainTemplate()
+   {
+     let self = this;
+     let data = {
+       path_elements: CssLogic.getShortNamePath(this.viewedElement),
+       sheets: this.cssLogic.sheets,
+-      toggleSpecificity: function CssHtmlTree_toggleSpecificity()
+-      {
+-        self.styleDocument.getElementById("groups")
+-            .classList.toggle("showSpecificity");
+-      },
+       str: {
+-        lookingAtLabel: this.strings.GetStringFromName("style.lookingAtLabel"),
+-        specificityLabel: this.strings.GetStringFromName("style.specificityLabel"),
+-        specificityHelpLink: this.strings.GetStringFromName("style.specificityHelpLink")
++        lookingAtLabel: this.strings.GetStringFromName("style.lookingAtLabel")
+       }
+     };
+     this._template(this.templateHeader, this.header, data);
+ 
+     data = { styleGroups: this.styleGroups };
+     this._template(this.templateGroups, this.groups, data);
+   },
+ 
+diff --git a/browser/base/content/csshtmltree.xhtml b/browser/base/content/csshtmltree.xhtml
+--- a/browser/base/content/csshtmltree.xhtml
++++ b/browser/base/content/csshtmltree.xhtml
+@@ -107,22 +107,16 @@
+       -moz-margin-start: 20px;
+       max-height: 150px;
+       overflow-y: auto;
+     }
+     td.rule-text, td.rule-status {
+       white-space: nowrap;
+       overflow-x: hidden;
+     }
+-    .rule-specificity {
+-      display: none;
+-    }
+-    .showSpecificity .rule-specificity {
+-      display: table-cell;
+-    }
+   </style>
+ </head>
+ <body role="application">
+ 
+ <!-- The output from #templateHeader (below) is inserted here. -->
+ <div id="header">
+ </div>
+ 
+@@ -135,40 +129,30 @@ To visually debug the templates without 
+ -->
+ <div style="display:none;">
+   <!--
+   The header at the top of the window showing options and what we're looking at
+   templateHeader needs data like this:
+   {
+     path_elements: [ 'div[0]', '#main', '#content', 'p[4]' ],
+     sheets: [ { source: 'foo.css' }, { source: 'bar.css' }, ... ],
+-    toggleSpecificity: function() {} // toggle the display of specificity data
+   }
+   -->
+   <div id="templateHeader">
+     <table>
+       <tr>
+         <td class="path_line">
+           <!-- TODO: Looking at styling is broken. See bug 585566. -->
+           <label>${str.lookingAtLabel}</label>
+           <span class="path" foreach="element in ${path_elements}">
+             <a href="#" class="path_element">${element}</a>
+             <span class="path_crumb">&#x27EB;</span>
+           </span>
+         </td>
+       </tr>
+-      <tr>
+-        <td class="sheet_line">
+-          <label for="specificity">${str.specificityLabel}</label>
+-          <input _id="specificity" type="checkbox" save="${specificity}"
+-              onchange="${toggleSpecificity}"/>
+-          <a target="_blank" class="link"
+-              href="https://developer.mozilla.org/en/CSS/Specificity">${str.specificityHelpLink}</a>
+-        </td>
+-      </tr>
+     </table>
+   </div>
+ 
+   <!--
+   Template for the top level groups of properties
+   templateGroups needs data like this:
+   {
+     styleGroups: [ // A reference to CssHtmlTree.styleGroups
+@@ -210,20 +194,20 @@ To visually debug the templates without 
+   {
+     cssInfo: ..., // from cssLogic.getCssInfo(property)
+     statusText: function(status) {}, // convert rule.status to readable text
+   }
+   The table element is only there do the DOM doesn't muck with the tr
+   -->
+   <table id="templateRules">
+     <tr foreach="rule in ${cssInfo.rules}">
+-      <td class="rule-text">${selectorText(rule.selector)} &#x2192;
++      <td class="rule-text" 
++        title="${specificityTitle(rule)}">${selectorText(rule.selector)} 
++        &#x2192;
+         ${rule.value}</td>
+-      <td class="rule-specificity"
+-        title="${specificityTitle(rule)}">${rule.specificity}</td>
+       <td><a target="_blank" href="view-source:${rule.href}"
+           class="link">${rule.source}</a></td>
+       <td class="rule-status">${statusText(rule.status)}</td>
+     </tr>
+   </table>
+ </div>
+ 
+ </body>
+diff --git a/browser/locales/en-US/chrome/browser/inspector.properties b/browser/locales/en-US/chrome/browser/inspector.properties
+--- a/browser/locales/en-US/chrome/browser/inspector.properties
++++ b/browser/locales/en-US/chrome/browser/inspector.properties
+@@ -16,26 +16,16 @@ style.styleItemLabel=#1: #2
+ #  Unsure if this localizes well, but including just in case
+ dom.domPanelTitle=DOM
+ 
+ # LOCALIZATION NOTE (style.lookingAtLabel): This is used inside the Style panel
+ # of the Inspector tool. This is the label for the path of the highlighted
+ # element in the web page. This path is based on the document tree.
+ style.lookingAtLabel=Looking at:
+ 
+-# LOCALIZATION NOTE (style.specificityLabel): This is used inside the Style
+-# panel of the Inspector tool. This allows the user to enable the showing of the
+-# specificity of the style sheet rules.
+-style.specificityLabel=Show specificity:
+-
+-# LOCALIZATION NOTE (style.specificityHelpLink): This is used inside the Style
+-# panel of the Inspector tool. This allows the user to display additional
+-# information on the specificity of style sheet rules.
+-style.specificityHelpLink=Help!
+-
+ # LOCALIZATION NOTE (style.group): These strings are used inside the Style
+ # panel of the Inspector tool. Style properties are displayed in groups and
+ # these are the group names.
+ style.group.Fonts_and_Color=Fonts and Color
+ style.group.Text=Text
+ style.group.Background=Background
+ style.group.Dimensions=Dimensions
+ style.group.Positioning_and_Page_Flow=Positioning and Page Flow
+@@ -88,16 +78,16 @@ style.rule.sourceInline=inline
+ style.rule.sourceElement=element
+ 
+ # LOCALIZATION NOTE (style.rule.specificity): This is used inside
+ # the Style panel of the Inspector tool. Each style property is inside a rule. A
+ # rule is a selector that can match (or not) the highlighted element in the web
+ # page. The rule selector can have its specificity calculated based on the
+ # number of IDs, tags, and classes that it tries to match. This string is
+ # displayed when the user hover the specificity score column.
+-style.rule.specificity=%1$S%2$S ID(s), %3$S class(es), %4$S tag(s).
++style.rule.specificity=CSS rule specificity: %1$S%2$S ID(s), %3$S class(es), %4$S tag(s).
+ 
+ # LOCALIZATION NOTE (style.property.numberOfRulesSingular): This is used inside
+ # the Style panel of the Inspector tool. For each property the panel shows
+ # the rule with its selector. Rules can come from element.style. In this case,
+ # one can translate element.style to the local language.
+ style.elementSelector=element.style
+ 

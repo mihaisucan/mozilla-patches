@@ -1,0 +1,37 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1321038566 -7200
+# Node ID cf310545d22ba03475d4c90fb743f88267279eab
+# Parent  15c2cf2f47f498c3bac3cd807011b3eabe1a415e
+Bug 701790 - Remove unused group.* strings in the Style Inspector
+
+diff --git a/browser/locales/en-US/chrome/browser/devtools/styleinspector.properties b/browser/locales/en-US/chrome/browser/devtools/styleinspector.properties
+--- a/browser/locales/en-US/chrome/browser/devtools/styleinspector.properties
++++ b/browser/locales/en-US/chrome/browser/devtools/styleinspector.properties
+@@ -20,26 +20,16 @@ rule.sourceInline=inline
+ rule.sourceElement=element
+ 
+ # LOCALIZATION NOTE (rule.inheritedSource): Shown for CSS rules
+ # that were inherited from a parent node.  Will be passed a node
+ # identifier and a source location.
+ # e.g "Inherited from body#bodyID (styles.css:20)"
+ rule.inheritedSource=Inherited from %S (%S)
+ 
+-# LOCALIZATION NOTE (group): Style properties are displayed in categories and
+-# these are the category names.
+-group.Text_Fonts_and_Color=Text, Fonts & Color
+-group.Background=Background
+-group.Dimensions=Dimensions
+-group.Positioning_and_Page_Flow=Positioning and Page Flow
+-group.Borders=Borders
+-group.Lists=Lists
+-group.Effects_and_Other=Effects and Other
+-
+ # LOCALIZATION NOTE (style.highlighter.button): These strings are used inside
+ # sidebar of the Highlighter for the style inspector button
+ style.highlighter.button.label1=Properties
+ style.highlighter.accesskey1=P
+ style.highlighter.button.tooltip=Inspect element styles
+ 
+ # LOCALIZATION NOTE (helpLinkTitle): For each style property
+ # the user can hover it and get a help link button which allows one to

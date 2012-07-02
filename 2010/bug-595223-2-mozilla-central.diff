@@ -1,0 +1,210 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -2809,19 +2809,21 @@ HUD_SERVICE.prototype =
+     if (aContentWindow.wrappedJSObject.console) {
+       this.logWarningAboutReplacedAPI(hudId);
+     }
+     else {
+       aContentWindow.wrappedJSObject.console = hud.console;
+     }
+ 
+     if (!_browser._WebConsoleProgressListener) {
+-      let listener = new ConsoleProgressListener(_browser, hudId);
++      let listener = new ConsoleProgressListener(_browser, hudId,
++        hud.outputNode);
+ 
+       _browser.webProgress.addProgressListener(listener,
++        Ci.nsIWebProgress.NOTIFY_STATE_REQUEST |
+         Ci.nsIWebProgress.NOTIFY_LOCATION);
+ 
+       _browser._WebConsoleProgressListener = listener;
+     }
+ 
+     // capture JS Errors
+     this.setOnErrorHandler(aContentWindow);
+ 
+@@ -5242,21 +5244,25 @@ HUDConsoleObserver = {
+  * state information on page navigation.
+  *
+  * @constructor
+  * @param aBrowser
+  *        The browser element this nsIWebProgressListener will be attached to.
+  *
+  * @param string aHudId
+  *        The HeadsUpDisplay ID.
++ *
++ * @param nsIDOMNode aOutputNode
++ *        The Web Console output node where messages will show.
+  */
+-function ConsoleProgressListener(aBrowser, aHudId)
++function ConsoleProgressListener(aBrowser, aHudId, aOutputNode)
+ {
+   this.browser = aBrowser;
+   this.hudId = aHudId;
++  this.outputNode = aOutputNode;
+   this.currentURI = aBrowser.contentWindow.location.href;
+ }
+ 
+ ConsoleProgressListener.prototype = {
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsIWebProgressListener,
+                                          Ci.nsISupportsWeakReference]),
+ 
+   onLocationChange: function CPL_onLocationChange(aProgress, aRequest,
+@@ -5294,17 +5300,57 @@ ConsoleProgressListener.prototype = {
+       HUDService.uriRegistry[newURI] = [this.hudId];
+     }
+ 
+     if (topLevel) {
+       HUDService.displayRegistry[this.hudId] = newURI;
+     }
+   },
+ 
+-  onStateChange: function() {},
++  onStateChange: function CPL_onStateChange(aProgress, aRequest, aState,
++                                            aStatus)
++  {
++    if (!(aState & Ci.nsIWebProgressListener.STATE_START)) {
++      return;
++    }
++
++    let uri = null;
++    if (aRequest instanceof Ci.imgIRequest) {
++      let imgIRequest = aRequest.QueryInterface(Ci.imgIRequest);
++      uri = imgIRequest.URI;
++    }
++    else if (aRequest instanceof Ci.nsIChannel) {
++      let nsIChannel = aRequest.QueryInterface(Ci.nsIChannel);
++      uri = nsIChannel.URI;
++    }
++    else {
++      return;
++    }
++
++    if (!uri || !uri.schemeIs("file") && !uri.schemeIs("ftp")) {
++      return;
++    }
++
++    let message = {
++      logLevel: "network",
++      hudId: this.hudId,
++      origin: "network"
++    };
++
++    message.message = HUDService.getStr("typeNetwork") + " " + uri.spec;
++
++    let messageObject = HUDService.messageFactory(message, "network",
++      this.outputNode, {});
++
++    messageObject.messageNode.setAttribute("crop", "end");
++
++    HUDService.logMessage(messageObject.messageObject, this.outputNode,
++      messageObject.messageNode);
++  },
++
+   onStatusChange: function() {},
+   onProgressChange: function() {},
+   onSecurityChange: function() {},
+ };
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ // appName
+ ///////////////////////////////////////////////////////////////////////////
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -58,16 +58,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_581231_close_button.js \
+ 	browser_webconsole_bug_595350_multiple_windows_and_tabs.js \
+ 	browser_webconsole_consoleonpage.js \
+ 	browser_webconsole_bug_587617_output_copy.js \
+ 	browser_webconsole_bug_588342_document_focus.js \
+ 	browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js \
+ 	browser_webconsole_bug_594523_location_change.js \
++	browser_webconsole_bug_595223_file_uri.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+ 	testscript.js \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595223_file_uri.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595223_file_uri.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595223_file_uri.js
+@@ -0,0 +1,72 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const Cu = Components.utils;
++const Cc = Components.classes;
++const Ci = Components.interfaces;
++
++Cu.import("resource://gre/modules/HUDService.jsm");
++
++const TEST_FILE = "test-network.html";
++
++let HUD;
++
++function tabLoad(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  waitForFocus(function () {
++    HUDService.activateHUDForContext(gBrowser.selectedTab);
++
++    let hudId = HUDService.getHudIdByWindow(content);
++    HUD = HUDService.hudWeakReferences[hudId].get();
++
++    gBrowser.selectedBrowser.addEventListener("load", tabReload, true);
++
++    content.location.reload();
++  }, content);
++}
++
++function tabReload(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  let msgNodes = HUD.outputNode.querySelectorAll(".hud-network");
++  is(msgNodes.length, 3, "found the network messages");
++
++  let textContent = HUD.outputNode.textContent;
++  isnot(textContent.indexOf("test-network.html"), -1,
++    "found test-network.html");
++  isnot(textContent.indexOf("test-image.png"), -1, "found test-image.png");
++  isnot(textContent.indexOf("testscript.js"), -1, "found testscript.js");
++  isnot(textContent.indexOf("running network console logging tests"), -1,
++    "found the console.log() message from testscript.js");
++
++  testEnd();
++}
++
++function testEnd() {
++  HUD = null;
++  HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++
++  executeSoon(function() {
++    gBrowser.removeCurrentTab();
++    executeSoon(finish);
++  });
++}
++
++function test() {
++  waitForExplicitFinish();
++
++  let rootDir = getResolvedURI(getRootDirectory(gTestPath));
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", tabLoad, true);
++
++  content.location = rootDir.spec + TEST_FILE;
++}

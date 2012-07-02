@@ -1,0 +1,244 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1501,29 +1501,42 @@ HUD_SERVICE.prototype =
+    */
+   adjustVisibilityForMessageType:
+   function HS_adjustVisibilityForMessageType(aHUDId, aMessageType, aState)
+   {
+     let displayNode = this.getOutputNodeById(aHUDId);
+     let outputNode = displayNode.querySelector(".hud-output-node");
+     let doc = outputNode.ownerDocument;
+ 
++    let oldScrollTop = outputNode.scrollTop;
++    let oldScrollHeight = outputNode.scrollHeight;
++
+     this.liftNode(outputNode, function() {
+       let xpath = ".//*[contains(@class, 'hud-msg-node') and " +
+         "contains(@class, 'hud-" + aMessageType + "')]";
+       let result = doc.evaluate(xpath, outputNode, null,
+         Ci.nsIDOMXPathResult.UNORDERED_NODE_SNAPSHOT_TYPE, null);
+       for (let i = 0; i < result.snapshotLength; i++) {
+         if (aState) {
+           result.snapshotItem(i).classList.remove("hud-filtered-by-type");
+-        } else {
++        }
++        else {
+           result.snapshotItem(i).classList.add("hud-filtered-by-type");
+         }
+       }
+     });
++
++    // Scroll to the bottom if the scroll was at the bottom.
++    if ((oldScrollTop+outputNode.clientHeight) == oldScrollHeight) {
++      outputNode.scrollTop = outputNode.scrollHeight - outputNode.clientHeight;
++    }
++    else {
++      // Remember the scroll position.
++      outputNode.scrollTop = Math.min(oldScrollTop, outputNode.scrollHeight);
++    }
+   },
+ 
+   /**
+    * Returns the source code of the XPath contains() function necessary to
+    * match the given query string.
+    *
+    * @param string The query string to convert.
+    * @returns string
+@@ -1930,17 +1943,16 @@ HUD_SERVICE.prototype =
+     if (!aMessage) {
+       throw new Error(ERRORS.MISSING_ARGS);
+     }
+ 
+     let lastGroupNode = this.appendGroupIfNecessary(aConsoleNode,
+                                                     aMessage.timestamp);
+ 
+     lastGroupNode.appendChild(aMessageNode);
+-    ConsoleUtils.scrollToVisible(aMessageNode);
+ 
+     // store this message in the storage module:
+     this.storage.recordEntry(aMessage.hudId, aMessage);
+ 
+     pruneConsoleOutputIfNecessary(aConsoleNode);
+   },
+ 
+   /**
+@@ -1952,17 +1964,16 @@ HUD_SERVICE.prototype =
+    * @param nsIDOMNode aMessageNode
+    * @returns void
+    */
+   logConsoleMessage: function HS_logConsoleMessage(aMessage,
+                                                    aConsoleNode,
+                                                    aMessageNode)
+   {
+     aConsoleNode.appendChild(aMessageNode);
+-    ConsoleUtils.scrollToVisible(aMessageNode);
+ 
+     // store this message in the storage module:
+     this.storage.recordEntry(aMessage.hudId, aMessage);
+   },
+ 
+   /**
+    * Logs a Message.
+    * @param aMessage
+@@ -3096,16 +3107,21 @@ HeadsUpDisplay.prototype = {
+       // DOMNodeInserted is also called when the output node is being *itself*
+       // (re)inserted into the DOM (which happens during a search, for
+       // example). For this reason, we need to ensure that we only check
+       // message nodes.
+       let node = ev.target;
+       if (node.nodeType === node.ELEMENT_NODE &&
+           node.classList.contains("hud-msg-node")) {
+         HUDService.adjustVisibilityForNewlyInsertedNode(self.hudId, ev.target);
++
++        if (!node.classList.contains("hud-filtered-by-string") &&
++            !node.classList.contains("hud-filtered-by-type")) {
++          ConsoleUtils.scrollToVisible(node);
++        }
+       }
+     }, false);
+ 
+     this.filterSpacer = this.makeXULNode("spacer");
+     this.filterSpacer.setAttribute("flex", "1");
+ 
+     this.filterBox = this.makeXULNode("textbox");
+     this.filterBox.setAttribute("class", "compact hud-filter-box");
+@@ -4108,17 +4124,16 @@ JSTerm.prototype = {
+ 
+     // TODO: format the aOutputObject and don't just use the
+     // aOuputObject.toString() function: [object object] -> Object {prop, ...}
+     // See bug 586249.
+     let textNode = this.textFactory(aOutputObject + "\n");
+     node.appendChild(textNode);
+ 
+     lastGroupNode.appendChild(node);
+-    ConsoleUtils.scrollToVisible(node);
+     pruneConsoleOutputIfNecessary(this.outputNode);
+   },
+ 
+   /**
+    * Writes a message to the HUD that originates from the interactive
+    * JavaScript console.
+    *
+    * @param string aOutputMessage
+@@ -4146,19 +4161,17 @@ JSTerm.prototype = {
+       let classes = this.cssClassOverride.split(" ");
+       for (let i = 0; i < classes.length; i++) {
+         node.classList.add(classes[i]);
+       }
+     }
+ 
+     var textNode = this.textFactory(aOutputMessage + "\n");
+     node.appendChild(textNode);
+-
+     lastGroupNode.appendChild(node);
+-    ConsoleUtils.scrollToVisible(node);
+     pruneConsoleOutputIfNecessary(this.outputNode);
+   },
+ 
+   clearOutput: function JST_clearOutput()
+   {
+     let outputNode = this.outputNode;
+ 
+     while (outputNode.firstChild) {
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -56,16 +56,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_581231_close_button.js \
+ 	browser_webconsole_bug_595350_multiple_windows_and_tabs.js \
+ 	browser_webconsole_consoleonpage.js \
+ 	browser_webconsole_bug_587617_output_copy.js \
+ 	browser_webconsole_bug_588342_document_focus.js \
++	browser_webconsole_bug_597460_filter_scroll.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+ 	testscript.js \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597460_filter_scroll.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597460_filter_scroll.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597460_filter_scroll.js
+@@ -0,0 +1,75 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/HUDService.jsm");
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-property-provider.html";
++
++let HUD;
++
++function tabLoad(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  waitForFocus(function () {
++    HUDService.activateHUDForContext(gBrowser.selectedTab);
++
++    let hudId = HUDService.getHudIdByWindow(content);
++    HUD = HUDService.hudWeakReferences[hudId].get();
++
++    for (let i = 0; i < 200; i++) {
++      HUD.console.log("test message " + i);
++    }
++
++    HUDService.setFilterState(hudId, "network", false);
++
++    gBrowser.selectedBrowser.addEventListener("load", tabReload, true);
++
++    content.location.reload();
++  }, content);
++}
++
++function tabReload(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  let msgNode = HUD.outputNode.querySelector(".hud-network");
++  ok(msgNode, "found network message");
++  ok(msgNode.classList.contains("hud-filtered-by-type"),
++    "network message is filtered");
++
++  ok(HUD.outputNode.scrollTop > 0, "scroll location is not at the top");
++
++  is(HUD.outputNode.scrollTop,
++    HUD.outputNode.scrollHeight - HUD.outputNode.clientHeight,
++    "scroll location is correct");
++
++  testEnd();
++}
++
++function testEnd() {
++  HUD = null;
++  HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++
++  executeSoon(function() {
++    gBrowser.removeCurrentTab();
++    executeSoon(finish);
++  });
++}
++
++function test() {
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", tabLoad, true);
++
++  content.location = TEST_URI;
++}
++

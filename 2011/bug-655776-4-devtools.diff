@@ -1,0 +1,78 @@
+# HG changeset patch
+# Date 1306184335 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Parent 53e257cdf4d304a464c534cda179efefcf4f4010
+Bug 655776 - Web Developer > Get More Tools menu item
+
+diff --git a/browser/base/content/browser-appmenu.inc b/browser/base/content/browser-appmenu.inc
+--- a/browser/base/content/browser-appmenu.inc
++++ b/browser/base/content/browser-appmenu.inc
+@@ -197,16 +197,20 @@
+                     command="View:PageSource"
+                     key="key_viewSource"/>
+           <menuitem id="appmenu_errorConsole"
+                     hidden="true"
+                     label="&errorConsoleCmd.label;"
+                     key="key_errorConsole"
+                     oncommand="toJavaScriptConsole();"/>
+           <menuseparator/>
++          <menuitem id="appmenu_getMoreDevtools"
++                    label="&getMoreDevtoolsCmd.label;"
++                    oncommand="openUILinkIn('https://addons.mozilla.org/firefox/collections/mozilla/webdeveloper/', 'tab');"/>
++          <menuseparator/>
+ #define ID_PREFIX appmenu_developer_
+ #define OMIT_ACCESSKEYS
+ #include browser-charsetmenu.inc
+ #undef ID_PREFIX
+ #undef OMIT_ACCESSKEYS
+           <menuitem label="&goOfflineCmd.label;"
+                     type="checkbox"
+                     observes="workOfflineMenuitemState"
+diff --git a/browser/base/content/browser-menubar.inc b/browser/base/content/browser-menubar.inc
+--- a/browser/base/content/browser-menubar.inc
++++ b/browser/base/content/browser-menubar.inc
+@@ -562,16 +562,21 @@
+                             key="key_viewSource"
+                             command="View:PageSource"/>
+                   <menuitem id="javascriptConsole"
+                             hidden="true"
+                             label="&errorConsoleCmd.label;"
+                             accesskey="&errorConsoleCmd.accesskey;"
+                             key="key_errorConsole"
+                             oncommand="toJavaScriptConsole();"/>
++                  <menuseparator/>
++                  <menuitem id="getMoreDevtools"
++                            label="&getMoreDevtoolsCmd.label;"
++                            accesskey="&getMoreDevtoolsCmd.accesskey;"
++                            oncommand="openUILinkIn('https://addons.mozilla.org/firefox/collections/mozilla/webdeveloper/', 'tab');"/>
+                 </menupopup>
+               </menu>
+               <menuitem id="menu_pageInfo"
+                         accesskey="&pageInfoCmd.accesskey;"
+                         label="&pageInfoCmd.label;"
+ #ifndef XP_WIN
+                         key="key_viewInfo"
+ #endif
+diff --git a/browser/locales/en-US/chrome/browser/browser.dtd b/browser/locales/en-US/chrome/browser/browser.dtd
+--- a/browser/locales/en-US/chrome/browser/browser.dtd
++++ b/browser/locales/en-US/chrome/browser/browser.dtd
+@@ -221,16 +221,19 @@ can reach it easily. -->
+ <!ENTITY inspectStylePanelTitle.label  "Style">
+ <!-- LOCALIZATION NOTE (inspectObjectButton.label): This button label
+   -  appears on the Inspector's toolbar. It is used to open and close the Object
+   -  panel. There is also a label in inspector.properties for the panel
+   -  titlebar: object.objectPanelTitle. -->
+ <!ENTITY inspectObjectButton.label       "Object">
+ <!ENTITY inspectObjectButton.accesskey   "O">
+ 
++<!ENTITY getMoreDevtoolsCmd.label        "Get More Tools">
++<!ENTITY getMoreDevtoolsCmd.accesskey    "M">
++
+ <!ENTITY fileMenu.label         "File"> 
+ <!ENTITY fileMenu.accesskey       "F">
+ <!ENTITY newNavigatorCmd.label        "New Window">
+ <!ENTITY newNavigatorCmd.key        "N">
+ <!ENTITY newNavigatorCmd.accesskey      "N">
+ 
+ <!ENTITY editMenu.label         "Edit"> 
+ <!ENTITY editMenu.accesskey       "E"> 

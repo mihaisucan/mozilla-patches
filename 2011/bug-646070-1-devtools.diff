@@ -1,0 +1,289 @@
+# HG changeset patch
+# Date 1302638727 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Parent b3056cee25ba6e72ba459cd1aebbdb3d9bfd5208
+Bug 646070 - Respect chrome developer tools preference in workspace
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -1045,16 +1045,19 @@ pref("services.sync.prefs.sync.xpinstall
+ 
+ // Disable the error console and inspector
+ pref("devtools.errorconsole.enabled", false);
+ pref("devtools.inspector.enabled", false);
+ 
+ // Enable the Workspace tool.
+ pref("devtools.workspace.enabled", true);
+ 
++// Enable tools for Chrome development.
++pref("devtools.chrome.enabled", false);
++
+ // The last Web Console height. This is initially 0 which means that the Web
+ // Console will use the default height next time it shows.
+ // Change to -1 if you do not want the Web Console to remember its last height.
+ pref("devtools.hud.height", 0);
+ 
+ // Whether the character encoding menu is under the main Firefox button. This
+ // preference is a string so that localizers can alter it.
+ pref("browser.menu.showCharacterEncoding", "chrome://browser/locale/browser.properties");
+diff --git a/browser/base/content/test/Makefile.in b/browser/base/content/test/Makefile.in
+--- a/browser/base/content/test/Makefile.in
++++ b/browser/base/content/test/Makefile.in
+@@ -192,16 +192,17 @@ _BROWSER_FILES = \
+                  browser_inspector_treePanel_output.js \
+                  browser_inspector_treePanel_input.html \
+                  browser_inspector_treePanel_result.html \
+                  browser_workspace_initialization.js \
+                  browser_workspace_contexts.js \
+                  browser_workspace_execute_print.js \
+                  browser_workspace_inspect.js \
+                  browser_workspace_files.js \
++                 browser_workspace_bug_646070_chrome_context_pref.js \
+                  browser_overflowScroll.js \
+                  browser_pageInfo.js \
+                  browser_page_style_menu.js \
+                  browser_pinnedTabs.js \
+                  browser_plainTextLinks.js \
+                  browser_pluginnotification.js \
+                  browser_relatedTabs.js \
+                  browser_sanitize-passwordDisabledHosts.js \
+diff --git a/browser/base/content/test/browser_workspace_bug_646070_chrome_context_pref.js b/browser/base/content/test/browser_workspace_bug_646070_chrome_context_pref.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_workspace_bug_646070_chrome_context_pref.js
+@@ -0,0 +1,88 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Workspace Tests.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Mihai Sucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++let wsWindow;
++let oldPref;
++let DEVTOOLS_CHROME_ENABLED = "devtools.chrome.enabled";
++
++function test()
++{
++  waitForExplicitFinish();
++
++  oldPref = Services.prefs.getBoolPref(DEVTOOLS_CHROME_ENABLED);
++  Services.prefs.setBoolPref(DEVTOOLS_CHROME_ENABLED, true);
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++
++    ok(Workspace, "Workspace variable exists");
++
++    wsWindow = Workspace.openWorkspace();
++    wsWindow.addEventListener("load", runTests, false);
++  }, true);
++
++  content.location = "data:text/html,Workspace test for bug 646070 - chrome context preference";
++}
++
++function runTests()
++{
++  wsWindow.removeEventListener("load", arguments.callee, false);
++
++  let ws = wsWindow.Workspace;
++  ok(ws, "Workspace object exists in new window");
++
++  let contextMenu = wsWindow.document.getElementById("ws-context-menu");
++  ok(contextMenu, "Context menu element exists");
++  ok(!contextMenu.hasAttribute("hidden"), "Context menu is visible");
++
++  let errorConsoleCommand = wsWindow.document.getElementById("ws-cmd-errorConsole");
++  ok(errorConsoleCommand, "Error console command element exists");
++  ok(!errorConsoleCommand.hasAttribute("disabled"), "Error console command is enabled");
++
++  let errorConsoleMenu = wsWindow.document.getElementById("ws-menu-errorConsole");
++  ok(errorConsoleMenu, "Error console menu element exists");
++  ok(!errorConsoleMenu.hasAttribute("hidden"), "Error console menu item is visible");
++
++  Services.prefs.setBoolPref(DEVTOOLS_CHROME_ENABLED, oldPref);
++
++  wsWindow.close();
++  wsWindow = null;
++  gBrowser.removeCurrentTab();
++  finish();
++}
+diff --git a/browser/base/content/test/browser_workspace_initialization.js b/browser/base/content/test/browser_workspace_initialization.js
+--- a/browser/base/content/test/browser_workspace_initialization.js
++++ b/browser/base/content/test/browser_workspace_initialization.js
+@@ -60,13 +60,27 @@ function runTests()
+   wsWindow.removeEventListener("load", arguments.callee, false);
+ 
+   let ws = wsWindow.Workspace;
+   ok(ws, "Workspace object exists in new window");
+   is(typeof ws.execute, "function", "Workspace.execute() exists");
+   is(typeof ws.inspect, "function", "Workspace.inspect() exists");
+   is(typeof ws.print, "function", "Workspace.print() exists");
+ 
++  let contextMenu = wsWindow.document.getElementById("ws-context-menu");
++  ok(contextMenu, "Context menu element exists");
++  is(contextMenu.getAttribute("hidden"), "true", "Context menu is hidden");
++
++  let errorConsoleCommand = wsWindow.document.getElementById("ws-cmd-errorConsole");
++  ok(errorConsoleCommand, "Error console command element exists");
++  is(errorConsoleCommand.getAttribute("disabled"), "true",
++     "Error console command is disabled");
++
++  let errorConsoleMenu = wsWindow.document.getElementById("ws-menu-errorConsole");
++  ok(errorConsoleMenu, "Error console menu element exists");
++  is(errorConsoleMenu.getAttribute("hidden"), "true",
++     "Error console menu item is hidden");
++
+   wsWindow.close();
+   wsWindow = null;
+   gBrowser.removeCurrentTab();
+   finish();
+ }
+diff --git a/browser/base/content/workspace.js b/browser/base/content/workspace.js
+--- a/browser/base/content/workspace.js
++++ b/browser/base/content/workspace.js
+@@ -47,16 +47,17 @@ Cu.import("resource://gre/modules/XPCOMU
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource:///modules/PropertyPanel.jsm");
+ 
+ const WORKSPACE_CONTEXT_CONTENT = 1;
+ const WORKSPACE_CONTEXT_CHROME = 2;
+ const WORKSPACE_WINDOW_URL = "chrome://browser/content/workspace.xul";
+ const WORKSPACE_L10N = "chrome://browser/locale/workspace.properties";
+ const WORKSPACE_WINDOW_FEATURES = "chrome,titlebar,toolbar,centerscreen,resizable,dialog=no";
++const DEVTOOLS_CHROME_ENABLED = "devtools.chrome.enabled";
+ 
+ /**
+  * The workspace object handles the Workspace window functionality.
+  */
+ var Workspace = {
+   /**
+    * The script execution context. This tells Workspace in which context the
+    * script shall execute.
+@@ -541,14 +542,33 @@ var Workspace = {
+    * @return integer
+    *         the outer window ID
+    */
+   getWindowId: function HS_getWindowId(aWindow)
+   {
+     return aWindow.QueryInterface(Ci.nsIInterfaceRequestor).
+            getInterface(Ci.nsIDOMWindowUtils).outerWindowID;
+   },
++
++  /**
++   * The Workspace window DOMContentLoaded event handler.
++   */
++  onLoad: function HS_onLoad()
++  {
++    let contextMenu = document.getElementById("ws-context-menu");
++    let errorConsoleMenu = document.getElementById("ws-menu-errorConsole");
++    let errorConsoleCommand = document.getElementById("ws-cmd-errorConsole");
++
++    let chrome = Services.prefs.getBoolPref(DEVTOOLS_CHROME_ENABLED);
++    if (chrome) {
++      contextMenu.removeAttribute("hidden");
++      errorConsoleMenu.removeAttribute("hidden");
++      errorConsoleCommand.removeAttribute("disabled");
++    }
++  },
+ };
+ 
+ XPCOMUtils.defineLazyGetter(Workspace, "strings", function () {
+   return Services.strings.createBundle(WORKSPACE_L10N);
+ });
+ 
++addEventListener("DOMContentLoaded", Workspace.onLoad.bind(Workspace), false);
++
+diff --git a/browser/base/content/workspace.xul b/browser/base/content/workspace.xul
+--- a/browser/base/content/workspace.xul
++++ b/browser/base/content/workspace.xul
+@@ -65,17 +65,17 @@
+   <command id="ws-cmd-saveas" oncommand="Workspace.saveFileAs();"/>
+   <command id="ws-cmd-printFile" oncommand="Workspace.printFile();" disabled="true"/>
+   <command id="ws-cmd-close" oncommand="window.close();"/>
+   <command id="ws-cmd-execute" oncommand="Workspace.execute();"/>
+   <command id="ws-cmd-inspect" oncommand="Workspace.inspect();"/>
+   <command id="ws-cmd-print" oncommand="Workspace.print();"/>
+   <command id="ws-cmd-contentContext" oncommand="Workspace.setContentContext();"/>
+   <command id="ws-cmd-chromeContext" oncommand="Workspace.setChromeContext();"/>
+-  <command id="ws-cmd-errorConsole" oncommand="Workspace.openErrorConsole();"/>
++  <command id="ws-cmd-errorConsole" oncommand="Workspace.openErrorConsole();" disabled="true"/>
+   <command id="ws-cmd-webConsole" oncommand="Workspace.openWebConsole();"/>
+ </commandset>
+ 
+ <keyset id="ws-keyset">
+   <key id="ws-key-window"
+        key="&workspace.newwindow.key;"
+        command="ws-cmd-newWindow"
+        modifiers="accel"/>
+@@ -236,17 +236,17 @@
+       <menuitem id="ws-text-print"
+                 label="&workspace.print.label;"
+                 accesskey="&workspace.print.accesskey;"
+                 key="ws-key-print"
+                 command="ws-cmd-print"/>
+     </menupopup>
+   </menu>
+ 
+-  <menu id="ws-context-menu"
++  <menu id="ws-context-menu" hidden="true"
+         label="&workspace.context.label;"
+         accesskey="&workspace.context.accesskey;">
+     <menupopup id="ws-menu-context">
+       <menuitem id="ws-menu-content"
+                 label="&workspace.content.label;"
+                 accesskey="&workspace.content.accesskey;"
+                 command="ws-cmd-contentContext"
+                 checked="true"
+@@ -258,17 +258,17 @@
+                 type="radio"/>
+     </menupopup>
+   </menu>
+ 
+   <menu id="ws-tools-menu"
+         label="&toolsMenu.label;"
+         accesskey="&toolsMenu.accesskey;">
+     <menupopup id="ws-menu-tools">
+-      <menuitem id="ws-menu-errorConsole"
++      <menuitem id="ws-menu-errorConsole" hidden="true"
+                 label="&errorConsoleCmd.label;"
+                 accesskey="&errorConsoleCmd.accesskey;"
+                 key="ws-key-errorConsole"
+                 command="ws-cmd-errorConsole"/>
+       <menuitem id="ws-menu-webConsole"
+                 label="&webConsoleCmd.label;"
+                 accesskey="&webConsoleCmd.accesskey;"
+                 key="ws-key-webConsole"

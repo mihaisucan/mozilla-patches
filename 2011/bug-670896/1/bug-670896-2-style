@@ -1,0 +1,287 @@
+# HG changeset patch
+# Parent 1a8f99bd690e50f97269759df6fa507582330da3
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1311186391 -10800
+Bug 670896 - Part 2 - layout/style changes
+
+diff --git a/layout/style/nsCSSScanner.cpp b/layout/style/nsCSSScanner.cpp
+--- a/layout/style/nsCSSScanner.cpp
++++ b/layout/style/nsCSSScanner.cpp
+@@ -56,16 +56,17 @@
+ #include "nsIConsoleService.h"
+ #include "nsIScriptError.h"
+ #include "nsIStringBundle.h"
+ #include "nsIDocument.h"
+ #include "mozilla/Services.h"
+ #include "mozilla/css/Loader.h"
+ #include "nsCSSStyleSheet.h"
+ #include "mozilla/Preferences.h"
++#include "nsPIDOMWindow.h"
+ 
+ using namespace mozilla;
+ 
+ #ifdef CSS_REPORT_PARSE_ERRORS
+ static PRBool gReportErrors = PR_TRUE;
+ static nsIConsoleService *gConsoleService;
+ static nsIFactory *gScriptErrorFactory;
+ static nsIStringBundle *gStringBundle;
+@@ -281,16 +282,17 @@ nsCSSToken::AppendToString(nsString& aBu
+ nsCSSScanner::nsCSSScanner()
+   : mInputStream(nsnull)
+   , mReadPointer(nsnull)
+   , mLowLevelError(NS_OK)
+   , mSVGMode(PR_FALSE)
+ #ifdef CSS_REPORT_PARSE_ERRORS
+   , mError(mErrorBuf, NS_ARRAY_LENGTH(mErrorBuf), 0)
+   , mWindowID(0)
++  , mInnerWindowID(0)
+   , mWindowIDCached(PR_FALSE)
+   , mSheet(nsnull)
+   , mLoader(nsnull)
+ #endif
+ {
+   MOZ_COUNT_CTOR(nsCSSScanner);
+   mPushback = mLocalPushback;
+   mPushbackSize = NS_ARRAY_LENGTH(mLocalPushback);
+@@ -444,39 +446,48 @@ nsCSSScanner::OutputError()
+ {
+   if (mError.IsEmpty()) return;
+  
+   // Log it to the Error console
+ 
+   if (InitGlobals() && gReportErrors) {
+     if (!mWindowIDCached) {
+       if (mSheet) {
+-        mWindowID = mSheet->FindOwningWindowID();
++        nsCOMPtr<nsPIDOMWindow> window = mSheet->FindOwningWindow();
++        if (window) {
++          mWindowID = window->WindowID();
++          nsCOMPtr<nsPIDOMWindow> innerWindow = window->GetCurrentInnerWindow();
++          if (innerWindow) {
++            mInnerWindowID = innerWindow->WindowID();
++          }
++        }
+       }
+       if (mWindowID == 0 && mLoader) {
+         nsIDocument* doc = mLoader->GetDocument();
+         if (doc) {
+           mWindowID = doc->OuterWindowID();
++          mInnerWindowID = doc->InnerWindowID();
+         }
+       }
+       mWindowIDCached = PR_TRUE;
+     }
+ 
+     nsresult rv;
+     nsCOMPtr<nsIScriptError2> errorObject =
+       do_CreateInstance(gScriptErrorFactory, &rv);
+ 
+     if (NS_SUCCEEDED(rv)) {
+       rv = errorObject->InitWithWindowID(mError.get(),
+                                          NS_ConvertUTF8toUTF16(mFileName).get(),
+                                          EmptyString().get(),
+                                          mErrorLineNumber,
+                                          mErrorColNumber,
+                                          nsIScriptError::warningFlag,
+-                                         "CSS Parser", mWindowID);
++                                         "CSS Parser",
++                                         mWindowID, mInnerWindowID);
+       if (NS_SUCCEEDED(rv)) {
+         nsCOMPtr<nsIScriptError> logError = do_QueryInterface(errorObject);
+         gConsoleService->LogMessage(logError);
+       }
+     }
+   }
+   ClearError();
+ }
+@@ -618,16 +629,17 @@ nsCSSScanner::Close()
+   mReadPointer = nsnull;
+ 
+   // Clean things up so we don't hold on to memory if our parser gets recycled.
+ #ifdef CSS_REPORT_PARSE_ERRORS
+   mFileName.Truncate();
+   mURI = nsnull;
+   mError.Truncate();
+   mWindowID = 0;
++  mInnerWindowID = 0;
+   mWindowIDCached = PR_FALSE;
+   mSheet = nsnull;
+   mLoader = nsnull;
+ #endif
+   if (mPushback != mLocalPushback) {
+     delete [] mPushback;
+     mPushback = mLocalPushback;
+     mPushbackSize = NS_ARRAY_LENGTH(mLocalPushback);
+diff --git a/layout/style/nsCSSScanner.h b/layout/style/nsCSSScanner.h
+--- a/layout/style/nsCSSScanner.h
++++ b/layout/style/nsCSSScanner.h
+@@ -244,15 +244,16 @@ protected:
+   PRPackedBool mSVGMode;
+ #ifdef CSS_REPORT_PARSE_ERRORS
+   nsXPIDLCString mFileName;
+   nsCOMPtr<nsIURI> mURI;  // Cached so we know to not refetch mFileName
+   PRUint32 mErrorLineNumber, mColNumber, mErrorColNumber;
+   nsFixedString mError;
+   PRUnichar mErrorBuf[200];
+   PRUint64 mWindowID;
++  PRUint64 mInnerWindowID;
+   PRBool mWindowIDCached;
+   nsCSSStyleSheet* mSheet;
+   mozilla::css::Loader* mLoader;
+ #endif
+ };
+ 
+ #endif /* nsCSSScanner_h___ */
+diff --git a/layout/style/nsCSSStyleSheet.cpp b/layout/style/nsCSSStyleSheet.cpp
+--- a/layout/style/nsCSSStyleSheet.cpp
++++ b/layout/style/nsCSSStyleSheet.cpp
+@@ -67,16 +67,17 @@
+ #include "nsXMLNameSpaceMap.h"
+ #include "nsCOMPtr.h"
+ #include "nsContentUtils.h"
+ #include "nsIScriptSecurityManager.h"
+ #include "mozAutoDocUpdate.h"
+ #include "mozilla/css/Declaration.h"
+ #include "nsRuleNode.h"
+ #include "nsMediaFeatures.h"
++#include "nsPIDOMWindow.h"
+ 
+ namespace css = mozilla::css;
+ 
+ // -------------------------------
+ // Style Rule List for the DOM
+ //
+ class CSSRuleListImpl : public nsICSSRuleList
+ {
+@@ -1247,49 +1248,49 @@ nsCSSStyleSheet::SetOwningDocument(nsIDo
+   for (nsCSSStyleSheet* child = mInner->mFirstChild;
+        child; child = child->mNext) {
+     if (child->mParent == this) {
+       child->SetOwningDocument(aDocument);
+     }
+   }
+ }
+ 
+-/* virtual */ PRUint64
+-nsCSSStyleSheet::FindOwningWindowID() const
++nsPIDOMWindow*
++nsCSSStyleSheet::FindOwningWindow() const
+ {
+-  PRUint64 windowID = 0;
++  nsCOMPtr<nsPIDOMWindow> window;
+   if (mDocument) {
+-    windowID = mDocument->OuterWindowID();
++    window = mDocument->GetWindow();
+   }
+ 
+-  if (windowID == 0 && mOwningNode) {
++  if (!window && mOwningNode) {
+     nsCOMPtr<nsIContent> node = do_QueryInterface(mOwningNode);
+     if (node) {
+       nsIDocument* doc = node->GetOwnerDoc();
+       if (doc) {
+-        windowID = doc->OuterWindowID();
++        window = doc->GetWindow();
+       }
+     }
+   }
+ 
+-  if (windowID == 0 && mOwnerRule) {
++  if (!window && mOwnerRule) {
+     nsCOMPtr<nsIStyleSheet> sheet = static_cast<css::Rule*>(mOwnerRule)->GetStyleSheet();
+     if (sheet) {
+       nsRefPtr<nsCSSStyleSheet> cssSheet = do_QueryObject(sheet);
+       if (cssSheet) {
+-        windowID = cssSheet->FindOwningWindowID();
++        window = cssSheet->FindOwningWindow();
+       }
+     }
+   }
+ 
+-  if (windowID == 0 && mParent) {
+-    windowID = mParent->FindOwningWindowID();
++  if (window && mParent) {
++    window = mParent->FindOwningWindow();
+   }
+ 
+-  return windowID;
++  return window;
+ }
+ 
+ void
+ nsCSSStyleSheet::AppendStyleSheet(nsCSSStyleSheet* aSheet)
+ {
+   NS_PRECONDITION(nsnull != aSheet, "null arg");
+ 
+   if (NS_SUCCEEDED(WillDirty())) {
+diff --git a/layout/style/nsCSSStyleSheet.h b/layout/style/nsCSSStyleSheet.h
+--- a/layout/style/nsCSSStyleSheet.h
++++ b/layout/style/nsCSSStyleSheet.h
+@@ -56,16 +56,17 @@ class nsXMLNameSpaceMap;
+ class nsCSSRuleProcessor;
+ class nsMediaList;
+ class nsIPrincipal;
+ class nsIURI;
+ class nsMediaList;
+ class nsMediaQueryResultCacheKey;
+ class nsCSSStyleSheet;
+ class nsPresContext;
++class nsPIDOMWindow;
+ template<class E, class A> class nsTArray;
+ 
+ namespace mozilla {
+ namespace css {
+ class Rule;
+ class GroupRule;
+ class ImportRule;
+ }
+@@ -150,18 +151,18 @@ public:
+   virtual PRBool IsApplicable() const;
+   virtual void SetEnabled(PRBool aEnabled);
+   virtual PRBool IsComplete() const;
+   virtual void SetComplete();
+   virtual nsIStyleSheet* GetParentSheet() const;  // may be null
+   virtual nsIDocument* GetOwningDocument() const;  // may be null
+   virtual void SetOwningDocument(nsIDocument* aDocument);
+ 
+-  // Find the ID of the owner outer window.
+-  virtual PRUint64 FindOwningWindowID() const;
++  // Find the owner outer window.
++  nsPIDOMWindow* FindOwningWindow() const; // may be null
+ #ifdef DEBUG
+   virtual void List(FILE* out = stdout, PRInt32 aIndent = 0) const;
+ #endif
+ 
+   void AppendStyleSheet(nsCSSStyleSheet* aSheet);
+   void InsertStyleSheetAt(nsCSSStyleSheet* aSheet, PRInt32 aIndex);
+ 
+   // XXX do these belong here or are they generic?
+diff --git a/layout/style/nsFontFaceLoader.cpp b/layout/style/nsFontFaceLoader.cpp
+--- a/layout/style/nsFontFaceLoader.cpp
++++ b/layout/style/nsFontFaceLoader.cpp
+@@ -793,23 +793,24 @@ nsUserFontSet::LogMessage(gfxProxyFontEn
+     NS_ENSURE_SUCCESS(rv, rv);
+   }
+ 
+   nsCOMPtr<nsIScriptError2> scriptError =
+     do_CreateInstance(NS_SCRIPTERROR_CONTRACTID, &rv);
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   PRUint64 windowID = GetPresContext()->Document()->OuterWindowID();
++  PRUint64 innerWindowID = GetPresContext()->Document()->InnerWindowID();
+   rv = scriptError->InitWithWindowID(NS_ConvertUTF8toUTF16(msg).get(),
+                                      href.get(),   // file
+                                      text.get(),   // src line
+                                      0, 0,         // line & column number
+                                      aFlags,       // flags
+                                      "CSS Loader", // category (make separate?)
+-                                     windowID);
++                                     windowID, innerWindowID);
+   if (NS_SUCCEEDED(rv)){
+     nsCOMPtr<nsIScriptError> logError = do_QueryInterface(scriptError);
+     if (logError) {
+       console->LogMessage(logError);
+     }
+   }
+ 
+   return NS_OK;

@@ -1,0 +1,214 @@
+diff --git a/browser/base/content/csslogic.js b/browser/base/content/csslogic.js
+--- a/browser/base/content/csslogic.js
++++ b/browser/base/content/csslogic.js
+@@ -17,16 +17,17 @@
+  *
+  * The Initial Developer of the Original Code is
+  * The Mozilla Foundation.
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Joe Walker <jwalker@mozilla.com)> (original author)
++ *   Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -479,39 +480,38 @@ CssInfo.prototype = {
+       // Do we have a selector match?
+       if (CssLogic.matchesQuery(this._cssLogic.viewedElement, rule.selector)) {
+         rule.status = CssLogic.STATUS.MATCHED;
+       } else {
+         rule.status = CssLogic.STATUS.UNMATCHED;
+       }
+     }
+ 
++    if (this._rules.length > 0) {
++      if (this._rules[0].status === CssLogic.STATUS.MATCHED) {
++        this._rules[0].status = CssLogic.STATUS.BEST;
++      }
++    }
++
+     // jlog('before', this._rules);
+ 
+     // Sort the arrays by how well they match the given element
+     this._rules.sort(function(rule1, rule2) {
+       // jlog('compare', rule1.source, rule2.source);
+       if (rule1.status > rule2.status) {
+         return -1;
++      } else if (rule2.status > rule1.status) {
++        return 1;
++      } else {
++        return rule1.specificity.compareTo(rule2.specificity);
+       }
+-      if (rule1.status > rule2.status) {
+-        return 1;
+-      }
+-
+-      return rule1.specificity.compareTo(rule2.specificity);
+     });
+ 
+     // jlog('after', this._rules);
+ 
+-    if (this._rules.length > 0) {
+-      if (this._rules[0].status === CssLogic.STATUS.MATCHED) {
+-        this._rules[0].status = CssLogic.STATUS.BEST;
+-      }
+-    }
+-
+     this._matched = true;
+   },
+ 
+   /**
+    * Undoes the changes made by _markMatches().
+    * For use when <tt>viewedElement</tt> changes (e.g. in highlight())
+    */
+   unmarkMatches: function CssInfo_unmarkMatches()
+diff --git a/browser/base/content/test/Makefile.in b/browser/base/content/test/Makefile.in
+--- a/browser/base/content/test/Makefile.in
++++ b/browser/base/content/test/Makefile.in
+@@ -147,16 +147,17 @@ _BROWSER_FILES = \
+                  browser_gestureSupport.js \
+                  browser_getshortcutoruri.js \
+                  browser_inspector_initialization.js \
+                  browser_inspector_treeSelection.js \
+                  browser_inspector_highlighter.js \
+                  browser_inspector_stylePanel.js \
+                  browser_inspector_iframeTest.js \
+                  browser_inspector_scrolling.js \
++                 browser_inspector_cssinfo_order.js \
+                  browser_pageInfo.js \
+                  browser_page_style_menu.js \
+                  browser_pinnedTabs.js \
+                  browser_plainTextLinks.js \
+                  browser_pluginnotification.js \
+                  browser_popupUI.js \
+                  browser_relatedTabs.js \
+                  browser_sanitize-passwordDisabledHosts.js \
+diff --git a/browser/base/content/test/browser_inspector_cssinfo_order.js b/browser/base/content/test/browser_inspector_cssinfo_order.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_inspector_cssinfo_order.js
+@@ -0,0 +1,117 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Inspector Initializationa and Shutdown Tests.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Rob Campbell <rcampbell@mozilla.com>
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++let doc;
++
++function startInspectorTests()
++{
++  ok(InspectorUI, "InspectorUI variable exists");
++  document.addEventListener("popupshown", runInspectorTests, false);
++  InspectorUI.toggleInspectorUI();
++}
++
++function runInspectorTests(evt)
++{
++  if (evt.target.id != "inspector-style-panel")
++    return true;
++  document.removeEventListener(evt.type, arguments.callee, false);
++
++  ok(InspectorUI.inspecting, "Inspector is highlighting");
++  ok(InspectorUI.isPanelOpen, "Inspector Tree Panel is open");
++  ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
++
++  InspectorUI.toggleInspection();
++  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++
++  let div = doc.getElementsByTagName("div")[0];
++  ok(div, "we have the div element");
++
++  InspectorUI.inspectNode(div);
++
++  let cssInfo = InspectorUI.cssLogic.getCssInfo("color");
++  let rules = cssInfo.rules;
++
++  ok(cssInfo, "we have cssInfo('color')");
++  ok(Array.isArray(rules), "cssInfo.rules property is an array");
++  is(rules.length, 3, "rules.length = 3");
++
++  // Check rules order.
++  is(rules[0].selector, ".test", "first rule: .test");
++  is(rules[1].selector, "div", "second rule: div");
++  is(rules[2].selector, "#test", "third rule: #test");
++
++  document.addEventListener("popuphidden", finishInspectorTests, false);
++  InspectorUI.toggleInspectorUI();
++}
++
++function finishInspectorTests(evt)
++{
++  if (evt.target.id != "inspector-style-panel")
++    return true;
++
++  document.removeEventListener(evt.type, arguments.callee, false);
++
++  ok(!InspectorUI.isStylePanelOpen, "Inspector Style Panel is closed");
++  ok(!InspectorUI.isPanelOpen, "Inspector Tree Panel is closed");
++  ok(!InspectorUI.inspecting, "Inspector is not highlighting");
++
++  gBrowser.removeCurrentTab();
++  finish();
++}
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function(evt) {
++    gBrowser.selectedBrowser.removeEventListener(evt.type, arguments.callee,
++      true);
++    doc = content.document;
++    waitForFocus(startInspectorTests, content);
++  }, true);
++
++  content.location = "data:text/html,<!DOCTYPE html><html><head><style> " +
++    ".test, #test { color: green } div { color: blue } " +
++    "</style></head><body>" +
++    "<div class='test'>cssInfo.rules order test for Inspector</div>" +
++    "</body></html>";
++}
++

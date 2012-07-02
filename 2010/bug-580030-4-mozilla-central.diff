@@ -1,0 +1,169 @@
+diff -r 58101a16aff7 toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm	Fri Jul 23 12:49:57 2010 +0300
++++ b/toolkit/components/console/hudservice/HUDService.jsm	Mon Jul 26 19:14:54 2010 +0300
+@@ -1725,25 +1725,29 @@ HeadsUpDisplay.prototype = {
+    * Shortcut to make HTML nodes
+    *
+    * @param string aTag
+    * @returns nsIDOMNode
+    */
+   makeHTMLNode:
+   function HUD_makeHTMLNode(aTag)
+   {
+-    try {
+-      return this.HTMLFactory(aTag);
++    var element;
++
++    if (this.HTMLFactory) {
++      element = this.HTMLFactory(aTag);
+     }
+-    catch (ex) {
++    else {
+       var ns = ELEMENT_NS;
+       var nsUri = ELEMENT_NS_URI;
+       var tag = ns + aTag;
+-      return this.chromeDocument.createElementNS(nsUri, tag);
++      element = this.chromeDocument.createElementNS(nsUri, tag);
+     }
++
++    return element;
+   },
+ 
+   /**
+    * Shortcut to make XUL nodes
+    *
+    * @param string aTag
+    * @returns nsIDOMNode
+    */
+diff -r 58101a16aff7 toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in	Fri Jul 23 12:49:57 2010 +0300
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in	Mon Jul 26 19:14:54 2010 +0300
+@@ -51,15 +51,16 @@ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-mutation.html \
+ 	testscript.js \
+ 	test-filter.html \
+ 	test-observe-http-ajax.html \
+ 	test-data.json \
+ 	test-property-provider.html \
++	test-error.html \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff -r 58101a16aff7 toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Fri Jul 23 12:49:57 2010 +0300
++++ b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Mon Jul 26 19:14:54 2010 +0300
+@@ -60,16 +60,18 @@ const TEST_URI = "http://example.com/bro
+ const TEST_HTTP_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-observe-http-ajax.html";
+ 
+ const TEST_NETWORK_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-network.html";
+ 
+ const TEST_FILTER_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-filter.html";
+ 
+ const TEST_PROPERTY_PROVIDER_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-property-provider.html";
+ 
++const TEST_ERROR_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-error.html";
++
+ function noCacheUriSpec(aUriSpec) {
+   return aUriSpec + "?_=" + Date.now();
+ }
+ 
+ content.location.href = TEST_URI;
+ 
+ function testRegistries() {
+   var displaysIdx = HUDService.displaysIndex();
+@@ -577,22 +579,65 @@ function testPageReload() {
+ 
+     is(typeof console, "object", "window.console is an object, after page reload");
+     is(typeof console.log, "function", "console.log is a function");
+     is(typeof console.info, "function", "console.info is a function");
+     is(typeof console.warn, "function", "console.warn is a function");
+     is(typeof console.error, "function", "console.error is a function");
+     is(typeof console.exception, "function", "console.exception is a function");
+ 
+-    testEnd();
++    testErrorOnPageReload();
+   }, false);
+ 
+   content.location.reload();
+ }
+ 
++function testErrorOnPageReload() {
++  // see bug 580030: the error handler fails silently after page reload.
++  // https://bugzilla.mozilla.org/show_bug.cgi?id=580030
++
++  var pageReloaded = false;
++  browser.addEventListener("DOMContentLoaded", function onDOMLoad() {
++    if (!pageReloaded) {
++      pageReloaded = true;
++      content.location.reload();
++      return;
++    }
++
++    browser.removeEventListener("DOMContentLoaded", onDOMLoad, false);
++
++    // dispatch a click event to the button in the test page.
++    var contentDocument = browser.contentDocument.wrappedJSObject;
++    var button = contentDocument.getElementsByTagName("button")[0];
++    var clickEvent = contentDocument.createEvent("MouseEvents");
++    clickEvent.initMouseEvent("click", true, true,
++      browser.contentWindow.wrappedJSObject, 0, 0, 0, 0, 0, false, false,
++      false, false, 0, null);
++
++    var successMsg = "Found the error message after page reload";
++    var errMsg = "Could not get the error message after page reload";
++
++    var display = HUDService.getDisplayByURISpec(content.location.href);
++    var outputNode = display.querySelectorAll(".hud-output-node")[0];
++
++    button.addEventListener("click", function onClickHandler() {
++      button.removeEventListener("click", onClickHandler, false);
++
++      testLogEntry(outputNode, "fooBazBaz",
++        { success: successMsg, err: errMsg });
++
++      testEnd();
++    }, false);
++
++    button.dispatchEvent(clickEvent);
++  }, false);
++
++  content.location.href = TEST_ERROR_URI;
++}
++
+ function testEnd() {
+   // testUnregister();
+   executeSoon(function () {
+     HUDService.deactivateHUDForContext(tab);
+     HUDService.shutdown();
+   });
+   finish();
+ }
+diff -r 58101a16aff7 toolkit/components/console/hudservice/tests/browser/test-error.html
+--- /dev/null	Thu Jan 01 00:00:00 1970 +0000
++++ b/toolkit/components/console/hudservice/tests/browser/test-error.html	Mon Jul 26 19:14:54 2010 +0300
+@@ -0,0 +1,19 @@
++<!DOCTYPE HTML>
++<html dir="ltr" xml:lang="en-US" lang="en-US">
++  <head>
++    <title>Console error test</title>
++  </head>
++  <body>
++    <h1>Heads Up Display - error test</h1>
++    <p><button>generate error</button></p>
++
++    <script type="text/javascript"><!--
++      var button = document.getElementsByTagName("button")[0];
++
++      button.addEventListener("click", function () {
++        fooBazBaz.bar();
++      }, false);
++    // --></script>
++  </body>
++</html>
++

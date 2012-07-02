@@ -1,0 +1,1128 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1313098510 -10800
+# Node ID bda0f3aacf48be63a9895253fc802c08ef5cdcb1
+# Parent  a31ae9a7dd799ed30a4befba15b781f567524868
+Bug 636727 - Add a source editor to Scratchpad
+
+diff --git a/browser/devtools/scratchpad/scratchpad.js b/browser/devtools/scratchpad/scratchpad.js
+--- a/browser/devtools/scratchpad/scratchpad.js
++++ b/browser/devtools/scratchpad/scratchpad.js
+@@ -43,35 +43,35 @@
+  * Original version history can be found here:
+  * https://github.com/mozilla/workspace
+  *
+  * Copied and relicensed from the Public Domain.
+  * See bug 653934 for details.
+  * https://bugzilla.mozilla.org/show_bug.cgi?id=653934
+  */
+ 
++"use strict";
++
+ const Cc = Components.classes;
+ const Ci = Components.interfaces;
+ const Cu = Components.utils;
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource://gre/modules/NetUtil.jsm");
+ Cu.import("resource:///modules/PropertyPanel.jsm");
++Cu.import("resource:///modules/source-editor.jsm");
+ 
+ const SCRATCHPAD_CONTEXT_CONTENT = 1;
+ const SCRATCHPAD_CONTEXT_BROWSER = 2;
+ const SCRATCHPAD_WINDOW_URL = "chrome://browser/content/scratchpad.xul";
+ const SCRATCHPAD_L10N = "chrome://browser/locale/scratchpad.properties";
+ const SCRATCHPAD_WINDOW_FEATURES = "chrome,titlebar,toolbar,centerscreen,resizable,dialog=no";
+ const DEVTOOLS_CHROME_ENABLED = "devtools.chrome.enabled";
+ 
+-const PREF_TABSIZE = "devtools.editor.tabsize";
+-const PREF_EXPANDTAB = "devtools.editor.expandtab";
+-
+ /**
+  * The scratchpad object handles the Scratchpad window functionality.
+  */
+ var Scratchpad = {
+   /**
+    * The script execution context. This tells Scratchpad in which context the
+    * script shall execute.
+    *
+@@ -79,34 +79,62 @@ var Scratchpad = {
+    *   - SCRATCHPAD_CONTEXT_CONTENT to execute code in the context of the current
+    *   tab content window object.
+    *   - SCRATCHPAD_CONTEXT_BROWSER to execute code in the context of the
+    *   currently active chrome window object.
+    */
+   executionContext: SCRATCHPAD_CONTEXT_CONTENT,
+ 
+   /**
+-   * Retrieve the xul:textbox DOM element. This element holds the source code
+-   * the user writes and executes.
+-   */
+-  get textbox() document.getElementById("scratchpad-textbox"),
+-
+-  /**
+    * Retrieve the xul:statusbarpanel DOM element. The status bar tells the
+    * current code execution context.
+    */
+   get statusbarStatus() document.getElementById("scratchpad-status"),
+ 
+   /**
+-   * Get the selected text from the textbox.
++   * Get the selected text from the editor.
++   *
++   * @return string
++   *         The selected text.
+    */
+-  get selectedText()
++  get selectedText() this.editor.getSelectedText(),
++
++  /**
++   * Get the editor content, in the given range. If no range is given you get
++   * the entire editor content.
++   *
++   * @param number [aStart=0]
++   *        Optional, start from the given offset.
++   * @param number [aEnd=content char count]
++   *        Optional, end offset for the text you want. If this parameter is not
++   *        given, then the text returned goes until the end of the editor
++   *        content.
++   * @return string
++   *         The text in the given range.
++   */
++  getText: function SP_getText(aStart, aEnd)
+   {
+-    return this.textbox.value.substring(this.textbox.selectionStart,
+-                                        this.textbox.selectionEnd);
++    return this.editor.getText(aStart, aEnd);
++  },
++
++  /**
++   * Replace text in the source editor with the given text, in the given range.
++   *
++   * @param string aText
++   *        The text you want to put into the editor.
++   * @param number [aStart=0]
++   *        Optional, the start offset, zero based, from where you want to start
++   *        replacing text in the editor.
++   * @param number [aEnd=char count]
++   *        Optional, the end offset, zero based, where you want to stop
++   *        replacing text in the editor.
++   */
++  setText: function SP_setText(aText, aStart, aEnd)
++  {
++    this.editor.setText(aText, aStart, aEnd);
+   },
+ 
+   /**
+    * Get the most recent chrome window of type navigator:browser.
+    */
+   get browserWindow() Services.wm.getMostRecentWindow("navigator:browser"),
+ 
+   /**
+@@ -119,21 +147,16 @@ var Scratchpad = {
+    * Get the gBrowser object of the most recent browser window.
+    */
+   get gBrowser()
+   {
+     let recentWin = this.browserWindow;
+     return recentWin ? recentWin.gBrowser : null;
+   },
+ 
+-  insertIntro: function SP_insertIntro()
+-  {
+-    this.textbox.value = this.strings.GetStringFromName("scratchpadIntro");
+-  },
+-
+   /**
+    * Cached Cu.Sandbox object for the active tab content window object.
+    */
+   _contentSandbox: null,
+ 
+   /**
+    * Get the Cu.Sandbox object for the active tab content window object. Note
+    * that the returned object is cached for later reuse. The cached object is
+@@ -192,35 +215,46 @@ var Scratchpad = {
+ 
+       this._previousBrowserWindow = this.browserWindow;
+     }
+ 
+     return this._chromeSandbox;
+   },
+ 
+   /**
+-   * Drop the textbox selection.
++   * Drop the editor selection.
+    */
+   deselect: function SP_deselect()
+   {
+-    this.textbox.selectionEnd = this.textbox.selectionStart;
++    this.editor.dropSelection();
+   },
+ 
+   /**
+-   * Select a specific range in the Scratchpad xul:textbox.
++   * Select a specific range in the Scratchpad editor.
+    *
+    * @param number aStart
+    *        Selection range start.
+    * @param number aEnd
+    *        Selection range end.
+    */
+   selectRange: function SP_selectRange(aStart, aEnd)
+   {
+-    this.textbox.selectionStart = aStart;
+-    this.textbox.selectionEnd = aEnd;
++    this.editor.setSelection(aStart, aEnd);
++  },
++
++  /**
++   * Get the current selection range.
++   *
++   * @return object
++   *         An object with two properties, start and end, that give the
++   *         selection range (zero based offsets).
++   */
++  getSelectionRange: function SP_getSelection()
++  {
++    return this.editor.getSelection();
+   },
+ 
+   /**
+    * Evaluate a string in the active tab content window.
+    *
+    * @param string aString
+    *        The script you want evaluated.
+    * @return mixed
+@@ -288,70 +322,65 @@ var Scratchpad = {
+   evalForContext: function SP_evaluateForContext(aString)
+   {
+     return this.executionContext == SCRATCHPAD_CONTEXT_CONTENT ?
+            this.evalInContentSandbox(aString) :
+            this.evalInChromeSandbox(aString);
+   },
+ 
+   /**
+-   * Execute the selected text (if any) or the entire textbox content in the
++   * Execute the selected text (if any) or the entire editor content in the
+    * current context.
+    */
+   run: function SP_run()
+   {
+-    let selection = this.selectedText || this.textbox.value;
++    let selection = this.selectedText || this.getText();
+     let result = this.evalForContext(selection);
+     this.deselect();
+     return [selection, result];
+   },
+ 
+   /**
+-   * Execute the selected text (if any) or the entire textbox content in the
++   * Execute the selected text (if any) or the entire editor content in the
+    * current context. The resulting object is opened up in the Property Panel
+    * for inspection.
+    */
+   inspect: function SP_inspect()
+   {
+     let [selection, result] = this.run();
+ 
+     if (result) {
+       this.openPropertyPanel(selection, result);
+     }
+   },
+ 
+   /**
+-   * Execute the selected text (if any) or the entire textbox content in the
+-   * current context. The evaluation result is inserted into the textbox after
+-   * the selected text, or at the end of the textbox value if there is no
++   * Execute the selected text (if any) or the entire editor content in the
++   * current context. The evaluation result is inserted into the editor after
++   * the selected text, or at the end of the editor content if there is no
+    * selected text.
+    */
+   display: function SP_display()
+   {
+-    let selectionStart = this.textbox.selectionStart;
+-    let selectionEnd = this.textbox.selectionEnd;
+-    if (selectionStart == selectionEnd) {
+-      selectionEnd = this.textbox.value.length;
+-    }
++    let selection = this.getSelectionRange();
++    let insertionPoint = selection.start != selection.end ?
++                         selection.end : // after selected text
++                         this.editor.getCharCount(); // after text end
+ 
+-    let [selection, result] = this.run();
++    let [selectedText, result] = this.run();
+     if (!result) {
+       return;
+     }
+ 
+-    let firstPiece = this.textbox.value.slice(0, selectionEnd);
+-    let lastPiece = this.textbox.value.
+-                    slice(selectionEnd, this.textbox.value.length);
+-
+     let newComment = "/*\n" + result.toString() + "\n*/";
+ 
+-    this.textbox.value = firstPiece + newComment + lastPiece;
++    this.setText(newComment, insertionPoint, insertionPoint);
+ 
+-    // Select the added comment.
+-    this.selectRange(firstPiece.length, firstPiece.length + newComment.length);
++    // Select the new comment.
++    this.selectRange(insertionPoint, insertionPoint + newComment.length);
+   },
+ 
+   /**
+    * Open the Property Panel to inspect the given object.
+    *
+    * @param string aEvalString
+    *        The string that was evaluated. This is re-used when the user updates
+    *        the properties list, by clicking the Update button.
+@@ -437,22 +466,22 @@ var Scratchpad = {
+         !window.confirm(this.strings.
+                         GetStringFromName("export.fileOverwriteConfirmation"))) {
+       return;
+     }
+ 
+     let fs = Cc["@mozilla.org/network/file-output-stream;1"].
+              createInstance(Ci.nsIFileOutputStream);
+     let modeFlags = 0x02 | 0x08 | 0x20;
+-    fs.init(aFile, modeFlags, 0644, fs.DEFER_OPEN);
++    fs.init(aFile, modeFlags, 420 /* 0644 */, fs.DEFER_OPEN);
+ 
+     let converter = Cc["@mozilla.org/intl/scriptableunicodeconverter"].
+                     createInstance(Ci.nsIScriptableUnicodeConverter);
+     converter.charset = "UTF-8";
+-    let input = converter.convertToInputStream(this.textbox.value);
++    let input = converter.convertToInputStream(this.getText());
+ 
+     let self = this;
+     NetUtil.asyncCopy(input, fs, function(aStatus) {
+       if (!aSilentError && !Components.isSuccessCode(aStatus)) {
+         window.alert(self.strings.GetStringFromName("saveFile.failed"));
+       }
+ 
+       if (aCallback) {
+@@ -483,17 +512,17 @@ var Scratchpad = {
+ 
+     let self = this;
+     NetUtil.asyncFetch(channel, function(aInputStream, aStatus) {
+       let content = null;
+ 
+       if (Components.isSuccessCode(aStatus)) {
+         content = NetUtil.readInputStreamToString(aInputStream,
+                                                   aInputStream.available());
+-        self.textbox.value = content;
++        self.setText(content);
+       }
+       else if (!aSilentError) {
+         window.alert(self.strings.GetStringFromName("openFile.failed"));
+       }
+ 
+       if (aCallback) {
+         aCallback.call(self, aStatus, content);
+       }
+@@ -610,83 +639,142 @@ var Scratchpad = {
+    */
+   getWindowId: function SP_getWindowId(aWindow)
+   {
+     return aWindow.QueryInterface(Ci.nsIInterfaceRequestor).
+            getInterface(Ci.nsIDOMWindowUtils).outerWindowID;
+   },
+ 
+   /**
+-   * The Scratchpad window DOMContentLoaded event handler.
++   * The Scratchpad window DOMContentLoaded event handler. This method
++   * initializes the Scratchpad window and source editor.
++   *
++   * @param nsIDOMEvent aEvent
+    */
+-  onLoad: function SP_onLoad()
++  onLoad: function SP_onLoad(aEvent)
+   {
++    if (aEvent.target != document) {
++      return;
++    }
++
+     let chromeContextMenu = document.getElementById("sp-menu-browser");
+     let errorConsoleMenu = document.getElementById("sp-menu-errorConsole");
+     let errorConsoleCommand = document.getElementById("sp-cmd-errorConsole");
+     let chromeContextCommand = document.getElementById("sp-cmd-browserContext");
+ 
+     let chrome = Services.prefs.getBoolPref(DEVTOOLS_CHROME_ENABLED);
+     if (chrome) {
+       chromeContextMenu.removeAttribute("hidden");
+       errorConsoleMenu.removeAttribute("hidden");
+       errorConsoleCommand.removeAttribute("disabled");
+       chromeContextCommand.removeAttribute("disabled");
+     }
+ 
+-    let tabsize = Services.prefs.getIntPref(PREF_TABSIZE);
+-    if (tabsize < 1) {
+-      // tabsize is invalid, clear back to the default value.
+-      Services.prefs.clearUserPref(PREF_TABSIZE);
+-      tabsize = Services.prefs.getIntPref(PREF_TABSIZE);
+-    }
++    this.editor = new SourceEditor();
+ 
+-    let expandtab = Services.prefs.getBoolPref(PREF_EXPANDTAB);
+-    this._tabCharacter = expandtab ? (new Array(tabsize + 1)).join(" ") : "\t";
+-    this.textbox.style.MozTabSize = tabsize;
++    let config = {
++      mode: SourceEditor.MODES.JAVASCRIPT,
++      showLineNumbers: true,
++      placeholderText: this.strings.GetStringFromName("scratchpadIntro"),
++    };
+ 
+-    // Force LTR direction (otherwise the textbox inherits the locale direction)
+-    this.textbox.style.direction = "ltr";
+-
+-    this.insertIntro();
+-
+-    // Make the Tab key work.
+-    this.textbox.addEventListener("keypress", this.onKeypress.bind(this), false);
+-
+-    this.textbox.focus();
++    let editorPlaceholder = document.getElementById("scratchpad-editor");
++    this.editor.init(editorPlaceholder, config, this.onEditorLoad.bind(this));
+   },
+ 
+   /**
+-   * The textbox keypress event handler which allows users to indent code using
+-   * the Tab key.
+-   *
+-   * @param nsIDOMEvent aEvent
++   * The load event handler for the source editor. This method does post-load
++   * editor initialization.
+    */
+-  onKeypress: function SP_onKeypress(aEvent)
++  onEditorLoad: function SP_onEditorLoad()
+   {
+-    if (aEvent.keyCode == aEvent.DOM_VK_TAB) {
+-      this.insertTextAtCaret(this._tabCharacter);
+-      aEvent.preventDefault();
+-    }
++    this.editor.addEventListener(SourceEditor.EVENTS.CONTEXT_MENU,
++                                 this.onContextMenu);
++    this.editor.focus();
++    this.editor.setCaretOffset(this.editor.getCharCount());
+   },
+ 
+   /**
+    * Insert text at the current caret location.
+    *
+    * @param string aText
++   *        The text you want to insert.
+    */
+   insertTextAtCaret: function SP_insertTextAtCaret(aText)
+   {
+-    let firstPiece = this.textbox.value.substring(0, this.textbox.selectionStart);
+-    let lastPiece = this.textbox.value.substring(this.textbox.selectionEnd);
+-    this.textbox.value = firstPiece + aText + lastPiece;
++    let caretOffset = this.editor.getCaretOffset();
++    this.setText(aText, caretOffset, caretOffset);
++    this.editor.setCaretOffset(caretOffset + aText.length);
++  },
+ 
+-    let newCaretPosition = firstPiece.length + aText.length;
+-    this.selectRange(newCaretPosition, newCaretPosition);
++  /**
++   * The contextmenu event handler for the source editor. This method opens the
++   * Scratchpad context menu popup at the pointer location.
++   *
++   * @param object aEvent
++   *        An event object coming from the SourceEditor. This object needs to
++   *        hold the screenX and screenY properties.
++   */
++  onContextMenu: function SP_onContextMenu(aEvent)
++  {
++    let menu = document.getElementById("scratchpad-text-popup");
++    if (menu.state == "closed") {
++      menu.openPopupAtScreen(aEvent.screenX, aEvent.screenY, true);
++    }
++  },
++
++  /**
++   * The popupshowing event handler for the Edit menu. This method updates the
++   * enabled/disabled state of the Undo and Redo commands, based on the editor
++   * state such that the menu items render correctly for the user when the menu
++   * shows.
++   */
++  onEditPopupShowing: function SP_onEditPopupShowing()
++  {
++    let undo = document.getElementById("sp-cmd-undo");
++    undo.setAttribute("disabled", !this.editor.canUndo());
++
++    let redo = document.getElementById("sp-cmd-redo");
++    redo.setAttribute("disabled", !this.editor.canRedo());
++  },
++
++  /**
++   * Undo the last action of the user.
++   */
++  undo: function SP_undo()
++  {
++    this.editor.undo();
++  },
++
++  /**
++   * Redo the previously undone action.
++   */
++  redo: function SP_redo()
++  {
++    this.editor.redo();
++  },
++
++  /**
++   * The Scratchpad window unload event handler. This method unloads/destroys
++   * the source editor.
++   *
++   * @param nsIDOMEvent aEvent
++   */
++  onUnload: function SP_onUnload(aEvent)
++  {
++    if (aEvent.target != document) {
++      return;
++    }
++
++    this.resetContext();
++    this.editor.removeEventListener(SourceEditor.EVENTS.CONTEXT_MENU,
++                                    this.onContextMenu);
++    this.editor.destroy();
++    this.editor = null;
+   },
+ };
+ 
+ XPCOMUtils.defineLazyGetter(Scratchpad, "strings", function () {
+   return Services.strings.createBundle(SCRATCHPAD_L10N);
+ });
+ 
+ addEventListener("DOMContentLoaded", Scratchpad.onLoad.bind(Scratchpad), false);
+-
++addEventListener("unload", Scratchpad.onUnload.bind(Scratchpad), false);
+diff --git a/browser/devtools/scratchpad/scratchpad.xul b/browser/devtools/scratchpad/scratchpad.xul
+--- a/browser/devtools/scratchpad/scratchpad.xul
++++ b/browser/devtools/scratchpad/scratchpad.xul
+@@ -73,16 +73,18 @@
+   <command id="sp-cmd-run" oncommand="Scratchpad.run();"/>
+   <command id="sp-cmd-inspect" oncommand="Scratchpad.inspect();"/>
+   <command id="sp-cmd-display" oncommand="Scratchpad.display();"/>
+   <command id="sp-cmd-contentContext" oncommand="Scratchpad.setContentContext();"/>
+   <command id="sp-cmd-browserContext" oncommand="Scratchpad.setBrowserContext();" disabled="true"/>
+   <command id="sp-cmd-resetContext" oncommand="Scratchpad.resetContext();"/>
+   <command id="sp-cmd-errorConsole" oncommand="Scratchpad.openErrorConsole();" disabled="true"/>
+   <command id="sp-cmd-webConsole" oncommand="Scratchpad.openWebConsole();"/>
++  <command id="sp-cmd-undo" oncommand="Scratchpad.undo();" disabled="true"/>
++  <command id="sp-cmd-redo" oncommand="Scratchpad.redo();" disabled="true"/>
+ </commandset>
+ 
+ <keyset id="sp-keyset">
+   <key id="sp-key-window"
+        key="&newWindowCmd.commandkey;"
+        command="sp-cmd-newWindow"
+        modifiers="accel"/>
+   <key id="sp-key-open"
+@@ -111,18 +113,20 @@
+ 
+   <key id="key_copy"
+        key="&copyCmd.key;"
+        modifiers="accel"/>
+   <key id="key_paste"
+        key="&pasteCmd.key;"
+        modifiers="accel"/>
+   <key id="key_selectAll" key="&selectAllCmd.key;" modifiers="accel"/>
+-  <key id="key_undo" key="&undoCmd.key;" modifiers="accel"/>
+-  <key id="key_redo" key="&undoCmd.key;" modifiers="accel,shift"/>
++  <key id="key_undo" key="&undoCmd.key;" modifiers="accel"
++       oncommand="Scratchpad.undo();"/>
++  <key id="key_redo" key="&undoCmd.key;" modifiers="accel,shift"
++       oncommand="Scratchpad.redo();"/>
+   <key id="sp-key-run"
+        key="&run.key;"
+        command="sp-cmd-run"
+        modifiers="accel"/>
+   <key id="sp-key-inspect"
+        key="&inspect.key;"
+        command="sp-cmd-inspect"
+        modifiers="accel"/>
+@@ -180,29 +184,28 @@
+                 key="sp-key-close"
+                 accesskey="&closeCmd.accesskey;"
+                 command="sp-cmd-close"/>
+     </menupopup>
+   </menu>
+ 
+   <menu id="sp-edit-menu" label="&editMenu.label;"
+         accesskey="&editMenu.accesskey;">
+-    <menupopup id="sp-menu_editpopup">
++    <menupopup id="sp-menu_editpopup"
++               onpopupshowing="Scratchpad.onEditPopupShowing()">
+       <menuitem id="sp-menu-undo"
+                 label="&undoCmd.label;"
+                 key="key_undo"
+                 accesskey="&undoCmd.accesskey;"
+-                disabled="true"
+-                command="cmd_undo"/>
++                command="sp-cmd-undo"/>
+       <menuitem id="sp-menu-redo"
+                 label="&redoCmd.label;"
+                 key="key_redo"
+-                disabled="true"
+                 accesskey="&redoCmd.accesskey;"
+-                command="cmd_redo"/>
++                command="sp-cmd-redo"/>
+       <menuseparator/>
+       <menuitem id="sp-menu-cut"
+                 label="&cutCmd.label;"
+                 key="key_cut"
+                 accesskey="&cutCmd.accesskey;"
+                 command="cmd_cut"/>
+       <menuitem id="sp-menu-copy"
+                 label="&copyCmd.label;"
+@@ -324,21 +327,17 @@
+     <menuitem id="sp-text-display"
+               label="&display.label;"
+               accesskey="&display.accesskey;"
+               key="sp-key-display"
+               command="sp-cmd-display"/>
+   </menupopup>
+ </popupset>
+ 
+-<textbox id="scratchpad-textbox"
+-         class="monospace"
+-         multiline="true"
+-         flex="1"
+-         context="scratchpad-text-popup"
+-         placeholder="&textbox.placeholder1;" />
++<hbox id="scratchpad-editor" flex="1" context="scratchpad-text-popup" />
++
+ <statusbar id="scratchpad-statusbar" align="end">
+   <statusbarpanel id="scratchpad-status"
+                   label="&contentContext.label;"
+                   class="statusbarpanel-iconic-text"/>
+   <spacer flex="1"/>
+ </statusbar>
+ </window>
+diff --git a/browser/devtools/scratchpad/test/browser_scratchpad_bug_660560_tab.js b/browser/devtools/scratchpad/test/browser_scratchpad_bug_660560_tab.js
+--- a/browser/devtools/scratchpad/test/browser_scratchpad_bug_660560_tab.js
++++ b/browser/devtools/scratchpad/test/browser_scratchpad_bug_660560_tab.js
+@@ -26,89 +26,66 @@ function test()
+ 
+ function runTests()
+ {
+   gScratchpadWindow.removeEventListener("load", arguments.callee, false);
+ 
+   let sp = gScratchpadWindow.Scratchpad;
+   ok(sp, "Scratchpad object exists in new window");
+ 
+-  is(gScratchpadWindow.document.activeElement, sp.textbox.inputField,
+-     "The textbox has focus");
++  ok(sp.editor.hasFocus(), "the editor has focus");
+ 
+-  is(sp.textbox.style.MozTabSize, 5, "-moz-tab-size is correct");
+-
+-  sp.textbox.value = "window.foo;";
+-  sp.selectRange(1, 3);
++  sp.setText("window.foo;");
++  sp.editor.setCaretOffset(0);
+ 
+   EventUtils.synthesizeKey("VK_TAB", {}, gScratchpadWindow);
+ 
+-  is(sp.textbox.value, "w     dow.foo;",
+-     "Tab key added 5 spaces");
++  is(sp.getText(), "     window.foo;", "Tab key added 5 spaces");
+ 
+-  is(sp.textbox.selectionStart, 6, "caret location is correct");
++  is(sp.editor.getCaretOffset(), 5, "caret location is correct");
+ 
+-  is(sp.textbox.selectionStart, sp.textbox.selectionEnd,
+-     "caret location is correct, confirmed");
++  sp.editor.setCaretOffset(6);
++
++  EventUtils.synthesizeKey("VK_TAB", {}, gScratchpadWindow);
++
++  is(sp.getText(), "     w    indow.foo;",
++     "Tab key added 4 spaces");
++
++  is(sp.editor.getCaretOffset(), 10, "caret location is correct");
+ 
+   // Test the new insertTextAtCaret() method.
+ 
+   sp.insertTextAtCaret("omg");
+ 
+-  is(sp.textbox.value, "w     omgdow.foo;", "insertTextAtCaret() works");
++  is(sp.getText(), "     w    omgindow.foo;", "insertTextAtCaret() works");
+ 
+-  is(sp.textbox.selectionStart, 9, "caret location is correct after update");
+-
+-  is(sp.textbox.selectionStart, sp.textbox.selectionEnd,
+-     "caret location is correct, confirmed");
++  is(sp.editor.getCaretOffset(), 13, "caret location is correct after update");
+ 
+   gScratchpadWindow.close();
+ 
+   Services.prefs.setIntPref("devtools.editor.tabsize", 6);
+   Services.prefs.setBoolPref("devtools.editor.expandtab", false);
+   gScratchpadWindow = Scratchpad.openScratchpad();
+   gScratchpadWindow.addEventListener("load", runTests2, false);
+ }
+ 
+ function runTests2()
+ {
+   gScratchpadWindow.removeEventListener("load", arguments.callee, false);
+ 
+   let sp = gScratchpadWindow.Scratchpad;
+ 
+-  is(sp.textbox.style.MozTabSize, 6, "-moz-tab-size is correct");
+-
+-  sp.textbox.value = "window.foo;";
+-  sp.selectRange(1, 3);
++  sp.setText("window.foo;");
++  sp.editor.setCaretOffset(0);
+ 
+   EventUtils.synthesizeKey("VK_TAB", {}, gScratchpadWindow);
+ 
+-  is(sp.textbox.value, "w\tdow.foo;", "Tab key added the tab character");
++  is(sp.getText(), "\twindow.foo;", "Tab key added the tab character");
+ 
+-  is(sp.textbox.selectionStart, 2, "caret location is correct");
+-
+-  is(sp.textbox.selectionStart, sp.textbox.selectionEnd,
+-     "caret location is correct, confirmed");
+-
+-  gScratchpadWindow.close();
+-
+-  // check with an invalid tabsize value.
+-  Services.prefs.setIntPref("devtools.editor.tabsize", 0);
+-  Services.prefs.setBoolPref("devtools.editor.expandtab", true);
+-  gScratchpadWindow = Scratchpad.openScratchpad();
+-  gScratchpadWindow.addEventListener("load", runTests3, false);
+-}
+-
+-function runTests3()
+-{
+-  gScratchpadWindow.removeEventListener("load", arguments.callee, false);
+-
+-  let sp = gScratchpadWindow.Scratchpad;
+-
+-  is(sp.textbox.style.MozTabSize, 4, "-moz-tab-size is correct");
++  is(sp.editor.getCaretOffset(), 1, "caret location is correct");
+ 
+   Services.prefs.clearUserPref("devtools.editor.tabsize");
+   Services.prefs.clearUserPref("devtools.editor.expandtab");
+ 
+   gScratchpadWindow.close();
+   gScratchpadWindow = null;
+ 
+   gBrowser.removeCurrentTab();
+diff --git a/browser/devtools/scratchpad/test/browser_scratchpad_contexts.js b/browser/devtools/scratchpad/test/browser_scratchpad_contexts.js
+--- a/browser/devtools/scratchpad/test/browser_scratchpad_contexts.js
++++ b/browser/devtools/scratchpad/test/browser_scratchpad_contexts.js
+@@ -43,18 +43,17 @@ function runTests()
+      "content menuitem is checked");
+ 
+   ok(!chromeMenu.hasAttribute("checked"),
+      "chrome menuitem is not checked");
+ 
+   is(statusbar.getAttribute("label"), contentMenu.getAttribute("label"),
+      "statusbar label is correct");
+ 
+-  ok(sp.textbox, "textbox exists");
+-  sp.textbox.value = "window.foobarBug636725 = 'aloha';";
++  sp.setText("window.foobarBug636725 = 'aloha';");
+ 
+   ok(!content.wrappedJSObject.foobarBug636725,
+      "no content.foobarBug636725");
+ 
+   sp.run();
+ 
+   is(content.wrappedJSObject.foobarBug636725, "aloha",
+      "content.foobarBug636725 has been set");
+@@ -68,50 +67,56 @@ function runTests()
+      "chrome menuitem is checked");
+ 
+   ok(!contentMenu.hasAttribute("checked"),
+      "content menuitem is not checked");
+ 
+   is(statusbar.getAttribute("label"), chromeMenu.getAttribute("label"),
+      "statusbar label is correct");
+ 
+-  sp.textbox.value = "window.foobarBug636725 = 'aloha2';";
++  sp.setText("2'", 31, 33);
++
++  ok(sp.getText(), "window.foobarBug636725 = 'aloha2';",
++     "setText() worked");
+ 
+   ok(!window.foobarBug636725, "no window.foobarBug636725");
+ 
+   sp.run();
+ 
+   is(window.foobarBug636725, "aloha2", "window.foobarBug636725 has been set");
+ 
+-  sp.textbox.value = "window.gBrowser";
++  sp.setText("gBrowser", 7);
++
++  ok(sp.getText(), "window.gBrowser",
++     "setText() worked with no end for the replace range");
+ 
+   is(typeof sp.run()[1].addTab, "function",
+      "chrome context has access to chrome objects");
+ 
+   // Check that the sandbox is cached.
+ 
+-  sp.textbox.value = "typeof foobarBug636725cache;";
++  sp.setText("typeof foobarBug636725cache;");
+   is(sp.run()[1], "undefined", "global variable does not exist");
+ 
+-  sp.textbox.value = "var foobarBug636725cache = 'foo';";
++  sp.setText("var foobarBug636725cache = 'foo';");
+   sp.run();
+ 
+-  sp.textbox.value = "typeof foobarBug636725cache;";
++  sp.setText("typeof foobarBug636725cache;");
+   is(sp.run()[1], "string",
+      "global variable exists across two different executions");
+ 
+   sp.resetContext();
+ 
+   is(sp.run()[1], "undefined",
+      "global variable no longer exists after calling resetContext()");
+ 
+-  sp.textbox.value = "var foobarBug636725cache2 = 'foo';";
++  sp.setText("var foobarBug636725cache2 = 'foo';");
+   sp.run();
+ 
+-  sp.textbox.value = "typeof foobarBug636725cache2;";
++  sp.setText("typeof foobarBug636725cache2;");
+   is(sp.run()[1], "string",
+      "global variable exists across two different executions");
+ 
+   sp.setContentContext();
+ 
+   is(sp.executionContext, gScratchpadWindow.SCRATCHPAD_CONTEXT_CONTENT,
+      "executionContext is content");
+ 
+diff --git a/browser/devtools/scratchpad/test/browser_scratchpad_execute_print.js b/browser/devtools/scratchpad/test/browser_scratchpad_execute_print.js
+--- a/browser/devtools/scratchpad/test/browser_scratchpad_execute_print.js
++++ b/browser/devtools/scratchpad/test/browser_scratchpad_execute_print.js
+@@ -23,93 +23,111 @@ function test()
+ function runTests()
+ {
+   gScratchpadWindow.removeEventListener("load", arguments.callee, false);
+ 
+   let sp = gScratchpadWindow.Scratchpad;
+ 
+   content.wrappedJSObject.foobarBug636725 = 1;
+ 
+-  ok(sp.textbox, "textbox exists");
+-  sp.textbox.value = "++window.foobarBug636725";
++  sp.setText("++window.foobarBug636725");
+ 
+   let exec = sp.run();
+-  is(exec[0], sp.textbox.value, "execute()[0] is correct");
++  is(exec[0], sp.getText(), "run()[0] is correct");
+   is(exec[1], content.wrappedJSObject.foobarBug636725,
+-     "execute()[1] is correct");
++     "run()[1] is correct");
+ 
+-  is(sp.textbox.value, "++window.foobarBug636725",
+-     "execute() does not change the textbox value");
++  is(sp.getText(), "++window.foobarBug636725",
++     "run() does not change the editor content");
+ 
+   is(content.wrappedJSObject.foobarBug636725, 2,
+-     "execute() updated window.foobarBug636725");
++     "run() updated window.foobarBug636725");
+ 
+   sp.display();
+ 
+   is(content.wrappedJSObject.foobarBug636725, 3,
+-     "print() updated window.foobarBug636725");
++     "display() updated window.foobarBug636725");
+ 
+-  is(sp.textbox.value, "++window.foobarBug636725/*\n3\n*/",
+-     "print() shows evaluation result in the textbox");
++  is(sp.getText(), "++window.foobarBug636725/*\n3\n*/",
++     "display() shows evaluation result in the textbox");
+ 
+   is(sp.selectedText, "/*\n3\n*/", "selectedText is correct");
+-  is(sp.textbox.selectionStart, 24, "selectionStart is correct");
+-  is(sp.textbox.selectionEnd, 31, "selectionEnd is correct");
++  let selection = sp.getSelectionRange();
++  is(selection.start, 24, "selection.start is correct");
++  is(selection.end, 31, "selection.end is correct");
+ 
+-  // Test selection execute() and print().
++  // Test selection run() and display().
+ 
+-  sp.textbox.value = "window.foobarBug636725 = 'a';\n" +
+-                     "window.foobarBug636725 = 'b';";
++  sp.setText("window.foobarBug636725 = 'a';\n" +
++             "window.foobarBug636725 = 'b';");
+ 
+   sp.selectRange(1, 2);
+ 
+-  is(sp.textbox.selectionStart, 1, "selectionStart is 1");
+-  is(sp.textbox.selectionEnd, 2, "selectionEnd is 2");
++  selection = sp.getSelectionRange();
++
++  is(selection.start, 1, "selection.start is 1");
++  is(selection.end, 2, "selection.end is 2");
+ 
+   sp.selectRange(0, 29);
+ 
+-  is(sp.textbox.selectionStart, 0, "selectionStart is 0");
+-  is(sp.textbox.selectionEnd, 29, "selectionEnd is 29");
++  selection = sp.getSelectionRange();
++
++  is(selection.start, 0, "selection.start is 0");
++  is(selection.end, 29, "selection.end is 29");
+ 
+   exec = sp.run();
+ 
+   is(exec[0], "window.foobarBug636725 = 'a';",
+-     "execute()[0] is correct");
++     "run()[0] is correct");
+   is(exec[1], "a",
+-     "execute()[1] is correct");
++     "run()[1] is correct");
+ 
+-  is(sp.textbox.value, "window.foobarBug636725 = 'a';\n" +
+-                       "window.foobarBug636725 = 'b';",
+-     "execute() does not change the textbox value");
++  is(sp.getText(), "window.foobarBug636725 = 'a';\n" +
++                   "window.foobarBug636725 = 'b';",
++     "run() does not change the textbox value");
+ 
+   is(content.wrappedJSObject.foobarBug636725, "a",
+-     "execute() worked for the selected range");
++     "run() worked for the selected range");
+ 
+-  sp.textbox.value = "window.foobarBug636725 = 'c';\n" +
+-                     "window.foobarBug636725 = 'b';";
++  sp.setText("window.foobarBug636725 = 'c';\n" +
++             "window.foobarBug636725 = 'b';");
+ 
+   sp.selectRange(0, 22);
+ 
+   sp.display();
+ 
+   is(content.wrappedJSObject.foobarBug636725, "a",
+-     "print() worked for the selected range");
++     "display() worked for the selected range");
+ 
+-  is(sp.textbox.value, "window.foobarBug636725" +
+-                       "/*\na\n*/" +
+-                       " = 'c';\n" +
+-                       "window.foobarBug636725 = 'b';",
+-     "print() shows evaluation result in the textbox");
++  is(sp.getText(), "window.foobarBug636725" +
++                   "/*\na\n*/" +
++                   " = 'c';\n" +
++                   "window.foobarBug636725 = 'b';",
++     "display() shows evaluation result in the textbox");
+ 
+   is(sp.selectedText, "/*\na\n*/", "selectedText is correct");
+-  is(sp.textbox.selectionStart, 22, "selectionStart is correct");
+-  is(sp.textbox.selectionEnd, 29, "selectionEnd is correct");
++
++  selection = sp.getSelectionRange();
++  is(selection.start, 22, "selection.start is correct");
++  is(selection.end, 29, "selection.end is correct");
+ 
+   sp.deselect();
+ 
+   ok(!sp.selectedText, "selectedText is empty");
+-  is(sp.textbox.selectionStart, sp.textbox.selectionEnd, "deselect() works");
++
++  selection = sp.getSelectionRange();
++  is(selection.start, selection.end, "deselect() works");
++
++  // Test undo/redo.
++
++  sp.setText("foo1");
++  sp.setText("foo2");
++  is(sp.getText(), "foo2", "editor content updated");
++  sp.undo();
++  is(sp.getText(), "foo1", "undo() works");
++  sp.redo();
++  is(sp.getText(), "foo2", "redo() works");
+ 
+   gScratchpadWindow.close();
+   gScratchpadWindow = null;
+   gBrowser.removeCurrentTab();
+   finish();
+ }
+diff --git a/browser/devtools/scratchpad/test/browser_scratchpad_files.js b/browser/devtools/scratchpad/test/browser_scratchpad_files.js
+--- a/browser/devtools/scratchpad/test/browser_scratchpad_files.js
++++ b/browser/devtools/scratchpad/test/browser_scratchpad_files.js
+@@ -69,37 +69,37 @@ function tempFileSaved(aStatus)
+ function fileImported(aStatus, aFileContent)
+ {
+   ok(Components.isSuccessCode(aStatus),
+      "the temporary file was imported successfully with Scratchpad");
+ 
+   is(aFileContent, gFileContent,
+      "received data is correct");
+ 
+-  is(gScratchpad.textbox.value, gFileContent,
+-     "the textbox.value is correct");
++  is(gScratchpad.getText(), gFileContent,
++     "the editor content is correct");
+ 
+   // Save the file after changes.
+   gFileContent += "// omg, saved!";
+-  gScratchpad.textbox.value = gFileContent;
++  gScratchpad.setText(gFileContent);
+ 
+   gScratchpad.exportToFile(gFile.QueryInterface(Ci.nsILocalFile), true, true,
+                           fileExported);
+ }
+ 
+ function fileExported(aStatus)
+ {
+   ok(Components.isSuccessCode(aStatus),
+      "the temporary file was exported successfully with Scratchpad");
+ 
+   let oldContent = gFileContent;
+ 
+   // Attempt another file save, with confirmation which returns false.
+   gFileContent += "// omg, saved twice!";
+-  gScratchpad.textbox.value = gFileContent;
++  gScratchpad.setText(gFileContent);
+ 
+   let oldConfirm = gScratchpadWindow.confirm;
+   let askedConfirmation = false;
+   gScratchpadWindow.confirm = function() {
+     askedConfirmation = true;
+     return false;
+   };
+ 
+diff --git a/browser/devtools/scratchpad/test/browser_scratchpad_inspect.js b/browser/devtools/scratchpad/test/browser_scratchpad_inspect.js
+--- a/browser/devtools/scratchpad/test/browser_scratchpad_inspect.js
++++ b/browser/devtools/scratchpad/test/browser_scratchpad_inspect.js
+@@ -22,18 +22,17 @@ function test()
+ }
+ 
+ function runTests()
+ {
+   gScratchpadWindow.removeEventListener("load", arguments.callee, false);
+ 
+   let sp = gScratchpadWindow.Scratchpad;
+ 
+-  ok(sp.textbox, "textbox exists");
+-  sp.textbox.value = "document";
++  sp.setText("document");
+ 
+   sp.inspect();
+ 
+   let propPanel = document.querySelector(".scratchpad_propertyPanel");
+   ok(propPanel, "property panel is open");
+ 
+   propPanel.addEventListener("popupshown", function() {
+     propPanel.removeEventListener("popupshown", arguments.callee, false);
+diff --git a/browser/devtools/scratchpad/test/browser_scratchpad_tab_switch.js b/browser/devtools/scratchpad/test/browser_scratchpad_tab_switch.js
+--- a/browser/devtools/scratchpad/test/browser_scratchpad_tab_switch.js
++++ b/browser/devtools/scratchpad/test/browser_scratchpad_tab_switch.js
+@@ -53,18 +53,17 @@ function runTests()
+      "content menuitem is checked");
+ 
+   ok(!browserMenu.hasAttribute("checked"),
+      "chrome menuitem is not checked");
+ 
+   is(statusbar.getAttribute("label"), contentMenu.getAttribute("label"),
+      "statusbar label is correct");
+ 
+-  ok(sp.textbox, "textbox exists");
+-  sp.textbox.value = "window.foosbug653108 = 'aloha';";
++  sp.setText("window.foosbug653108 = 'aloha';");
+ 
+   ok(!content.wrappedJSObject.foosbug653108,
+      "no content.foosbug653108");
+ 
+   sp.run();
+ 
+   is(content.wrappedJSObject.foosbug653108, "aloha",
+      "content.foosbug653108 has been set");
+@@ -73,36 +72,36 @@ function runTests()
+   gBrowser.selectedTab = tab1;
+ }
+ 
+ function runTests2() {
+   gBrowser.tabContainer.removeEventListener("TabSelect", runTests2, true);
+ 
+   ok(!window.foosbug653108, "no window.foosbug653108");
+ 
+-  sp.textbox.value = "window.foosbug653108";
++  sp.setText("window.foosbug653108");
+   let result = sp.run();
+ 
+   isnot(result, "aloha", "window.foosbug653108 is not aloha");
+ 
+-  sp.textbox.value = "window.foosbug653108 = 'ahoyhoy';";
++  sp.setText("window.foosbug653108 = 'ahoyhoy';");
+   sp.run();
+ 
+   is(content.wrappedJSObject.foosbug653108, "ahoyhoy",
+      "content.foosbug653108 has been set 2");
+ 
+   gBrowser.selectedBrowser.addEventListener("load", runTests3, true);
+   content.location = "data:text/html,test context switch in Scratchpad location 2";
+ }
+ 
+ function runTests3() {
+   gBrowser.selectedBrowser.removeEventListener("load", runTests3, true);
+   // Check that the sandbox is not cached.
+ 
+-  sp.textbox.value = "typeof foosbug653108;";
++  sp.setText("typeof foosbug653108;");
+   is(sp.run()[1], "undefined", "global variable does not exist");
+ 
+   gScratchpadWindow.close();
+   gScratchpadWindow = null;
+   tab1 = null;
+   tab2 = null;
+   sp = null;
+   gBrowser.removeCurrentTab();
+diff --git a/browser/devtools/scratchpad/test/browser_scratchpad_ui.js b/browser/devtools/scratchpad/test/browser_scratchpad_ui.js
+--- a/browser/devtools/scratchpad/test/browser_scratchpad_ui.js
++++ b/browser/devtools/scratchpad/test/browser_scratchpad_ui.js
+@@ -36,16 +36,18 @@ function runTests()
+     "sp-text-run": "run",
+     "sp-text-inspect": "inspect",
+     "sp-text-display": "display",
+     "sp-menu-content": "setContentContext",
+     "sp-menu-browser": "setBrowserContext",
+     "sp-menu-resetContext": "resetContext",
+     "sp-menu-errorConsole": "openErrorConsole",
+     "sp-menu-webConsole": "openWebConsole",
++    "sp-menu-undo": "undo",
++    "sp-menu-redo": "redo",
+   };
+ 
+   let lastMethodCalled = null;
+   sp.__noSuchMethod__ = function(aMethodName) {
+     lastMethodCalled = aMethodName;
+   };
+ 
+   for (let id in methodsAndItems) {
+diff --git a/browser/locales/en-US/chrome/browser/scratchpad.dtd b/browser/locales/en-US/chrome/browser/scratchpad.dtd
+--- a/browser/locales/en-US/chrome/browser/scratchpad.dtd
++++ b/browser/locales/en-US/chrome/browser/scratchpad.dtd
+@@ -109,15 +109,8 @@
+ 
+ <!ENTITY errorConsoleCmd.label        "Error Console">
+ <!ENTITY errorConsoleCmd.accesskey    "C">
+ <!ENTITY errorConsoleCmd.commandkey   "j">
+ 
+ <!ENTITY webConsoleCmd.label          "Web Console">
+ <!ENTITY webConsoleCmd.accesskey      "W">
+ <!ENTITY webConsoleCmd.commandkey     "k">
+-
+-<!-- LOCALIZATION NOTE (textbox.placeholder1): This is some placeholder text
+-  -  that appears when the Scratchpad's text area is empty and unfocused.
+-  -  It should be a one-line JavaScript comment, i.e., preceded by '//'
+-  -->
+-<!ENTITY textbox.placeholder1         "// Enter some JavaScript, select it, right click and select Run, Inspect or Display.">
+-

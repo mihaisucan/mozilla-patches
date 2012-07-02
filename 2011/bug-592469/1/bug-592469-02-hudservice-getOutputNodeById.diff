@@ -1,0 +1,136 @@
+# HG changeset patch
+# Parent a96f7c9fa6c09a77fc12bd2cc3119b9ae6284174
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1265,17 +1265,17 @@ HUD_SERVICE.prototype =
+    * @param string|nsIDOMNode aHUD
+    *        Either the ID of a HUD or the DOM node corresponding to an outer
+    *        HUD box.
+    * @returns void
+    */
+   clearDisplay: function HS_clearDisplay(aHUD)
+   {
+     if (typeof(aHUD) === "string") {
+-      aHUD = this.getOutputNodeById(aHUD);
++      aHUD = this.hudReferences[aHUD].HUDBox;
+     }
+ 
+     var outputNode = aHUD.querySelector(".hud-output-node");
+ 
+     while (outputNode.firstChild) {
+       outputNode.removeChild(outputNode.firstChild);
+     }
+ 
+@@ -1381,18 +1381,17 @@ HUD_SERVICE.prototype =
+    * @param boolean aState
+    *        True if the filter named by @aMessageType is being turned on; false
+    *        otherwise.
+    * @returns void
+    */
+   adjustVisibilityForMessageType:
+   function HS_adjustVisibilityForMessageType(aHUDId, aMessageType, aState)
+   {
+-    let displayNode = this.getOutputNodeById(aHUDId);
+-    let outputNode = displayNode.querySelector(".hud-output-node");
++    let outputNode = this.hudReferences[aHUDId].outputNode;
+     let doc = outputNode.ownerDocument;
+ 
+     this.maintainScrollPosition(outputNode, function() {
+       this.liftNode(outputNode, function() {
+         let xpath = ".//*[contains(@class, 'hud-msg-node') and " +
+           "contains(@class, 'hud-" + aMessageType + "')]";
+         let result = doc.evaluate(xpath, outputNode, null,
+           Ci.nsIDOMXPathResult.UNORDERED_NODE_SNAPSHOT_TYPE, null);
+@@ -1479,18 +1478,17 @@ HUD_SERVICE.prototype =
+    * @param string aSearchString
+    *        The new search string.
+    * @returns void
+    */
+   adjustVisibilityOnSearchStringChange:
+   function HS_adjustVisibilityOnSearchStringChange(aHUDId, aSearchString)
+   {
+     let fn = this.buildXPathFunctionForString(aSearchString);
+-    let displayNode = this.getOutputNodeById(aHUDId);
+-    let outputNode = displayNode.querySelector(".hud-output-node");
++    let outputNode = this.hudReferences[aHUDId].outputNode;
+     let doc = outputNode.ownerDocument;
+ 
+     this.maintainScrollPosition(outputNode, function() {
+       this.liftNode(outputNode, function() {
+         let xpath = './/*[contains(@class, "hud-msg-node") and ' +
+           'not(contains(@class, "hud-filtered-by-string")) and not(' + fn + ')]';
+         let result = doc.evaluate(xpath, outputNode, null,
+           Ci.nsIDOMXPathResult.UNORDERED_NODE_SNAPSHOT_TYPE, null);
+@@ -1707,27 +1705,16 @@ HUD_SERVICE.prototype =
+    */
+   getHudIdByWindow: function HS_getHudIdByWindow(aContentWindow)
+   {
+     let windowId = this.getWindowId(aContentWindow);
+     return this.getHudIdByWindowId(windowId);
+   },
+ 
+   /**
+-   * Gets the Web Console DOM node, the .hud-box.
+-   *
+-   * @param string aId
+-   * @returns nsIDOMNode
+-   */
+-  getOutputNodeById: function HS_getOutputNodeById(aId)
+-  {
+-    return this.hudReferences[aId].HUDBox;
+-  },
+-
+-  /**
+    * Gets an array that contains all the HUD IDs.
+    * @returns array
+    */
+   displaysIndex: function HS_displaysIndex()
+   {
+     return Object.keys(this.hudReferences);
+   },
+ 
+@@ -2673,17 +2660,17 @@ HUD_SERVICE.prototype =
+    * @param string aDirection Whether to animate the console appearing
+    *        (ANIMATE_IN) or disappearing (ANIMATE_OUT).
+    * @param function aCallback An optional callback, which will be called with
+    *        the "transitionend" event passed as a parameter once the animation
+    *        finishes.
+    */
+   animate: function HS_animate(aHUDId, aDirection, aCallback)
+   {
+-    let hudBox = this.getOutputNodeById(aHUDId);
++    let hudBox = this.hudReferences[aHUDId].HUDBox;
+     if (!hudBox.classList.contains("animated")) {
+       if (aCallback) {
+         aCallback();
+       }
+       return;
+     }
+ 
+     switch (aDirection) {
+@@ -4964,20 +4951,19 @@ HeadsUpDisplayUICommands = {
+     return true;
+   },
+ 
+   command: function UIC_command(aButton) {
+     var filter = aButton.getAttribute("buttonType");
+     var hudId = aButton.getAttribute("hudId");
+     switch (filter) {
+       case "selectAll":
+-        let outputNode = HUDService.getOutputNodeById(hudId);
+-        let chromeWindow = outputNode.ownerDocument.defaultView;
+-        let commandController = chromeWindow.commandController;
+-        commandController.selectAll(outputNode);
++        let hud = HUDService.hudReferences[hudId];
++        let commandController = hud.chromeWindow.commandController;
++        commandController.selectAll(hud.outputNode);
+         break;
+       case "saveBodies": {
+         let checked = aButton.getAttribute("checked") === "true";
+         HUDService.saveRequestAndResponseBodies = checked;
+         break;
+       }
+     }
+   },

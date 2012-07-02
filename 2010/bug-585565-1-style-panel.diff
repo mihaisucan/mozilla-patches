@@ -1,0 +1,97 @@
+diff --git a/browser/base/content/csshtmltree.js b/browser/base/content/csshtmltree.js
+--- a/browser/base/content/csshtmltree.js
++++ b/browser/base/content/csshtmltree.js
+@@ -112,6 +112,7 @@ CssHtmlTree.prototype = {
+             .classList.toggle("showSpecificity");
+       },
+       str: {
++        displaySheetLabel: this.strings.GetStringFromName("style.displaySheetLabel"),
+         lookingAtLabel: this.strings.GetStringFromName("style.lookingAtLabel"),
+         specificityLabel: this.strings.GetStringFromName("style.specificityLabel"),
+         specificityHelpLink: this.strings.GetStringFromName("style.specificityHelpLink")
+@@ -594,11 +595,13 @@ Templater.prototype.processNode = functi
+           paramName = nameArr[0].trim();
+           value = self.stripBraces(nameArr[1].trim());
+         }
++
+         recurse = false;
++        aNode.removeAttribute("foreach");
++
+         try {
+           let processMember = function(aMember) {
+             let clone = aNode.cloneNode(true);
+-            clone.removeAttribute("foreach");
+             aNode.parentNode.insertBefore(clone, aNode);
+             aData[paramName] = aMember;
+             self.processNode(clone, aData);
+@@ -615,11 +618,10 @@ Templater.prototype.processNode = functi
+             }
+           }
+           aNode.parentNode.removeChild(aNode);
++          break; // Do not continue any attribute parsing.
+         } catch (ex) {
+           self.error("Error with '" + value + "'" + ex);
+-          recurse = false;
+         }
+-        aNode.removeAttribute("foreach");
+       } else if (name.substring(0, 2) == "on") {
+         // Event registration relies on property doing a bind.
+         value = self.stripBraces(value);
+diff --git a/browser/base/content/csshtmltree.xhtml b/browser/base/content/csshtmltree.xhtml
+--- a/browser/base/content/csshtmltree.xhtml
++++ b/browser/base/content/csshtmltree.xhtml
+@@ -139,7 +139,8 @@ To visually debug the templates without 
+   templateHeader needs data like this:
+   {
+     path_elements: [ 'div[0]', '#main', '#content', 'p[4]' ],
+-    sheets: [ { source: 'foo.css' }, { source: 'bar.css' }, ... ],
++    sheets: [ { source: 'foo.css', href: ... }, { source: 'bar.css', href: ...  
++    }, ...  ],
+     toggleSpecificity: function() {} // toggle the display of specificity data
+   }
+   -->
+@@ -156,12 +157,27 @@ To visually debug the templates without 
+         </td>
+       </tr>
+       <tr>
+-        <td class="sheet_line">
++        <td class="sheet_line____">
++          <p>
++          <menulist
++            xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
++            save="${sheetInput}"
++            label="${str.displaySheetLabel}">
++            <menupopup>
++              <menuitem foreach="sheet in ${sheets}"
++              label="${sheet.shortSource}" value="${sheet.href}" />
++              <menuitem selected="true" label="All sheets" value="all" />
++              <menuitem label="Include UA sheets" value="ua" />
++            </menupopup>
++          </menulist>
++          </p>
++          <p>
+           <label for="specificity">${str.specificityLabel}</label>
+           <input _id="specificity" type="checkbox" save="${specificity}"
+               onchange="${toggleSpecificity}"/>
+           <a target="_blank" class="link"
+-              href="https://developer.mozilla.org/en/CSS/Specificity">${str.specificityHelpLink}</a>
++            href="https://developer.mozilla.org/en/CSS/Specificity">${str.specificityHelpLink}</a>
++          </p>
+         </td>
+       </tr>
+     </table>
+diff --git a/browser/locales/en-US/chrome/browser/inspector.properties b/browser/locales/en-US/chrome/browser/inspector.properties
+--- a/browser/locales/en-US/chrome/browser/inspector.properties
++++ b/browser/locales/en-US/chrome/browser/inspector.properties
+@@ -31,6 +31,11 @@ style.specificityLabel=Show specificity:
+ # information on the specificity of style sheet rules.
+ style.specificityHelpLink=Help!
+ 
++# LOCALIZATION NOTE (style.displaySheetLabel): This is used inside the Style 
++# panel of the Inspector tool. This allows the user to filter the rules 
++# displayed based on their source, based on where the rules come from.
++style.displaySheetLabel=Display:
++
+ # LOCALIZATION NOTE (style.group): These strings are used inside the Style
+ # panel of the Inspector tool. Style properties are displayed in groups and
+ # these are the group names.

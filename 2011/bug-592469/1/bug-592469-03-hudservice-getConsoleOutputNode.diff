@@ -1,0 +1,46 @@
+# HG changeset patch
+# Parent e15a74d0b0b353fe4f1628c961239acd51c00b84
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1841,38 +1841,27 @@ HUD_SERVICE.prototype =
+         break;
+       default:
+         // noop
+         break;
+     }
+   },
+ 
+   /**
+-   * Get OutputNode by Id
+-   *
+-   * @param string aId
+-   * @returns nsIDOMNode
+-   */
+-  getConsoleOutputNode: function HS_getConsoleOutputNode(aId)
+-  {
+-    return this.hudReferences[aId].outputNode;
+-  },
+-
+-  /**
+    * Inform user that the Web Console API has been replaced by a script
+    * in a content page.
+    *
+    * @param string aHUDId
+    * @returns void
+    */
+   logWarningAboutReplacedAPI:
+   function HS_logWarningAboutReplacedAPI(aHUDId)
+   {
+     let domId = "hud-log-node-" + this.sequenceId();
+-    let outputNode = this.getConsoleOutputNode(aHUDId);
++    let outputNode = this.hudReferences[aHUDId].outputNode;
+ 
+     let msgFormat = {
+       logLevel: "error",
+       activityObject: {},
+       hudId: aHUDId,
+       origin: "console-listener",
+       domId: domId,
+       message: this.getStr("ConsoleAPIDisabled"),

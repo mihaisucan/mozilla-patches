@@ -1,0 +1,97 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1318002894 -10800
+# Node ID 20e1e19a89c4bcd6e04b76599f4a1201f93359ce
+# Parent  36e6eb27d0c26dd6e44bc7c344259611801c0cc5
+Bug 692795 - Firebug should be able to suppress web console prompted by scratchpad
+
+diff --git a/browser/base/content/browser.js b/browser/base/content/browser.js
+--- a/browser/base/content/browser.js
++++ b/browser/base/content/browser.js
+@@ -8707,16 +8707,35 @@ var Scratchpad = {
+     const SCRATCHPAD_WINDOW_URL = "chrome://browser/content/scratchpad.xul";
+     const SCRATCHPAD_WINDOW_FEATURES = "chrome,titlebar,toolbar,centerscreen,resizable,dialog=no";
+ 
+     return Services.ww.openWindow(null, SCRATCHPAD_WINDOW_URL, "_blank",
+                                   SCRATCHPAD_WINDOW_FEATURES, null);
+   },
+ };
+ 
++var Devtools = {
++  openJavaScriptConsole: function Devtools_openJavaScriptConsole()
++  {
++    if (!HUDConsoleUI.getOpenHUD()) {
++      HUDConsoleUI.toggleHUD();
++    }
++  },
++
++  inspectNode: function Devtools_inspectNode(aNode)
++  {
++    if (InspectorUI.isInspectorOpen) {
++      InspectorUI.inspectNode(aNode);
++      InspectorUI.stopInspecting();
++    } else {
++      InspectorUI.openInspectorUI(aNode);
++    }
++  },
++};
++
+ 
+ XPCOMUtils.defineLazyGetter(window, "gShowPageResizers", function () {
+ #ifdef XP_WIN
+   // Only show resizers on Windows 2000 and XP
+   let sysInfo = Components.classes["@mozilla.org/system-info;1"]
+                           .getService(Components.interfaces.nsIPropertyBag2);
+   return parseFloat(sysInfo.getProperty("version")) < 6;
+ #else
+diff --git a/browser/base/content/nsContextMenu.js b/browser/base/content/nsContextMenu.js
+--- a/browser/base/content/nsContextMenu.js
++++ b/browser/base/content/nsContextMenu.js
+@@ -439,22 +439,17 @@ nsContextMenu.prototype = {
+         this.setItemAttr("context-video-showstats", "disabled", hasError);
+         this.setItemAttr("context-video-hidestats", "disabled", hasError);
+       }
+     }
+     this.showItem("context-media-sep-commands",  onMedia);
+   },
+ 
+   inspectNode: function CM_inspectNode() {
+-    if (InspectorUI.isTreePanelOpen) {
+-      InspectorUI.inspectNode(this.target);
+-      InspectorUI.stopInspecting();
+-    } else {
+-      InspectorUI.openInspectorUI(this.target);
+-    }
++    Devtools.inspectNode(this.target);
+   },
+ 
+   // Set various context menu attributes based on the state of the world.
+   setTarget: function (aNode, aRangeParent, aRangeOffset) {
+     const xulNS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
+     if (aNode.namespaceURI == xulNS ||
+         aNode.nodeType == Node.DOCUMENT_NODE ||
+         this.isTargetAFormControl(aNode)) {
+diff --git a/browser/devtools/scratchpad/scratchpad.js b/browser/devtools/scratchpad/scratchpad.js
+--- a/browser/devtools/scratchpad/scratchpad.js
++++ b/browser/devtools/scratchpad/scratchpad.js
+@@ -583,19 +583,17 @@ var Scratchpad = {
+     this.browserWindow.toJavaScriptConsole();
+   },
+ 
+   /**
+    * Open the Web Console.
+    */
+   openWebConsole: function SP_openWebConsole()
+   {
+-    if (!this.browserWindow.HUDConsoleUI.getOpenHUD()) {
+-      this.browserWindow.HUDConsoleUI.toggleHUD();
+-    }
++    this.browserWindow.Devtools.openJavaScriptConsole();
+     this.browserWindow.focus();
+   },
+ 
+   /**
+    * Set the current execution context to be the active tab content window.
+    */
+   setContentContext: function SP_setContentContext()
+   {

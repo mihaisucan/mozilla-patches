@@ -1,0 +1,49 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1338581131 -10800
+# Node ID 627c7f89a5165f8c0cf9f30059a417b64969ffc4
+# Parent  a24414165cd43dfd58c55388e544ba95472a9060
+Bug 751901 - Slow Source View in Debugger on large files
+
+diff --git a/browser/devtools/debugger/debugger-controller.js b/browser/devtools/debugger/debugger-controller.js
+--- a/browser/devtools/debugger/debugger-controller.js
++++ b/browser/devtools/debugger/debugger-controller.js
+@@ -6,16 +6,17 @@
+ "use strict";
+ 
+ const Cc = Components.classes;
+ const Ci = Components.interfaces;
+ const Cu = Components.utils;
+ 
+ const FRAME_STEP_CACHE_DURATION = 100; // ms
+ const DBG_STRINGS_URI = "chrome://browser/locale/devtools/debugger.properties";
++const SYNTAX_HIGHLIGHT_MAX_FILE_SIZE = 1048576; // 1 MB in bytes 
+ 
+ Cu.import("resource:///modules/source-editor.jsm");
+ Cu.import("resource://gre/modules/devtools/dbg-server.jsm");
+ Cu.import("resource://gre/modules/devtools/dbg-client.jsm");
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/NetUtil.jsm");
+ Cu.import('resource://gre/modules/Services.jsm');
+ 
+@@ -1004,17 +1005,19 @@ SourceScripts.prototype = {
+    *        The script object coming from the active thread.
+    * @param object aOptions [optional]
+    *        Additional options for showing the script. Supported options:
+    *        - targetLine: place the editor at the given line number.
+    */
+   _onShowScript: function SS__onShowScript(aScript, aOptions) {
+     aOptions = aOptions || {};
+ 
+-    this._setEditorMode(aScript.url, aScript.contentType);
++    if (aScript.text.length < SYNTAX_HIGHLIGHT_MAX_FILE_SIZE) {
++      this._setEditorMode(aScript.url, aScript.contentType);
++    }
+ 
+     let editor = DebuggerView.editor;
+     editor.setText(aScript.text);
+     editor.resetUndo();
+ 
+     DebuggerController.Breakpoints.updateEditorBreakpoints();
+     DebuggerController.StackFrames.updateEditorLocation();
+ 

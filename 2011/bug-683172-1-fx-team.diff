@@ -1,0 +1,145 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1323724631 -7200
+# Node ID 37b997c24b6e4430bb1f9870cf2308ee18042003
+# Parent  6a4606b61fd5634fd8605ad129064f91b0714722
+Bug 683172 - Source Editor should automatically set up Undo/Redo key bindings
+
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -78,16 +78,38 @@ const ORION_EVENTS = {
+ /**
+  * Known Orion annotation types.
+  */
+ const ORION_ANNOTATION_TYPES = {
+   currentBracket: "orion.annotation.currentBracket",
+   matchingBracket: "orion.annotation.matchingBracket",
+ };
+ 
++/**
++ * Default key bindings in the Orion editor.
++ */
++const DEFAULT_KEYBINDINGS = [
++  {
++    action: "undo",
++    code: Ci.nsIDOMKeyEvent.DOM_VK_Z,
++    accel: true,
++  },
++  {
++    action: "redo",
++    code: Ci.nsIDOMKeyEvent.DOM_VK_Z,
++    accel: true,
++    shift: true,
++  },
++  {
++    action: "Unindent Lines",
++    code: Ci.nsIDOMKeyEvent.DOM_VK_TAB,
++    shift: true,
++  },
++];
++
+ var EXPORTED_SYMBOLS = ["SourceEditor"];
+ 
+ /**
+  * The SourceEditor object constructor. The SourceEditor component allows you to
+  * provide users with an editor tailored to the specific needs of editing source
+  * code, aimed primarily at web developers.
+  *
+  * The editor used here is Eclipse Orion (see http://www.eclipse.org/orion).
+@@ -244,24 +266,24 @@ SourceEditor.prototype = {
+ 
+     this.setMode(config.mode || SourceEditor.DEFAULTS.MODE);
+ 
+     this._undoStack = new UndoStack(this._view,
+       config.undoLimit || SourceEditor.DEFAULTS.UNDO_LIMIT);
+ 
+     this._dragAndDrop = new TextDND(this._view, this._undoStack);
+ 
++    this._view.setAction("undo", this.undo.bind(this));
++    this._view.setAction("redo", this.redo.bind(this));
+     this._view.setAction("tab", this._doTab.bind(this));
+-
+-    let shiftTabKey = new KeyBinding(Ci.nsIDOMKeyEvent.DOM_VK_TAB, false, true);
+     this._view.setAction("Unindent Lines", this._doUnindentLines.bind(this));
+-    this._view.setKeyBinding(shiftTabKey, "Unindent Lines");
+     this._view.setAction("enter", this._doEnter.bind(this));
+ 
+-    (config.keys || []).forEach(function(aKey) {
++    let keys = (config.keys || []).concat(DEFAULT_KEYBINDINGS);
++    keys.forEach(function(aKey) {
+       let binding = new KeyBinding(aKey.code, aKey.accel, aKey.shift, aKey.alt);
+       this._view.setKeyBinding(binding, aKey.action);
+ 
+       if (aKey.callback) {
+         this._view.setAction(aKey.action, aKey.callback);
+       }
+     }, this);
+   },
+diff --git a/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js b/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js
+--- a/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js
++++ b/browser/devtools/sourceeditor/test/browser_sourceeditor_initialization.js
+@@ -83,16 +83,24 @@ function editorLoaded()
+   is(editor.getText(), "source-editor", "undo() works");
+ 
+   ok(editor.canRedo(), "canRedo() works (things to redo)");
+ 
+   editor.redo();
+ 
+   is(editor.getText(), "code-editor", "redo() works");
+ 
++  EventUtils.synthesizeKey("VK_Z", {accelKey: true}, testWin);
++
++  is(editor.getText(), "source-editor", "Ctrl-Z (undo) works");
++
++  EventUtils.synthesizeKey("VK_Z", {accelKey: true, shiftKey: true}, testWin);
++
++  is(editor.getText(), "code-editor", "Ctrl-Shift-Z (redo) works");
++
+   // Test selection methods.
+ 
+   editor.setSelection(0, 4);
+ 
+   is(editor.getSelectedText(), "code", "getSelectedText() works");
+ 
+   let selection = editor.getSelection();
+   ok(selection.start == 0 && selection.end == 4, "getSelection() works");
+diff --git a/browser/devtools/styleeditor/StyleEditor.jsm b/browser/devtools/styleeditor/StyleEditor.jsm
+--- a/browser/devtools/styleeditor/StyleEditor.jsm
++++ b/browser/devtools/styleeditor/StyleEditor.jsm
+@@ -1011,35 +1011,16 @@ StyleEditor.prototype = {
+       code: _("saveStyleSheet.commandkey"),
+       accel: true,
+       shift: true,
+       callback: function saveAs() {
+         this.saveToFile();
+       }.bind(this)
+     });
+ 
+-    bindings.push({
+-      action: "undo",
+-      code: _("undo.commandkey"),
+-      accel: true,
+-      callback: function undo() {
+-        this._sourceEditor.undo();
+-      }.bind(this)
+-    });
+-
+-    bindings.push({
+-      action: "redo",
+-      code: _("redo.commandkey"),
+-      accel: true,
+-      shift: true,
+-      callback: function redo() {
+-        this._sourceEditor.redo();
+-      }.bind(this)
+-    });
+-
+     return bindings;
+   }
+ };
+ 
+ /**
+  * List of StyleEditor UI flags.
+  * A Style Editor add-on using its own flag needs to add it to this object.
+  *

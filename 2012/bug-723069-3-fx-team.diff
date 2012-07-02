@@ -1,0 +1,970 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1330720709 -7200
+# Node ID e7ccdf7730db9c3fb97f29e0a36f09bee951b38a
+# Parent  5724c5ba0f84ef3e2928717e7900c9e11e3d1c13
+Bug 723069 - The debugger should allow breakpoints to be set in the embedded editor
+
+diff --git a/browser/devtools/debugger/DebuggerUI.jsm b/browser/devtools/debugger/DebuggerUI.jsm
+--- a/browser/devtools/debugger/DebuggerUI.jsm
++++ b/browser/devtools/debugger/DebuggerUI.jsm
+@@ -19,16 +19,17 @@
+  *   Mozilla Foundation
+  * Portions created by the Initial Developer are Copyright (C) 2011
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Dave Camp <dcamp@mozilla.com> (original author)
+  *   Panos Astithas <past@mozilla.com>
+  *   Victor Porof <vporof@mozilla.com>
++ *   Mihai Sucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -55,19 +56,32 @@ let EXPORTED_SYMBOLS = ["DebuggerUI"];
+ 
+ /**
+  * Creates a pane that will host the debugger UI.
+  */
+ function DebuggerPane(aTab) {
+   this._tab = aTab;
+   this._close = this.close.bind(this);
+   this._debugTab = this.debugTab.bind(this);
++  this.breakpoints = {};
+ }
+ 
+ DebuggerPane.prototype = {
++  _skipEditorBreakpointChange: false,
++
++  /**
++   * The list of breakpoints in the debugger as tracked by the current
++   * DebuggerPane instance. This an object where the values are BreakpointActor
++   * objects received from the client, while the keys are actor names, for
++   * example "conn0.breakpoint3".
++   *
++   * @type object
++   */
++  breakpoints: null,
++
+   /**
+    * Creates and initializes the widgets contained in the debugger UI.
+    */
+   create: function DP_create(gBrowser) {
+     this._tab._scriptDebugger = this;
+ 
+     this._nbox = gBrowser.getNotificationBox(this._tab.linkedBrowser);
+     this._splitter = gBrowser.parentNode.ownerDocument.createElement("splitter");
+@@ -82,44 +96,272 @@ DebuggerPane.prototype = {
+ 
+     this.frame.addEventListener("DOMContentLoaded", function initPane(aEvent) {
+       if (aEvent.target != self.frame.contentDocument) {
+         return;
+       }
+       self.frame.removeEventListener("DOMContentLoaded", initPane, true);
+       // Initialize the source editor.
+       self.frame.contentWindow.editor = self.editor = new SourceEditor();
++      self.frame.contentWindow.updateEditorBreakpoints =
++        self._updateEditorBreakpoints.bind(self);
+ 
+       let config = {
+         mode: SourceEditor.MODES.JAVASCRIPT,
+         showLineNumbers: true,
+-        readOnly: true
++        readOnly: true,
++        showAnnotationRuler: true,
++        showOverviewRuler: true,
+       };
+ 
+       let editorPlaceholder = self.frame.contentDocument.getElementById("editor");
+       self.editor.init(editorPlaceholder, config, self._onEditorLoad.bind(self));
+     }, true);
+     this.frame.addEventListener("DebuggerClose", this._close, true);
+ 
+     this.frame.setAttribute("src", "chrome://browser/content/debugger.xul");
+   },
+ 
+   /**
+    * The load event handler for the source editor. This method does post-load
+    * editor initialization.
+    */
+   _onEditorLoad: function DP__onEditorLoad() {
++    this.editor.addEventListener(SourceEditor.EVENTS.BREAKPOINT_CHANGE,
++                                 this._onEditorBreakpointChange.bind(this));
+     // Connect to the debugger server.
+     this.connect();
+   },
+ 
+   /**
++   * Event handler for breakpoint changes that happen in the editor. This
++   * function syncs the breakpoint changes in the editor to those in the
++   * debugger.
++   *
++   * @private
++   * @param object aEvent
++   *        The SourceEditor.EVENTS.BREAKPOINT_CHANGE event object.
++   */
++  _onEditorBreakpointChange: function DP__onEditorBreakpointChange(aEvent) {
++    if (this._skipEditorBreakpointChange) {
++      return;
++    }
++
++    aEvent.added.forEach(this._onEditorBreakpointAdd, this);
++    aEvent.removed.forEach(this._onEditorBreakpointRemove, this);
++  },
++
++  /**
++   * Retrieve the URL of the selected script in the debugger view.
++   *
++   * @private
++   * @return string
++   *         The URL of the selected script.
++   */
++  _selectedScript: function DP__selectedScript() {
++    return this.debuggerWindow ?
++           this.debuggerWindow.DebuggerView.Scripts.selected : null;
++  },
++
++  /**
++   * Event handler for new breakpoints that come from the editor.
++   *
++   * @private
++   * @param object aBreakpoint
++   *        The breakpoint object coming from the editor.
++   */
++  _onEditorBreakpointAdd: function DP__onEditorBreakpointAdd(aBreakpoint) {
++    let location = {
++      url: this._selectedScript(),
++      line: aBreakpoint.line + 1,
++    };
++
++    if (location.url) {
++      let callback = function (aClient, aError) {
++        if (aError) {
++          this._skipEditorBreakpointChange = true;
++          let result = this.editor.removeBreakpoint(aBreakpoint.line);
++          this._skipEditorBreakpointChange = false;
++        }
++      }.bind(this);
++      this._addBreakpoint(location, callback, true);
++    }
++  },
++
++  /**
++   * Event handler for breakpoints that are removed from the editor.
++   *
++   * @private
++   * @param object aBreakpoint
++   *        The breakpoint object that was removed from the editor.
++   */
++  _onEditorBreakpointRemove: function DP__onEditorBreakpointRemove(aBreakpoint) {
++    let url = this._selectedScript();
++    let line = aBreakpoint.line + 1;
++    if (!url) {
++      return;
++    }
++
++    let breakpoint = this.getBreakpoint(url, line);
++    if (breakpoint) {
++      this._removeBreakpoint(breakpoint, null, true);
++    }
++  },
++
++  /**
++   * Update the breakpoints in the editor view. This function takes the list of
++   * breakpoints in the debugger and adds them back into the editor view. This
++   * is invoked when the selected script is changed.
++   *
++   * @private
++   */
++  _updateEditorBreakpoints: function DP__updateEditorBreakpoints()
++  {
++    let url = this._selectedScript();
++    if (!url) {
++      return;
++    }
++
++    this._skipEditorBreakpointChange = true;
++    for each (let breakpoint in this.breakpoints) {
++      if (breakpoint.location.url == url) {
++        this.editor.addBreakpoint(breakpoint.location.line - 1);
++      }
++    }
++    this._skipEditorBreakpointChange = false;
++  },
++
++  /**
++   * Add a breakpoint.
++   *
++   * @param object aLocation
++   *        The location where you want the breakpoint. This object must have
++   *        two properties:
++   *          - url - the URL of the script.
++   *          - line - the line number (starting from 1).
++   * @param function [aCallback]
++   *        Optional function to invoke once the breakpoint is added. The
++   *        callback is invoked with two arguments:
++   *          - aBreakpointClient - the BreakpointActor client object, if the
++   *          breakpoint has been added successfully.
++   *          - aResponseError - if there was any error.
++   */
++  addBreakpoint: function DP_addBreakpoint(aLocation, aCallback) {
++    this._addBreakpoint(aLocation, aCallback);
++  },
++
++  /**
++   * Perform the actual breakpoint addition.
++   *
++   * @private
++   * @see this.addBreakpoint
++   * @param boolean [aFromEditor=false]
++   *        Tells if the call comes from the source editor BREAKPOINT_CHANGE
++   *        event handler. This allows the code to avoid adding the breakpoint
++   *        again to the editor.
++   */
++  _addBreakpoint: function DP__addBreakpoint(aLocation, aCallback, aFromEditor) {
++    let breakpoint = this.getBreakpoint(aLocation.url, aLocation.line);
++    if (breakpoint) {
++      aCallback && aCallback(breakpoint);
++      return;
++    }
++
++    this.activeThread.setBreakpoint(aLocation, function(aResponse, aBpClient) {
++      if (!aResponse.error) {
++        this.breakpoints[aBpClient.actor] = aBpClient;
++
++        if (!aFromEditor) {
++          let url = this._selectedScript();
++          if (url == aLocation.url) {
++            this._skipEditorBreakpointChange = true;
++            this.editor.addBreakpoint(aLocation.line - 1);
++            this._skipEditorBreakpointChange = false;
++          }
++        }
++      }
++
++      aCallback && aCallback(aBpClient, aResponse.error);
++    }.bind(this));
++  },
++
++  /**
++   * Remove a breakpoint.
++   *
++   * @param object aBreakpoint
++   *        The breakpoint you want to remove.
++   * @param function [aCallback]
++   *        Optional function to invoke once the breakpoint is removed. The
++   *        callback is invoked with one argument: the breakpoint location
++   *        object which holds the url and line properties.
++   */
++  removeBreakpoint: function DP__removeBreakpoint(aBreakpoint, aCallback) {
++    this._removeBreakpoint(aBreakpoint, aCallback);
++  },
++
++  /**
++   * Perform the actual breakpoint removal.
++   *
++   * @private
++   * @see this.addBreakpoint
++   * @param boolean [aFromEditor=false]
++   *        Tells if the call comes from the source editor BREAKPOINT_CHANGE
++   *        event handler. This allows the code to avoid removing the breakpoint
++   *        again to the editor.
++   */
++  _removeBreakpoint:
++  function DP__removeBreakpoint(aBreakpoint, aCallback, aFromEditor) {
++    if (!(aBreakpoint.actor in this.breakpoints)) {
++      aCallback && aCallback(aBreakpoint.location);
++      return;
++    }
++
++    aBreakpoint.remove(function() {
++      delete this.breakpoints[aBreakpoint.actor];
++
++      if (!aFromEditor) {
++        let url = this._selectedScript();
++        if (url == aBreakpoint.location.url) {
++          this._skipEditorBreakpointChange = true;
++          this.editor.removeBreakpoint(aBreakpoint.location.line - 1);
++          this._skipEditorBreakpointChange = false;
++        }
++      }
++
++      aCallback && aCallback(aBreakpoint.location);
++    }.bind(this));
++  },
++
++  /**
++   * Get the breakpoint object at the given location.
++   *
++   * @param string aUrl
++   *        The URL of where the breakpoint is.
++   * @param number aLine
++   *        The line number where the breakpoint is.
++   * @return object
++   *         The BreakpointActor object.
++   */
++  getBreakpoint: function DP_getBreakpoint(aUrl, aLine) {
++    for each (let breakpoint in this.breakpoints) {
++      if (breakpoint.location.url == aUrl && breakpoint.location.line == aLine) {
++        return breakpoint;
++      }
++    }
++    return null;
++  },
++
++  /**
+    * Closes the debugger UI removing child nodes and event listeners.
+    */
+   close: function DP_close() {
++    for each (let breakpoint in this.breakpoints) {
++      this.removeBreakpoint(breakpoint);
++    }
++
+     if (this._tab) {
+       this._tab._scriptDebugger = null;
+       this._tab = null;
+     }
+     if (this.frame) {
+       DebuggerUIPreferences.height = this.frame.height;
+ 
+       this.frame.removeEventListener("unload", this._close, true);
+@@ -187,17 +429,17 @@ DebuggerPane.prototype = {
+             self.onConnected(self);
+           }
+         });
+       });
+     });
+   },
+ 
+   get debuggerWindow() {
+-    return this.frame.contentWindow;
++    return this.frame ? this.frame.contentWindow : null;
+   },
+ 
+   get debuggerClient() {
+     return this._client;
+   },
+ 
+   get activeThread() {
+     try {
+@@ -335,16 +577,17 @@ DebuggerUI.prototype = {
+     let doc = dbg.frame.contentDocument;
+     let scripts = doc.getElementById("scripts");
+     let elt = scripts.getElementsByAttribute("value", aSourceUrl)[0];
+     let script = elt.getUserData("sourceScript");
+     script.loaded = true;
+     script.text = aSourceText;
+     script.contentType = aContentType;
+     elt.setUserData("sourceScript", script, null);
++    dbg._updateEditorBreakpoints();
+   }
+ };
+ 
+ /**
+  * Various debugger UI preferences (currently just the pane height).
+  */
+ let DebuggerUIPreferences = {
+ 
+diff --git a/browser/devtools/debugger/debugger-view.js b/browser/devtools/debugger/debugger-view.js
+--- a/browser/devtools/debugger/debugger-view.js
++++ b/browser/devtools/debugger/debugger-view.js
+@@ -17,16 +17,17 @@
+  *
+  * The Initial Developer of the Original Code is
+  *   Mozilla Foundation
+  * Portions created by the Initial Developer are Copyright (C) 2011
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Victor Porof <vporof@mozilla.com> (original author)
++ *   Mihai Sucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -1122,16 +1123,25 @@ DebuggerView.Scripts = {
+     for (let i = 0; i < this._scripts.itemCount; i++) {
+       if (this._scripts.getItemAtIndex(i).value == aUrl) {
+         this._scripts.selectedIndex = i;
+         break;
+       }
+     }
+   },
+ 
++   /**
++   	* Retrieve the URL of the selected script.
++   	* @return string|null
++   	*/
++   get selected() {
++    return this._scripts.selectedItem ?
++           this._scripts.selectedItem.value : null;
++   },
++
+   /**
+    * Adds a script to the scripts container.
+    * If the script already exists (was previously added), null is returned.
+    * Otherwise, the newly created element is returned.
+    *
+    * @param string aLabel
+    *        The simplified script location to be shown.
+    * @param string aScript
+diff --git a/browser/devtools/debugger/debugger.js b/browser/devtools/debugger/debugger.js
+--- a/browser/devtools/debugger/debugger.js
++++ b/browser/devtools/debugger/debugger.js
+@@ -607,16 +607,17 @@ var SourceScripts = {
+     if (!aScript.loaded) {
+       // Notify the chrome code that we need to load a script file.
+       var evt = document.createEvent("CustomEvent");
+       evt.initCustomEvent("Debugger:LoadSource", true, false, aScript.url);
+       document.documentElement.dispatchEvent(evt);
+       window.editor.setText(DebuggerView.getStr("loadingText"));
+     } else {
+       window.editor.setText(aScript.text);
++      window.updateEditorBreakpoints();
+     }
+   }
+ };
+ 
+ SourceScripts.onPaused = SourceScripts.onPaused.bind(SourceScripts);
+ SourceScripts.onScripts = SourceScripts.onScripts.bind(SourceScripts);
+ SourceScripts.onNewScript = SourceScripts.onNewScript.bind(SourceScripts);
+ SourceScripts.onScriptsCleared = SourceScripts.onScriptsCleared.bind(SourceScripts);
+diff --git a/browser/devtools/debugger/test/Makefile.in b/browser/devtools/debugger/test/Makefile.in
+--- a/browser/devtools/debugger/test/Makefile.in
++++ b/browser/devtools/debugger/test/Makefile.in
+@@ -68,16 +68,17 @@ include $(topsrcdir)/config/rules.mk
+ 	browser_dbg_stack-03.js \
+ 	browser_dbg_stack-04.js \
+ 	browser_dbg_location-changes.js \
+ 	browser_dbg_script-switching.js \
+ 	browser_dbg_pause-resume.js \
+ 	browser_dbg_update-editor-mode.js \
+ 	browser_dbg_select-line.js \
+ 	browser_dbg_clean-exit.js \
++	browser_dbg_bug723069_editor-breakpoints.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	browser_dbg_tab1.html \
+ 	browser_dbg_tab2.html \
+ 	browser_dbg_debuggerstatement.html \
+ 	browser_dbg_stack.html \
+diff --git a/browser/devtools/debugger/test/browser_dbg_bug723069_editor-breakpoints.js b/browser/devtools/debugger/test/browser_dbg_bug723069_editor-breakpoints.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/debugger/test/browser_dbg_bug723069_editor-breakpoints.js
+@@ -0,0 +1,276 @@
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++/**
++ * Test the debugger breakpoint API and connection to the source editor.
++ */
++
++const TAB_URL = "http://example.com/browser/browser/devtools/debugger/" +
++                "test/browser_dbg_script-switching.html";
++
++let gPane = null;
++let gTab = null;
++let gDebuggee = null;
++let gDebugger = null;
++let gScripts = null;
++let gEditor = null;
++let gBreakpoints = null;
++
++function test()
++{
++  let tempScope = {};
++  Cu.import("resource:///modules/source-editor.jsm", tempScope);
++  let SourceEditor = tempScope.SourceEditor;
++
++  debug_tab_pane(TAB_URL, function(aTab, aDebuggee, aPane) {
++    gTab = aTab;
++    gDebuggee = aDebuggee;
++    gPane = aPane;
++    gDebugger = gPane.debuggerWindow;
++
++    gPane.activeThread.addOneTimeListener("scriptsadded", function() {
++      Services.tm.currentThread.dispatch({ run: onScriptsAdded }, 0);
++    });
++    gDebuggee.firstCall();
++  });
++
++  function onScriptsAdded()
++  {
++    gScripts = gDebugger.DebuggerView.Scripts;
++
++    is(gDebugger.StackFrames.activeThread.state, "paused",
++      "Should only be getting stack frames while paused.");
++
++    is(gScripts._scripts.itemCount, 2, "Found the expected number of scripts.");
++
++    gEditor = gDebugger.editor;
++
++    isnot(gEditor.getText().indexOf("debugger"), -1,
++          "The correct script was loaded initially.");
++    isnot(gScripts.selected, gScripts.scriptLocations()[0],
++          "the correct sccript is selected");
++
++    gBreakpoints = gPane.breakpoints;
++    is(Object.keys(gBreakpoints), 0, "no breakpoints");
++    ok(!gPane.getBreakpoint("foo", 3), "getBreakpoint('foo', 3) returns falsey");
++
++    is(gEditor.getBreakpoints().length, 0, "no breakpoints in the editor");
++
++
++    info("add the first breakpoint");
++    gEditor.addEventListener(SourceEditor.EVENTS.BREAKPOINT_CHANGE,
++                             onEditorBreakpointAddFirst);
++    let location = {url: gScripts.selected, line: 6};
++    executeSoon(function() {
++      gPane.addBreakpoint(location, onBreakpointAddFirst);
++    });
++  }
++
++  let breakpointsAdded = 0;
++  let breakpointsRemoved = 0;
++  let editorBreakpointChanges = 0;
++
++  function onEditorBreakpointAddFirst(aEvent)
++  {
++    dump("\n\n onEditorBreakpointAddFirst \n\n");
++    gEditor.removeEventListener(SourceEditor.EVENTS.BREAKPOINT_CHANGE,
++                                onEditorBreakpointAddFirst);
++    editorBreakpointChanges++;
++
++    ok(aEvent, "breakpoint1 added to the editor");
++    is(aEvent.added.length, 1, "one breakpoint added to the editor");
++    is(aEvent.removed.length, 0, "no breakpoint was removed from the editor");
++    is(aEvent.added[0].line, 5, "editor breakpoint line is correct");
++
++    is(gEditor.getBreakpoints().length, 1,
++       "editor.getBreakpoints().length is correct");
++  }
++
++  function onBreakpointAddFirst(aBreakpointClient, aResponseError)
++  {
++    dump("\n\n onBreakpointAddFirst '" + aBreakpointClient + "' '" + aResponseError + "' \n\n");
++    breakpointsAdded++;
++
++    ok(aBreakpointClient, "breakpoint1 added, client received");
++    ok(!aResponseError, "breakpoint1 added without errors");
++    is(aBreakpointClient.location.url, gScripts.selected,
++       "breakpoint1 client url is correct");
++    is(aBreakpointClient.location.line, 6,
++       "breakpoint1 client line is correct");
++
++    executeSoon(function() {
++      ok(aBreakpointClient.actor in gBreakpoints,
++         "breakpoint1 client found in the list of debugger breakpoints");
++      is(Object.keys(gBreakpoints).length, 1,
++         "the list of debugger breakpoints holds only one breakpoint");
++      is(gPane.getBreakpoint(gScripts.selected, 6), aBreakpointClient,
++         "getBreakpoint(selectedScript, 2) returns the correct breakpoint");
++
++      info("remove the first breakpoint");
++      gEditor.addEventListener(SourceEditor.EVENTS.BREAKPOINT_CHANGE,
++                               onEditorBreakpointRemoveFirst);
++      gPane.removeBreakpoint(aBreakpointClient, onBreakpointRemoveFirst);
++    });
++  }
++
++  function onBreakpointRemoveFirst(aLocation)
++  {
++    breakpointsRemoved++;
++
++    ok(aLocation, "breakpoint1 removed");
++    is(aLocation.url, gScripts.selected, "breakpoint1 remove: url is correct");
++    is(aLocation.line, 6, "breakpoint1 remove: line is correct");
++
++    executeSoon(testBreakpointAddBackground);
++  }
++
++  function onEditorBreakpointRemoveFirst(aEvent)
++  {
++    gEditor.removeEventListener(SourceEditor.EVENTS.BREAKPOINT_CHANGE,
++                                onEditorBreakpointRemoveFirst);
++    editorBreakpointChanges++;
++
++    ok(aEvent, "breakpoint1 removed from the editor");
++    is(aEvent.added.length, 0, "no breakpoint was added to the editor");
++    is(aEvent.removed.length, 1, "one breakpoint was removed from the editor");
++    is(aEvent.removed[0].line, 5, "editor breakpoint line is correct");
++
++    is(gEditor.getBreakpoints().length, 0, "editor.getBreakpoints().length is correct");
++  }
++
++  function testBreakpointAddBackground()
++  {
++    info("add a breakpoint to the second script which is not selected");
++
++    is(Object.keys(gBreakpoints).length, 0, "no breakpoints in the debugger");
++    ok(!gPane.getBreakpoint(gScripts.selected, 6),
++       "getBreakpoint(selectedScript, 6) returns no breakpoint");
++
++    let script0 = gScripts.scriptLocations()[0];
++    isnot(script0, gScripts.selected,
++          "first script location is not the currently selected script");
++
++    let location = {url: script0, line: 5};
++    gEditor.addEventListener(SourceEditor.EVENTS.BREAKPOINT_CHANGE,
++                             onEditorBreakpointAddBackgroundTrap);
++    gPane.addBreakpoint(location, onBreakpointAddBackground);
++  }
++
++  function onEditorBreakpointAddBackgroundTrap(aEvent)
++  {
++    // trap listener: no breakpoint must be added to the editor when a breakpoint
++    // is added to a script that is not currently selected.
++    gEditor.removeEventListener(SourceEditor.EVENTS.BREAKPOINT_CHANGE,
++                                onEditorBreakpointAddBackgroundTrap);
++    editorBreakpointChanges++;
++    ok(!aEvent, "breakpoint2 must not be added to the editor");
++  }
++
++  function onBreakpointAddBackground(aBreakpointClient, aResponseError)
++  {
++    breakpointsAdded++;
++
++    ok(aBreakpointClient, "breakpoint2 added, client received");
++    ok(!aResponseError, "breakpoint2 added without errors");
++    is(aBreakpointClient.location.url, gScripts.scriptLocations()[0],
++       "breakpoint2 client url is correct");
++    is(aBreakpointClient.location.line, 5,
++       "breakpoint2 client line is correct");
++
++    executeSoon(function() {
++      ok(aBreakpointClient.actor in gBreakpoints,
++         "breakpoint2 client found in the list of debugger breakpoints");
++      is(Object.keys(gBreakpoints).length, 1, "one breakpoint in the debugger");
++      is(gPane.getBreakpoint(gScripts.scriptLocations()[0], 5), aBreakpointClient,
++         "getBreakpoint(scriptLocations[0], 5) returns the correct breakpoint");
++
++      // remove the trap listener
++      gEditor.removeEventListener(SourceEditor.EVENTS.BREAKPOINT_CHANGE,
++                                  onEditorBreakpointAddBackgroundTrap);
++
++      gEditor.addEventListener(SourceEditor.EVENTS.BREAKPOINT_CHANGE,
++                               onEditorBreakpointAddSwitch);
++      gEditor.addEventListener(SourceEditor.EVENTS.TEXT_CHANGED,
++                               onEditorTextChanged);
++
++      info("switch to the second script");
++
++      gScripts._scripts.selectedIndex = 0;
++      gDebugger.SourceScripts.onChange({ target: gScripts._scripts });
++    });
++  }
++
++  function onEditorBreakpointAddSwitch(aEvent)
++  {
++    gEditor.removeEventListener(SourceEditor.EVENTS.BREAKPOINT_CHANGE,
++                                onEditorBreakpointAddSwitch);
++    editorBreakpointChanges++;
++
++    ok(aEvent, "breakpoint2 added to the editor");
++    is(aEvent.added.length, 1, "one breakpoint added to the editor");
++    is(aEvent.removed.length, 0, "no breakpoint was removed from the editor");
++    is(aEvent.added[0].line, 4, "editor breakpoint line is correct");
++
++    is(gEditor.getBreakpoints().length, 1,
++       "editor.getBreakpoints().length is correct");
++  }
++
++  function onEditorTextChanged()
++  {
++    gEditor.removeEventListener(SourceEditor.EVENTS.TEXT_CHANGED,
++                                onEditorTextChanged);
++
++    is(gEditor.getText().indexOf("debugger"), -1,
++       "The second script is no longer displayed.");
++
++    isnot(gEditor.getText().indexOf("firstCall"), -1,
++          "The first script is displayed.");
++
++    executeSoon(function() {
++      info("remove the second breakpoint using the mouse");
++
++      gEditor.addEventListener(SourceEditor.EVENTS.BREAKPOINT_CHANGE,
++                               onEditorBreakpointRemoveSecond);
++
++      let testWin = gEditor.editorElement.ownerDocument.defaultView;
++      EventUtils.synthesizeMouse(gEditor.editorElement, 10, 70, {}, testWin);
++    });
++
++  }
++
++  function onEditorBreakpointRemoveSecond(aEvent)
++  {
++    gEditor.removeEventListener(SourceEditor.EVENTS.BREAKPOINT_CHANGE,
++                                onEditorBreakpointRemoveSecond);
++    editorBreakpointChanges++;
++
++    ok(aEvent, "breakpoint2 removed from the editor");
++    is(aEvent.added.length, 0, "no breakpoint was added to the editor");
++    is(aEvent.removed.length, 1, "one breakpoint was removed from the editor");
++    is(aEvent.removed[0].line, 4, "editor breakpoint line is correct");
++
++    is(gEditor.getBreakpoints().length, 0, "editor.getBreakpoints().length is correct");
++
++    executeSoon(function() {
++      gDebugger.StackFrames.activeThread.resume(finish);
++    });
++  }
++
++  registerCleanupFunction(function() {
++    is(Object.keys(gBreakpoints).length, 0, "no breakpoint in the debugger");
++    ok(!gPane.getBreakpoint(gScripts.scriptLocations()[0], 5),
++       "getBreakpoint(scriptLocations[0], 5) returns no breakpoint");
++
++    removeTab(gTab);
++    is(breakpointsAdded, 2, "correct number of breakpoints have been added");
++    is(breakpointsRemoved, 1, "correct number of breakpoints have been removed");
++    is(editorBreakpointChanges, 4, "correct number of editor breakpoint changes");
++    gPane = null;
++    gTab = null;
++    gDebuggee = null;
++    gDebugger = null;
++    gScripts = null;
++    gEditor = null;
++    gBreakpoints = null;
++  });
++}
+diff --git a/browser/devtools/webconsole/GcliCommands.jsm b/browser/devtools/webconsole/GcliCommands.jsm
+--- a/browser/devtools/webconsole/GcliCommands.jsm
++++ b/browser/devtools/webconsole/GcliCommands.jsm
+@@ -15,16 +15,17 @@
+  *
+  * The Initial Developer of the Original Code is
+  * The Mozilla Foundation.
+  * Portions created by the Initial Developer are Copyright (C) 2011
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Joe Walker <jwalker@mozilla.com> (original author)
++ *   Mihai Sucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -155,18 +156,16 @@ gcli.addCommand({
+    ],
+    exec: function(args, context) {
+      let hud = HUDService.getHudReferenceById(context.environment.hudId);
+      let StyleEditor = hud.gcliterm.document.defaultView.StyleEditor;
+      StyleEditor.openChrome(args.resource.element, args.line);
+    }
+ });
+ 
+-let breakpoints = [];
+-
+ /**
+  * 'break' command
+  */
+ gcli.addCommand({
+   name: "break",
+   description: gcli.lookup("breakDesc"),
+   manual: gcli.lookup("breakManual")
+ });
+@@ -175,27 +174,35 @@ gcli.addCommand({
+ /**
+  * 'break list' command
+  */
+ gcli.addCommand({
+   name: "break list",
+   description: gcli.lookup("breaklistDesc"),
+   returnType: "html",
+   exec: function(args, context) {
+-    if (breakpoints.length === 0) {
++    let win = HUDService.currentContext();
++    let dbg = win.DebuggerUI.getDebugger(win.gBrowser.selectedTab);
++    if (!dbg) {
++      return gcli.lookup("breakaddDebuggerStopped");
++    }
++    let breakpoints = dbg.breakpoints;
++
++    if (Object.keys(breakpoints).length === 0) {
+       return gcli.lookup("breaklistNone");
+     }
+ 
+     let reply = gcli.lookup("breaklistIntro");
+     reply += "<ol>";
+-    breakpoints.forEach(function(breakpoint) {
++    for each (let breakpoint in breakpoints) {
+       let text = gcli.lookupFormat("breaklistLineEntry",
+-                                   [breakpoint.file, breakpoint.line]);
++                                   [breakpoint.location.url,
++                                    breakpoint.location.line]);
+       reply += "<li>" + text + "</li>";
+-    });
++    };
+     reply += "</ol>";
+     return reply;
+   }
+ });
+ 
+ 
+ /**
+  * 'break add' command
+@@ -243,24 +250,21 @@ gcli.addCommand({
+     args.type = "line";
+     let win = HUDService.currentContext();
+     let dbg = win.DebuggerUI.getDebugger(win.gBrowser.selectedTab);
+     if (!dbg) {
+       return gcli.lookup("breakaddDebuggerStopped");
+     }
+     var promise = context.createPromise();
+     let position = { url: args.file, line: args.line };
+-    dbg.activeThread.setBreakpoint(position, function(aResponse, aBpClient) {
+-      if (aResponse.error) {
+-        promise.resolve(gcli.lookupFormat("breakaddFailed",
+-                        [ aResponse.error ]));
++    dbg.addBreakpoint(position, function(aBreakpoint, aError) {
++      if (aError) {
++        promise.resolve(gcli.lookupFormat("breakaddFailed", [aError]));
+         return;
+       }
+-      args.client = aBpClient;
+-      breakpoints.push(args);
+       promise.resolve(gcli.lookup("breakaddAdded"));
+     });
+     return promise;
+   }
+ });
+ 
+ 
+ /**
+@@ -270,28 +274,46 @@ gcli.addCommand({
+   name: "break del",
+   description: gcli.lookup("breakdelDesc"),
+   params: [
+     {
+       name: "breakid",
+       type: {
+         name: "number",
+         min: 0,
+-        max: function() { return breakpoints.length - 1; }
++        max: function() {
++          let win = HUDService.currentContext();
++          let dbg = win.DebuggerUI.getDebugger(win.gBrowser.selectedTab);
++          if (!dbg) {
++            return gcli.lookup("breakaddDebuggerStopped");
++          }
++          return Object.keys(dbg.breakpoints).length - 1;
++        },
+       },
+       description: gcli.lookup("breakdelBreakidDesc")
+     }
+   ],
+   returnType: "html",
+   exec: function(args, context) {
+-    let breakpoint = breakpoints.splice(args.breakid, 1)[0];
+-    var promise = context.createPromise();
++    let win = HUDService.currentContext();
++    let dbg = win.DebuggerUI.getDebugger(win.gBrowser.selectedTab);
++    if (!dbg) {
++      return gcli.lookup("breakaddDebuggerStopped");
++    }
++
++    let breakpoints = dbg.breakpoints;
++    let id = Object.keys(dbg.breakpoints)[args.breakid];
++    if (!id || !(id in breakpoints)) {
++      return gcli.lookup("breakdelRemoved");
++    }
++
++    let promise = context.createPromise();
+     try {
+-      breakpoint.client.remove(function(aResponse) {
+-                                 promise.resolve(gcli.lookup("breakdelRemoved"));
+-                               });
++      dbg.removeBreakpoint(breakpoints[id], function() {
++        promise.resolve(gcli.lookup("breakdelRemoved"));
++      });
+     } catch (ex) {
+       // If the debugger has been closed already, don't scare the user.
+       promise.resolve(gcli.lookup("breakdelRemoved"));
+     }
+     return promise;
+   }
+ });
+diff --git a/toolkit/devtools/debugger/dbg-client.jsm b/toolkit/devtools/debugger/dbg-client.jsm
+--- a/toolkit/devtools/debugger/dbg-client.jsm
++++ b/toolkit/devtools/debugger/dbg-client.jsm
+@@ -18,16 +18,17 @@
+  * The Initial Developer of the Original Code is
+  *   Mozilla Foundation
+  * Portions created by the Initial Developer are Copyright (C) 2011
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Dave Camp <dcamp@mozilla.com> (original author)
+  *   Panos Astithas <past@mozilla.com>
++ *   Mihai Sucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -639,17 +640,18 @@ ThreadClient.prototype = {
+             if (aResponse.error) {
+               if (aCallback) {
+                 aCallback(aOnResponse.bind(undefined, aResponse));
+               } else {
+                 aOnResponse(aResponse);
+               }
+               return;
+             }
+-            let bpClient = new BreakpointClient(this._client, aResponse.actor);
++            let bpClient = new BreakpointClient(this._client, aResponse.actor,
++                                                aLocation);
+             if (aCallback) {
+               aCallback(aOnResponse(aResponse, bpClient));
+             } else {
+               aOnResponse(aResponse, bpClient);
+             }
+           }
+         }.bind(this));
+     }.bind(this);
+@@ -946,20 +948,24 @@ GripClient.prototype = {
+ 
+ /**
+  * Breakpoint clients are used to remove breakpoints that are no longer used.
+  *
+  * @param aClient DebuggerClient
+  *        The debugger client parent.
+  * @param aActor string
+  *        The actor ID for this breakpoint.
++ * @param aLocation object
++ *        The location of the breakpoint. This is an object with two properties:
++ *        url and line.
+  */
+-function BreakpointClient(aClient, aActor) {
++function BreakpointClient(aClient, aActor, aLocation) {
+   this._client = aClient;
+   this._actor = aActor;
++  this.location = aLocation;
+ }
+ 
+ BreakpointClient.prototype = {
+ 
+   _actor: null,
+   get actor() { return this._actor; },
+ 
+   /**

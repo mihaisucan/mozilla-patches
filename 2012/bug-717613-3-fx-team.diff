@@ -1,0 +1,124 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1328734773 -7200
+# Node ID cd40a7eee75f5d5078cf17ea9c1b28728952c1a0
+# Parent  a03056b255ff05790ec184aea9669e1212a89969
+Bug 717613 - Make sure the primary selection is not updated too often in the Source Editor
+
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -58,16 +58,24 @@ const ORION_IFRAME = "data:text/html;cha
+   " href='chrome://browser/skin/devtools/orion-container.css'></head>" +
+   "<body style='height:100%;margin:0;overflow:hidden'>" +
+   "<div id='editor' style='height:100%'></div>" +
+   "</body></html>";
+ 
+ const XUL_NS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
+ 
+ /**
++ * The primary selection update delay. On Linux, the X11 primary selection is
++ * updated to hold the currently selected text.
++ *
++ * @type number
++ */
++const PRIMARY_SELECTION_DELAY = 100;
++
++/**
+  * Predefined themes for syntax highlighting. This objects maps
+  * SourceEditor.THEMES to Orion CSS files.
+  */
+ const ORION_THEMES = {
+   mozilla: ["chrome://browser/skin/devtools/orion.css"],
+ };
+ 
+ /**
+@@ -149,16 +157,17 @@ SourceEditor.prototype = {
+   _linesRuler: null,
+   _annotationRuler: null,
+   _overviewRuler: null,
+   _styler: null,
+   _annotationStyler: null,
+   _annotationModel: null,
+   _dragAndDrop: null,
+   _currentLineAnnotation: null,
++  _primarySelectionTimeout: null,
+   _mode: null,
+   _expandTab: null,
+   _tabSize: null,
+   _iframeWindow: null,
+   _eventTarget: null,
+   _eventListenersQueue: null,
+ 
+   /**
+@@ -559,24 +568,42 @@ SourceEditor.prototype = {
+    */
+   _onOrionSelection: function SE__onOrionSelection(aEvent)
+   {
+     if (this._config.highlightCurrentLine) {
+       this._highlightCurrentLine(aEvent);
+     }
+ 
+     if (Services.appinfo.OS == "Linux") {
+-      let text = this.getText(aEvent.newValue.start, aEvent.newValue.end);
+-      if (!text) {
+-        return;
++      let window = this.parentElement.ownerDocument.defaultView;
++
++      if (this._primarySelectionTimeout) {
++        window.clearTimeout(this._primarySelectionTimeout);
+       }
++      this._primarySelectionTimeout =
++        window.setTimeout(this._updatePrimarySelection.bind(this),
++                          PRIMARY_SELECTION_DELAY);
++    }
++  },
+ 
+-      clipboardHelper.copyStringToClipboard(text,
+-                                            Ci.nsIClipboard.kSelectionClipboard);
++  /**
++   * Update the X11 PRIMARY buffer to hold the current selection.
++   * @private
++   */
++  _updatePrimarySelection: function SE__updatePrimarySelection()
++  {
++    this._primarySelectionTimeout = null;
++
++    let text = this.getSelectedText();
++    if (!text) {
++      return;
+     }
++
++    clipboardHelper.copyStringToClipboard(text,
++                                          Ci.nsIClipboard.kSelectionClipboard);
+   },
+ 
+   /**
+    * Highlight the current line using the Orion annotation model.
+    *
+    * @private
+    * @param object aEvent
+    *        The Selection event object.
+@@ -1291,16 +1318,22 @@ SourceEditor.prototype = {
+    */
+   destroy: function SE_destroy()
+   {
+     if (this._config.highlightCurrentLine || Services.appinfo.OS == "Linux") {
+       this._view.removeEventListener("Selection", this._onOrionSelection);
+     }
+     this._onOrionSelection = null;
+ 
++    if (this._primarySelectionTimeout) {
++      let window = this.parentElement.ownerDocument.defaultView;
++      window.clearTimeout(this._primarySelectionTimeout);
++      this._primarySelectionTimeout = null;
++    }
++
+     this._view.destroy();
+     this.ui.destroy();
+     this.ui = null;
+ 
+     this.parentElement.removeChild(this._iframe);
+     this.parentElement = null;
+     this._iframeWindow = null;
+     this._iframe = null;

@@ -1,0 +1,575 @@
+diff --git a/browser/base/content/browser.xul b/browser/base/content/browser.xul
+--- a/browser/base/content/browser.xul
++++ b/browser/base/content/browser.xul
+@@ -258,22 +258,22 @@
+                        label="&inspectNextButton.label;"
+                        accesskey="&inspectNextButton.accesskey;"
+                        class="toolbarbutton-text"
+                        command="Inspector:Next"/>
+         <toolbarbutton id="inspector-style-toolbutton"
+                        label="&inspectStyleButton.label;"
+                        accesskey="&inspectStyleButton.accesskey;"
+                        class="toolbarbutton-text"
+-                       oncommand="InspectorUI.toggleStylePanel();'"/>
+-        <toolbarbutton id="inspector-dom-toolbutton"
+-                       label="&inspectDOMButton.label;"
+-                       accesskey="&inspectDOMButton.accesskey;"
++                       oncommand="InspectorUI.toggleStylePanel();"/>
++        <toolbarbutton id="inspector-object-toolbutton"
++                       label="&inspectObjectButton.label;"
++                       accesskey="&inspectObjectButton.accesskey;"
+                        class="toolbarbutton-text"
+-                       oncommand="InspectorUI.toggleDOMPanel();"/>
++                       oncommand="InspectorUI.toggleObjectPanel();"/>
+       </toolbar>
+       <tree id="inspector-tree" class="plain"
+             seltype="single"
+             treelines="true"
+             onselect="InspectorUI.onTreeSelected()"
+             flex="1">
+         <treecols>
+           <treecol id="colNodeName" label="nodeName" primary="true"
+diff --git a/browser/base/content/inspector.js b/browser/base/content/inspector.js
+--- a/browser/base/content/inspector.js
++++ b/browser/base/content/inspector.js
+@@ -535,26 +535,27 @@ var InspectorUI = {
+       this.openStylePanel();
+       if (this.treeView.selectedNode) {
+         this.updateStylePanel(this.treeView.selectedNode);
+       }
+     }
+   },
+ 
+   /**
+-   * Toggle the DOM panel. Invoked from the toolbar's DOM button.
++   * Toggle the Object panel. Invoked from the toolbar's Object button.
+    */
+-  toggleDOMPanel: function IUI_toggleDOMPanel()
++  toggleObjectPanel: function IUI_toggleObjectPanel()
+   {
+-    if (this.isDOMPanelOpen) {
+-      this.domPanel.hidePopup();
++    if (this.isObjectPanelOpen) {
++      this.objectPanel.hidePopup();
+     } else {
+-      this.openDOMPanel();
++      this.clearObjectPanel();
++      this.openObjectPanel();
+       if (this.treeView.selectedNode) {
+-        this.updateDOMPanel(this.treeView.selectedNode);
++        this.updateObjectPanel(this.treeView.selectedNode);
+       }
+     }
+   },
+ 
+   /**
+    * Is the tree panel open?
+    *
+    * @returns boolean
+@@ -570,23 +571,23 @@ var InspectorUI = {
+    * @returns boolean
+    */
+   get isStylePanelOpen()
+   {
+     return this.stylePanel && this.stylePanel.state == "open";
+   },
+ 
+   /**
+-   * Is the DOM panel open?
++   * Is the Object panel open?
+    *
+    * @returns boolean
+    */
+-  get isDOMPanelOpen()
++  get isObjectPanelOpen()
+   {
+-    return this.domPanel && this.domPanel.state == "open";
++    return this.objectPanel && this.objectPanel.state == "open";
+   },
+ 
+   /**
+    * Open the inspector's tree panel and initialize it.
+    */
+   openTreePanel: function IUI_openTreePanel()
+   {
+     if (!this.treePanel) {
+@@ -618,26 +619,27 @@ var InspectorUI = {
+       // open at top right of browser panel, offset by 20px from top.
+       this.stylePanel.openPopup(this.browser, "end_before", 0, 20, false, false);
+       // size panel to 200px wide by half browser height - 60.
+       this.stylePanel.sizeTo(200, this.win.outerHeight / 2 - 60);
+     }
+   },
+ 
+   /**
+-   * Open the DOM panel if not already onscreen.
++   * Open the Object panel if not already onscreen.
+    */
+-  openDOMPanel: function IUI_openDOMPanel()
++  openObjectPanel: function IUI_openObjectPanel()
+   {
+-    if (!this.isDOMPanelOpen) {
++    if (!this.isObjectPanelOpen) {
++      this.objectPanel.hidden = false;
+       // open at middle right of browser panel, offset by 20px from middle.
+-      this.domPanel.openPopup(this.browser, "end_before", 0,
++      this.objectPanel.openPopup(this.browser, "end_before", 0,
+         this.win.outerHeight / 2 - 20, false, false);
+       // size panel to 200px wide by half browser height - 60.
+-      this.domPanel.sizeTo(200, this.win.outerHeight / 2 - 60);
++      this.objectPanel.sizeTo(200, this.win.outerHeight / 2 - 60);
+     }
+   },
+ 
+   /**
+    * Toggle the dimmed (semi-transparent) state for a panel by setting or
+    * removing a dimmed attribute.
+    *
+    * @param aDim
+@@ -648,47 +650,47 @@ var InspectorUI = {
+     if (aDim.hasAttribute("dimmed")) {
+       aDim.removeAttribute("dimmed");
+     } else {
+       aDim.setAttribute("dimmed", "true");
+     }
+   },
+ 
+   /**
+-   * Open inspector UI. tree, style and DOM panels if enabled. Add listeners for
+-   * document scrolling, resize and tabContainer.TabSelect.
++   * Open inspector UI. tree, style and object panels if enabled. Add listeners
++   * for document scrolling, resize and tabContainer.TabSelect.
+    */
+   openInspectorUI: function IUI_openInspectorUI()
+   {
+     // initialization
+     this.browser = gBrowser.selectedBrowser;
+     this.win = this.browser.contentWindow;
+ 
+-    // DOM panel initialization and loading (via PropertyPanel.jsm)
+-    let domPanelTitle = this.strings.GetStringFromName("dom.domPanelTitle");
++    // Object panel initialization and loading (via PropertyPanel.jsm)
++    let objectPanelTitle = this.strings.GetStringFromName("object.objectPanelTitle");
+     let parent = document.getElementById("inspector-style-panel").parentNode;
+-    this.propertyPanel = new (this.PropertyPanel)(parent, document, domPanelTitle, {});
++    this.propertyPanel = new (this.PropertyPanel)(parent, document, objectPanelTitle, {});
+ 
+-    // additional DOM panel setup needed for unittest identification and use
+-    this.domPanel = this.propertyPanel.panel;
+-    this.domPanel.setAttribute("id", "inspector-dom-panel");
+-    this.domBox = this.propertyPanel.tree;
+-    this.domTreeView = this.propertyPanel.treeView;
++    // additional Object panel setup needed for unittest identification and use
++    this.objectPanel = this.propertyPanel.panel;
++    this.objectPanel.setAttribute("id", "inspector-object-panel");
++    this.objectPanelTree = this.propertyPanel.tree;
++    this.objectPanelTreeView = this.propertyPanel.treeView;
+ 
+     // open inspector UI
+     this.openTreePanel();
+ 
+     // style panel setup and activation
+     this.styleBox = document.getElementById("inspector-style-listbox");
+     this.clearStylePanel();
+     this.openStylePanel();
+ 
+-    // DOM panel setup and activation
+-    this.clearDOMPanel();
+-    this.openDOMPanel();
++    // Object panel setup and activation
++    this.clearObjectPanel();
++    this.openObjectPanel();
+ 
+     // setup highlighter and start inspecting
+     this.initializeHighlighter();
+     this.startInspecting();
+     this.win.document.addEventListener("scroll", this, false);
+     this.win.addEventListener("resize", this, false);
+     gBrowser.tabContainer.addEventListener("TabSelect", this, false);
+     this.inspectCmd.setAttribute("checked", true);
+@@ -718,53 +720,53 @@ var InspectorUI = {
+     }
+     if (this.isPanelOpen) {
+       this.treePanel.hidePopup();
+       this.treeView.destroy();
+     }
+     if (this.isStylePanelOpen) {
+       this.stylePanel.hidePopup();
+     }
+-    if (this.domPanel) {
+-      this.domPanel.hidePopup();
+-      this.domBox = null;
+-      this.domTreeView = null;
++    if (this.objectPanel) {
++      this.objectPanel.hidePopup();
++      this.objectPanelTree = null;
++      this.objectPanelTreeView = null;
+       this.propertyPanel.destroy();
+     }
+     this.inspectCmd.setAttribute("checked", false);
+     this.browser = this.win = null; // null out references to browser and window
+   },
+ 
+   /**
+    * Begin inspecting webpage, attach page event listeners, activate
+    * highlighter event listeners.
+    */
+   startInspecting: function IUI_startInspecting()
+   {
+     this.attachPageListeners();
+     this.inspecting = true;
+     this.toggleDimForPanel(this.stylePanel);
+-    this.toggleDimForPanel(this.domPanel);
++    this.toggleDimForPanel(this.objectPanel);
+   },
+ 
+   /**
+    * Stop inspecting webpage, detach page listeners, disable highlighter
+    * event listeners.
+    */
+   stopInspecting: function IUI_stopInspecting()
+   {
+     if (!this.inspecting)
+       return;
+     this.detachPageListeners();
+     this.inspecting = false;
+     this.toggleDimForPanel(this.stylePanel);
+-    this.toggleDimForPanel(this.domPanel);
++    this.toggleDimForPanel(this.objectPanel);
+     if (this.treeView.selection) {
+       this.updateStylePanel(this.treeView.selectedNode);
+-      this.updateDOMPanel(this.treeView.selectedNode);
++      this.updateObjectPanel(this.treeView.selectedNode);
+     }
+   },
+ 
+   /////////////////////////////////////////////////////////////////////////
+   //// Model Creation Methods
+ 
+   /**
+    * Create treeView object from content window.
+@@ -855,21 +857,21 @@ var InspectorUI = {
+    */
+   clearStylePanel: function IUI_clearStylePanel()
+   {
+     for (let i = this.styleBox.childElementCount; i >= 0; --i)
+       this.styleBox.removeItemAt(i);
+   },
+ 
+   /**
+-   * Remove all items from the DOM Panel's listbox.
++   * Remove all items from the Object Panel.
+    */
+-  clearDOMPanel: function IUI_clearStylePanel()
++  clearObjectPanel: function IUI_clearObjectPanel()
+   {
+-    this.domTreeView.data = {};
++    this.objectPanelTreeView.data = {};
+   },
+ 
+   /**
+    * Update the contents of the style panel with styles for the currently
+    * inspected node.
+    *
+    * @param aNode
+    *        The highlighted node to get styles for.
+@@ -883,26 +885,26 @@ var InspectorUI = {
+     let rules = [], styleSections = [], usedProperties = {};
+     this.style.getInheritedRules(aNode, styleSections, usedProperties);
+     this.style.getElementRules(aNode, rules, usedProperties);
+     this.clearStylePanel();
+     this.createStyleItems(rules, styleSections);
+   },
+ 
+   /**
+-   * Update the contents of the DOM panel with name/value pairs for the
++   * Update the contents of the Object panel with name/value pairs for the
+    * currently-inspected node.
+    */
+-  updateDOMPanel: function IUI_updateDOMPanel(aNode)
++  updateObjectPanel: function IUI_updateObjectPanel(aNode)
+   {
+-    if (this.inspecting || !this.isDOMPanelOpen) {
++    if (this.inspecting || !this.isObjectPanelOpen) {
+       return;
+     }
+ 
+-    this.domTreeView.data = aNode;
++    this.objectPanelTreeView.data = aNode;
+   },
+ 
+   /////////////////////////////////////////////////////////////////////////
+   //// Event Handling
+ 
+   /**
+    * Main callback handler for events.
+    *
+@@ -948,17 +950,17 @@ var InspectorUI = {
+     if (this.selectEventsSuppressed) {
+       return false;
+     }
+ 
+     let node = this.treeView.selectedNode;
+     this.highlighter.highlightNode(node);
+     this.stopInspecting();
+     this.updateStylePanel(node);
+-    this.updateDOMPanel(node);
++    this.updateObjectPanel(node);
+     return true;
+   },
+ 
+   /**
+    * Attach event listeners to content window and child windows to enable 
+    * highlighting and click to stop inspection.
+    */
+   attachPageListeners: function IUI_attachPageListeners()
+@@ -991,17 +993,17 @@ var InspectorUI = {
+    */
+   inspectNode: function IUI_inspectNode(aNode)
+   {
+     this.highlighter.highlightNode(aNode);
+     this.selectEventsSuppressed = true;
+     this.treeView.selectedNode = aNode;
+     this.selectEventsSuppressed = false;
+     this.updateStylePanel(aNode);
+-    this.updateDOMPanel(aNode);
++    this.updateObjectPanel(aNode);
+   },
+ 
+   /**
+    * Find an element from the given coordinates. This method descends through 
+    * frames to find the element the user clicked inside frames.
+    *
+    * @param DOMDocument aDocument the document to look into.
+    * @param integer aX
+diff --git a/browser/base/content/test/Makefile.in b/browser/base/content/test/Makefile.in
+--- a/browser/base/content/test/Makefile.in
++++ b/browser/base/content/test/Makefile.in
+@@ -149,17 +149,17 @@ _BROWSER_FILES = \
+                  browser_duplicateIDs.js \
+                  browser_gestureSupport.js \
+                  browser_getshortcutoruri.js \
+                  browser_hide_removing.js \
+                  browser_inspector_initialization.js \
+                  browser_inspector_treeSelection.js \
+                  browser_inspector_highlighter.js \
+                  browser_inspector_stylePanel.js \
+-                 browser_inspector_domPanel.js \
++                 browser_inspector_objectPanel.js \
+                  browser_inspector_iframeTest.js \
+                  browser_inspector_scrolling.js \
+                  browser_pageInfo.js \
+                  browser_page_style_menu.js \
+                  browser_pinnedTabs.js \
+                  browser_plainTextLinks.js \
+                  browser_pluginnotification.js \
+                  browser_popupUI.js \
+diff --git a/browser/base/content/test/browser_inspector_initialization.js b/browser/base/content/test/browser_inspector_initialization.js
+--- a/browser/base/content/test/browser_inspector_initialization.js
++++ b/browser/base/content/test/browser_inspector_initialization.js
+@@ -43,33 +43,33 @@ function startInspectorTests()
+ {
+   ok(InspectorUI, "InspectorUI variable exists");
+   document.addEventListener("popupshown", runInspectorTests, false);
+   InspectorUI.toggleInspectorUI();
+ }
+ 
+ function runInspectorTests(evt)
+ {
+-  if (evt.target.id != "inspector-dom-panel")
++  if (evt.target.id != "inspector-object-panel")
+     return true;
+   document.removeEventListener("popupshown", runInspectorTests, false);
+   document.addEventListener("popuphidden", finishInspectorTests, false);
+   ok(InspectorUI.inspecting, "Inspector is highlighting");
+   ok(InspectorUI.isPanelOpen, "Inspector Tree Panel is open");
+   ok(InspectorUI.isStylePanelOpen, "Inspector Style Panel is open");
+-  ok(InspectorUI.isDOMPanelOpen, "Inspector DOM Panel is open");
++  ok(InspectorUI.isObjectPanelOpen, "Inspector Object Panel is open");
+   InspectorUI.toggleInspectorUI();
+ }
+ 
+ function finishInspectorTests(evt)
+ {
+-  if (evt.target.id != "inspector-dom-panel")
++  if (evt.target.id != "inspector-object-panel")
+     return true;
+   document.removeEventListener("popuphidden", finishInspectorTests, false);
+-  ok(!InspectorUI.isDOMPanelOpen, "Inspector DOM Panel is closed");
++  ok(!InspectorUI.isObjectPanelOpen, "Inspector Object Panel is closed");
+   ok(!InspectorUI.isStylePanelOpen, "Inspector Style Panel is closed");
+   ok(!InspectorUI.isPanelOpen, "Inspector Tree Panel is closed");
+   ok(!InspectorUI.inspecting, "Inspector is not highlighting");
+   gBrowser.removeCurrentTab();
+   finish();
+ }
+ 
+ function test()
+diff --git a/browser/base/content/test/browser_inspector_domPanel.js b/browser/base/content/test/browser_inspector_objectPanel.js
+rename from browser/base/content/test/browser_inspector_domPanel.js
+rename to browser/base/content/test/browser_inspector_objectPanel.js
+--- a/browser/base/content/test/browser_inspector_domPanel.js
++++ b/browser/base/content/test/browser_inspector_objectPanel.js
+@@ -8,25 +8,26 @@
+  * the License. You may obtain a copy of the License at
+  * http://www.mozilla.org/MPL/
+  *
+  * Software distributed under the License is distributed on an "AS IS" basis,
+  * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+  * for the specific language governing rights and limitations under the
+  * License.
+  *
+- * The Original Code is Inspector DOM Panel Tests.
++ * The Original Code is Inspector Object Panel Tests.
+  *
+  * The Initial Developer of the Original Code is
+  * The Mozilla Foundation.
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Rob Campbell <rcampbell@mozilla.com>
++ *   Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -50,59 +51,59 @@ function createDocument()
+     'solely to provide some things to <span style="{color: yellow}">' +
+     'highlight</span> and <span style="{font-weight: bold}">count</span> ' +
+     'DOM list-items in the box at right. If you are reading this, ' +
+     'you should go do something else instead. Maybe read a book. Or better ' +
+     'yet, write some test-cases for another bit of code. ' +
+     '<span style="{font-style: italic}">Maybe more inspector test-cases!</span></p>\n' +
+     '<p id="closing">end transmission</p>\n' +
+     '</div>';
+-  doc.title = "Inspector DOM Test";
+-  document.addEventListener("popupshown", runDOMTests, false);
++  doc.title = "Inspector Object Panel Test";
++  document.addEventListener("popupshown", runObjectPanelTests, false);
+   InspectorUI.openInspectorUI();
+ }
+ 
+ function nodeGenerator()
+ {
+   let body = doc.body;
+   InspectorUI.inspectNode(body);
+   yield;
+   let h1 = doc.querySelector("h1");
+   InspectorUI.inspectNode(h1);
+   yield;
+   let first = doc.getElementById("first");
+   InspectorUI.inspectNode(first);
+   yield;
+-  let closing = doc.getElementById("#closing");
++  let closing = doc.getElementById("closing");
+   InspectorUI.inspectNode(closing);
+   yield;
+ }
+ 
+-function runDOMTests(evt)
++function runObjectPanelTests(evt)
+ {
+-  if (evt.target.id != "inspector-dom-panel")
++  if (evt.target.id != "inspector-object-panel")
+     return true;
+-  InspectorUI._log("runDOMtests");
+-  document.removeEventListener("popupshown", runDOMTests, false);
++  InspectorUI._log("runObjectPanelTests");
++  document.removeEventListener("popupshown", runObjectPanelTests, false);
+   InspectorUI.stopInspecting();
+   document.addEventListener("popupshown", performTestComparisons, false);
+   testGen = nodeGenerator();
+   testGen.next();
+ }
+ 
+ function performTestComparisons(evt)
+ {
+   InspectorUI._log("performTestComparisons");
+   if (evt.target.id != "highlighter-panel")
+     return true;
+ 
+   ok(InspectorUI.treeView.selectedNode, "selection");
+-  ok(InspectorUI.isDOMPanelOpen, "DOM panel is open?");
++  ok(InspectorUI.isObjectPanelOpen, "Object panel is open?");
+   ok(InspectorUI.highlighter.isHighlighting, "panel is highlighting");
+-  ok(InspectorUI.domTreeView.rowCount > 0, "domBox has items");
++  ok(InspectorUI.objectPanelTreeView.rowCount > 0, "objectPanelTreeView has items");
+ 
+   try {
+     testGen.next();
+   } catch(StopIteration) {
+     document.removeEventListener("popupshown", performTestComparisons, false);
+     finishUp();
+   }
+ }
+@@ -118,11 +119,11 @@ function test()
+   waitForExplicitFinish();
+   gBrowser.selectedTab = gBrowser.addTab();
+   gBrowser.selectedBrowser.addEventListener("load", function() {
+     gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
+     doc = content.document;
+     waitForFocus(createDocument, content);
+   }, true);
+ 
+-  content.location = "data:text/html,basic tests for inspector";
++  content.location = "data:text/html,object panel test for the Inspector";
+ }
+ 
+diff --git a/browser/locales/en-US/chrome/browser/browser.dtd b/browser/locales/en-US/chrome/browser/browser.dtd
+--- a/browser/locales/en-US/chrome/browser/browser.dtd
++++ b/browser/locales/en-US/chrome/browser/browser.dtd
+@@ -186,22 +186,22 @@
+ <!ENTITY inspectButton.accesskey      "I">
+ <!ENTITY inspectNextButton.label      "Next">
+ <!ENTITY inspectNextButton.accesskey  "N">
+ <!ENTITY inspectPreviousButton.label  "Previous">
+ <!ENTITY inspectPreviousButton.accesskey "P">
+ <!ENTITY inspectStyleButton.label     "Style">
+ <!ENTITY inspectStyleButton.accesskey "S">
+ <!ENTITY inspectStylePanelTitle.label  "Style">
+-<!-- LOCALIZATION NOTE (inspectDOMButton.label): This button label
+-  -  stands for Document Object Model and appears on the inspector's toolbar.
+-  -  It is used to open and closed the DOM panel. There is also a DOM label in
+-  -  inspector.properties for the panel titlebar. -->
+-<!ENTITY inspectDOMButton.label       "DOM">
+-<!ENTITY inspectDOMButton.accesskey       "D">
++<!-- LOCALIZATION NOTE (inspectObjectButton.label): This button label
++  -  appears on the Inspector's toolbar. It is used to open and close the Object
++  -  panel. There is also a DOM label in inspector.properties for the panel
++  -  titlebar. -->
++<!ENTITY inspectObjectButton.label       "Object">
++<!ENTITY inspectObjectButton.accesskey   "O">
+ 
+ <!ENTITY fileMenu.label         "File"> 
+ <!ENTITY fileMenu.accesskey       "F">
+ <!ENTITY newNavigatorCmd.label        "New Window">
+ <!ENTITY newNavigatorCmd.key        "N">
+ <!ENTITY newNavigatorCmd.accesskey      "N">
+ 
+ <!ENTITY editMenu.label         "Edit"> 
+diff --git a/browser/locales/en-US/chrome/browser/inspector.properties b/browser/locales/en-US/chrome/browser/inspector.properties
+--- a/browser/locales/en-US/chrome/browser/inspector.properties
++++ b/browser/locales/en-US/chrome/browser/inspector.properties
+@@ -5,13 +5,12 @@ style.selectorLabel=Selector
+ # LOCALIZATION NOTE  (style.inheritedFrom): used in Style panel in
+ #  inspector. Describes which tagname[#id] the properties are inherited from.
+ style.inheritedFrom=Inherited from: #1
+ 
+ # LOCALIZATION NOTE (style.styleItemLabel): used in Style panel in inspector.
+ #  Used for construction of list items, #1 = label, #2 = content.
+ style.styleItemLabel=#1: #2
+ 
+-# LOCALIZATION NOTE (dom.domPanelTitle): used in DOM Panel in inspector.
+-#  Stands for "Document Object Model". Also referenced in in browser.dtd
+-#  and used as a button title.
+-#  Unsure if this localizes well, but including just in case
+-dom.domPanelTitle=DOM
++# LOCALIZATION NOTE (object.objectPanelTitle): used in the Object Panel in the 
++# Inspector tool. There's also inspectObjectButton in browser.dtd for the 
++# toolbar button which allows users to open/close the Object panel.
++object.objectPanelTitle=Object

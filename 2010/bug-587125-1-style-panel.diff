@@ -1,0 +1,179 @@
+diff --git a/browser/base/content/csshtmltree.js b/browser/base/content/csshtmltree.js
+--- a/browser/base/content/csshtmltree.js
++++ b/browser/base/content/csshtmltree.js
+@@ -402,16 +402,38 @@ PropertyView.prototype = {
+         selectorText: function(aSelector) {
+           let result = aSelector;
+           if (aSelector == "@element.style") {
+             result = InspectorUI.cssHtmlTree.strings.
+               GetStringFromName("style.elementSelector");
+           }
+           return result;
+         },
++
++        specificityTitle: function(aRule)
++        {
++          let bundle = InspectorUI.cssHtmlTree.strings;
++          let specificity = aRule.specificity;
++
++          let important = "";
++          if (specificity.important) {
++            important = bundle.GetStringFromName("style.property.important");
++          }
++
++          let result = "";
++          if (specificity.inline) {
++            result = important;
++          } else {
++            result = bundle.formatStringFromName("style.rule.specificity",
++              [important, specificity.ids, specificity.classes,
++              specificity.tags], 4);
++          }
++
++          return result;
++        },
+       };
+       this.tree._template(this.tree.templateRules, this.element, data);
+       this.populated = true;
+     }
+ 
+     this.element.style.display = "block";
+     if (this.toggle) {
+       this.toggle.innerHTML = "&#x25BC;";
+diff --git a/browser/base/content/csshtmltree.xhtml b/browser/base/content/csshtmltree.xhtml
+--- a/browser/base/content/csshtmltree.xhtml
++++ b/browser/base/content/csshtmltree.xhtml
+@@ -212,17 +212,18 @@ To visually debug the templates without 
+     statusText: function(status) {}, // convert rule.status to readable text
+   }
+   The table element is only there do the DOM doesn't muck with the tr
+   -->
+   <table id="templateRules">
+     <tr foreach="rule in ${cssInfo.rules}">
+       <td class="rule-text">${selectorText(rule.selector)} &#x2192;
+         ${rule.value}</td>
+-      <td class="rule-specificity">${rule.specificity}</td>
++      <td class="rule-specificity"
++        title="${specificityTitle(rule)}">${rule.specificity}</td>
+       <td><a target="_blank" href="view-source:${rule.href}"
+           class="link">${rule.source}</a></td>
+       <td class="rule-status">${statusText(rule.status)}</td>
+     </tr>
+   </table>
+ </div>
+ 
+ </body>
+diff --git a/browser/base/content/csslogic.js b/browser/base/content/csslogic.js
+--- a/browser/base/content/csslogic.js
++++ b/browser/base/content/csslogic.js
+@@ -678,16 +678,34 @@ function CssSpecificity(aSelector, aInde
+       let tag = aSimple.split(/[#.[:]/)[0];
+       if (tag && tag != "*") {
+         this.tags++;
+       }
+     }, this);
+   } else {
+     this.inline = true;
+   }
++
++  this.score = 0;
++
++  /* Score prefix:
++  0 nothing
++  1 inline
++  2 important
++  3 inline important
++  */
++  let scorePrefix = 0;
++  if (this.inline) {
++    scorePrefix++;
++  }
++  if (this.important) {
++    scorePrefix += 2;
++  }
++
++  this.score = "" + scorePrefix + this.ids + this.classes + this.tags;
+ };
+ 
+ CssSpecificity.prototype = {
+   /**
+    * Compare the current CssSpecificity instance to another instance.
+    *
+    * @param {CssSpecificity} aThat The CssSpecificity instance to compare ourselves against.
+    * @returns number -1, 0, 1 depending on how aThat compares with this.
+@@ -752,12 +770,22 @@ CssSpecificity.prototype = {
+   },
+ 
+   /**
+    * Displayable version of the specificity.
+    * @returns {string}
+    */
+   toString: function CssSpecificity_toString()
+   {
+-    let prefix = this.important ? "!," : "-,";
+-    return prefix + this.ids + "," + this.classes + "," + this.tags;
++    let result = "";
++    if (this.score) {
++      result = this.score;
++    } else {
++      if (this.inline) {
++        let prefix = this.important ? "!," : " ,";
++        result = prefix + this.ids + "," + this.classes + "," + this.tags;
++      } else {
++        result = this.important ? "!" : " ";
++      }
++    }
++    return result;
+   },
+ };
+diff --git a/browser/locales/en-US/chrome/browser/inspector.properties b/browser/locales/en-US/chrome/browser/inspector.properties
+--- a/browser/locales/en-US/chrome/browser/inspector.properties
++++ b/browser/locales/en-US/chrome/browser/inspector.properties
+@@ -46,16 +46,24 @@ style.property.numberOfRulesSingular=%1$
+ 
+ # LOCALIZATION NOTE (style.property.numberOfRulesSingular): This is used inside
+ # the Style panel of the Inspector tool. For each style property the panel shows
+ # the number of rules which hold that specific property, counted from all of the
+ # stylesheet in the web page inspected. This string is used when there are
+ # multiple rules (more than one).
+ style.property.numberOfRulesPlural=%1$S rules
+ 
++# LOCALIZATION NOTE (style.property.important): This is used inside
++# the Style panel of the Inspector tool. For each style property the developer
++# can mark it as important, or not. This string is displayed in the hover tool
++# tip when the user is on top of a rule within a property view, if the CSS
++# property is marked as important in that rule. Also note that this string is
++# prepended to the style.rule.specificity string *if* the property is important.
++style.property.important=!important, 
++
+ # LOCALIZATION NOTE (style.rule.status): These strings are used inside the Style
+ # panel of the Inspector tool. For each style property the panel shows the rules
+ # which hold that specific property. For every rule, the rule status is also
+ # displayed: a rule can be the best match, a match, a parent match, or a rule
+ # did not match the element the user has highlighted.
+ style.rule.status.BEST=Best Match
+ style.rule.status.MATCHED=Matched
+ style.rule.status.PARENT_MATCH=Parent Match
+@@ -68,14 +76,22 @@ style.rule.status.UNMATCHED=Unmatched
+ # style property the panel shows the rules which hold that specific property.
+ # For every rule, the rule source is also displayed: a rule can come from a
+ # file, from the same page (inline), from the element itself (element), or from
+ # an unknown source.
+ style.rule.sourceUnknown=unknown
+ style.rule.sourceInline=inline
+ style.rule.sourceElement=element
+ 
++# LOCALIZATION NOTE (style.rule.specificity): This is used inside
++# the Style panel of the Inspector tool. Each style property is inside a rule. A
++# rule is a selector that can match (or not) the highlighted element in the web
++# page. The rule selector can have its specificity calculated based on the
++# number of IDs, tags, and classes that it tries to match. This string is
++# displayed when the user hover the specificity score column.
++style.rule.specificity=%1$S%2$S ID(s), %3$S class(es), %4$S tag(s).
++
+ # LOCALIZATION NOTE (style.property.numberOfRulesSingular): This is used inside
+ # the Style panel of the Inspector tool. For each property the panel shows
+ # the rule with its selector. Rules can come from element.style. In this case,
+ # one can translate element.style to the local language.
+ style.elementSelector=element.style
+ 

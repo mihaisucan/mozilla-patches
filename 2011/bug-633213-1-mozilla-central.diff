@@ -1,0 +1,66 @@
+diff --git a/browser/themes/gnomestripe/browser/tabview/tabview.css b/browser/themes/gnomestripe/browser/tabview/tabview.css
+--- a/browser/themes/gnomestripe/browser/tabview/tabview.css
++++ b/browser/themes/gnomestripe/browser/tabview/tabview.css
+@@ -247,17 +247,17 @@ html[dir=rtl] .overlay {
+   box-shadow: -3px 3px 5.5px rgba(0,0,0,.5);
+ }
+ 
+ .appTabTrayContainer {
+   top: 34px;
+   right: 1px;
+   -moz-border-start: 1px solid #E1E1E1;
+   padding: 0 5px;
+-  overflow-x: hidden;
++  overflow: hidden;
+   text-align: start;
+   line-height: 0;
+ }
+ 
+ html[dir=rtl] .appTabTrayContainer {
+   right: auto;
+   left: 1px;
+ }
+diff --git a/browser/themes/pinstripe/browser/tabview/tabview.css b/browser/themes/pinstripe/browser/tabview/tabview.css
+--- a/browser/themes/pinstripe/browser/tabview/tabview.css
++++ b/browser/themes/pinstripe/browser/tabview/tabview.css
+@@ -240,17 +240,17 @@ html[dir=rtl] .overlay {
+   box-shadow: -3px 3px 5.5px rgba(0,0,0,.5);
+ }
+ 
+ .appTabTrayContainer {
+   top: 34px;
+   right: 1px;
+   -moz-border-start: 1px solid #E1E1E1;
+   padding: 0 5px;
+-  overflow-x: hidden;
++  overflow: hidden;
+   text-align: start;
+   line-height: 0;
+ }
+ 
+ html[dir=rtl] .appTabTrayContainer {
+   right: auto;
+   left: 1px;
+ }
+diff --git a/browser/themes/winstripe/browser/tabview/tabview.css b/browser/themes/winstripe/browser/tabview/tabview.css
+--- a/browser/themes/winstripe/browser/tabview/tabview.css
++++ b/browser/themes/winstripe/browser/tabview/tabview.css
+@@ -266,17 +266,17 @@ html[dir=rtl] .overlay {
+   box-shadow: -3px 3px 5.5px rgba(0,0,0,.5);
+ }
+ 
+ .appTabTrayContainer {
+   top: 34px;
+   right: 1px;
+   -moz-border-start: 1px solid #E1E1E1;
+   padding: 0 5px;
+-  overflow-x: hidden;
++  overflow: hidden;
+   text-align: start;
+   line-height: 0;
+ }
+ 
+ html[dir=rtl] .appTabTrayContainer {
+   right: auto;
+   left: 1px;
+ }

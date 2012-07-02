@@ -1,0 +1,526 @@
+# HG changeset patch
+# Parent bad86971801932432099bcbe8788b5e1eaa2e71a
+# Date 1310143982 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+
+Bug 612658 - Implement ConsoleStorageService
+
+diff --git a/dom/base/ConsoleAPI.js b/dom/base/ConsoleAPI.js
+--- a/dom/base/ConsoleAPI.js
++++ b/dom/base/ConsoleAPI.js
+@@ -38,55 +38,61 @@
+  * ***** END LICENSE BLOCK ***** */
+ 
+ let Cu = Components.utils;
+ let Ci = Components.interfaces;
+ let Cc = Components.classes;
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/Services.jsm");
++Cu.import("resource://gre/modules/ConsoleAPIStorage.jsm");
+ 
+ function ConsoleAPI() {}
++
+ ConsoleAPI.prototype = {
+ 
+   classID: Components.ID("{b49c18f8-3379-4fc0-8c90-d7772c1a9ff3}"),
+ 
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsIDOMGlobalPropertyInitializer]),
+ 
+   // nsIDOMGlobalPropertyInitializer
+   init: function CA_init(aWindow) {
+-    let id;
++    let outerID;
++    let innerID;
+     try {
+-      id = aWindow.QueryInterface(Ci.nsIInterfaceRequestor)
+-                  .getInterface(Ci.nsIDOMWindowUtils)
+-                  .outerWindowID;
+-    } catch (ex) {
++      let windowUtils = aWindow.QueryInterface(Ci.nsIInterfaceRequestor)
++                          .getInterface(Ci.nsIDOMWindowUtils);
++
++      outerID = windowUtils.outerWindowID;
++      innerID = windowUtils.currentInnerWindowID;
++    }
++    catch (ex) {
+       Cu.reportError(ex);
+     }
+ 
+     let self = this;
+     let chromeObject = {
+       // window.console API
+       log: function CA_log() {
+-        self.notifyObservers(id, "log", arguments);
++        self.notifyObservers(outerID, innerID, "log", arguments);
+       },
+       info: function CA_info() {
+-        self.notifyObservers(id, "info", arguments);
++        self.notifyObservers(outerID, innerID, "info", arguments);
+       },
+       warn: function CA_warn() {
+-        self.notifyObservers(id, "warn", arguments);
++        self.notifyObservers(outerID, innerID, "warn", arguments);
+       },
+       error: function CA_error() {
+-        self.notifyObservers(id, "error", arguments);
++        self.notifyObservers(outerID, innerID, "error", arguments);
+       },
+       debug: function CA_debug() {
+-        self.notifyObservers(id, "log", arguments);
++        self.notifyObservers(outerID, innerID, "log", arguments);
+       },
+       trace: function CA_trace() {
+-        self.notifyObservers(id, "trace", self.getStackTrace());
++        self.notifyObservers(outerID, innerID, "trace", self.getStackTrace());
+       },
+       __exposedProps__: {
+         log: "r",
+         info: "r",
+         warn: "r",
+         error: "r",
+         debug: "r",
+         trace: "r",
+@@ -114,38 +120,52 @@ ConsoleAPI.prototype = {
+ 
+     Object.defineProperties(contentObj, properties);
+     Cu.makeObjectPropsNormal(contentObj);
+ 
+     return contentObj;
+   },
+ 
+   /**
+-   * Notify all observers of any console API call
++   * Notify all observers of any console API call.
++   *
++   * @param number aOuterWindowID
++   *        The outer window ID from where the message came from.
++   * @param number aInnerWindowID
++   *        The inner window ID from where the message came from.
++   * @param string aLevel
++   *        The message level.
++   * @param mixed aArguments
++   *        The arguments given to the console API call.
+    **/
+-  notifyObservers: function CA_notifyObservers(aID, aLevel, aArguments) {
+-    if (!aID)
++  notifyObservers:
++  function CA_notifyObservers(aOuterWindowID, aInnerWindowID, aLevel, aArguments) {
++    if (!aOuterWindowID) {
+       return;
++    }
+ 
+     let stack = this.getStackTrace();
+     // Skip the first frame since it contains an internal call.
+     let frame = stack[1];
+     let consoleEvent = {
+-      ID: aID,
++      ID: aOuterWindowID,
++      innerID: aInnerWindowID,
+       level: aLevel,
+       filename: frame.filename,
+       lineNumber: frame.lineNumber,
+       functionName: frame.functionName,
+       arguments: aArguments
+     };
+ 
+     consoleEvent.wrappedJSObject = consoleEvent;
+ 
++    ConsoleAPIStorage.recordEvent(aInnerWindowID, consoleEvent);
++
+     Services.obs.notifyObservers(consoleEvent,
+-                                 "console-api-log-event", aID);
++                                 "console-api-log-event", aOuterWindowID);
+   },
+ 
+   /**
+    * Build the stacktrace array for the console.trace() call.
+    *
+    * @return array
+    *         Each element is a stack frame that holds the following properties:
+    *         filename, lineNumber, functionName and language.
+diff --git a/dom/base/ConsoleAPIStorage.jsm b/dom/base/ConsoleAPIStorage.jsm
+new file mode 100644
+--- /dev/null
++++ b/dom/base/ConsoleAPIStorage.jsm
+@@ -0,0 +1,151 @@
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is ConsoleStorageService code.
++ *
++ * The Initial Developer of the Original Code is Mozilla Foundation
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *  David Dahl <ddahl@mozilla.com>  (Original Author)
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++let Cu = Components.utils;
++let Ci = Components.interfaces;
++let Cc = Components.classes;
++
++Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++Cu.import("resource://gre/modules/Services.jsm");
++
++const STORAGE_MAX_EVENTS = 200;
++
++XPCOMUtils.defineLazyGetter(this, "gPrivBrowsing", function () {
++  // private browsing may not be available in some Gecko Apps
++  try {
++    return Cc["@mozilla.org/privatebrowsing;1"].getService(Ci.nsIPrivateBrowsingService);
++  }
++  catch (ex) {
++    return null;
++  }
++});
++
++var EXPORTED_SYMBOLS = ["ConsoleAPIStorage"];
++
++var _consoleStorage = {};
++
++var ConsoleAPIStorage = {
++
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
++
++  observe: function CS_observe(aSubject, aTopic, aData)
++  {
++    if (aTopic == "xpcom-shutdown") {
++      Services.obs.removeObserver(this, "xpcom-shutdown");
++      Services.obs.removeObserver(this, "inner-window-destroyed");
++      Services.obs.removeObserver(this, "memory-pressure");
++      delete _consoleStorage;
++    }
++    else if (aTopic == "inner-window-destroyed") {
++      let innerWindowID = aSubject.QueryInterface(Components.interfaces.nsISupportsPRUint64).data;
++      this.clearEvents(innerWindowID);
++    }
++    else if (aTopic == "memory-pressure") {
++      if (aData == "low-memory") {
++        this.clearEvents();
++      }
++    }
++  },
++
++  init: function CS_init()
++  {
++    Services.obs.addObserver(this, "xpcom-shutdown", false);
++    Services.obs.addObserver(this, "inner-window-destroyed", false);
++    Services.obs.addObserver(this, "memory-pressure", false);
++  },
++
++  /**
++   * Get a storage array by ID
++   *
++   * @param string aId [optional]
++   * @returns array
++   */
++  getEvents: function CS_getEvents(aId)
++  {
++    return _consoleStorage[aId] || [];
++  },
++
++  /**
++   * Record an event associated with the given window ID
++   *
++   * @param string aWindowID,
++   *        the ID of the inner window for which the event occurred
++   * @param object aEvent
++   *        A JS object
++   */
++  recordEvent: function CS_recordEvent(aWindowID, aEvent)
++  {
++    let ID = parseInt(aWindowID);
++    if (isNaN(ID)) {
++      throw new Error("Invalid window ID argument");
++    }
++
++    if (gPrivBrowsing && gPrivBrowsing.privateBrowsingEnabled) {
++      return;
++    }
++
++    if (!_consoleStorage[ID]) {
++      _consoleStorage[ID] = [];
++    }
++    let storage = _consoleStorage[ID];
++    storage.push(aEvent);
++
++    // truncate
++    if (storage.length > STORAGE_MAX_EVENTS) {
++      storage.shift();
++    }
++
++    Services.obs.notifyObservers(aEvent, "console-storage-cache-event", ID);
++  },
++
++  /**
++   * Clear storage data
++   *
++   * @param string aId
++   */
++  clearEvents: function CS_clearEvents(aId)
++  {
++    if (aId != null) {
++      delete _consoleStorage[aId];
++    }
++    else {
++      _consoleStorage = {};
++      Services.obs.notifyObservers(null, "console-storage-reset", null);
++    }
++  },
++};
++
++ConsoleAPIStorage.init();
+diff --git a/dom/base/Makefile.in b/dom/base/Makefile.in
+--- a/dom/base/Makefile.in
++++ b/dom/base/Makefile.in
+@@ -47,16 +47,19 @@ LIBRARY_NAME	= jsdombase_s
+ LIBXUL_LIBRARY	= 1
+ FORCE_STATIC_LIB = 1
+ 
+ EXTRA_PP_COMPONENTS = \
+ 		ConsoleAPI.js \
+ 		ConsoleAPI.manifest \
+ 		$(NULL)
+ 
++EXTRA_JS_MODULES = ConsoleAPIStorage.jsm \
++		$(NULL)
++
+ XPIDLSRCS = \
+   nsIEntropyCollector.idl \
+   nsIScriptChannel.idl \
+   $(NULL)
+ 
+ EXPORTS = \
+   nsDOMCID.h \
+   nsDOMClassInfoClasses.h \
+diff --git a/dom/tests/browser/Makefile.in b/dom/tests/browser/Makefile.in
+--- a/dom/tests/browser/Makefile.in
++++ b/dom/tests/browser/Makefile.in
+@@ -46,12 +46,14 @@ include $(topsrcdir)/config/rules.mk
+ 
+ _BROWSER_FILES = \
+ 		browser_focus_steal_from_chrome.js \
+ 		browser_focus_steal_from_chrome_during_mousedown.js \
+ 		browser_autofocus_background.js \
+ 		browser_ConsoleAPITests.js \
+ 		test-console-api.html \
+ 		browser_autofocus_preference.js \
++		browser_ConsoleStorageAPITests.js \
++		browser_ConsoleStoragePBTest.js \
+ 		$(NULL)
+ 
+ libs::	$(_BROWSER_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/dom/tests/browser/browser_ConsoleStorageAPITests.js b/dom/tests/browser/browser_ConsoleStorageAPITests.js
+new file mode 100644
+--- /dev/null
++++ b/dom/tests/browser/browser_ConsoleStorageAPITests.js
+@@ -0,0 +1,104 @@
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++const TEST_URI = "http://example.com/browser/dom/tests/browser/test-console-api.html";
++const TEST_URI_NAV = "http://example.com/browser/dom/tests/browser/";
++
++Cu.import("resource://gre/modules/ConsoleAPIStorage.jsm");
++
++var apiCallCount;
++
++var ConsoleObserver = {
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
++
++  init: function CO_init()
++  {
++    Services.obs.addObserver(this, "console-storage-cache-event", false);
++    apiCallCount = 0;
++  },
++
++  observe: function CO_observe(aSubject, aTopic, aData)
++  {
++    if (aTopic == "console-storage-cache-event") {
++      apiCallCount ++;
++      if (apiCallCount == 4) {
++        try {
++                  var tab = gBrowser.selectedTab;
++        let browser = gBrowser.selectedBrowser;
++        let win = XPCNativeWrapper.unwrap(browser.contentWindow);
++        let windowID = getWindowId(win);
++        let messages = ConsoleAPIStorage.getEvents(windowID);
++
++        ok(messages.length >= 4, "Some messages found in the storage service");
++
++        ConsoleAPIStorage.clearEvents();
++        messages = ConsoleAPIStorage.getEvents(windowID);
++        ok(messages.length == 0, "Cleared Storage, no events found");
++
++        // remove the observer so we don't trigger this test again
++        Services.obs.removeObserver(this, "console-storage-cache-event");
++
++        // make sure a closed window's events are in fact removed from the
++        // storage cache
++        win.console.log("adding a new event");
++
++        // close the window - the storage cache should now be empty
++        gBrowser.removeTab(tab, {animate: false});
++
++        window.QueryInterface(Ci.nsIInterfaceRequestor)
++          .getInterface(Ci.nsIDOMWindowUtils).garbageCollect();
++        executeSoon(function (){
++          // use the old windowID again to see if we have any stray cached messages
++          messages = ConsoleAPIStorage.getEvents(windowID);
++          ok(messages.length == 0, "0 events found, tab close is clearing the cache");
++          finish();
++        });
++        } catch (ex) {
++          dump(ex + "\n\n\n");
++          dump(ex.stack + "\n\n\n");
++        }
++        }
++
++    }
++  }
++};
++
++function tearDown()
++{
++   while (gBrowser.tabs.length > 1) {
++    gBrowser.removeCurrentTab();
++  }
++}
++
++function test()
++{
++  registerCleanupFunction(tearDown);
++
++  ConsoleObserver.init();
++
++  waitForExplicitFinish();
++
++  var tab = gBrowser.addTab(TEST_URI);
++  gBrowser.selectedTab = tab;
++  var browser = gBrowser.selectedBrowser;
++  browser.addEventListener("DOMContentLoaded", function onLoad(event) {
++    browser.removeEventListener("DOMContentLoaded", onLoad, false);
++    executeSoon(function test_executeSoon() {
++      var contentWin = browser.contentWindow;
++
++      let win = XPCNativeWrapper.unwrap(contentWin);
++
++      win.console.log("this", "is", "a", "log message");
++      win.console.info("this", "is", "a", "info message");
++      win.console.warn("this", "is", "a", "warn message");
++      win.console.error("this", "is", "a", "error message");
++    });
++  }, false);
++}
++
++function getWindowId(aWindow)
++{
++  return aWindow.QueryInterface(Ci.nsIInterfaceRequestor)
++                .getInterface(Ci.nsIDOMWindowUtils)
++                .currentInnerWindowID;
++}
+diff --git a/dom/tests/browser/browser_ConsoleStoragePBTest.js b/dom/tests/browser/browser_ConsoleStoragePBTest.js
+new file mode 100644
+--- /dev/null
++++ b/dom/tests/browser/browser_ConsoleStoragePBTest.js
+@@ -0,0 +1,74 @@
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++function test() {
++  try {
++    var pb = Cc["@mozilla.org/privatebrowsing;1"].getService(Ci.nsIPrivateBrowsingService);
++  } catch (ex) {
++    ok(true, "nothing to do here, PB service doesn't exist");
++    return;
++  }
++
++  waitForExplicitFinish();
++
++  var CSS = {};
++  Cu.import("resource://gre/modules/ConsoleAPIStorage.jsm", CSS);
++
++  function checkStorageOccurs(shouldOccur) {
++    let win = XPCNativeWrapper.unwrap(browser.contentWindow);
++    let innerID = getInnerWindowId(win);
++
++    let beforeEvents = CSS.ConsoleAPIStorage.getEvents(innerID);
++    win.console.log("foo bar baz (private: " + !shouldOccur + ")");
++
++    let afterEvents = CSS.ConsoleAPIStorage.getEvents(innerID);
++
++    is(beforeEvents.length == afterEvents.length - 1,
++       shouldOccur, "storage should" + (shouldOccur ? "" : "n't") + " occur");
++  }
++
++  function pbObserver(aSubject, aTopic, aData) {
++    if (aData == "enter") {
++      checkStorageOccurs(false);
++
++      executeSoon(function () { pb.privateBrowsingEnabled = false; });
++    } else if (aData == "exit") {
++      executeSoon(finish);
++    }
++  }
++
++  const TEST_URI = "http://example.com/browser/dom/tests/browser/test-console-api.html";
++  var tab = gBrowser.selectedTab = gBrowser.addTab(TEST_URI);
++  var browser = gBrowser.selectedBrowser;
++
++  Services.obs.addObserver(pbObserver, "private-browsing", false);
++
++  const PB_KEEP_SESSION_PREF = "browser.privatebrowsing.keep_current_session";
++  Services.prefs.setBoolPref(PB_KEEP_SESSION_PREF, true);
++
++  registerCleanupFunction(function () {
++    gBrowser.removeTab(tab);
++
++    Services.obs.removeObserver(pbObserver, "private-browsing");
++
++    if (Services.prefs.prefHasUserValue(PB_KEEP_SESSION_PREF))
++      Services.prefs.clearUserPref(PB_KEEP_SESSION_PREF);
++  });
++
++  browser.addEventListener("DOMContentLoaded", function onLoad(event) {
++    if (browser.currentURI.spec != TEST_URI)
++      return;
++
++    browser.removeEventListener("DOMContentLoaded", onLoad, false);
++
++    checkStorageOccurs(true);
++
++    pb.privateBrowsingEnabled = true;
++  }, false);
++}
++
++function getInnerWindowId(aWindow) {
++  return aWindow.QueryInterface(Ci.nsIInterfaceRequestor)
++                .getInterface(Ci.nsIDOMWindowUtils)
++                .currentInnerWindowID;
++}

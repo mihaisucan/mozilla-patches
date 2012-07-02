@@ -1,0 +1,607 @@
+# HG changeset patch
+# Parent 6e2d8070c72212b9ce5e800b54e56ac234983254
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -428,16 +428,259 @@ var NetworkHelper =
+       }
+     }
+     return null;
+   }
+ }
+ 
+ // FIREBUG CODE END.
+ 
++///////////////////////////////////////////////////////////////////////////
++//// Helper for creating the panel.
++
++/**
++ * Creates a DOMNode and sets all the attributes of aAttributes on the created
++ * element.
++ *
++ * @param nsIDOMDocument aDocument
++ *        Document to create the new DOMNode.
++ * @param string aTag
++ *        Name of the tag for the DOMNode.
++ * @param object aAttributes
++ *        Attributes set on the created DOMNode.
++ *
++ * @returns nsIDOMNode
++ */
++function createElement(aDocument, aTag, aAttributes)
++{
++  let node = aDocument.createElement(aTag);
++  for (var attr in aAttributes) {
++    node.setAttribute(attr, aAttributes[attr]);
++  }
++  return node;
++}
++
++/**
++ * Creates a new DOMNode and appends it to aParent.
++ *
++ * @param nsIDOMDocument aDocument
++ *        Document to create the new DOMNode.
++ * @param nsIDOMNode aParent
++ *        A parent node to append the created element.
++ * @param string aTag
++ *        Name of the tag for the DOMNode.
++ * @param object aAttributes
++ *        Attributes set on the created DOMNode.
++ *
++ * @returns nsIDOMNode
++ */
++function appendChild(aDocument, aParent, aTag, aAttributes)
++{
++  let node = createElement(aDocument, aTag, aAttributes);
++  aParent.appendChild(node);
++  return node;
++}
++
++///////////////////////////////////////////////////////////////////////////
++//// PropertyPanel
++
++/**
++ * Creates a new PropertyPanel.
++ *
++ * @param nsIDOMNode aParent
++ *        Parent node to append the created panel to.
++ * @param nsIDOMDocument aDocument
++ *        Document to create the new nodes on.
++ * @param string aTitle
++ *        Title for the panel.
++ * @param string aObject
++ *        Object to display in the tree.
++ * @param array of objects aButtons
++ *        Array with buttons to display at the bottom of the panel.
++ */
++function NetworkPanel(aParent, aDocument, aTitle, aHttpActivity, aButtons)
++{
++  this.httpActivity = aHttpActivity;
++
++  // Create the underlaying panel
++  this.panel = createElement(aDocument, "panel", {
++    label: aTitle,
++    titlebar: "normal",
++    noautofocus: "true",
++    noautohide: "true",
++    close: "true"
++  });
++
++  // Create the tree.
++  this.browser = appendChild(aDocument, this.panel, "browser", {
++    src: "chrome://global/content/NetworkPanel.html",
++    disablehistory: "true",
++    flex: "1"
++  });
++
++  let self = this;
++  this.panel.addEventListener("popupshown", function onPopupShow()
++  {
++    self.panel.removeEventListener("popupshown", onPopupShow, false);
++    self.document = XPCNativeWrapper.unwrap(self.browser.contentWindow.document);
++    self.update();
++  }, false);
++
++  this.panel.addEventListener("popuphidden", function onPopypHide() {
++    self.panel.removeEventListener("popuphidden", onPopypHide, false);
++    self.destroy();
++  }, false);
++
++
++  // Create the footer.
++  let footer = createElement(aDocument, "hbox", { align: "end" });
++  appendChild(aDocument, footer, "spacer", { flex: 1 });
++
++  // The footer can have butttons.
++  for each (var button in aButtons) {
++    let buttonNode = appendChild(aDocument, footer, "button", {
++      label: button.label,
++      accesskey: button.accesskey || ""
++    });
++    buttonNode.onclick = button.onclick;
++  }
++
++  appendChild(aDocument, footer, "resizer", { dir: "bottomend" });
++  this.panel.appendChild(footer);
++
++  aParent.appendChild(this.panel);
++}
++
++/**
++ * Destroy the PropertyPanel. This closes the poped up panel and removes
++ * it from the browser DOM.
++ *
++ * @returns void
++ */
++NetworkPanel.prototype = {
++
++  state: 0,
++
++  destroy: function NP_destory()
++  {
++    this.panel.hidePopup();
++    this.panel.parentNode.removeChild(this.panel);
++  },
++
++  _appendNode: function(aId, aValue) {
++    let textNode = this.document.createTextNode(aValue);
++    this.document.getElementById(aId).appendChild(textNode);
++  },
++
++  _appendList: function(aParentId, aList, aIgnoreObject) {
++    let parent = this.document.getElementById(aParentId);
++    let doc = this.document;
++    aIgnoreObject = aIgnoreObject || {};
++    for (let line in aList) {
++      if (line in aIgnoreObject) {
++        continue;
++      }
++
++      let textNode = doc.createTextNode(line + ":");
++      let span = doc.createElement("span");
++      span.setAttribute("class", "property-name");
++      span.appendChild(textNode);
++      parent.appendChild(span);
++
++      textNode = doc.createTextNode(aList[line]);
++      span = doc.createElement("span");
++      span.setAttribute("class", "property-value");
++      span.appendChild(textNode);
++      parent.appendChild(span);
++
++      parent.appendChild(doc.createElement("br"));
++    }
++  },
++
++  _displayNode: function (aId) {
++    this.document.getElementById(aId).style.display = "block";
++  },
++
++  update: function() {
++    let doc = this.document;
++    let timing = this.httpActivity.timing;
++    let helper = this.helper
++
++    if (this.state == 0) {
++      this._appendNode("headUrl", this.httpActivity.url);
++      this._appendNode("headMethod", this.httpActivity.method);
++
++      this._appendNode("requestHeadersTiming",
++        ConsoleUtils.timestampString(timing.REQUEST_HEADER/1000));
++
++      this._displayNode("requestHeaders");
++      this._appendList("requestHeadersContent",
++                        this.httpActivity.request.header, { Cookie: true });
++
++      if ("Cookie" in this.httpActivity.request.header) {
++        this._displayNode("requestCookie");
++
++        let cookies = this.httpActivity.request.header.Cookie.split(";");
++        let cookieList = {};
++        let cookieListSorted = {};
++        cookies.forEach(function(cookie) {
++          let name, value;
++          [name, value] = cookie.trim().replace("\n", "").split("=");
++          cookieList[name] = value;
++        });
++        Object.keys(cookieList).sort().forEach(function(cookieName) {
++          cookieListSorted[cookieName] = cookieList[cookieName];
++        });
++
++        this._appendList("requestCookieContent", cookieListSorted);
++      }
++
++      this.state = 1;
++    }
++
++    if (this.httpActivity.request.body && this.state < 2) {
++      this._displayNode("requestBody");
++      this._appendNode("requestBodyContent", this.httpActivity.request.body);
++      this.state = 2;
++    }
++
++    if (this.httpActivity.response.header && this.state < 3) {
++      this._appendNode("headStatus", this.httpActivity.response.status);
++      this._appendNode("responseHeadersTiming",
++        Math.round((timing.RESPONSE_HEADER - timing.REQUEST_HEADER) / 1000) +
++        "ms");
++      this._displayNode("responseContainer");
++      this._appendList("responseHeadersContent", this.httpActivity.response.header);
++
++      this.state = 3;
++    }
++
++    if (this.httpActivity.response.body && this.state < 4) {
++      this._appendNode("responseBodyTiming",
++        Math.round((timing.RESPONSE_COMPLETE - timing.RESPONSE_HEADER) / 1000) +
++        "ms");
++
++      this._displayNode("responseBody");
++      this._appendNode("responseBodyContenet", this.httpActivity.response.body);
++
++      this.state = 4;
++    }
++
++    if (timing.TRANSACTION_CLOSE) {
++      if (this.state != 4) {
++        this._displayNode("responseNoBody");
++        this._appendNode("responseNoBodyTiming",
++          Math.round((timing.RESPONSE_COMPLETE - timing.RESPONSE_HEADER) / 1000) +
++          "ms");
++      }
++      this.state = 5;
++    }
++  }
++}
++
+ function HUD_SERVICE()
+ {
+   // TODO: provide mixins for FENNEC: bug 568621
+   if (appName() == "FIREFOX") {
+     var mixins = new FirefoxApplicationHooks();
+   }
+   else {
+     throw new Error("Unsupported Application");
+@@ -1327,17 +1570,22 @@ HUD_SERVICE.prototype =
+       if (!(line.trim())) {
+         return;
+       }
+       let colonIndex = line.indexOf(":");
+       headerContent[line.substring(0, colonIndex)] =
+         line.substring(colonIndex + 1).trim();
+     });
+ 
+-    return [status, headerContent];
++    let headerContentSorted = {};
++    Object.keys(headerContent).sort().forEach(function(line) {
++      headerContentSorted[line] = headerContent[line];
++    });
++
++    return [status, headerContentSorted];
+   },
+ 
+   /**
+    * Requests that haven't finished yet.
+    */
+   openRequests: {},
+ 
+   /**
+@@ -1414,16 +1662,17 @@ HUD_SERVICE.prototype =
+             var httpActivity = {
+               id: self.sequenceId(),
+               url: aChannel.URI.spec,
+               method: aChannel.requestMethod,
+               channel: aChannel,
+               loadGroup: loadGroup,
+               hud: self.hudWeakReferences[hudId].get(),
+ 
++              panels: [],
+               request: { },
+               response: { },
+               timing: {
+                 "REQUEST_HEADER": aTimestamp
+               }
+             };
+ 
+             // Add a new output entry.
+@@ -1444,16 +1693,28 @@ HUD_SERVICE.prototype =
+ 
+             // Parse the header string into status and header section.
+             [httpActivity.request.status, httpActivity.request.header] =
+               self.parseHttpHeader(aExtraStringData);
+ 
+             // Store the loggedNode and the httpActivity object for later reuse.
+             httpActivity.messageObject = loggedNode;
+             self.openRequests[httpActivity.id] = httpActivity;
++
++            let link = loggedNode.messageNode;
++            link.onclick = function() {
++              let doc = loggedNode.messageNode.ownerDocument;
++              let parent = doc.getElementById("mainPopupSet");
++              let propPanel = new NetworkPanel(parent, doc, "Inspect Network Request", httpActivity, [] /* no buttons yet */);
++
++              let panel = propPanel.panel;
++              panel.openPopup(link, "after_pointer", 0, 0, false, false);
++              panel.sizeTo(350, 400);
++              httpActivity.panels.push(Cu.getWeakReference(propPanel));
++            }
+           }
+           else {
+             // Iterate over all currently ongoing requests. If aChannel can't
+             // be found within them, then exit this function.
+             let httpActivity = null;
+             for each (var item in self.openRequests) {
+               if (item.channel !== aChannel) {
+                 continue;
+@@ -1461,17 +1722,17 @@ HUD_SERVICE.prototype =
+               httpActivity = item;
+               break;
+             }
+ 
+             if (!httpActivity) {
+               return;
+             }
+ 
+-            let msgObject;
++            let msgObject, updatePanel = false;
+             // Store the time information for this activity subtype.
+             httpActivity.timing[transCodes[aActivitySubtype]] = aTimestamp;
+ 
+             switch (aActivitySubtype) {
+               case activityDistributor.ACTIVITY_SUBTYPE_REQUEST_BODY_SENT:
+                 let gBrowser = HUDService.currentContext().gBrowser;
+ 
+                 let sentBody = NetworkHelper.readPostTextFromRequest(
+@@ -1479,50 +1740,69 @@ HUD_SERVICE.prototype =
+                 if (!sentBody) {
+                   sentBody = NetworkHelper.readPostTextFromPage(
+                                 httpActivity.url, gBrowser);
+                   if (!sentBody) {
+                     sentBody = "";
+                   }
+                 }
+                 httpActivity.request.body = sentBody;
++                updatePanel = true;
+                 break;
+ 
+               case activityDistributor.ACTIVITY_SUBTYPE_RESPONSE_HEADER:
+                 msgObject = httpActivity.messageObject;
+ 
+                 // Parse the header string into status and header section.
+                 [httpActivity.response.status, httpActivity.response.header] =
+                   self.parseHttpHeader(aExtraStringData);
+ 
+                 msgObject.messageNode.appendChild(
+                   msgObject.textFactory(" [" + httpActivity.response.status));
++
++                httpActivity.panels.forEach(function(weakRef) {
++                  let panel = weakRef.get();
++                  if (panel) {
++                    panel.update();
++                  }
++                });
++                updatePanel = true;
+                 break;
+ 
+               case activityDistributor.ACTIVITY_SUBTYPE_TRANSACTION_CLOSE:
+                 msgObject = httpActivity.messageObject;
+ 
+                 // Store the response body. This is not done during the
+                 // ACTIVITY_SUBTYPE_RESPONSE_COMPLETE state, as the body
+                 // might not be received by the listener at that point.
+                 httpActivity.response.body =
+                   httpActivity.response.listener.receivedData.join();
+ 
+                 let timing = httpActivity.timing;
+                 let requestDuration =
+-                  Math.round((timing.TRANSACTION_CLOSE -
++                  Math.round((timing.RESPONSE_COMPLETE -
+                                 timing.REQUEST_HEADER) / 1000);
+ 
+                 msgObject.messageNode.appendChild(
+                   msgObject.textFactory(" " + requestDuration + "ms]"));
+ 
+                 self.lastFinishedRequest = self.openRequests[item.id];
+                 delete self.openRequests[item.id];
++                updatePanel = true;
+                 break;
+             }
++
++            if (updatePanel) {
++              httpActivity.panels.forEach(function(weakRef) {
++                let panel = weakRef.get();
++                if (panel) {
++                  panel.update();
++                }
++              });
++            }
+           }
+         }
+       },
+ 
+       transactionCodes: {
+         0x5001: "REQUEST_HEADER",
+         0x5002: "REQUEST_BODY_SENT",
+         0x5003: "RESPONSE_START",
+diff --git a/toolkit/components/console/hudservice/NetworkPanel.html b/toolkit/components/console/hudservice/NetworkPanel.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/NetworkPanel.html
+@@ -0,0 +1,164 @@
++<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
++  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
++
++<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
++<head>
++  <style id="dynamic"></style>
++  <title>Style3</title>
++  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
++  <style>
++    body {
++      font-family: Lucida Grande, sans-serif;
++      font-size: 11px;
++      background: #EEE;
++    }
++
++    span.path {
++      font-size: 11px;
++      word-spacing: -1px;
++    }
++    span.path_element, span.path_element_link {
++      -moz-border-radius: 2px;
++      padding: 2px 3px;
++      text-shadow: #FFF 0px 1px 0px;
++      font-weight: bold;
++      font-size: 11px;
++    }
++    a.path_element {
++      background: -moz-linear-gradient(top, #BBE, #99C);
++    }
++    a.path_element:last-of-type {
++      background: -moz-linear-gradient(top, #FFC, #DD8);
++    }
++    span.path_crumb:last-of-type {
++      color: red;
++    }
++    div#header {
++      padding: 5px;
++      overflow-x:auto;
++    }
++    td.sheet_line {
++      text-align: right;
++    }
++    td#path_list {
++      text-align: left;
++    }
++    div#header label {
++      font-weight: bold;
++    }
++    #sheets {
++      margin-right: 10px; margin-top: 5px;
++    }
++    h1 {
++      font-size: 13px;
++      padding: 2px 10px;
++      margin: 0px;
++      background: -moz-linear-gradient(top, #BBB, #999);
++      -moz-border-radius: 2px;
++      text-shadow: #FFF 0px 1px 0px;
++    }
++    h1 .toggle {
++      font-size: 11px;
++      float: right;
++      color: #333;
++      display: none;
++    }
++    h1 .timing {
++      font-size: 11px;
++      float: right;
++      color: #333;
++      padding-right: 3px;
++    }
++
++    div.property-header {
++      padding: 2px 5px;
++      background: -moz-linear-gradient(top, #FFF, #F8F8F8);
++      color: #333;
++      max-height: 330px;
++      overflow-y: auto;
++      overflow-x: auto;
++      white-space: pre-wrap;
++    }
++    /* Take away these two :visited rules to get a core dumper */
++    .link { color: #55A;  }
++    .link:visited { color: #55A;  }
++    a.link { text-decoration: none; }
++    a.link:visited { text-decoration: none; }
++    span.property-rule-count {
++      float: right;
++    }
++    span.property-name {
++      font-size: 11px;
++      font-weight: bold;
++      padding-right: 4px;
++      color: #000;
++    }
++    span.property-value {
++      padding-right: 5px;
++      font-size: 11px;
++    }
++    div.group {
++      margin-top: 10px;
++    }
++    div.group, div#header {
++      background: #FFF;
++      border-color: #E1E1E1;
++      border-style: solid;
++      border-width: 1px;
++      -moz-box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
++      -moz-border-radius: 4px 4px 4px 4px;
++    }
++
++    table.rules {
++      margin-left: 20px;
++    }
++    td.rule-text, td.rule-status {
++      white-space: nowrap;
++      overflow-x: hidden;
++    }
++  </style>
++</head>
++<body role="application">
++
++<div id="header">
++  <span class="property-name">Request URL:</span>
++  <span class="property-value" id="headUrl"></span><br>
++  <span class="property-name">Request Method:</span>
++  <span class="property-value" id="headMethod"></span><br>
++  <span class="property-name">Status Code:</span>
++  <span class="property-value" id="headStatus"></span>
++</div>
++
++<div class="group">
++  <div id="requestHeaders" style="display:none">
++    <h1>Request Headers<span class="toggle">&#x25BC;</span><span class="timing" id="requestHeadersTiming"></span></h1>
++      <div class="property-header" id="requestHeadersContent"></div>
++  </div>
++
++  <div id="requestCookie" style="display:none">
++    <h1>Sent Cookies<span class="toggle">&#x25BC;</span></h1>
++      <div class="property-header" id="requestCookieContent"></div>
++  </div>
++
++  <div id="requestBody" style="display:none">
++    <h1>Request Body<span class="toggle">&#x25BC;</span></h1>
++      <div class="property-header" id="requestBodyContent"></div>
++  </div>
++</div>
++
++<div class="group" id="responseContainer" style="display:none">
++  <div id="responseHeaders">
++    <h1>Response Headers<span class="toggle">&#x25BC;</span><span class="timing" id="responseHeadersTiming">&#x394;</span></h1>
++      <div class="property-header" id="responseHeadersContent"></div>
++  </div>
++  <div id="responseBody" style="display:none">
++    <h1>Response Body<span class="toggle">&#x25BC;</span><span class="timing" id="responseBodyTiming">&#x394;</span></h1>
++      <div class="property-header" id="responseBodyContenet"></div>
++  </div>
++  <div id="responseNoBody" style="display:none">
++    <h1>There Is No Response Body<span class="timing" id="responseNoBodyTiming">&#x394;</span></h1>
++  </div>
++</div>
++
++</body>
++</html>
+\ No newline at end of file
+diff --git a/toolkit/components/console/jar.mn b/toolkit/components/console/jar.mn
+--- a/toolkit/components/console/jar.mn
++++ b/toolkit/components/console/jar.mn
+@@ -1,5 +1,6 @@
+ toolkit.jar:
+ *+ content/global/console.js                            (content/console.js)
+ *+ content/global/console.xul                           (content/console.xul)
+++  content/global/NetworkPanel.html                     (hudservice/NetworkPanel.html)
+ +  content/global/console.css                           (content/console.css)
+ +  content/global/consoleBindings.xml                   (content/consoleBindings.xml)

@@ -1,0 +1,238 @@
+# HG changeset patch
+# Parent 58966a461351a91031084fe27acfc185bc097bb4
+
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_583816_tab_focus.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_583816_tab_focus.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_583816_tab_focus.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_583816_tab_focus.js
+@@ -5,29 +5,27 @@
+  *
+  * Contributor(s):
+  *  Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
+ 
+-let inputNode;
++let HUD, inputNode;
+ 
+ function tabLoad(aEvent) {
+   browser.removeEventListener(aEvent.type, arguments.callee, true);
+ 
+   waitForFocus(function() {
+     openConsole();
+ 
+-    let hudId = HUDService.getHudIdByWindow(content);
+-    HUD = HUDService.hudReferences[hudId];
++    HUD = HUDService.getHudByWindow(content);
+ 
+-    let display = HUDService.getOutputNodeById(hudId);
+-    inputNode = display.querySelector(".jsterm-input-node");
++    inputNode = HUD.jsterm.inputNode;
+ 
+     inputNode.focus();
+     executeSoon(function() {
+       is(inputNode.getAttribute("focused"), "true", "inputNode is focused");
+       HUD.jsterm.setInputValue("doc");
+       inputNode.addEventListener("keyup", firstTab, false);
+       EventUtils.synthesizeKey("VK_TAB", {});
+     });
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586142_insert_newlines.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586142_insert_newlines.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586142_insert_newlines.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586142_insert_newlines.js
+@@ -1,15 +1,16 @@
+ /* vim:set ts=2 sw=2 sts=2 et: */
+ /* ***** BEGIN LICENSE BLOCK *****
+  * Any copyright is dedicated to the Public Domain.
+  * http://creativecommons.org/publicdomain/zero/1.0/
+  *
+  * Contributor(s):
+  *  Patrick Walton <pcwalton@mozilla.com>
++ *  Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ // Tests that newlines are present in the output of the console, so that
+ // copying works properly.
+ 
+ const TEST_URI = "http://example.com/";
+ 
+@@ -22,34 +23,27 @@ function test()
+ function onLoad() {
+   browser.removeEventListener("DOMContentLoaded", onLoad,
+                                                false);
+   executeSoon(testNewlines);
+ }
+ 
+ function testNewlines() {
+   openConsole();
+-  hudId = HUDService.displaysIndex()[0];
+-  ok(hudId != null, "we have the HUD ID");
++  hud = HUDService.getHudByWindow(content);
++  HUDService.clearDisplay(hud.hudId);
+ 
+-  HUDService.clearDisplay(hudId);
+-
+-  let contentWindow = browser.contentWindow;
+-  let console = contentWindow.wrappedJSObject.console;
++  let console = content.wrappedJSObject.console;
+   ok(console != null, "we have the console object");
+ 
+   for (let i = 0; i < 20; i++) {
+     console.log("Hello world!");
+   }
+ 
+-  let hudNode = HUDService.getOutputNodeById(hudId);
+-  let outputNode = hudNode.querySelector(".hud-output-node");
+-  ok(outputNode != null, "we have the output node");
+-
+-  let labels = outputNode.querySelectorAll("label");
++  let labels = hud.outputNode.querySelectorAll("label");
+   is(labels.length, 20, "we found 20 labels in the output node");
+ 
+   for (let i = 0; i < labels.length; i++) {
+     let value = labels[i].textContent;
+     is(value[value.length - 1], "\n", "the value of label " + i + " ends " +
+        "with a newline");
+   }
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_593003_iframe_wrong_hud.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_593003_iframe_wrong_hud.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_593003_iframe_wrong_hud.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_593003_iframe_wrong_hud.js
+@@ -84,29 +84,25 @@ function tab2Loaded(aEvent) {
+ 
+   tab1.linkedBrowser.addEventListener("load", tab1Reloaded, true);
+   tab1.linkedBrowser.contentWindow.location.reload();
+ }
+ 
+ function tab1Reloaded(aEvent) {
+   tab1.linkedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
+ 
+-  let hudId1 = HUDService.getHudIdByWindow(tab1.linkedBrowser.contentWindow);
+-
+-  let display1 = HUDService.getOutputNodeById(hudId1);
+-  let outputNode1 = display1.querySelector(".hud-output-node");
++  let hud1 = HUDService.getHudByWindow(tab1.linkedBrowser.contentWindow);
++  let outputNode1 = hud1.outputNode;
+ 
+   let msg = "Found the iframe network request in tab1";
+   testLogEntry(outputNode1, TEST_IFRAME_URI, msg, true);
+ 
+-  let hudId2 = HUDService.getHudIdByWindow(tab2.linkedBrowser.contentWindow);
+-  let display2 = HUDService.getOutputNodeById(hudId2);
+-  let outputNode2 = display2.querySelector(".hud-output-node");
++  let hud2 = HUDService.getHudByWindow(tab2.linkedBrowser.contentWindow);
++  let outputNode2 = hud2.outputNode;
+ 
+-  isnot(display1, display2, "the two HUD displays must be different");
+   isnot(outputNode1, outputNode2,
+         "the two HUD outputNodes must be different");
+ 
+   msg = "Didn't find the iframe network request in tab2";
+   testLogEntry(outputNode2, TEST_IFRAME_URI, msg, true, true);
+ 
+   HUDService.deactivateHUDForContext(tab2);
+   gBrowser.removeTab(tab2);
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594477_clickable_output.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594477_clickable_output.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594477_clickable_output.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594477_clickable_output.js
+@@ -13,21 +13,19 @@ let HUD;
+ 
+ let outputItem;
+ 
+ function tabLoad1(aEvent) {
+   browser.removeEventListener(aEvent.type, arguments.callee, true);
+ 
+   openConsole();
+ 
+-  let hudId = HUDService.getHudIdByWindow(browser.contentWindow);
+-  HUD = HUDService.hudReferences[hudId];
++  HUD = HUDService.getHudByWindow(content);
+ 
+-  let display = HUDService.getOutputNodeById(hudId);
+-  outputNode = display.querySelector(".hud-output-node");
++  outputNode = HUD.outputNode;
+ 
+   browser.addEventListener("load", tabLoad2, true);
+ 
+   // Reload so we get some output in the console.
+   browser.contentWindow.location.reload();
+   log(document);
+ }
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594497_history_arrow_keys.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594497_history_arrow_keys.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594497_history_arrow_keys.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594497_history_arrow_keys.js
+@@ -5,29 +5,28 @@
+  *
+  * Contributor(s):
+  *  Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
+ 
+-let inputNode, testKey, values, pos;
++let inputNode, testKey, values, pos, HUD;
+ 
+ function tabLoad(aEvent) {
+   browser.removeEventListener(aEvent.type, arguments.callee, true);
+ 
+   waitForFocus(function() {
+     openConsole();
+ 
+     let hudId = HUDService.getHudIdByWindow(content);
+     HUD = HUDService.hudReferences[hudId];
+ 
+-    let display = HUDService.getOutputNodeById(hudId);
+-    inputNode = display.querySelector(".jsterm-input-node");
++    inputNode = HUD.jsterm.inputNode;
+ 
+     inputNode.focus();
+ 
+     ok(!inputNode.value, "inputNode.value is empty");
+ 
+     values = ["document", "window", "document.body"];
+     values.push(values.join(";\n"), "document.location");
+ 
+@@ -117,17 +116,17 @@ function testMore() {
+ 
+     testEnd();
+   }, false);
+ 
+   EventUtils.synthesizeKey("VK_DOWN", {});
+ }
+ 
+ function testEnd() {
+-  inputNode = testKey = values = pos = null;
++  HUD = inputNode = testKey = values = pos = null;
+   executeSoon(finishTest);
+ }
+ 
+ function test() {
+   addTab(TEST_URI);
+   browser.addEventListener("load", tabLoad, true);
+ }
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597136_external_script_errors.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597136_external_script_errors.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597136_external_script_errors.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597136_external_script_errors.js
+@@ -29,17 +29,16 @@ function contentLoaded(aEvent) {
+   browser.removeEventListener("load", contentLoaded, true);
+ 
+   let button = content.document.querySelector("button");
+   EventUtils.sendMouseEvent({ type: "click" }, button, content);
+   executeSoon(buttonClicked);
+ }
+ 
+ function buttonClicked() {
+-  let hudId = HUDService.getHudIdByWindow(content);
+-  let outputNode = HUDService.getOutputNodeById(hudId);
++  let outputNode = HUDService.getHudByWindow(content).outputNode;
+ 
+   let msg = "the error from the external script was logged";
+   testLogEntry(outputNode, "bogus", msg);
+ 
+   finishTest();
+ }
+ 

@@ -1,0 +1,317 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1335440875 -10800
+# Node ID 4eeef6f86840592ea24f2ae2718b0313eaca2240
+# Parent  c7523bf07e121da6f9e5b406059de3fe3b4b5834
+Bug 734641 - Intermittent mochitest-browser-chrome browser/devtools/debugger/test/browser_dbg_bug723069_editor-breakpoints.js | The correct script was loaded initially. - Didn't expect -1, but got it
+
+diff --git a/browser/devtools/debugger/test/browser_dbg_bug723069_editor-breakpoints.js b/browser/devtools/debugger/test/browser_dbg_bug723069_editor-breakpoints.js
+--- a/browser/devtools/debugger/test/browser_dbg_bug723069_editor-breakpoints.js
++++ b/browser/devtools/debugger/test/browser_dbg_bug723069_editor-breakpoints.js
+@@ -18,47 +18,54 @@ let gBreakpoints = null;
+ 
+ function test()
+ {
+   let tempScope = {};
+   Cu.import("resource:///modules/source-editor.jsm", tempScope);
+   let SourceEditor = tempScope.SourceEditor;
+   let scriptShown = false;
+   let framesAdded = false;
++  let resumed = false;
++  let testStarted = false;
+ 
+   debug_tab_pane(TAB_URL, function(aTab, aDebuggee, aPane) {
+     gTab = aTab;
+     gDebuggee = aDebuggee;
+     gPane = aPane;
+     gDebugger = gPane.debuggerWindow;
++    resumed = true;
++
+     gDebugger.DebuggerController.activeThread.addOneTimeListener("framesadded", function() {
+       framesAdded = true;
+-      runTest();
++      executeSoon(startTest);
+     });
+ 
+-    gDebuggee.firstCall();
++    executeSoon(function() {
++      gDebuggee.firstCall();
++    });
+   });
+ 
+-  window.addEventListener("Debugger:ScriptShown", function _onEvent(aEvent) {
+-    let url = aEvent.detail.url;
+-    if (url.indexOf("-02.js") != -1) {
+-      scriptShown = true;
+-      window.removeEventListener(aEvent.type, _onEvent);
+-      runTest();
+-    }
+-  });
++  function onScriptShown(aEvent)
++  {
++    scriptShown = aEvent.detail.url.indexOf("-02.js") != -1;
++    executeSoon(startTest);
++  }
+ 
+-  function runTest()
++  window.addEventListener("Debugger:ScriptShown", onScriptShown);
++
++  function startTest()
+   {
+-    if (scriptShown && framesAdded) {
+-      Services.tm.currentThread.dispatch({ run: onScriptShown }, 0);
++    if (scriptShown && framesAdded && resumed && !testStarted) {
++      window.removeEventListener("Debugger:ScriptShown", onScriptShown);
++      testStarted = true;
++      Services.tm.currentThread.dispatch({ run: performTest }, 0);
+     }
+   }
+ 
+-  function onScriptShown()
++  function performTest()
+   {
+     gScripts = gDebugger.DebuggerView.Scripts;
+ 
+     is(gDebugger.DebuggerController.activeThread.state, "paused",
+       "Should only be getting stack frames while paused.");
+ 
+     is(gScripts._scripts.itemCount, 2, "Found the expected number of scripts.");
+ 
+diff --git a/browser/devtools/debugger/test/browser_dbg_bug731394_editor-contextmenu.js b/browser/devtools/debugger/test/browser_dbg_bug731394_editor-contextmenu.js
+--- a/browser/devtools/debugger/test/browser_dbg_bug731394_editor-contextmenu.js
++++ b/browser/devtools/debugger/test/browser_dbg_bug731394_editor-contextmenu.js
+@@ -16,47 +16,53 @@ function test()
+ {
+   let tempScope = {};
+   Cu.import("resource:///modules/source-editor.jsm", tempScope);
+   let SourceEditor = tempScope.SourceEditor;
+ 
+   let contextMenu = null;
+   let scriptShown = false;
+   let framesAdded = false;
++  let resumed = false;
++  let testStarted = false;
+ 
+   debug_tab_pane(TAB_URL, function(aTab, aDebuggee, aPane) {
+     gTab = aTab;
+     gDebuggee = aDebuggee;
+     gPane = aPane;
+     gDebugger = gPane.debuggerWindow;
++    resumed = true;
+ 
+     gDebugger.DebuggerController.activeThread.addOneTimeListener("framesadded", function() {
+       framesAdded = true;
+-      runTest();
++      executeSoon(startTest);
+     });
+-    gDebuggee.firstCall();
++
++    executeSoon(function() {
++      gDebuggee.firstCall();
++    });
+   });
+ 
+-  window.addEventListener("Debugger:ScriptShown", function _onEvent(aEvent) {
+-    let url = aEvent.detail.url;
+-    if (url.indexOf("-02.js") != -1) {
+-      scriptShown = true;
+-      window.removeEventListener(aEvent.type, _onEvent);
+-      runTest();
+-    }
+-  });
++  function onScriptShown(aEvent) {
++    scriptShown = aEvent.detail.url.indexOf("-02.js") != -1;
++    executeSoon(startTest);
++  }
+ 
+-  function runTest()
++  window.addEventListener("Debugger:ScriptShown", onScriptShown);
++
++  function startTest()
+   {
+-    if (scriptShown && framesAdded) {
+-      Services.tm.currentThread.dispatch({ run: onScriptShown }, 0);
++    if (scriptShown && framesAdded && resumed && !testStarted) {
++      testStarted = true;
++      window.removeEventListener("Debugger:ScriptShown", onScriptShown);
++      Services.tm.currentThread.dispatch({ run: performTest }, 0);
+     }
+   }
+ 
+-  function onScriptShown()
++  function performTest()
+   {
+     let scripts = gDebugger.DebuggerView.Scripts._scripts;
+ 
+     is(gDebugger.DebuggerController.activeThread.state, "paused",
+       "Should only be getting stack frames while paused.");
+ 
+     is(scripts.itemCount, 2, "Found the expected number of scripts.");
+ 
+diff --git a/browser/devtools/debugger/test/browser_dbg_script-switching.js b/browser/devtools/debugger/test/browser_dbg_script-switching.js
+--- a/browser/devtools/debugger/test/browser_dbg_script-switching.js
++++ b/browser/devtools/debugger/test/browser_dbg_script-switching.js
+@@ -13,43 +13,49 @@ var gTab = null;
+ var gDebuggee = null;
+ var gDebugger = null;
+ var gScripts = null;
+ 
+ function test()
+ {
+   let scriptShown = false;
+   let framesAdded = false;
++  let resumed = false;
++  let testStarted = false;
+ 
+   debug_tab_pane(TAB_URL, function(aTab, aDebuggee, aPane) {
+     gTab = aTab;
+     gDebuggee = aDebuggee;
+     gPane = aPane;
+     gDebugger = gPane.debuggerWindow;
++    resumed = true;
+ 
+     gDebugger.DebuggerController.activeThread.addOneTimeListener("framesadded", function() {
+       framesAdded = true;
+-      runTest();
++      executeSoon(startTest);
+     });
+ 
+-    gDebuggee.firstCall();
++    executeSoon(function() {
++      gDebuggee.firstCall();
++    });
+   });
+ 
+-  window.addEventListener("Debugger:ScriptShown", function _onEvent(aEvent) {
+-    let url = aEvent.detail.url;
+-    if (url.indexOf("-02.js") != -1) {
+-      scriptShown = true;
+-      window.removeEventListener(aEvent.type, _onEvent);
+-      runTest();
+-    }
+-  });
++  function onScriptShown(aEvent)
++  {
++    scriptShown = aEvent.detail.url.indexOf("-02.js") != -1;
++    executeSoon(startTest);
++  }
+ 
+-  function runTest()
++  window.addEventListener("Debugger:ScriptShown", onScriptShown);
++
++  function startTest()
+   {
+-    if (scriptShown && framesAdded) {
++    if (scriptShown && framesAdded && resumed && !testStarted) {
++      window.removeEventListener("Debugger:ScriptShown", onScriptShown);
++      testStarted = true;
+       Services.tm.currentThread.dispatch({ run: testScriptsDisplay }, 0);
+     }
+   }
+ }
+ 
+ function testScriptsDisplay() {
+   gScripts = gDebugger.DebuggerView.Scripts._scripts;
+ 
+@@ -70,18 +76,16 @@ function testScriptsDisplay() {
+   ok(gDebugger.DebuggerView.Scripts.contains(EXAMPLE_URL +
+     label2), "Second script url is incorrect.");
+ 
+   ok(gDebugger.DebuggerView.Scripts.containsLabel(
+     label1), "First script label is incorrect.");
+   ok(gDebugger.DebuggerView.Scripts.containsLabel(
+     label2), "Second script label is incorrect.");
+ 
+-  dump("Debugger editor text:\n" + gDebugger.editor.getText() + "\n");
+-
+   ok(gDebugger.editor.getText().search(/debugger/) != -1,
+     "The correct script was loaded initially.");
+ 
+   is(gDebugger.editor.getDebugLocation(), 5,
+      "editor debugger location is correct.");
+ 
+   window.addEventListener("Debugger:ScriptShown", function _onEvent(aEvent) {
+     let url = aEvent.detail.url;
+@@ -91,18 +95,16 @@ function testScriptsDisplay() {
+     }
+   });
+ 
+   gDebugger.DebuggerView.Scripts.selectScript(EXAMPLE_URL + label1);
+ }
+ 
+ function testSwitchPaused()
+ {
+-  dump("Debugger editor text:\n" + gDebugger.editor.getText() + "\n");
+-
+   ok(gDebugger.editor.getText().search(/debugger/) == -1,
+     "The second script is no longer displayed.");
+ 
+   ok(gDebugger.editor.getText().search(/firstCall/) != -1,
+     "The first script is displayed.");
+ 
+   is(gDebugger.editor.getDebugLocation(), -1,
+      "editor debugger location has been cleared.");
+diff --git a/browser/devtools/debugger/test/browser_dbg_update-editor-mode.js b/browser/devtools/debugger/test/browser_dbg_update-editor-mode.js
+--- a/browser/devtools/debugger/test/browser_dbg_update-editor-mode.js
++++ b/browser/devtools/debugger/test/browser_dbg_update-editor-mode.js
+@@ -17,42 +17,48 @@ var gTab = null;
+ var gDebuggee = null;
+ var gDebugger = null;
+ var gScripts = null;
+ 
+ function test()
+ {
+   let scriptShown = false;
+   let framesAdded = false;
++  let testStarted = false;
++  let resumed = false;
+ 
+   debug_tab_pane(TAB_URL, function(aTab, aDebuggee, aPane) {
+     gTab = aTab;
+     gDebuggee = aDebuggee;
+     gPane = aPane;
+     gDebugger = gPane.debuggerWindow;
++    resumed = true;
+ 
+     gDebugger.DebuggerController.activeThread.addOneTimeListener("framesadded", function() {
+       framesAdded = true;
+-      runTest();
++      executeSoon(startTest);
+     });
+-    gDebuggee.firstCall();
++
++    executeSoon(function() {
++      gDebuggee.firstCall();
++    });
+   });
+ 
+-  window.addEventListener("Debugger:ScriptShown", function _onEvent(aEvent) {
+-    let url = aEvent.detail.url;
+-    if (url.indexOf("editor-mode") != -1) {
+-      scriptShown = true;
+-      window.removeEventListener(aEvent.type, _onEvent);
+-      runTest();
+-    }
+-  });
++  function onScriptShown(aEvent) {
++    scriptShown = aEvent.detail.url.indexOf("test-editor-mode") != -1;
++    executeSoon(startTest);
++  }
+ 
+-  function runTest()
++  window.addEventListener("Debugger:ScriptShown", onScriptShown);
++
++  function startTest()
+   {
+-    if (scriptShown && framesAdded) {
++    if (scriptShown && framesAdded && resumed && !testStarted) {
++      window.removeEventListener("Debugger:ScriptShown", onScriptShown);
++      testStarted = true;
+       Services.tm.currentThread.dispatch({ run: testScriptsDisplay }, 0);
+     }
+   }
+ }
+ 
+ function testScriptsDisplay() {
+   gScripts = gDebugger.DebuggerView.Scripts._scripts;
+ 

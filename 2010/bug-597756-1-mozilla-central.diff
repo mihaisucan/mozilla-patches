@@ -1,0 +1,134 @@
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -56,16 +56,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_581231_close_button.js \
+ 	browser_webconsole_bug_595350_multiple_windows_and_tabs.js \
+ 	browser_webconsole_consoleonpage.js \
+ 	browser_webconsole_bug_587617_output_copy.js \
+ 	browser_webconsole_bug_588342_document_focus.js \
++	browser_webconsole_bug_597756_reopen_closed_tab.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+ 	testscript.js \
+@@ -76,15 +77,16 @@ _BROWSER_TEST_PAGES = \
+ 	test-error.html \
+ 	test-duplicate-error.html \
+ 	test-image.png \
+ 	test-encoding-ISO-8859-1.html \
+ 	test-bug-593003-iframe-wrong-hud.html \
+ 	test-bug-593003-iframe-wrong-hud-iframe.html \
+ 	test-console-replaced-api.html \
+ 	test-own-console.html \
++	test-bug-597756-reopen-closed-tab.html \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597756_reopen_closed_tab.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597756_reopen_closed_tab.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597756_reopen_closed_tab.js
+@@ -0,0 +1,69 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/HUDService.jsm");
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-597756-reopen-closed-tab.html";
++
++let newTabIsOpen = false;
++
++function tabLoaded(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  HUDService.activateHUDForContext(gBrowser.selectedTab);
++  content.location.reload();
++
++  gBrowser.selectedBrowser.addEventListener("load", tabReloaded, true);
++}
++
++function tabReloaded(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let HUD = HUDService.hudWeakReferences[hudId].get();
++  ok(HUD, "Web Console is open");
++
++  ok(testOutput(HUD.outputNode), "error message must be in console output");
++
++  executeSoon(function() {
++    if (newTabIsOpen) {
++      testEnd();
++      return;
++    }
++
++    let newTab = gBrowser.addTab();
++    gBrowser.removeCurrentTab();
++    gBrowser.selectedTab = newTab;
++
++    newTabIsOpen = true;
++    gBrowser.selectedBrowser.addEventListener("load", tabLoaded, true);
++    content.location = TEST_URI;
++  });
++}
++
++function testOutput(aOutputNode) {
++  return aOutputNode.textContent.indexOf("fooBug597756_error") > -1;
++}
++
++function testEnd() {
++  gBrowser.removeCurrentTab();
++  executeSoon(finish);
++}
++
++function test() {
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", tabLoaded, true);
++  content.location = TEST_URI;
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-597756-reopen-closed-tab.html b/toolkit/components/console/hudservice/tests/browser/test-bug-597756-reopen-closed-tab.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-597756-reopen-closed-tab.html
+@@ -0,0 +1,17 @@
++<!DOCTYPE HTML>
++<html dir="ltr" xml:lang="en-US" lang="en-US">
++  <head>
++    <title>Bug 597756: test error logging after tab close and reopen</title>
++    <!--
++     Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/
++   -->
++  </head>
++  <body>
++    <h1>Bug 597756: test error logging after tab close and reopen.</h1>
++
++    <script type="text/javascript"><!--
++      fooBug597756_error.bar();
++    // --></script>
++  </body>
++</html>

@@ -1,0 +1,115 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1538,17 +1538,17 @@ HUD_SERVICE.prototype =
+       hidden = true;
+     }
+ 
+     // Filter by the message type.
+     let classes = aNewNode.classList;
+     let msgType = null;
+     for (let i = 0; i < classes.length; i++) {
+       let klass = classes.item(i);
+-      if (klass !== "hud-msg-node" && klass.indexOf("hud-") === 0) {
++      if (klass !== "hud-msg-node" && klass !== "hud-clickable" && klass.indexOf("hud-") === 0) {
+         msgType = klass.substring(4);   // Strip off "hud-".
+         break;
+       }
+     }
+     if (msgType !== null && !this.getFilterState(aHUDId, msgType)) {
+       // The node is filtered by type.
+       aNewNode.classList.add("hud-filtered-by-type");
+       hidden = true;
+@@ -3114,17 +3114,19 @@ HeadsUpDisplay.prototype = {
+ 
+     this.outputNode.addEventListener("DOMNodeInserted", function(ev) {
+       // DOMNodeInserted is also called when the output node is being *itself*
+       // (re)inserted into the DOM (which happens during a search, for
+       // example). For this reason, we need to ensure that we only check
+       // message nodes.
+       let node = ev.target;
+       if (node.nodeType === node.ELEMENT_NODE &&
+-          node.classList.contains("hud-msg-node")) {
++          (node.classList.contains("hud-msg-node") ||
++           node.classList.contains("jsterm-input-line") ||
++           node.classList.contains("jsterm-output-line"))) {
+         let hidden = HUDService.
+           adjustVisibilityForNewlyInsertedNode(self.hudId, ev.target);
+ 
+         if (!hidden) {
+           ConsoleUtils.scrollToVisible(node);
+         }
+       }
+     }, false);
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -104,16 +104,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_601909_remember_height.js \
+ 	browser_webconsole_bug_613013_console_api_iframe.js \
+ 	browser_webconsole_bug_597756_reopen_closed_tab.js \
+ 	browser_webconsole_bug_600183_charset.js \
+ 	browser_webconsole_bug_601177_log_levels.js \
+ 	browser_webconsole_bug_587615_lastTimestamp.js \
+ 	browser_webconsole_bug_597460_filter_scroll.js \
++	browser_webconsole_bug_614793_jsterm_scroll.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_614793_jsterm_scroll.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_614793_jsterm_scroll.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_614793_jsterm_scroll.js
+@@ -0,0 +1,46 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ */
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let hud = HUDService.hudReferences[hudId];
++  let outputNode = hud.outputNode;
++  let boxObject = outputNode.boxObject.QueryInterface(Ci.nsIScrollBoxObject);
++
++  for (let i = 0; i < 150; i++) {
++    hud.console.log("test message " + i);
++  }
++
++  let oldScrollTop = outputNode.scrollTop;
++  ok(oldScrollTop > 0, "scroll location is not at the top");
++
++  hud.jsterm.execute("'hello world'");
++
++  isnot(outputNode.scrollTop, oldScrollTop, "scroll location updated");
++
++  let lastNode = outputNode.querySelector(".hud-group:last-child > label:last-child");
++  ok(lastNode, "found the last message");
++
++  oldScrollTop = outputNode.scrollTop;
++  boxObject.ensureElementIsVisible(lastNode);
++
++  is(outputNode.scrollTop, oldScrollTop, "scroll location is the same");
++
++  finishTest();
++}
++
++function test() {
++  addTab("data:text/html,Web Console test for bug 614793: jsterm result scroll");
++  browser.addEventListener("load", tabLoad, true);
++}
++

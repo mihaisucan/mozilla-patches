@@ -1,0 +1,124 @@
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -97,16 +97,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_595350_multiple_windows_and_tabs.js \
+ 	browser_webconsole_bug_594497_history_arrow_keys.js \
+ 	browser_webconsole_bug_588342_document_focus.js \
+ 	browser_webconsole_bug_595934_message_categories.js \
+ 	browser_webconsole_bug_601352_scroll.js \
+ 	browser_webconsole_bug_592442_closing_brackets.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_601909_remember_height.js \
++	browser_webconsole_bug_597756_reopen_closed_tab.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+@@ -129,15 +130,16 @@ _BROWSER_TEST_PAGES = \
+ 	test-bug-595934-css-loader.css^headers^ \
+ 	test-bug-595934-dom-html.html \
+ 	test-bug-595934-imagemap.html \
+ 	test-bug-595934-html.html \
+ 	test-bug-595934-malformedxml.xhtml \
+ 	test-bug-595934-svg.xhtml \
+ 	test-bug-597136-external-script-errors.html \
+ 	test-bug-597136-external-script-errors.js \
++	test-bug-597756-reopen-closed-tab.html \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597756_reopen_closed_tab.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597756_reopen_closed_tab.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597756_reopen_closed_tab.js
+@@ -0,0 +1,59 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-597756-reopen-closed-tab.html";
++
++let newTabIsOpen = false;
++
++function tabLoaded(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  HUDService.activateHUDForContext(gBrowser.selectedTab);
++
++  gBrowser.selectedBrowser.addEventListener("load", tabReloaded, true);
++  content.location.reload();
++}
++
++function tabReloaded(aEvent) {
++  gBrowser.selectedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let HUD = HUDService.hudReferences[hudId];
++  ok(HUD, "Web Console is open");
++
++  isnot(HUD.outputNode.textContent.indexOf("fooBug597756_error"), -1,
++    "error message must be in console output");
++
++  executeSoon(function() {
++    if (newTabIsOpen) {
++      testEnd();
++      return;
++    }
++
++    let newTab = gBrowser.addTab();
++    gBrowser.removeCurrentTab();
++    gBrowser.selectedTab = newTab;
++
++    newTabIsOpen = true;
++    gBrowser.selectedBrowser.addEventListener("load", tabLoaded, true);
++    content.location = TEST_URI;
++  });
++}
++
++function testEnd() {
++  gBrowser.removeCurrentTab();
++  executeSoon(finishTest);
++}
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoaded, true);
++}
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-597756-reopen-closed-tab.html b/toolkit/components/console/hudservice/tests/browser/test-bug-597756-reopen-closed-tab.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-597756-reopen-closed-tab.html
+@@ -0,0 +1,17 @@
++<!DOCTYPE HTML>
++<html dir="ltr" xml:lang="en-US" lang="en-US">
++  <head>
++    <title>Bug 597756: test error logging after tab close and reopen</title>
++    <!--
++     Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/
++   -->
++  </head>
++  <body>
++    <h1>Bug 597756: test error logging after tab close and reopen.</h1>
++
++    <script type="text/javascript"><!--
++      fooBug597756_error.bar();
++    // --></script>
++  </body>
++</html>

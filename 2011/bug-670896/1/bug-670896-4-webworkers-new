@@ -1,0 +1,148 @@
+# HG changeset patch
+# Parent c034b5566344df8ff127cc218e75f696da40599a
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1311186498 -10800
+Bug 670896 - Part 4 - Web Workers changes
+
+diff --git a/dom/workers/WorkerPrivate.cpp b/dom/workers/WorkerPrivate.cpp
+--- a/dom/workers/WorkerPrivate.cpp
++++ b/dom/workers/WorkerPrivate.cpp
+@@ -673,44 +673,49 @@ public:
+   WorkerRun(JSContext* aCx, WorkerPrivate* aWorkerPrivate)
+   {
+     JSObject* target = aWorkerPrivate->GetJSObject();
+     if (target) {
+       aWorkerPrivate->AssertInnerWindowIsCorrect();
+     }
+ 
+     PRUint64 windowId;
++    PRUint64 innerWindowId;
+ 
+     WorkerPrivate* parent = aWorkerPrivate->GetParent();
+     if (parent) {
+       windowId = 0;
++      innerWindowId = 0;
+     }
+     else {
+       AssertIsOnMainThread();
+ 
+       if (aWorkerPrivate->IsSuspended()) {
+         aWorkerPrivate->QueueRunnable(this);
+         return true;
+       }
+ 
+       windowId = aWorkerPrivate->GetOuterWindowId();
++      innerWindowId = aWorkerPrivate->GetInnerWindowId();
+     }
+ 
+     return ReportErrorRunnable::ReportError(aCx, parent, true, target, mMessage,
+                                             mFilename, mLine, mLineNumber,
+                                             mColumnNumber, mFlags,
+-                                            mErrorNumber, windowId);
++                                            mErrorNumber, windowId,
++                                            innerWindowId);
+   }
+ 
+   static bool
+   ReportError(JSContext* aCx, WorkerPrivate* aWorkerPrivate,
+               bool aFireAtScope, JSObject* aTarget, const nsString& aMessage,
+               const nsString& aFilename, const nsString& aLine,
+               PRUint32 aLineNumber, PRUint32 aColumnNumber, PRUint32 aFlags,
+-              PRUint32 aErrorNumber, PRUint64 aWindowId)
++              PRUint32 aErrorNumber, PRUint64 aWindowId,
++              PRUint64 aInnerWindowId)
+   {
+     if (aWorkerPrivate) {
+       aWorkerPrivate->AssertIsOnWorkerThread();
+     }
+     else {
+       AssertIsOnMainThread();
+     }
+ 
+@@ -807,17 +812,18 @@ public:
+     nsCOMPtr<nsIConsoleMessage> consoleMessage;
+ 
+     if (scriptError) {
+       if (NS_SUCCEEDED(scriptError->InitWithWindowID(aMessage.get(),
+                                                      aFilename.get(),
+                                                      aLine.get(), aLineNumber,
+                                                      aColumnNumber, aFlags,
+                                                      "Web Worker",
+-                                                     aWindowId))) {
++                                                     aWindowId,
++                                                     aInnerWindowId))) {
+         consoleMessage = do_QueryInterface(scriptError);
+         NS_ASSERTION(consoleMessage, "This should never fail!");
+       }
+       else {
+         NS_WARNING("Failed to init script error!");
+       }
+     }
+ 
+@@ -1654,16 +1660,24 @@ template <class Derived>
+ PRUint64
+ WorkerPrivateParent<Derived>::GetOuterWindowId()
+ {
+   AssertIsOnMainThread();
+   return mDocument->OuterWindowID();
+ }
+ 
+ template <class Derived>
++PRUint64
++WorkerPrivateParent<Derived>::GetInnerWindowId()
++{
++  AssertIsOnMainThread();
++  return mDocument->InnerWindowID();
++}
++
++template <class Derived>
+ void
+ WorkerPrivateParent<Derived>::UpdateJSContextOptions(JSContext* aCx,
+                                                      PRUint32 aOptions)
+ {
+   AssertIsOnParentThread();
+ 
+   mJSContextOptions = aOptions;
+ 
+@@ -2735,17 +2749,17 @@ WorkerPrivate::ReportError(JSContext* aC
+ 
+   // Don't want to run the scope's error handler if this is a recursive error or
+   // if there was an error in the close handler.
+   bool fireAtScope = mErrorHandlerRecursionCount == 1 &&
+                      !mCloseHandlerStarted;
+ 
+   if (!ReportErrorRunnable::ReportError(aCx, this, fireAtScope, nsnull, message,
+                                         filename, line, lineNumber,
+-                                        columnNumber, flags, errorNumber, 0)) {
++                                        columnNumber, flags, errorNumber, 0, 0)) {
+     JS_ReportPendingException(aCx);
+   }
+ 
+   mErrorHandlerRecursionCount--;
+ }
+ 
+ bool
+ WorkerPrivate::SetTimeout(JSContext* aCx, uintN aArgc, jsval* aVp,
+diff --git a/dom/workers/WorkerPrivate.h b/dom/workers/WorkerPrivate.h
+--- a/dom/workers/WorkerPrivate.h
++++ b/dom/workers/WorkerPrivate.h
+@@ -285,16 +285,19 @@ public:
+   ForgetMainThreadObjects(nsTArray<nsCOMPtr<nsISupports> >& aDoomed);
+ 
+   bool
+   PostMessage(JSContext* aCx, jsval aMessage);
+ 
+   PRUint64
+   GetOuterWindowId();
+ 
++  PRUint64
++  GetInnerWindowId();
++
+   void
+   UpdateJSContextOptions(JSContext* aCx, PRUint32 aOptions);
+ 
+ #ifdef JS_GC_ZEAL
+   void
+   UpdateGCZeal(JSContext* aCx, PRUint8 aGCZeal);
+ #endif
+ 

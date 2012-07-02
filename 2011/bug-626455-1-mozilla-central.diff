@@ -1,0 +1,131 @@
+diff --git a/browser/base/content/tabbrowser.xml b/browser/base/content/tabbrowser.xml
+--- a/browser/base/content/tabbrowser.xml
++++ b/browser/base/content/tabbrowser.xml
+@@ -2534,19 +2534,27 @@
+           }
+         ]]>
+       </handler>
+       <handler event="DOMWillOpenModalDialog" phase="capturing">
+         <![CDATA[
+           if (!event.isTrusted)
+             return;
+ 
++          let previousTab = this.selectedTab;
++
+           // We're about to open a modal dialog, make sure the opening
+           // tab is brought to the front.
+           this.selectedTab = this._getTabForContentWindow(event.target.top);
++
++          if (previousTab == this.selectedTab &&
++              window.TabView && TabView.isVisible()) {
++            let win = TabView.getContentWindow();
++            win.UI.onTabSelect(this.selectedTab);
++          }
+         ]]>
+       </handler>
+       <handler event="DOMTitleChanged">
+         <![CDATA[
+           if (!event.isTrusted)
+             return;
+ 
+           var contentWin = event.target.defaultView;
+diff --git a/browser/base/content/tabview/groupitems.js b/browser/base/content/tabview/groupitems.js
+--- a/browser/base/content/tabview/groupitems.js
++++ b/browser/base/content/tabview/groupitems.js
+@@ -752,17 +752,17 @@ GroupItem.prototype = Utils.extend(new I
+       return (groupItem != self && groupItem.getChildren().length);
+     });
+     if (!gBrowser._numPinnedTabs && !GroupItems.getOrphanedTabs().length &&
+         !remainingGroups.length) {
+       let emptyGroups = GroupItems.groupItems.filter(function (groupItem) {
+         return (groupItem != self && !groupItem.getChildren().length);
+       });
+       let group = (emptyGroups.length ? emptyGroups[0] : GroupItems.newGroup());
+-      group.newTab();
++      group.newTab(null, true);
+     }
+ 
+     this.destroy();
+   },
+ 
+   // ----------
+   // Function: destroy
+   // Close all tabs linked to children (tabItems), removes all children and 
+@@ -799,17 +799,19 @@ GroupItem.prototype = Utils.extend(new I
+     });
+ 
+     if (shouldRemoveTabItems.length != toClose.length) {
+       // remove children without the assiciated tab and show the group item
+       shouldRemoveTabItems.forEach(function(child) {
+         self.remove(child, { dontArrange: true });
+       });
+ 
+-      this.$undoContainer.fadeOut(function() { self._unhide() });
++      if (this.hidden) {
++        this.$undoContainer.fadeOut(function() { self._unhide() });
++      }
+     } else {
+       this.close(options);
+     }
+   },
+ 
+   // ----------
+   // Function: _fadeAwayUndoButton
+   // Fades away the undo button
+@@ -1679,24 +1681,25 @@ GroupItem.prototype = Utils.extend(new I
+       immediately ? this.$resizer.hide() : this.$resizer.fadeOut();
+       this.resizable(false);
+     }
+   },
+ 
+   // ----------
+   // Function: newTab
+   // Creates a new tab within this groupItem.
+-  newTab: function GroupItem_newTab(url) {
++  newTab: function GroupItem_newTab(url, dontZoomIn) {
+     GroupItems.setActiveGroupItem(this);
+     let newTab = gBrowser.loadOneTab(url || "about:blank", {inBackground: true});
+ 
+     // TabItems will have handled the new tab and added the tabItem property.
+     // We don't have to check if it's an app tab (and therefore wouldn't have a
+     // TabItem), since we've just created it.
+-    newTab._tabViewTabItem.zoomIn(!url);
++    if (!dontZoomIn)
++      newTab._tabViewTabItem.zoomIn(!url);
+   },
+ 
+   // ----------
+   // Function: reorderTabItemsBasedOnTabOrder
+   // Reorders the tabs in a groupItem based on the arrangment of the tabs
+   // shown in the tab bar. It does it by sorting the children
+   // of the groupItem by the positions of their respective tabs in the
+   // tab bar.
+diff --git a/browser/base/content/tabview/ui.js b/browser/base/content/tabview/ui.js
+--- a/browser/base/content/tabview/ui.js
++++ b/browser/base/content/tabview/ui.js
+@@ -844,18 +844,24 @@ let UI = {
+     }
+     // reset these vars, just in case.
+     this._closedLastVisibleTab = false;
+     this._closedSelectedTabInTabView = false;
+     this.restoredClosedTab = false;
+ 
+     // if TabView is visible but we didn't just close the last tab or
+     // selected tab, show chrome.
+-    if (this.isTabViewVisible())
++    if (this.isTabViewVisible()) {
++      // Unhide the group of the tab the user is activating.
++      if (tab && tab._tabViewTabItem && tab._tabViewTabItem.parent &&
++          tab._tabViewTabItem.parent.hidden)
++        tab._tabViewTabItem.parent._unhide();
++
+       this.hideTabView();
++    }
+ 
+     // another tab might be selected when hideTabView() is invoked so a
+     // validation is needed.
+     if (this._currentTab != tab)
+       return;
+ 
+     let oldItem = null;
+     let newItem = null;

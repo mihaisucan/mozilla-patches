@@ -1,0 +1,332 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -3748,31 +3748,54 @@ function JSPropertyProvider(aScope, aInp
+   }
+ 
+   // If obj is undefined or null, then there is no change to run
+   // completion on it. Exit here.
+   if (typeof obj === "undefined" || obj === null) {
+     return null;
+   }
+ 
++  // Skip Iterators and Generators.
++  if (isIteratorOrGenerator(obj)) {
++    return null;
++  }
++
+   let matches = [];
+   for (var prop in obj) {
+     matches.push(prop);
+   }
+ 
+   matches = matches.filter(function(item) {
+     return item.indexOf(matchProp) == 0;
+   }).sort();
+ 
+   return {
+     matchProp: matchProp,
+     matches: matches
+   };
+ }
+ 
++function isIteratorOrGenerator(aObject)
++{
++  if (typeof aObject == "object") {
++    if (typeof aObject.__iterator__ == "function" ||
++        aObject.constructor && aObject.constructor.name == "Iterator") {
++      return true;
++    }
++
++    let str = aObject.toString();
++    if (typeof aObject.next == "function" &&
++        str.indexOf("[object Generator") == 0) {
++      return true;
++    }
++  }
++
++  return false;
++}
++
+ //////////////////////////////////////////////////////////////////////////
+ // JSTerm
+ //////////////////////////////////////////////////////////////////////////
+ 
+ /**
+  * JSTermHelper
+  *
+  * Defines a set of functions ("helper functions") that are available from the
+@@ -4351,16 +4374,21 @@ JSTerm.prototype = {
+    *        The evaluation result object you want to check if it is inspectable.
+    * @returns boolean
+    *          True if the object is inspectable or false otherwise.
+    */
+   isResultInspectable: function JST_isResultInspectable(aResult)
+   {
+     let isEnumerable = false;
+ 
++    // Skip Iterators and Generators.
++    if (isIteratorOrGenerator(aResult)) {
++      return false;
++    }
++
+     for (let p in aResult) {
+       isEnumerable = true;
+       break;
+     }
+ 
+     return isEnumerable && typeof(aResult) != "string";
+   },
+ 
+diff --git a/toolkit/components/console/hudservice/PropertyPanel.jsm b/toolkit/components/console/hudservice/PropertyPanel.jsm
+--- a/toolkit/components/console/hudservice/PropertyPanel.jsm
++++ b/toolkit/components/console/hudservice/PropertyPanel.jsm
+@@ -90,27 +90,47 @@ function presentableValueFor(aObject)
+     case "RegExp":
+     case "Number":
+     case "Boolean":
+       return {
+         type: TYPE_OTHER,
+         display: aObject
+       };
+ 
++    case "Iterator":
++      return {
++        type: TYPE_OTHER,
++        display: "Iterator"
++      };
++
+     case "Function":
+       presentable = aObject.toString();
+       return {
+         type: TYPE_FUNCTION,
+         display: presentable.substring(0, presentable.indexOf(')') + 1)
+       };
+ 
+     default:
+       presentable = aObject.toString();
+       let m = /^\[object (\S+)\]/.exec(presentable);
+-      let display;
++
++      if (typeof aObject == "object" && typeof aObject.next == "function" &&
++          m && m[1] == "Generator") {
++        return {
++          type: TYPE_OTHER,
++          display: m[1]
++        };
++      }
++
++      if (typeof aObject == "object" && typeof aObject.__iterator__ == "function") {
++        return {
++          type: TYPE_OTHER,
++          display: "Iterator"
++        };
++      }
+ 
+       return {
+         type: TYPE_OBJECT,
+         display: m ? m[1] : "Object"
+       };
+   }
+ }
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -121,16 +121,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_613642_maintain_scroll.js \
+ 	browser_webconsole_bug_613642_prune_scroll.js \
+ 	browser_webconsole_bug_618078_network_exceptions.js \
+ 	browser_webconsole_bug_613280_jsterm_copy.js \
+ 	browser_webconsole_bug_630733_response_redirect_headers.js \
+ 	browser_webconsole_bug_621644_jsterm_dollar.js \
+ 	browser_webconsole_bug_632817.js \
+ 	browser_webconsole_bug_611795.js \
++	browser_webconsole_bug_632347_iterators_generators.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+@@ -188,15 +189,16 @@ _BROWSER_TEST_PAGES = \
+ 	test-bug-601177-log-levels.js \
+ 	test-console-extras.html \
+ 	test-bug-603750-websocket.html \
+ 	test-bug-603750-websocket.js \
+ 	test-bug-599725-response-headers.sjs \
+ 	test-bug-618078-network-exceptions.html \
+ 	test-bug-630733-response-redirect-headers.sjs \
+ 	test-bug-621644-jsterm-dollar.html \
++	test-bug-632347-iterators-generators.html \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_632347_iterators_generators.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_632347_iterators_generators.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_632347_iterators_generators.js
+@@ -0,0 +1,99 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-bug-632347-iterators-generators.html";
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoaded, true);
++}
++
++function tabLoaded() {
++  browser.removeEventListener("load", tabLoaded, true);
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let HUD = HUDService.hudReferences[hudId];
++  let jsterm = HUD.jsterm;
++
++  let win = content.wrappedJSObject;
++
++  // Make sure autocomplete does not walk through iterators and generators.
++  let result = win.gen1.next();
++  let completion = jsterm.propertyProvider(win, "gen1.");
++  is(completion, null, "no matchees for gen1");
++  ok(!jsterm.isResultInspectable(win.gen1),
++     "gen1 is not inspectable");
++
++  is(result+1, win.gen1.next(), "gen1.next() did not execute");
++
++  result = win.gen2.next();
++
++  completion = jsterm.propertyProvider(win, "gen2.");
++  is(completion, null, "no matchees for gen2");
++  ok(!jsterm.isResultInspectable(win.gen2),
++     "gen2 is not inspectable");
++
++  is((result/2+1)*2, win.gen2.next(),
++     "gen2.next() did not execute");
++
++  result = win.iter1.next();
++  is(result[0], "foo", "iter1.next() [0] is correct");
++  is(result[1], "bar", "iter1.next() [1] is correct");
++
++  completion = jsterm.propertyProvider(win, "iter1.");
++  is(completion, null, "no matchees for iter1");
++  ok(!jsterm.isResultInspectable(win.iter1),
++     "iter1 is not inspectable");
++
++  result = win.iter1.next();
++  is(result[0], "baz", "iter1.next() [0] is correct");
++  is(result[1], "baaz", "iter1.next() [1] is correct");
++
++  completion = jsterm.propertyProvider(content, "iter2.");
++  is(completion, null, "no matchees for iter2");
++  ok(!jsterm.isResultInspectable(win.iter2),
++     "iter2 is not inspectable");
++
++  completion = jsterm.propertyProvider(win, "window.");
++  ok(completion, "matches available for window");
++  ok(completion.matches.length, "matches available for window (length)");
++  ok(jsterm.isResultInspectable(win),
++     "window is inspectable");
++
++  let panel = jsterm.openPropertyPanel("Test", win);
++  ok(panel, "opened the Property Panel");
++  let rows = panel.treeView._rows;
++  ok(rows.length, "Property Panel rows are available");
++
++  let find = function(display, children) {
++    return rows.some(function(row) {
++      return row.display == display &&
++             row.children == children;
++    });
++  };
++
++  ok(find("gen1: Generator", false),
++     "gen1 is correctly displayed in the Property Panel");
++
++  ok(find("gen2: Generator", false),
++     "gen2 is correctly displayed in the Property Panel");
++
++  ok(find("iter1: Iterator", false),
++     "iter1 is correctly displayed in the Property Panel");
++
++  ok(find("iter2: Iterator", false),
++     "iter2 is correctly displayed in the Property Panel");
++
++  ok(find("parent: Window", true),
++     "window.parent is correctly displayed in the Property Panel");
++
++  panel.destroy();
++
++  finishTest();
++}
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-632347-iterators-generators.html b/toolkit/components/console/hudservice/tests/browser/test-bug-632347-iterators-generators.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-632347-iterators-generators.html
+@@ -0,0 +1,53 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 632347 - iterators and generators</title>
++    <!-- Any copyright is dedicated to the Public Domain.
++         http://creativecommons.org/publicdomain/zero/1.0/ -->
++<script type="application/javascript;version=1.8">
++(function(){
++function genFunc() {
++  var a = 5;
++  while (a < 10) {
++    yield a++;
++  }
++}
++
++window.gen1 = genFunc();
++gen1.next();
++
++var obj = { foo: "bar", baz: "baaz", hay: "stack" };
++window.iter1 = Iterator(obj);
++
++function Range(low, high) {
++  this.low = low;
++  this.high = high;
++}
++
++function RangeIterator(range) {
++  this.range = range;
++  this.current = this.range.low;
++}
++
++RangeIterator.prototype.next = function() {
++  if (this.current > this.range.high) {
++    throw StopIteration;
++  } else {
++    return this.current++;
++  }
++}
++
++Range.prototype.__iterator__ = function() {
++  return new RangeIterator(this);
++}
++
++window.iter2 = new Range(3, 15);
++
++window.gen2 = (i * 2 for (i in iter2));
++})();
++</script>
++  </head>
++  <body>
++    <p>Web Console test for bug 632347 - iterators and generators.</p>
++  </body>
++</html>

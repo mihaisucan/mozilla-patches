@@ -1,0 +1,281 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1319041738 -10800
+# Node ID 61ab33f37d4510240b9a4d2eca724d3527b583ff
+# Parent  b2fe0ef92892b97994aac0e4ad5f7a3470b669fb
+[mq]: fluid-width.diff
+
+diff --git a/browser/devtools/styleinspector/CssHtmlTree.jsm b/browser/devtools/styleinspector/CssHtmlTree.jsm
+--- a/browser/devtools/styleinspector/CssHtmlTree.jsm
++++ b/browser/devtools/styleinspector/CssHtmlTree.jsm
+@@ -475,34 +475,51 @@ PropertyView.prototype = {
+       return false;
+     }
+ 
+     return true;
+   },
+ 
+   /**
+    * Returns the className that should be assigned to the propertyView.
++   * @return string
+    */
+-  get className()
++  get propertyHeaderClassName()
++  {
++    if (this.visible) {
++      this.tree._darkStripe = !this.tree._darkStripe;
++      let darkValue = this.tree._darkStripe ?
++                      "property-view darkrow" : "property-view";
++      return darkValue;
++    }
++    return "property-view-hidden";
++  },
++
++  /**
++   * Returns the className that should be assigned to the propertyView content
++   * container.
++   * @return string
++   */
++  get propertyContentClassName()
+   {
+     if (this.visible) {
+       let darkValue = this.tree._darkStripe ?
+-                      "property-view darkrow" : "property-view";
+-      this.tree._darkStripe = !this.tree._darkStripe;
++                      "property-content darkrow" : "property-content";
+       return darkValue;
+     }
+-    return "property-view-hidden";
++    return "property-content-hidden";
+   },
+ 
+   /**
+    * Refresh the panel's CSS property value.
+    */
+   refresh: function PropertyView_refresh()
+   {
+-    this.element.className = this.className;
++    this.element.className = this.propertyHeaderClassName;
++    this.element.nextElementSibling.className = this.propertyContentClassName;
+ 
+     if (this.prevViewedElement != this.tree.viewedElement) {
+       this._matchedSelectorViews = null;
+       this._unmatchedSelectorViews = null;
+       this.prevViewedElement = this.tree.viewedElement;
+     }
+ 
+     if (!this.tree.viewedElement || !this.visible) {
+@@ -525,19 +542,19 @@ PropertyView.prototype = {
+    * Refresh the panel matched rules.
+    */
+   refreshMatchedSelectors: function PropertyView_refreshMatchedSelectors()
+   {
+     let hasMatchedSelectors = this.hasMatchedSelectors;
+     this.matchedSelectorsContainer.hidden = !hasMatchedSelectors;
+ 
+     if (hasMatchedSelectors || this.hasUnmatchedSelectors) {
+-      this.propertyHeader.classList.add("expandable");
++      this.propertyHeader.parentNode.classList.add("expandable");
+     } else {
+-      this.propertyHeader.classList.remove("expandable");
++      this.propertyHeader.parentNode.classList.remove("expandable");
+     }
+ 
+     if (this.matchedExpanded && hasMatchedSelectors) {
+       CssHtmlTree.processTemplate(this.templateMatchedSelectors,
+         this.matchedSelectorsContainer, this);
+       this.matchedExpander.setAttribute("open", "");
+     } else {
+       this.matchedSelectorsContainer.innerHTML = "";
+diff --git a/browser/devtools/styleinspector/csshtmltree.xhtml b/browser/devtools/styleinspector/csshtmltree.xhtml
+--- a/browser/devtools/styleinspector/csshtmltree.xhtml
++++ b/browser/devtools/styleinspector/csshtmltree.xhtml
+@@ -68,18 +68,18 @@
+   </div>
+ 
+   <!-- The output from #templatePath (below) is inserted here. -->
+   <div id="path">
+   </div>
+ </div>
+ 
+ <!-- The output from #templateProperty (below) is appended here. -->
+-<div id="propertyContainer">
+-</div>
++<table id="propertyContainer">
++</table>
+ 
+ <!--
+ To visually debug the templates without running firefox, alter the display:none
+ -->
+ <div style="display:none;">
+   <!--
+   templateRoot sits at the top of the window and contains the "include default
+   styles" checkbox. For data it needs an instance of CssHtmlTree.
+@@ -117,40 +117,44 @@ To visually debug the templates without 
+ 
+   <!--
+   TemplateProperty lists the properties themselves. Each needs data like this:
+   {
+     property: ... // PropertyView from CssHtmlTree.jsm
+   }
+   -->
+   <div id="templateProperty">
+-    <div class="${className}" save="${element}" dir="${getRTLAttr}">
+-      <div class="property-header" save="${propertyHeader}"
+-           onclick="${propertyHeaderClick}">
++    <tr class="${propertyHeaderClassName}" save="${element}" dir="${getRTLAttr}" 
++      onclick="${propertyHeaderClick}">
++      <td class="property-header" save="${propertyHeader}">
+         <div save="${matchedExpander}" class="match expander"></div>
+         <div class="property-name" dir="${getRTLAttr}">${name}</div>
+         <div class="helplink" alt="&helpLinkTitle;" title="&helpLinkTitle;"
+              onclick="${mdnLinkClick}">
+           <a href="${link}" class="helplink"></a>
+         </div>
+-        <div save="${valueNode}" class="property-value" dir="ltr">${value}</div>
+-      </div>
+-
+-      <div save="${matchedSelectorsContainer}" class="rulelink" dir="${getRTLAttr}">
+-      </div>
+-      <div save="${unmatchedSelectorsContainer}" class="rulelink" dir="${getRTLAttr}">
+-        <div save="${unmatchedTitleBlock}" onclick="${unmatchedSelectorsClick}"
+-             class="rule-unmatched">
+-          <div save="${unmatchedExpander}" class="expander"></div>
+-          <div save="${unmatchedSelectorsTitleNode}">&unmatchedSelectors;</div>
++      </td>
++      <td save="${valueNode}" class="property-value" dir="ltr">${value}</td>
++    </tr>
++    <tr class="${propertyContentClassName}">
++      <td colspan="2">
++        <div save="${matchedSelectorsContainer}" class="rulelink" 
++          dir="${getRTLAttr}">
+         </div>
+-        <div save="${unmatchedSelectorTable}" class="unmatchedSelectorTable"
+-             dir="${getRTLAttr}"></div>
+-      </div>
+-    </div>
++        <div save="${unmatchedSelectorsContainer}" class="rulelink" dir="${getRTLAttr}">
++          <div save="${unmatchedTitleBlock}" onclick="${unmatchedSelectorsClick}"
++               class="rule-unmatched">
++            <div save="${unmatchedExpander}" class="expander"></div>
++            <div save="${unmatchedSelectorsTitleNode}">&unmatchedSelectors;</div>
++          </div>
++          <div save="${unmatchedSelectorTable}" class="unmatchedSelectorTable"
++               dir="${getRTLAttr}"></div>
++        </div>
++      </td>
++    </tr>
+   </div>
+ 
+   <!--
+   A templateMatchedSelectors sits inside each templateProperties showing the
+   list of selectors that affect that property. Each needs data like this:
+   {
+     matchedSelectorViews: ..., // from cssHtmlTree.propertyViews[name].matchedSelectorViews
+   }
+diff --git a/browser/themes/gnomestripe/browser/devtools/csshtmltree.css b/browser/themes/gnomestripe/browser/devtools/csshtmltree.css
+--- a/browser/themes/gnomestripe/browser/devtools/csshtmltree.css
++++ b/browser/themes/gnomestripe/browser/devtools/csshtmltree.css
+@@ -76,31 +76,30 @@ body {
+   color: #0091ff;
+ }
+ .path li:last-child:after {
+   content: "";
+ }
+ 
+ .property-header {
+   padding: 4px 5px 4px 0;
++  white-space: nowrap;
+ }
+ 
+ .rule-unmatched {
+   cursor: pointer;
+ }
+ 
+ /* Take away these two :visited rules to get a core dumper     */
+ /* See https://bugzilla.mozilla.org/show_bug.cgi?id=575675#c30 */
+ .link,
+ .link:visited {
+   color: #0091ff;
+ }
+ .helplink {
+-  position: relative;
+-  top: 2px;
+   width: 14px;
+   height: 14px;
+   cursor: pointer;
+   display: inline-block;
+   visibility: hidden;
+   background-image: url("chrome://browser/skin/devtools/goto-mdn.png");
+ }
+ a.link,
+@@ -124,17 +123,17 @@ a.helplink:visited {
+ 
+ .rulelink {
+   color: #000;
+ }
+ 
+ .expander {
+   width: 8px;
+   height: 8px;
+-  float: left;
++  display: inline-block;
+   -moz-margin-start: 5px;
+   -moz-margin-end: 5px;
+   margin-top: 3px;
+   background: url("chrome://browser/skin/devtools/arrows.png") 24px 0;
+ }
+ .expander[dir="rtl"] {
+   background-position: 16px 0;
+ }
+@@ -145,17 +144,17 @@ a.helplink:visited {
+ .expandable {
+   cursor: pointer;
+ }
+ 
+ .match {
+   visibility: hidden;
+ }
+ 
+-.expandable > .match {
++.expandable > .property-header > .match {
+   margin-top: 5px;
+   visibility: visible;
+ }
+ 
+ .only-unmatched {
+   -moz-margin-start: 0;
+ }
+ 
+@@ -163,28 +162,27 @@ a.helplink:visited {
+   background: url("chrome://browser/skin/devtools/search.png") no-repeat #FFF;
+   border-radius: 5px;
+   -moz-padding-start: 20px;
+   width: 135px;
+   float: right;
+ }
+ 
+ .property-name {
+-  display: inline-block;
++  display: inline;
+   font-size: 12px;
+   color: #000;
+-  width: 220px;
+ }
+ .property-value {
+-  display: inline-block;
+   font-size: 10px;
+   color: #666;
++  padding: 0;
+ }
+ 
+-.property-view-hidden {
++.property-view-hidden, .property-content-hidden {
+   display: none;
+ }
+ 
+ .rule-link {
+   text-align: end;
+   -moz-padding-start: 10px;
+ }
+ 

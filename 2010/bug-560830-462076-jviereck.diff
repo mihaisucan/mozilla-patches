@@ -1,0 +1,271 @@
+# HG changeset patch
+# Parent a4d86c3a34944a99de1c6be96812cd3e7cce4f27
+
+diff --git a/browser/base/content/browser.xul b/browser/base/content/browser.xul
+--- a/browser/base/content/browser.xul
++++ b/browser/base/content/browser.xul
+@@ -217,17 +217,18 @@
+     </panel>
+ 
+     <panel id="highlighter-panel"
+            hidden="true"
+            ignorekeys="true"
+            noautofocus="true"
+            noautohide="true"
+            onclick="InspectorUI.stopInspecting();"
+-           onmousemove="InspectorUI.highlighter.handleMouseMove(event);"/>
++           onmousemove="InspectorUI.highlighter.handleMouseMove(event);"
++           onMozMousePixelScroll="InspectorUI.highlighter.handlePixelScroll(event);"/>
+ 
+     <panel id="inspector-panel"
+            orient="vertical"
+            hidden="true"
+            ignorekeys="true"
+            noautofocus="true"
+            noautohide="true"
+            level="top"
+diff --git a/browser/base/content/inspector.js b/browser/base/content/inspector.js
+--- a/browser/base/content/inspector.js
++++ b/browser/base/content/inspector.js
+@@ -19,16 +19,17 @@
+  * The Initial Developer of the Original Code is
+  * The Mozilla Foundation.
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Rob Campbell <rcampbell@mozilla.com> (original author)
+  *   Mihai Șucan <mihai.sucan@gmail.com>
++ *   Julian Viereck <jviereck@mozilla.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -315,16 +316,39 @@ PanelHighlighter.prototype = {
+     }
+     let browserRect = this.browser.getBoundingClientRect();
+     let element = InspectorUI.elementFromPoint(this.win.document,
+       aEvent.clientX - browserRect.left, aEvent.clientY - browserRect.top);
+     if (element && element != this.node) {
+       InspectorUI.inspectNode(element);
+     }
+   },
++
++  /**
++   * Handle MozMousePixelScroll in panel when InspectorUI.inspecting is true.
++   *
++   * @param aEvent
++   *        The onMozMousePixelScrollEvent triggering the method.
++   * @returns void
++   */
++  handlePixelScroll: function PanelHighlighter_handlePixelScroll(aEvent) {
++    if (!InspectorUI.inspecting) {
++      return;
++    }
++    let browserRect = this.browser.getBoundingClientRect();
++    let win = InspectorUI.windowFromPoint(this.win,
++      aEvent.clientX - browserRect.left, aEvent.clientY - browserRect.top);
++
++    if (aEvent.axis == aEvent.HORIZONTAL_AXIS) {
++      win.scrollBy(aEvent.detail, 0);
++    }
++    else {
++      win.scrollBy(0, aEvent.detail);
++    }
++  }
+ };
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ //// InspectorTreeView
+ 
+ /**
+  * TreeView object to manage the view of the DOM tree. Wraps and provides an
+  * interface to an inIDOMView object
+@@ -957,16 +981,43 @@ var InspectorUI = {
+           if (subnode) {
+             node = subnode;
+           }
+       }
+     }
+     return node;
+   },
+ 
++
++  /**
++   * Find a window from the given coordinates. This method descends through
++   * frames to find the window.
++   *
++   * @param nsIDOMWindow aWindow The window to look into.
++   * @param integer aX
++   * @param integer aY
++   * @returns nsIDOMWindow The window found at the given coordinates.
++   */
++  windowFromPoint: function IUI_windowFromPoint(aWindow, aX, aY)
++  {
++    let node = aWindow.document.elementFromPoint(aX, aY);
++    if (node && node.contentDocument) {
++      switch (node.nodeName.toLowerCase()) {
++        case "iframe":
++          let rect = node.getBoundingClientRect();
++          aX -= rect.left;
++          aY -= rect.top;
++
++        case "frame":
++          return this.windowFromPoint(node.contentWindow, aX, aY);
++      }
++    }
++    return aWindow;
++  },
++
+   ///////////////////////////////////////////////////////////////////////////
+   //// Utility functions
+ 
+   /**
+    * debug logging facility
+    * @param msg
+    *        text message to send to the log
+    */
+diff --git a/browser/base/content/test/Makefile.in b/browser/base/content/test/Makefile.in
+--- a/browser/base/content/test/Makefile.in
++++ b/browser/base/content/test/Makefile.in
+@@ -144,16 +144,17 @@ _BROWSER_FILES = \
+                  browser_drag.js \
+                  browser_gestureSupport.js \
+                  browser_getshortcutoruri.js \
+                  browser_inspector_initialization.js \
+                  browser_inspector_treeSelection.js \
+                  browser_inspector_highlighter.js \
+                  browser_inspector_stylePanel.js \
+                  browser_inspector_iframeTest.js \
++                 browser_inspector_scrolling.js \
+                  browser_pageInfo.js \
+                  browser_page_style_menu.js \
+                  browser_pinnedTabs.js \
+                  browser_plainTextLinks.js \
+                  browser_pluginnotification.js \
+                  browser_popupUI.js \
+                  browser_relatedTabs.js \
+                  browser_sanitize-passwordDisabledHosts.js \
+diff --git a/browser/base/content/test/browser_inspector_scrolling.js b/browser/base/content/test/browser_inspector_scrolling.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_inspector_scrolling.js
+@@ -0,0 +1,114 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=2 et sw=2 tw=80: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Inspector iframe Tests.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Rob Campbell <rcampbell@mozilla.com>
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ *   Julian Viereck <jviereck@mozilla.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++let doc;
++let div;
++let iframe;
++
++function createDocument()
++{
++  doc.title = "Inspector scrolling Tests";
++
++  iframe = doc.createElement('iframe');
++
++  iframe.addEventListener("load", function () {
++    iframe.removeEventListener("load", arguments.callee, false);
++    let iFrameDoc = iframe.contentDocument;
++
++    div = iFrameDoc.createElement('div');
++    div.textContent = 'big div';
++    div.setAttribute('style', 'height:500px; width:500px; border:1px solid gray;');
++    iFrameDoc.body.appendChild(div);
++    setupIframeTests();
++  }, false);
++
++  iframe.src = 'data:text/html,foo bar';
++  doc.body.appendChild(iframe);
++}
++
++function setupIframeTests()
++{
++  document.addEventListener("popupshown", runIframeTests, false);
++  InspectorUI.toggleInspectorUI();
++}
++
++function runIframeTests(aEvt)
++{
++  if (aEvt.target.id != "inspector-panel") {
++    return true;
++  }
++
++  document.removeEventListener("popupshown", runIframeTests, false);
++  document.addEventListener("popupshown", performScrollingTest, false);
++
++  InspectorUI.inspectNode(div)
++}
++
++function performScrollingTest(aEvt)
++{
++  if (aEvt.target.id != "highlighter-panel") {
++    return true;
++  }
++
++  document.removeEventListener("popupshown", performScrollingTest, false);
++
++  EventUtils.synthesizeMouseScroll(aEvt.target, 10, 10,
++    {axis:"vertical", delta:50, type:"MozMousePixelScroll"}, window);
++
++  is (iframe.contentDocument.body.scrollTop, 50, "inspected iframe scrolled");
++
++  InspectorUI.closeInspectorUI();
++  gBrowser.removeCurrentTab();
++  finish();
++}
++
++function test()
++{
++  waitForExplicitFinish();
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++    doc = content.document;
++    waitForFocus(createDocument, content);
++  }, true);
++
++  content.location = "data:text/html,iframe tests for inspector";
++}

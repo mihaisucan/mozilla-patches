@@ -1,0 +1,672 @@
+# HG changeset patch
+# Parent 5867ed624b37f8a912748a82eb81dd264ded0af4
+# Date 1301323191 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+
+bug 585991: show a popup listing possible completions
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -219,16 +219,18 @@ const MINIMUM_CONSOLE_HEIGHT = 150;
+ const MINIMUM_PAGE_HEIGHT = 50;
+ 
+ // The default console height, as a ratio from the content window inner height.
+ const DEFAULT_CONSOLE_HEIGHT = 0.33;
+ 
+ // Constant used when checking the typeof objects.
+ const TYPEOF_FUNCTION = "function";
+ 
++const XHTML_NS = "http://www.w3.org/1999/xhtml";
++
+ const ERRORS = { LOG_MESSAGE_MISSING_ARGS:
+                  "Missing arguments: aMessage, aConsoleNode and aMessageNode are required.",
+                  CANNOT_GET_HUD: "Cannot getHeads Up Display with provided ID",
+                  MISSING_ARGS: "Missing arguments",
+                  LOG_OUTPUT_FAILED: "Log Failure: Could not append messageNode to outputNode",
+ };
+ 
+ /**
+@@ -518,18 +520,20 @@ ResponseListener.prototype =
+  * @param object aAttributes
+  *        Attributes set on the created DOMNode.
+  *
+  * @returns nsIDOMNode
+  */
+ function createElement(aDocument, aTag, aAttributes)
+ {
+   let node = aDocument.createElement(aTag);
+-  for (var attr in aAttributes) {
+-    node.setAttribute(attr, aAttributes[attr]);
++  if (aAttributes) {
++    for (let attr in aAttributes) {
++      node.setAttribute(attr, aAttributes[attr]);
++    }
+   }
+   return node;
+ }
+ 
+ /**
+  * Creates a new DOMNode and appends it to aParent.
+  *
+  * @param nsIDOMNode aParent
+@@ -1747,16 +1751,18 @@ HUD_SERVICE.prototype =
+       if (splitters[i].getAttribute("class") == "hud-splitter") {
+         splitters[i].parentNode.removeChild(splitters[i]);
+         break;
+       }
+     }
+     // remove the DOM Nodes
+     parent.removeChild(outputNode);
+ 
++    this.hudReferences[id].jsterm.autocompletePopup.destroy();
++
+     // remove the HeadsUpDisplay object from memory
+     if ("cssNodes" in this.hudReferences[id]) {
+       delete this.hudReferences[id].cssNodes;
+     }
+     delete this.hudReferences[id];
+     // remove the related storage object
+     this.storage.removeDisplay(id);
+ 
+@@ -1773,16 +1779,22 @@ HUD_SERVICE.prototype =
+     for (let i = 0; i < panels.length; i++) {
+       panels[i].hidePopup();
+     }
+ 
+     let id = ConsoleUtils.supString(id);
+     Services.obs.notifyObservers(id, "web-console-destroyed", null);
+ 
+     if (Object.keys(this.hudReferences).length == 0) {
++      let autocompletePopup =
++        popupset.querySelector(".webConsole_autocompletePopup");
++      if (autocompletePopup) {
++        popupset.removeChild(autocompletePopup);
++      }
++
+       this.suspend();
+     }
+   },
+ 
+   /**
+    * "Wake up" the Web Console activity. This is called when the first Web
+    * Console is open. This method initializes the various observers we have.
+    *
+@@ -3729,20 +3741,19 @@ function JSPropertyProvider(aScope, aInp
+   // Don't complete on just an empty string.
+   if (completionPart.trim() == "") {
+     return null;
+   }
+ 
+   let properties = completionPart.split('.');
+   let matchProp;
+   if (properties.length > 1) {
+-      matchProp = properties[properties.length - 1].trimLeft();
+-      properties.pop();
+-      for each (var prop in properties) {
+-        prop = prop.trim();
++      matchProp = properties.pop().trimLeft();
++      for (let i = 0; i < properties.length; i++) {
++        let prop = properties[i].trim();
+ 
+         // If obj is undefined or null, then there is no change to run
+         // completion on it. Exit here.
+         if (typeof obj === "undefined" || obj === null) {
+           return null;
+         }
+ 
+         // Check if prop is a getter function on obj. Functions can change other
+@@ -3764,27 +3775,25 @@ function JSPropertyProvider(aScope, aInp
+   }
+ 
+   // Skip Iterators and Generators.
+   if (isIteratorOrGenerator(obj)) {
+     return null;
+   }
+ 
+   let matches = [];
+-  for (var prop in obj) {
+-    matches.push(prop);
++  for (let prop in obj) {
++    if (prop.indexOf(matchProp) == 0) {
++      matches.push(prop);
++    }
+   }
+ 
+-  matches = matches.filter(function(item) {
+-    return item.indexOf(matchProp) == 0;
+-  }).sort();
+-
+   return {
+     matchProp: matchProp,
+-    matches: matches
++    matches: matches.sort()
+   };
+ }
+ 
+ function isIteratorOrGenerator(aObject)
+ {
+   if (typeof aObject == "object") {
+     if (typeof aObject.__iterator__ == "function" ||
+         aObject.constructor && aObject.constructor.name == "Iterator") {
+@@ -4032,16 +4041,19 @@ function JSTerm(aContext, aParentNode, a
+   while (!node.hasAttribute("id")) {
+     node = node.parentNode;
+   }
+   this.hudId = node.getAttribute("id");
+ 
+   this.historyIndex = 0;
+   this.historyPlaceHolder = 0;  // this.history.length;
+   this.log = LogFactory("*** JSTerm:");
++  this.autocompletePopup = new AutocompletePopup(aParentNode.ownerDocument);
++  this.autocompletePopup.onSelect = this.onAutocompleteSelect.bind(this);
++  this.autocompletePopup.onClick = this.acceptProposedCompletion.bind(this);
+   this.init();
+ }
+ 
+ JSTerm.prototype = {
+ 
+   propertyProvider: JSPropertyProvider,
+ 
+   COMPLETE_FORWARD: 0,
+@@ -4166,16 +4178,17 @@ JSTerm.prototype = {
+     catch (ex) {
+       this.writeOutput("" + ex, CATEGORY_OUTPUT, SEVERITY_ERROR);
+     }
+ 
+     this.history.push(aExecuteString);
+     this.historyIndex++;
+     this.historyPlaceHolder = this.history.length;
+     this.setInputValue("");
++    this.clearCompletion();
+   },
+ 
+   /**
+    * Opens a new PropertyPanel. The panel has two buttons: "Update" reexecutes
+    * the passed aEvalString and places the result inside of the tree. The other
+    * button closes the panel.
+    *
+    * @param string aEvalString
+@@ -4726,105 +4739,113 @@ JSTerm.prototype = {
+    *          or false otherwise.
+    */
+   complete: function JSTF_complete(type)
+   {
+     let inputNode = this.inputNode;
+     let inputValue = inputNode.value;
+     // If the inputNode has no value, then don't try to complete on it.
+     if (!inputValue) {
+-      this.updateCompleteNode("");
++      this.clearCompletion();
+       return false;
+     }
+ 
+     // Only complete if the selection is empty and at the end of the input.
+     if (inputNode.selectionStart == inputNode.selectionEnd &&
+         inputNode.selectionEnd != inputValue.length) {
+-      // TODO: shouldnt we do this in the other 'bail' cases?
+-      this.lastCompletion = null;
+-      this.updateCompleteNode("");
++      this.clearCompletion();
+       return false;
+     }
+ 
+-    let matches;
+-    let matchIndexToUse;
+-    let matchOffset;
+-
+-    // If there is a saved completion from last time and the used value for
+-    // completion stayed the same, then use the stored completion.
+-    if (this.lastCompletion && inputValue == this.lastCompletion.value) {
+-      matches = this.lastCompletion.matches;
+-      matchOffset = this.lastCompletion.matchOffset;
+-      if (type === this.COMPLETE_BACKWARD) {
+-        this.lastCompletion.index --;
+-      }
+-      else if (type === this.COMPLETE_FORWARD) {
+-        this.lastCompletion.index ++;
+-      }
+-      matchIndexToUse = this.lastCompletion.index;
+-    }
+-    else {
+-      // Look up possible completion values.
+-      let completion = this.propertyProvider(this.sandbox.window, inputValue);
+-      if (!completion) {
+-        this.updateCompleteNode("");
++    let popup = this.autocompletePopup;
++
++    if (!this.lastCompletion || this.lastCompletion.value != inputValue) {
++      let matches = this.propertyProvider(this.sandbox.window, inputValue);
++      if (!matches || !matches.matches.length) {
++        this.clearCompletion();
+         return false;
+       }
+-      matches = completion.matches;
+-      matchIndexToUse = 0;
+-      matchOffset = completion.matchProp.length;
+-      // Store this match;
+-      this.lastCompletion = {
+-        index: 0,
+-        value: inputValue,
+-        matches: matches,
+-        matchOffset: matchOffset
+-      };
+-    }
+-
+-    if (type != this.COMPLETE_HINT_ONLY && matches.length == 1) {
+-      this.acceptProposedCompletion();
+-      return true;
+-    }
+-    else if (matches.length != 0) {
+-      // Ensure that the matchIndexToUse is always a valid array index.
+-      if (matchIndexToUse < 0) {
+-        matchIndexToUse = matches.length + (matchIndexToUse % matches.length);
+-        if (matchIndexToUse == matches.length) {
+-          matchIndexToUse = 0;
++
++      let items = matches.matches.map(function(aMatch) {
++        return {label: aMatch};
++      });
++      popup.setItems(items);
++      this.lastCompletion = {value: inputValue, matchProp: matches.matchProp};
++
++      if (items.length > 1 && !popup.isOpen) {
++        popup.openPopup(this.inputNode);
++      }
++      else if (items.length < 2 && popup.isOpen) {
++        popup.hidePopup();
++      }
++
++      if (items.length > 0) {
++        popup.selectedIndex = 0;
++        if (items.length == 1) {
++          // onSelect is not fired when the popup is not open.
++          this.onAutocompleteSelect();
+         }
+       }
+-      else {
+-        matchIndexToUse = matchIndexToUse % matches.length;
+-      }
+-
+-      let completionStr = matches[matchIndexToUse].substring(matchOffset);
+-      this.updateCompleteNode(completionStr);
+-      return completionStr ? true : false;
++    }
++
++    let accepted = false;
++
++    if (type != this.COMPLETE_HINT_ONLY && popup.itemCount == 1) {
++      this.acceptProposedCompletion();
++      accepted = true;
++    }
++    else if (type == this.COMPLETE_BACKWARD) {
++      this.autocompletePopup.selectPreviousItem();
++    }
++    else if (type == this.COMPLETE_FORWARD) {
++      this.autocompletePopup.selectNextItem();
++    }
++
++    return accepted || popup.itemCount > 0;
++  },
++
++  onAutocompleteSelect: function JSTF_onAutocompleteSelect()
++  {
++    let currentItem = this.autocompletePopup.selectedItem;
++    if (currentItem && this.lastCompletion) {
++      let suffix = currentItem.label.substring(this.lastCompletion.
++                                               matchProp.length);
++      this.updateCompleteNode(suffix);
+     }
+     else {
+       this.updateCompleteNode("");
+     }
+-
+-    return false;
++  },
++
++  clearCompletion: function JSTF_clearCompletion()
++  {
++    if (this.autocompletePopup.isOpen) {
++      this.autocompletePopup.hidePopup();
++    }
++    this.autocompletePopup.clearItems();
++    this.lastCompletion = null;
++    this.updateCompleteNode("");
+   },
+ 
+   acceptProposedCompletion: function JSTF_acceptProposedCompletion()
+   {
+-    this.setInputValue(this.inputNode.value + this.completionValue);
+-    this.updateCompleteNode("");
++    let currentItem = this.autocompletePopup.selectedItem;
++    if (currentItem && this.lastCompletion) {
++      let suffix = currentItem.label.substring(this.lastCompletion.
++                                               matchProp.length);
++      this.setInputValue(this.inputNode.value + suffix);
++    }
++    this.clearCompletion();
+   },
+ 
+   updateCompleteNode: function JSTF_updateCompleteNode(suffix)
+   {
+-    this.completionValue = suffix;
+-
+     // completion prefix = input, with non-control chars replaced by spaces
+-    let prefix = this.inputNode.value.replace(/[\S]/g, " ");
+-    this.completeNode.value = prefix + this.completionValue;
++    let prefix = suffix ? this.inputNode.value.replace(/[\S]/g, " ") : "";
++    this.completeNode.value = prefix + suffix;
+   },
+ };
+ 
+ /**
+  * Generates and attaches the JS Terminal part of the Web Console, which
+  * essentially consists of the interactive JavaScript input facility.
+  *
+  * @param nsWeakPtr<nsIDOMWindow> aContext
+@@ -4931,16 +4952,233 @@ FirefoxApplicationHooks.prototype = {
+    * @returns nsIDOMWindow
+    */
+   getCurrentContext: function FAH_getCurrentContext()
+   {
+     return Services.wm.getMostRecentWindow("navigator:browser");
+   },
+ };
+ 
++/**
++ * Autocomplete popup UI implementation.
++ *
++ * @constructor
++ * @param nsIDOMDocument aDocument
++ *        The document you want the popup attached to.
++ */
++function AutocompletePopup(aDocument)
++{
++  this._document = aDocument;
++
++  this._panel = this._document.querySelector(".webConsole_autocompletePopup");
++  if (!this._panel) {
++    this._panel = this._document.createElementNS(XUL_NS, "panel");
++    this._panel.setAttribute("class", "webConsole_autocompletePopup");
++    this._panel.setAttribute("label", "Autocomplete Popup");
++    this._panel.setAttribute("noautofocus", "true");
++    let mainPopupSet = this._document.getElementById("mainPopupSet");
++    mainPopupSet.appendChild(this._panel);
++  }
++
++  this._list = this._document.querySelector(".webConsole_autocompleteList");
++  if (!this._list) {
++    this._list = this._document.createElementNS(XUL_NS, "richlistbox");
++    this._list.setAttribute("class", "webConsole_autocompleteList");
++    this._panel.appendChild(this._list);
++
++    // Open and hide the panel, so we initialize the API of the richlistbox.
++    this._panel.width = 1;
++    this._panel.height = 1;
++    this._panel.openPopup(null, "overlap", 0, 0, false, false);
++    this._panel.hidePopup();
++  }
++
++  this._onSelect = this._onSelect.bind(this);
++  this._onClick = this._onClick.bind(this);
++}
++
++AutocompletePopup.prototype = {
++  _document: null,
++  _panel: null,
++  _list: null,
++  _onSelect: null,
++  _onClick: null,
++
++  openPopup: function AP_openPopup(aAnchor)
++  {
++    this._panel.openPopup(aAnchor, "after_start", 0, 0, false, false);
++    this._list.addEventListener("select", this._onSelect, false);
++    this._list.addEventListener("click", this._onClick, false);
++    this._updateSize();
++  },
++
++  hidePopup: function AP_hidePopup()
++  {
++    this._panel.hidePopup();
++    this._list.removeEventListener("select", this._onSelect, false);
++    this._list.removeEventListener("click", this._onClick, false);
++  },
++
++  get isOpen() {
++    return this._panel.state == "open";
++  },
++
++  destroy: function AP_destroy()
++  {
++    if (this.isOpen) {
++      this.hidePopup();
++    }
++    this.clearItems();
++
++    this._document = null;
++    this._list = null;
++
++    this._panel = null;
++  },
++
++  getItems: function AP_getItems()
++  {
++    let items = [];
++
++    Array.forEach(this._list.children, function(aItem) {
++      this.push(aItem._autocompleteItem);
++    }, items);
++
++    return items;
++  },
++
++  setItems: function AP_setItems(aItems)
++  {
++    this.clearItems();
++    aItems.forEach(this.appendItem, this);
++
++    // Make sure that the new content is properly fitted by the XUL richlistbox.
++    if (this.isOpen) {
++      this._document.defaultView.setTimeout(this._updateSize.bind(this), 1);
++    }
++  },
++
++  _updateSize: function AP__updateSize()
++  {
++    // Make sure the bottom border of the richlistbox is visible.
++    let diff = this._panel.clientWidth - this._list.clientWidth;
++
++    this._list.width = this._panel.clientWidth +
++                       ConsoleUtils.scrollbarWidth(this._document);
++
++    this._list.height = this._panel.clientHeight - Math.floor(diff/2) + 1;
++  },
++
++  clearItems: function AP_clearItems()
++  {
++    while (this._list.hasChildNodes()) {
++      this._list.removeChild(this._list.firstChild);
++    }
++    this._panel.width = "";
++    this._panel.height = "";
++    this._list.width = "";
++    this._list.height = "";
++  },
++
++  get selectedIndex() {
++    return this._list.selectedIndex;
++  },
++
++  set selectedIndex(aIndex) {
++    this._list.selectedIndex = aIndex;
++    this._list.ensureIndexIsVisible(this._list.selectedIndex);
++  },
++
++  get selectedItem() {
++    return this._list.selectedItem ?
++           this._list.selectedItem._autocompleteItem : null;
++  },
++
++  set selectedItem(aItem) {
++    this._list.selectedItem = this._findListItem(aItem);
++    this._list.ensureIndexIsVisible(this._list.selectedIndex);
++  },
++
++  appendItem: function AP_appendItem(aItem)
++  {
++    let description = this._document.createElementNS(XUL_NS, "xul:description");
++    let text = this._document.createTextNode(aItem.label);
++    description.appendChild(text);
++
++    let listItem = this._document.createElementNS(XUL_NS, "xul:richlistitem");
++    listItem.appendChild(description);
++    listItem._autocompleteItem = aItem;
++
++    this._list.appendChild(listItem);
++  },
++
++  _findListItem: function AP__findListItem(aItem)
++  {
++    for (let i = 0; i < this._list.children.length; i++) {
++      let child = this._list.children[i];
++      if (child._autocompleteItem == aItem) {
++        return child;
++      }
++    }
++    return null;
++  },
++
++  removeItem: function AP_removeItem(aItem)
++  {
++    let item = this._findListItem(aItem);
++    if (!item) {
++      throw new Error("Item not found!");
++    }
++    this._list.removeChild(item);
++  },
++
++  get itemCount() {
++    return this._list.children.length;
++  },
++
++  selectNextItem: function AP_selectNextItem()
++  {
++    if (this.selectedIndex < (this.itemCount - 1)) {
++      this.selectedIndex++;
++    }
++    else if (this.selectedIndex == (this.itemCount - 1)) {
++      this.selectedIndex = -1;
++    }
++
++    return this.selectedItem;
++  },
++
++  selectPreviousItem: function AP_selectPreviousItem()
++  {
++    if (this.selectedIndex > -1) {
++      this.selectedIndex--;
++    }
++    else if (this.selectedIndex == -1) {
++      this.selectedIndex = this.itemCount - 1;
++    }
++
++    return this.selectedItem;
++  },
++
++  _onSelect: function AP__onSelect(aEvent)
++  {
++    if (this.onSelect) {
++      this.onSelect.call(this, aEvent);
++    }
++  },
++
++  _onClick: function AP__onClick(aEvent)
++  {
++    if (this.onClick) {
++      this.onClick.call(this, aEvent);
++    }
++  },
++};
++
++
+ //////////////////////////////////////////////////////////////////////////////
+ // Utility functions used by multiple callers
+ //////////////////////////////////////////////////////////////////////////////
+ 
+ /**
+  * ConsoleUtils: a collection of globally used functions
+  *
+  */
+@@ -5402,17 +5640,70 @@ ConsoleUtils = {
+ 
+     // Remove all but the last path component.
+     let slashIndex = aSourceURL.lastIndexOf("/");
+     if (slashIndex > -1) {
+       aSourceURL = aSourceURL.substring(slashIndex + 1);
+     }
+ 
+     return aSourceURL;
+-  }
++  },
++
++  /**
++   * Determine the scrollbar width in a given document.
++   *
++   * Credits:
++   *   Fabian Jakobs <fabian AT ajax DOT org>, the Ajax.org Code Editor (ACE)
++   *
++   * @param nsIDOMDocument aDocument
++   *        The document where you want to determine the scrollbar width.
++   * @return number
++   *         The scrollbar width. Please note that the value is cached, and
++   *         subsequent calls reuse the cached value. Also, the value does not
++   *         change with a different aDocument - that is because we consider
++   *         scroll bars to always have the same width, irrespective of the
++   *         document.
++   */
++  scrollbarWidth: function ConsoleUtils_scrollbarWidth(aDocument)
++  {
++    if (this._scrollbarWidth) {
++      return this._scrollbarWidth;
++    }
++
++    let inner = aDocument.createElementNS(XHTML_NS, "div");
++    inner.style.width = "100%";
++    inner.style.height = "200px";
++
++    let outer = aDocument.createElementNS(XHTML_NS, "div");
++    let style = outer.style;
++
++    style.position = "absolute";
++    style.left = "-10000px";
++    style.overflow = "hidden";
++    style.width = "200px";
++    style.height = "150px";
++
++    outer.appendChild(inner);
++
++    aDocument.documentElement.appendChild(outer);
++
++    let noScrollbar = inner.offsetWidth;
++
++    style.overflow = "scroll";
++    let withScrollbar = inner.offsetWidth;
++
++    if (noScrollbar == withScrollbar) {
++      withScrollbar = outer.clientWidth;
++    }
++
++    aDocument.documentElement.removeChild(outer);
++
++    this._scrollbarWidth = noScrollbar - withScrollbar;
++    return this._scrollbarWidth;
++  },
+ };
+ 
+ //////////////////////////////////////////////////////////////////////////
+ // HeadsUpDisplayUICommands
+ //////////////////////////////////////////////////////////////////////////
+ 
+ HeadsUpDisplayUICommands = {
+   toggleHUD: function UIC_toggleHUD() {

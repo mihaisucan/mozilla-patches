@@ -1,0 +1,173 @@
+diff --git a/browser/base/content/tabview/groupitems.js b/browser/base/content/tabview/groupitems.js
+--- a/browser/base/content/tabview/groupitems.js
++++ b/browser/base/content/tabview/groupitems.js
+@@ -231,17 +231,17 @@ function GroupItem(listOfEls, options) {
+     .addClass("appTabTrayContainer")
+     .appendTo($container);
+   this.$appTabTray = iQ("<div/>")
+     .addClass("appTabTray")
+     .appendTo(appTabTrayContainer);
+ 
+   AllTabs.tabs.forEach(function(xulTab) {
+     if (xulTab.pinned && xulTab.ownerDocument.defaultView == gWindow)
+-      self.addAppTab(xulTab);
++      self.addAppTab(xulTab, {dontAdjustTray: true});
+   });
+ 
+   // ___ Undo Close
+   this.$undoContainer = null;
+   this._undoButtonTimeoutId = null;
+ 
+   // ___ Superclass initialization
+   this._init($container[0]);
+@@ -388,17 +388,17 @@ GroupItem.prototype = Utils.extend(new I
+   //   arrangeGroup - rearrange the groupItem if the number of appTab columns
+   //   changes. If true, then this.arrange() is called, otherwise not.
+   adjustAppTabTray: function GroupItem_adjustAppTabTray(arrangeGroup) {
+     let icons = iQ(".appTabIcon", this.$appTabTray);
+     let container = iQ(this.$appTabTray[0].parentNode);
+     if (!icons.length) {
+       // There are no icons, so hide the appTabTray if needed.
+       if (parseInt(container.css("width")) != 0) {
+-        this.$appTabTray.css("-moz-column-count", 0);
++        this.$appTabTray.css("-moz-column-count", "auto");
+         this.$appTabTray.css("height", 0);
+         container.css("width", 0);
+         container.css("height", 0);
+ 
+         if (container.hasClass("appTabTrayContainerTruncated"))
+           container.removeClass("appTabTrayContainerTruncated");
+ 
+         if (arrangeGroup)
+@@ -413,16 +413,19 @@ GroupItem.prototype = Utils.extend(new I
+                         parseInt(container.css("top")) -
+                         this.$resizer.height();
+     let rows = Math.floor(contentHeight / iconBounds.height);
+     let columns = Math.ceil(icons.length / rows);
+     let columnsGap = parseInt(this.$appTabTray.css("-moz-column-gap"));
+     let iconWidth = iconBounds.width + columnsGap;
+     let maxColumns = Math.floor((boxBounds.width * 0.20) / iconWidth);
+ 
++    Utils.assert(rows > 0 && columns > 0 && maxColumns > 0,
++      "make sure the calculated rows, columns and maxColumns are correct");
++
+     if (columns > maxColumns)
+       container.addClass("appTabTrayContainerTruncated");
+     else if (container.hasClass("appTabTrayContainerTruncated"))
+       container.removeClass("appTabTrayContainerTruncated");
+ 
+     // Need to drop the -moz- prefix when Gecko makes it obsolete.
+     // See bug 629452.
+     if (parseInt(this.$appTabTray.css("-moz-column-count")) != columns)
+@@ -1108,17 +1111,25 @@ GroupItem.prototype = Utils.extend(new I
+         $icon.attr("src", Utils.defaultFaviconURL);
+         return true;
+       }
+     });
+   },
+ 
+   // ----------
+   // Adds the given xul:tab as an app tab in this group's apptab tray
+-  addAppTab: function GroupItem_addAppTab(xulTab) {
++  //
++  // Parameters:
++  //   options - change how the app tab is added.
++  //
++  // Options:
++  //   dontAdjustTray - (boolean) if true, the $appTabTray size is not adjusted,
++  //                    which means that the adjustAppTabTray() method is not
++  //                    called.
++  addAppTab: function GroupItem_addAppTab(xulTab, options) {
+     let self = this;
+ 
+     xulTab.addEventListener("error", this._onAppTabError, false);
+ 
+     // add the icon
+     let iconUrl = xulTab.image || Utils.defaultFaviconURL;
+     let $appTab = iQ("<img>")
+       .addClass("appTabIcon")
+@@ -1128,18 +1139,19 @@ GroupItem.prototype = Utils.extend(new I
+       .click(function(event) {
+         if (!Utils.isLeftClick(event))
+           return;
+ 
+         GroupItems.setActiveGroupItem(self);
+         UI.goToTab(iQ(this).data("xulTab"));
+       });
+ 
+-    // adjust the tray
+-    this.adjustAppTabTray(true);
++    // adjust the tray, if needed.
++    if (!options || !options.dontAdjustTray)
++      this.adjustAppTabTray(true);
+   },
+ 
+   // ----------
+   // Removes the given xul:tab as an app tab in this group's apptab tray
+   removeAppTab: function GroupItem_removeAppTab(xulTab) {
+     // remove the icon
+     iQ(".appTabIcon", this.$appTabTray).each(function(icon) {
+       let $icon = iQ(icon);
+diff --git a/browser/themes/gnomestripe/browser/tabview/tabview.css b/browser/themes/gnomestripe/browser/tabview/tabview.css
+--- a/browser/themes/gnomestripe/browser/tabview/tabview.css
++++ b/browser/themes/gnomestripe/browser/tabview/tabview.css
+@@ -260,17 +260,16 @@ html[dir=rtl] .overlay {
+ html[dir=rtl] .appTabTrayContainer {
+   right: auto;
+   left: 1px;
+ }
+ 
+ .appTabTray {
+   display: inline-block;
+   -moz-column-width: 16px;
+-  -moz-column-count: 0;
+   -moz-column-gap: 5px;
+ }
+ 
+ .appTabTrayContainerTruncated {
+   padding-bottom: 7px;
+ }
+ 
+ .appTabTrayContainerTruncated:after {
+diff --git a/browser/themes/pinstripe/browser/tabview/tabview.css b/browser/themes/pinstripe/browser/tabview/tabview.css
+--- a/browser/themes/pinstripe/browser/tabview/tabview.css
++++ b/browser/themes/pinstripe/browser/tabview/tabview.css
+@@ -253,17 +253,16 @@ html[dir=rtl] .overlay {
+ html[dir=rtl] .appTabTrayContainer {
+   right: auto;
+   left: 1px;
+ }
+ 
+ .appTabTray {
+   display: inline-block;
+   -moz-column-width: 16px;
+-  -moz-column-count: 0;
+   -moz-column-gap: 5px;
+ }
+ 
+ .appTabTrayContainerTruncated {
+   padding-bottom: 7px;
+ }
+ 
+ .appTabTrayContainerTruncated:after {
+diff --git a/browser/themes/winstripe/browser/tabview/tabview.css b/browser/themes/winstripe/browser/tabview/tabview.css
+--- a/browser/themes/winstripe/browser/tabview/tabview.css
++++ b/browser/themes/winstripe/browser/tabview/tabview.css
+@@ -276,17 +276,16 @@ html[dir=rtl] .overlay {
+ html[dir=rtl] .appTabTrayContainer {
+   right: auto;
+   left: 1px;
+ }
+ 
+ .appTabTray {
+   display: inline-block;
+   -moz-column-width: 16px;
+-  -moz-column-count: 0;
+   -moz-column-gap: 5px;
+ }
+ 
+ .appTabTrayContainerTruncated {
+   padding-bottom: 7px;
+ }
+ 
+ .appTabTrayContainerTruncated:after {

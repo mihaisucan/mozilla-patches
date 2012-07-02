@@ -1,0 +1,34 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1336149903 -10800
+# Node ID 163e05754e4742504b65e383e8fa10a57e132c95
+# Parent  ff1386b331fbcdab311c132823516f3bca575c29
+Bug 673148 - (async-webconsole) Fix nsFrameMessageManager crasher
+
+diff --git a/content/base/src/nsFrameMessageManager.cpp b/content/base/src/nsFrameMessageManager.cpp
+--- a/content/base/src/nsFrameMessageManager.cpp
++++ b/content/base/src/nsFrameMessageManager.cpp
+@@ -895,18 +895,21 @@ nsFrameScriptExecutor::InitTabChildGloba
+ }
+ 
+ // static
+ void
+ nsFrameScriptExecutor::Traverse(nsFrameScriptExecutor *tmp,
+                                 nsCycleCollectionTraversalCallback &cb)
+ {
+   NS_IMPL_CYCLE_COLLECTION_TRAVERSE_NSCOMPTR(mGlobal)
+-  NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "mCx");
+-  nsContentUtils::XPConnect()->NoteJSContext(tmp->mCx, cb);
++  nsIXPConnect* xpc = nsContentUtils::XPConnect();
++  if (xpc) {
++    NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "mCx");
++    xpc->NoteJSContext(tmp->mCx, cb);
++  }
+ }
+ 
+ NS_IMPL_ISUPPORTS1(nsScriptCacheCleaner, nsIObserver)
+ 
+ nsFrameMessageManager* nsFrameMessageManager::sChildProcessManager = nsnull;
+ nsFrameMessageManager* nsFrameMessageManager::sParentProcessManager = nsnull;
+ nsFrameMessageManager* nsFrameMessageManager::sSameProcessParentManager = nsnull;
+ nsTArray<nsCOMPtr<nsIRunnable> >* nsFrameMessageManager::sPendingSameProcessAsyncMessages = nsnull;

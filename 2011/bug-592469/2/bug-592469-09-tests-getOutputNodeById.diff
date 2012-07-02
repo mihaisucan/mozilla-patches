@@ -1,0 +1,208 @@
+# HG changeset patch
+# Date 1309551916 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Parent 7d9de0f7798f3dd02f625da0929dfaed357d7a9e
+Bug 592469 - Web Console cleanup: part 9 - tests - getOutputNodeById()
+
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_583816_tab_focus.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_583816_tab_focus.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_583816_tab_focus.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_583816_tab_focus.js
+@@ -5,29 +5,27 @@
+  *
+  * Contributor(s):
+  *  Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
+ 
+-let inputNode;
++let HUD, inputNode;
+ 
+ function tabLoad(aEvent) {
+   browser.removeEventListener(aEvent.type, arguments.callee, true);
+ 
+   waitForFocus(function() {
+     openConsole();
+ 
+-    let hudId = HUDService.getHudIdByWindow(content);
+-    HUD = HUDService.hudReferences[hudId];
++    HUD = HUDService.getHudByWindow(content);
+ 
+-    let display = HUDService.getOutputNodeById(hudId);
+-    inputNode = display.querySelector(".jsterm-input-node");
++    inputNode = HUD.jsterm.inputNode;
+ 
+     inputNode.focus();
+     executeSoon(function() {
+       is(inputNode.getAttribute("focused"), "true", "inputNode is focused");
+       HUD.jsterm.setInputValue("doc");
+       inputNode.addEventListener("keyup", firstTab, false);
+       EventUtils.synthesizeKey("VK_TAB", {});
+     });
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_593003_iframe_wrong_hud.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_593003_iframe_wrong_hud.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_593003_iframe_wrong_hud.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_593003_iframe_wrong_hud.js
+@@ -85,29 +85,25 @@ function tab2Loaded(aEvent) {
+ 
+   tab1.linkedBrowser.addEventListener("load", tab1Reloaded, true);
+   tab1.linkedBrowser.contentWindow.location.reload();
+ }
+ 
+ function tab1Reloaded(aEvent) {
+   tab1.linkedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
+ 
+-  let hudId1 = HUDService.getHudIdByWindow(tab1.linkedBrowser.contentWindow);
+-
+-  let display1 = HUDService.getOutputNodeById(hudId1);
+-  let outputNode1 = display1.querySelector(".hud-output-node");
++  let hud1 = HUDService.getHudByWindow(tab1.linkedBrowser.contentWindow);
++  let outputNode1 = hud1.outputNode;
+ 
+   let msg = "Found the iframe network request in tab1";
+   testLogEntry(outputNode1, TEST_IFRAME_URI, msg, true);
+ 
+-  let hudId2 = HUDService.getHudIdByWindow(tab2.linkedBrowser.contentWindow);
+-  let display2 = HUDService.getOutputNodeById(hudId2);
+-  let outputNode2 = display2.querySelector(".hud-output-node");
++  let hud2 = HUDService.getHudByWindow(tab2.linkedBrowser.contentWindow);
++  let outputNode2 = hud2.outputNode;
+ 
+-  isnot(display1, display2, "the two HUD displays must be different");
+   isnot(outputNode1, outputNode2,
+         "the two HUD outputNodes must be different");
+ 
+   msg = "Didn't find the iframe network request in tab2";
+   testLogEntry(outputNode2, TEST_IFRAME_URI, msg, true, true);
+ 
+   HUDService.deactivateHUDForContext(tab2);
+   gBrowser.removeTab(tab2);
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594477_clickable_output.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594477_clickable_output.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594477_clickable_output.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594477_clickable_output.js
+@@ -13,21 +13,19 @@ let HUD;
+ 
+ let outputItem;
+ 
+ function tabLoad1(aEvent) {
+   browser.removeEventListener(aEvent.type, arguments.callee, true);
+ 
+   openConsole();
+ 
+-  let hudId = HUDService.getHudIdByWindow(browser.contentWindow);
+-  HUD = HUDService.hudReferences[hudId];
++  HUD = HUDService.getHudByWindow(content);
+ 
+-  let display = HUDService.getOutputNodeById(hudId);
+-  outputNode = display.querySelector(".hud-output-node");
++  outputNode = HUD.outputNode;
+ 
+   browser.addEventListener("load", tabLoad2, true);
+ 
+   // Reload so we get some output in the console.
+   browser.contentWindow.location.reload();
+   log(document);
+ }
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594497_history_arrow_keys.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594497_history_arrow_keys.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594497_history_arrow_keys.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_594497_history_arrow_keys.js
+@@ -14,18 +14,17 @@ function tabLoad(aEvent) {
+   browser.removeEventListener(aEvent.type, arguments.callee, true);
+ 
+   waitForFocus(function() {
+     openConsole();
+ 
+     let hudId = HUDService.getHudIdByWindow(content);
+     HUD = HUDService.hudReferences[hudId];
+ 
+-    let display = HUDService.getOutputNodeById(hudId);
+-    inputNode = display.querySelector(".jsterm-input-node");
++    inputNode = HUD.jsterm.inputNode;
+ 
+     inputNode.focus();
+ 
+     ok(!inputNode.value, "inputNode.value is empty");
+ 
+     values = ["document", "window", "document.body"];
+     values.push(values.join(";\n"), "document.location");
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597136_external_script_errors.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597136_external_script_errors.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597136_external_script_errors.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597136_external_script_errors.js
+@@ -29,17 +29,16 @@ function contentLoaded(aEvent) {
+   browser.removeEventListener("load", contentLoaded, true);
+ 
+   let button = content.document.querySelector("button");
+   EventUtils.sendMouseEvent({ type: "click" }, button, content);
+   executeSoon(buttonClicked);
+ }
+ 
+ function buttonClicked() {
+-  let hudId = HUDService.getHudIdByWindow(content);
+-  let outputNode = HUDService.getOutputNodeById(hudId);
++  let outputNode = HUDService.getHudByWindow(content).outputNode;
+ 
+   let msg = "the error from the external script was logged";
+   testLogEntry(outputNode, "bogus", msg);
+ 
+   finishTest();
+ }
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_copying_multiple_messages_inserts_newlines_in_between.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_copying_multiple_messages_inserts_newlines_in_between.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_copying_multiple_messages_inserts_newlines_in_between.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_copying_multiple_messages_inserts_newlines_in_between.js
+@@ -5,48 +5,43 @@
+  *
+  * Contributor(s):
+  *  Patrick Walton <pcwalton@mozilla.com>
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ // Tests that copying multiple messages inserts newlines in between.
+ 
+-const TEST_URI = "http://example.com/";
++const TEST_URI = "data:text/html,Web Console test for bug 586142";
+ 
+ function test()
+ {
+   addTab(TEST_URI);
+   browser.addEventListener("DOMContentLoaded", onLoad, false);
+ }
+ 
+ function onLoad() {
+   browser.removeEventListener("DOMContentLoaded", onLoad,
+                                                false);
+   executeSoon(testNewlines);
+ }
+ 
+ function testNewlines() {
+   openConsole();
+-  hudId = HUDService.displaysIndex()[0];
+-  ok(hudId != null, "we have the HUD ID");
++  hud = HUDService.getHudByWindow(content);
++  HUDService.clearDisplay(hud.hudId);
+ 
+-  HUDService.clearDisplay(hudId);
+-
+-  let contentWindow = browser.contentWindow;
+-  let console = contentWindow.wrappedJSObject.console;
++  let console = content.wrappedJSObject.console;
+   ok(console != null, "we have the console object");
+ 
+   for (let i = 0; i < 20; i++) {
+     console.log("Hello world!");
+   }
+ 
+-  let hudNode = HUDService.getOutputNodeById(hudId);
+-  let outputNode = hudNode.querySelector(".hud-output-node");
+-  ok(outputNode != null, "we have the output node");
++  let outputNode = hud.outputNode;
+ 
+   outputNode.selectAll();
+   outputNode.focus();
+ 
+   let clipboardTexts = [];
+   for (let i = 0; i < outputNode.itemCount; i++) {
+     let item = outputNode.getItemAtIndex(i);
+     clipboardTexts.push("[" + ConsoleUtils.timestampString(item.timestamp) +

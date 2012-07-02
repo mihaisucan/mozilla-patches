@@ -1,0 +1,108 @@
+diff --git a/browser/base/content/tabview/groupitems.js b/browser/base/content/tabview/groupitems.js
+--- a/browser/base/content/tabview/groupitems.js
++++ b/browser/base/content/tabview/groupitems.js
+@@ -388,17 +388,17 @@ GroupItem.prototype = Utils.extend(new I
+   //   arrangeGroup - rearrange the groupItem if the number of appTab columns
+   //   changes. If true, then this.arrange() is called, otherwise not.
+   adjustAppTabTray: function GroupItem_adjustAppTabTray(arrangeGroup) {
+     let icons = iQ(".appTabIcon", this.$appTabTray);
+     let container = iQ(this.$appTabTray[0].parentNode);
+     if (!icons.length) {
+       // There are no icons, so hide the appTabTray if needed.
+       if (parseInt(container.css("width")) != 0) {
+-        this.$appTabTray.css("-moz-column-count", 0);
++        this.$appTabTray.css("-moz-column-count", "auto");
+         this.$appTabTray.css("height", 0);
+         container.css("width", 0);
+         container.css("height", 0);
+ 
+         if (container.hasClass("appTabTrayContainerTruncated"))
+           container.removeClass("appTabTrayContainerTruncated");
+ 
+         if (arrangeGroup)
+@@ -413,16 +413,22 @@ GroupItem.prototype = Utils.extend(new I
+                         parseInt(container.css("top")) -
+                         this.$resizer.height();
+     let rows = Math.floor(contentHeight / iconBounds.height);
+     let columns = Math.ceil(icons.length / rows);
+     let columnsGap = parseInt(this.$appTabTray.css("-moz-column-gap"));
+     let iconWidth = iconBounds.width + columnsGap;
+     let maxColumns = Math.floor((boxBounds.width * 0.20) / iconWidth);
+ 
++    // Sometimes we get wrong icon and box bounds, which means we also get the
++    // numbers of rows, columns and maxColumns wrong. When that happens, we have
++    // to stop.
++    if (rows < 1 || columns < 1 || maxColumns < 1)
++      return;
++
+     if (columns > maxColumns)
+       container.addClass("appTabTrayContainerTruncated");
+     else if (container.hasClass("appTabTrayContainerTruncated"))
+       container.removeClass("appTabTrayContainerTruncated");
+ 
+     // Need to drop the -moz- prefix when Gecko makes it obsolete.
+     // See bug 629452.
+     if (parseInt(this.$appTabTray.css("-moz-column-count")) != columns)
+diff --git a/browser/themes/gnomestripe/browser/tabview/tabview.css b/browser/themes/gnomestripe/browser/tabview/tabview.css
+--- a/browser/themes/gnomestripe/browser/tabview/tabview.css
++++ b/browser/themes/gnomestripe/browser/tabview/tabview.css
+@@ -260,17 +260,16 @@ html[dir=rtl] .overlay {
+ html[dir=rtl] .appTabTrayContainer {
+   right: auto;
+   left: 1px;
+ }
+ 
+ .appTabTray {
+   display: inline-block;
+   -moz-column-width: 16px;
+-  -moz-column-count: 0;
+   -moz-column-gap: 5px;
+ }
+ 
+ .appTabTrayContainerTruncated {
+   padding-bottom: 7px;
+ }
+ 
+ .appTabTrayContainerTruncated:after {
+diff --git a/browser/themes/pinstripe/browser/tabview/tabview.css b/browser/themes/pinstripe/browser/tabview/tabview.css
+--- a/browser/themes/pinstripe/browser/tabview/tabview.css
++++ b/browser/themes/pinstripe/browser/tabview/tabview.css
+@@ -253,17 +253,16 @@ html[dir=rtl] .overlay {
+ html[dir=rtl] .appTabTrayContainer {
+   right: auto;
+   left: 1px;
+ }
+ 
+ .appTabTray {
+   display: inline-block;
+   -moz-column-width: 16px;
+-  -moz-column-count: 0;
+   -moz-column-gap: 5px;
+ }
+ 
+ .appTabTrayContainerTruncated {
+   padding-bottom: 7px;
+ }
+ 
+ .appTabTrayContainerTruncated:after {
+diff --git a/browser/themes/winstripe/browser/tabview/tabview.css b/browser/themes/winstripe/browser/tabview/tabview.css
+--- a/browser/themes/winstripe/browser/tabview/tabview.css
++++ b/browser/themes/winstripe/browser/tabview/tabview.css
+@@ -276,17 +276,16 @@ html[dir=rtl] .overlay {
+ html[dir=rtl] .appTabTrayContainer {
+   right: auto;
+   left: 1px;
+ }
+ 
+ .appTabTray {
+   display: inline-block;
+   -moz-column-width: 16px;
+-  -moz-column-count: 0;
+   -moz-column-gap: 5px;
+ }
+ 
+ .appTabTrayContainerTruncated {
+   padding-bottom: 7px;
+ }
+ 
+ .appTabTrayContainerTruncated:after {

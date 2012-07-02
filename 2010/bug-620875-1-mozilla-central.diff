@@ -1,0 +1,89 @@
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js
+@@ -103,22 +103,24 @@ const TESTS = [
+     file: "test-bug-595934-image.html",
+     category: "Image",
+     matchString: "corrupt",
+   },
+ ];
+ 
+ let pos = -1;
+ 
++let testEnded = false;
++
+ let TestObserver = {
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
+ 
+   observe: function test_observe(aSubject)
+   {
+-    if (!(aSubject instanceof Ci.nsIScriptError)) {
++    if (testEnded || !(aSubject instanceof Ci.nsIScriptError)) {
+       return;
+     }
+ 
+     is(aSubject.category, TESTS[pos].category,
+       "test #" + pos + ": error category '" + TESTS[pos].category + "'");
+ 
+     if (aSubject.category == TESTS[pos].category) {
+       executeSoon(performTest);
+@@ -138,44 +140,58 @@ function tabLoad(aEvent) {
+   hud = HUDService.hudReferences[hudId];
+ 
+   Services.console.registerListener(TestObserver);
+ 
+   executeSoon(testNext);
+ }
+ 
+ function testNext() {
++  if (testEnded) {
++    return;
++  }
++
+   hud.jsterm.clearOutput();
+ 
+   pos++;
+   if (pos < TESTS.length) {
+     if (TESTS[pos].onload) {
+       browser.addEventListener("load", function(aEvent) {
+         browser.removeEventListener(aEvent.type, arguments.callee, true);
+-        TESTS[pos].onload(aEvent);
++        if (!testEnded) {
++          TESTS[pos].onload(aEvent);
++        }
+       }, true);
+     }
+ 
+     content.location = TESTS_PATH + TESTS[pos].file;
+   }
+   else {
+     testEnd();
+   }
+ }
+ 
+ function testEnd() {
++  if (testEnded) {
++    return;
++  }
++
++  testEnded = true;
++
+   Services.console.unregisterListener(TestObserver);
+   finishTest();
+ }
+ 
+ function performTest() {
+   let textContent = hud.outputNode.textContent;
+   isnot(textContent.indexOf(TESTS[pos].matchString), -1,
+     "test #" + pos + ": message found '" + TESTS[pos].matchString + "'");
+ 
+   testNext();
+ }
+ 
+ function test() {
++  registerCleanupFunction(testEnd);
++
+   addTab("data:text/html,Web Console test for bug 595934 - message categories coverage.");
+   browser.addEventListener("load", tabLoad, true);
+ }
+ 

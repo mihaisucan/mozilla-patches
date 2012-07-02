@@ -1,0 +1,266 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1320420744 -7200
+# Node ID 85881721da05e3b13da0b87e758b124ac961a002
+# Parent  3dae8be98e389a94aa8d242d328fb270c155b81d
+Bug 699130 - Paste is disabled after using it once in Scratchpad
+
+diff --git a/browser/devtools/scratchpad/scratchpad.js b/browser/devtools/scratchpad/scratchpad.js
+--- a/browser/devtools/scratchpad/scratchpad.js
++++ b/browser/devtools/scratchpad/scratchpad.js
+@@ -793,16 +793,18 @@ var Scratchpad = {
+   /**
+    * The popupshowing event handler for the Edit menu. This method updates the
+    * enabled/disabled state of the Undo and Redo commands, based on the editor
+    * state such that the menu items render correctly for the user when the menu
+    * shows.
+    */
+   onEditPopupShowing: function SP_onEditPopupShowing()
+   {
++    goUpdateGlobalEditMenuItems();
++
+     let undo = document.getElementById("sp-cmd-undo");
+     undo.setAttribute("disabled", !this.editor.canUndo());
+ 
+     let redo = document.getElementById("sp-cmd-redo");
+     redo.setAttribute("disabled", !this.editor.canRedo());
+   },
+ 
+   /**
+diff --git a/browser/devtools/scratchpad/scratchpad.xul b/browser/devtools/scratchpad/scratchpad.xul
+--- a/browser/devtools/scratchpad/scratchpad.xul
++++ b/browser/devtools/scratchpad/scratchpad.xul
+@@ -285,17 +285,18 @@
+                 label="&browserContext.label;"
+                 accesskey="&browserContext.accesskey;"
+                 type="radio"/>
+     </menupopup>
+   </menu>
+ </menubar>
+ 
+ <popupset id="scratchpad-popups">
+-  <menupopup id="scratchpad-text-popup">
++  <menupopup id="scratchpad-text-popup"
++             onpopupshowing="goUpdateGlobalEditMenuItems()">
+     <menuitem id="menu_cut"/>
+     <menuitem id="menu_copy"/>
+     <menuitem id="menu_paste"/>
+     <menuitem id="menu_delete"/>
+     <menuseparator/>
+     <menuitem id="menu_selectAll"/>
+     <menuseparator/>
+     <menuitem id="sp-text-run"
+diff --git a/browser/devtools/scratchpad/test/Makefile.in b/browser/devtools/scratchpad/test/Makefile.in
+--- a/browser/devtools/scratchpad/test/Makefile.in
++++ b/browser/devtools/scratchpad/test/Makefile.in
+@@ -51,11 +51,12 @@ _BROWSER_TEST_FILES = \
+ 		browser_scratchpad_inspect.js \
+ 		browser_scratchpad_files.js \
+ 		browser_scratchpad_ui.js \
+ 		browser_scratchpad_bug_646070_chrome_context_pref.js \
+ 		browser_scratchpad_bug_660560_tab.js \
+ 		browser_scratchpad_open.js \
+ 		browser_scratchpad_restore.js \
+ 		browser_scratchpad_bug_679467_falsy.js \
++		browser_scratchpad_bug_699130_edit_ui_updates.js \
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/browser/devtools/scratchpad/test/browser_scratchpad_bug_699130_edit_ui_updates.js b/browser/devtools/scratchpad/test/browser_scratchpad_bug_699130_edit_ui_updates.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/scratchpad/test/browser_scratchpad_bug_699130_edit_ui_updates.js
+@@ -0,0 +1,193 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++"use strict";
++
++Cu.import("resource:///modules/source-editor.jsm");
++
++// Reference to the Scratchpad chrome window object.
++let gScratchpadWindow;
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function onLoad() {
++    gBrowser.selectedBrowser.removeEventListener("load", onLoad, true);
++
++    gScratchpadWindow = Scratchpad.openScratchpad();
++    gScratchpadWindow.addEventListener("load", function onScratchpadLoad() {
++      gScratchpadWindow.removeEventListener("load", onScratchpadLoad, false);
++      waitForFocus(runTests, gScratchpadWindow);
++    }, false);
++  }, true);
++
++  content.location = "data:text/html,test Edit menu updates Scratchpad - bug 699130";
++}
++
++function runTests()
++{
++  let sp = gScratchpadWindow.Scratchpad;
++  let doc = gScratchpadWindow.document;
++  let winUtils = gScratchpadWindow.QueryInterface(Ci.nsIInterfaceRequestor).
++                 getInterface(Ci.nsIDOMWindowUtils);
++  let OS = Cc["@mozilla.org/xre/app-info;1"].getService(Ci.nsIXULRuntime).OS;
++
++  info("will test the Edit menu");
++
++  let pass = 0;
++
++  sp.setText("bug 699130: hello world! (edit menu)");
++
++  let editMenu = doc.getElementById("sp-edit-menu");
++  ok(editMenu, "the Edit menu");
++  let menubar = editMenu.parentNode;
++  ok(menubar, "menubar found");
++
++  let editMenuIndex = -1;
++  for (let i = 0; i < menubar.children.length; i++) {
++    if (menubar.children[i] === editMenu) {
++      editMenuIndex = i;
++      break;
++    }
++  }
++  isnot(editMenuIndex, -1, "Edit menu index is correct");
++
++  let menuPopup = editMenu.menupopup;
++  ok(menuPopup, "the Edit menupopup");
++  let cutItem = doc.getElementById("sp-menu-cut");
++  ok(cutItem, "the Cut menuitem");
++  let pasteItem = doc.getElementById("sp-menu-paste");
++  ok(pasteItem, "the Paste menuitem");
++
++  let anchor = doc.documentElement;
++  let isContextMenu = false;
++
++  let openMenu = function(aX, aY, aCallback) {
++    if (!editMenu || OS != "Darwin") {
++      menuPopup.addEventListener("popupshown", function onPopupShown() {
++        menuPopup.removeEventListener("popupshown", onPopupShown, false);
++        executeSoon(aCallback);
++      }, false);
++    }
++
++    executeSoon(function() {
++      if (editMenu) {
++        if (OS == "Darwin") {
++          winUtils.forceUpdateNativeMenuAt(editMenuIndex);
++          executeSoon(aCallback);
++        } else {
++          editMenu.open = true;
++        }
++      } else {
++        menuPopup.openPopup(anchor, "overlap", aX, aY, isContextMenu, false);
++      }
++    });
++  };
++
++  let closeMenu = function(aCallback) {
++    if (!editMenu || OS != "Darwin") {
++      menuPopup.addEventListener("popuphidden", function onPopupHidden() {
++        menuPopup.removeEventListener("popuphidden", onPopupHidden, false);
++        executeSoon(aCallback);
++      }, false);
++    }
++
++    executeSoon(function() {
++      if (editMenu) {
++        if (OS == "Darwin") {
++          winUtils.forceUpdateNativeMenuAt(editMenuIndex);
++          executeSoon(aCallback);
++        } else {
++          editMenu.open = false;
++        }
++      } else {
++        menuPopup.hidePopup();
++      }
++    });
++  };
++
++  let firstShow = function() {
++    ok(cutItem.hasAttribute("disabled"), "cut menuitem is disabled");
++    closeMenu(firstHide);
++  };
++
++  let firstHide = function() {
++    sp.selectRange(0, 10);
++    openMenu(11, 11, showAfterSelect);
++  };
++
++  let showAfterSelect = function() {
++    ok(!cutItem.hasAttribute("disabled"), "cut menuitem is enabled after select");
++    closeMenu(hideAfterSelect);
++  };
++
++  let hideAfterSelect = function() {
++    sp.editor.addEventListener(SourceEditor.EVENTS.TEXT_CHANGED, onCut);
++    EventUtils.synthesizeKey("x", {accelKey: true}, gScratchpadWindow);
++  };
++
++  let onCut = function() {
++    sp.editor.removeEventListener(SourceEditor.EVENTS.TEXT_CHANGED, onCut);
++    openMenu(12, 12, showAfterCut);
++  };
++
++  let showAfterCut = function() {
++    ok(cutItem.hasAttribute("disabled"), "cut menuitem is disabled after cut");
++    ok(!pasteItem.hasAttribute("disabled"), "paste menuitem is enabled after cut");
++    closeMenu(hideAfterCut);
++  };
++
++  let hideAfterCut = function() {
++    sp.editor.addEventListener(SourceEditor.EVENTS.TEXT_CHANGED, onPaste);
++    EventUtils.synthesizeKey("v", {accelKey: true}, gScratchpadWindow);
++  };
++
++  let onPaste = function() {
++    sp.editor.removeEventListener(SourceEditor.EVENTS.TEXT_CHANGED, onPaste);
++    openMenu(13, 13, showAfterPaste);
++  };
++
++  let showAfterPaste = function() {
++    ok(cutItem.hasAttribute("disabled"), "cut menuitem is disabled after paste");
++    ok(!pasteItem.hasAttribute("disabled"), "paste menuitem is enabled after paste");
++    closeMenu(hideAfterPaste);
++  };
++
++  let hideAfterPaste = function() {
++    if (pass == 0) {
++      pass++;
++      testContextMenu();
++    } else {
++      finishTest();
++    }
++  };
++
++  let testContextMenu = function() {
++    info("will test the context menu");
++
++    editMenu = null;
++    isContextMenu = true;
++
++    menuPopup = doc.getElementById("scratchpad-text-popup");
++    ok(menuPopup, "the context menupopup");
++    cutItem = doc.getElementById("menu_cut");
++    ok(cutItem, "the Cut menuitem");
++    pasteItem = doc.getElementById("menu_paste");
++    ok(pasteItem, "the Paste menuitem");
++
++    sp.setText("bug 699130: hello world! (context menu)");
++    openMenu(10, 10, firstShow);
++  };
++
++  let finishTest = function() {
++    gScratchpadWindow.close();
++    gScratchpadWindow = null;
++    gBrowser.removeCurrentTab();
++    finish();
++  };
++
++  openMenu(10, 10, firstShow);
++}

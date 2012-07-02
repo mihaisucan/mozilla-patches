@@ -1,0 +1,99 @@
+# HG changeset patch
+# Parent 30f88cca1ac2d59c15b2f349babf38fe5bb9089e
+Bug 660806 - Autocomplete shows during history navigation
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -4956,16 +4956,17 @@ JSTerm.prototype = {
+    *
+    * @param string aNewValue
+    *        The new value to set.
+    * @returns void
+    */
+   setInputValue: function JST_setInputValue(aNewValue)
+   {
+     this.inputNode.value = aNewValue;
++    this.lastInputValue = aNewValue;
+     this.completeNode.value = "";
+     this.resizeInput();
+   },
+ 
+   /**
+    * The inputNode "input" and "keyup" event handler.
+    *
+    * @param nsIDOMEvent aEvent
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -138,16 +138,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_644419_log_limits.js \
+ 	browser_webconsole_bug_646025_console_file_location.js \
+ 	browser_webconsole_position_ui.js \
+ 	browser_webconsole_bug_642615_autocomplete.js \
+ 	browser_webconsole_bug_585991_autocomplete_popup.js \
+ 	browser_webconsole_bug_585991_autocomplete_keys.js \
+ 	browser_webconsole_bug_651501_document_body_autocomplete.js \
+ 	browser_webconsole_bug_663443_panel_title.js \
++	browser_webconsole_bug_660806_history_nav.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_660806_history_nav.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_660806_history_nav.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_660806_history_nav.js
+@@ -0,0 +1,48 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++const TEST_URI = "data:text/html,<p>bug 660806 - history navigation must not show the autocomplete popup";
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoaded, true);
++}
++
++function tabLoaded()
++{
++  browser.removeEventListener("load", tabLoaded, true);
++  openConsole();
++
++  content.wrappedJSObject.foobarBug660806 = {
++    "location": "value0",
++    "locationbar": "value1",
++  };
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let HUD = HUDService.hudReferences[hudId];
++  let jsterm = HUD.jsterm;
++  let popup = jsterm.autocompletePopup;
++  popup._panel.addEventListener("popupshown", function() {
++    popup._panel.removeEventListener("popupshown", arguments.callee, false);
++    ok(false, "popup shown");
++  }, false);
++
++  ok(!popup.isOpen, "popup is not open");
++
++  ok(!jsterm.lastInputValue, "no lastInputValue");
++  jsterm.setInputValue("window.foobarBug660806.location");
++  is(jsterm.lastInputValue, "window.foobarBug660806.location",
++     "lastInputValue is correct");
++
++  EventUtils.synthesizeKey("VK_RETURN", {});
++  EventUtils.synthesizeKey("VK_UP", {});
++
++  is(jsterm.lastInputValue, "window.foobarBug660806.location",
++     "lastInputValue is correct, again");
++
++  executeSoon(function() {
++    ok(!popup.isOpen, "popup is not open");
++    executeSoon(finishTest);
++  });
++}

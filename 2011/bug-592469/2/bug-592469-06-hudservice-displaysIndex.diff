@@ -1,0 +1,203 @@
+# HG changeset patch
+# Date 1309551609 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Parent 027ae8bd0ab1f9eb10c6dc7e25ed52024de0e978
+Bug 592469 - Web Console cleanup: part 6 - HUDService - remove displaysIndex() and more
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1192,42 +1192,43 @@ NetworkPanel.prototype =
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ //// Private utility functions for the HUD service
+ 
+ /**
+  * Ensures that the number of message nodes of type aCategory don't exceed that
+  * category's line limit by removing old messages as needed.
+  *
+- * @param nsIDOMNode aConsoleNode
+- *        The DOM node (richlistbox aka outputNode) that holds the output of the
+- *        console.
++ * @param aHUDId aHUDId
++ *        The HeadsUpDisplay ID.
+  * @param integer aCategory
+  *        The category of message nodes to limit.
+  * @return number
+  *         The current user-selected log limit.
+  */
+-function pruneConsoleOutputIfNecessary(aConsoleNode, aCategory)
++function pruneConsoleOutputIfNecessary(aHUDId, aCategory)
+ {
+   // Get the log limit, either from the pref or from the constant.
+   let logLimit;
+   try {
+     let prefName = CATEGORY_CLASS_FRAGMENTS[aCategory];
+     logLimit = Services.prefs.getIntPref("devtools.hud.loglimit." + prefName);
+   } catch (e) {
+     logLimit = DEFAULT_LOG_LIMIT;
+   }
+ 
+-  let scrollBox = aConsoleNode.scrollBoxObject.element;
++  let hudRef = HUDService.getHudReferenceById(aHUDId);
++  let outputNode = hudRef.outputNode;
++
++  let scrollBox = outputNode.scrollBoxObject.element;
+   let oldScrollHeight = scrollBox.scrollHeight;
+-  let scrolledToBottom = ConsoleUtils.isOutputScrolledToBottom(aConsoleNode);
+-  let hudRef = HUDService.getHudReferenceForOutputNode(aConsoleNode);
++  let scrolledToBottom = ConsoleUtils.isOutputScrolledToBottom(outputNode);
+ 
+   // Prune the nodes.
+-  let messageNodes = aConsoleNode.querySelectorAll(".webconsole-msg-" +
++  let messageNodes = outputNode.querySelectorAll(".webconsole-msg-" +
+       CATEGORY_CLASS_FRAGMENTS[aCategory]);
+   let removeNodes = messageNodes.length - logLimit;
+   for (let i = 0; i < removeNodes; i++) {
+     if (messageNodes[i].classList.contains("webconsole-msg-cssparser")) {
+       let desc = messageNodes[i].childNodes[2].textContent;
+       let location = "";
+       if (messageNodes[i].childNodes[4]) {
+         location = messageNodes[i].childNodes[4].getAttribute("title");
+@@ -1845,70 +1846,52 @@ HUD_SERVICE.prototype =
+   shutdown: function HS_shutdown()
+   {
+     for (let hudId in this.hudReferences) {
+       this.deactivateHUDForContext(this.hudReferences[hudId].tab, false);
+     }
+   },
+ 
+   /**
++   * Returns the HeadsUpDisplay object associated to a content window.
++   *
++   * @param nsIDOMWindow aContentWindow
++   * @returns object
++   */
++  getHudByWindow: function HS_getHudByWindow(aContentWindow)
++  {
++    let hudId = this.getHudIdByWindow(aContentWindow);
++    return hudId ? this.hudReferences[hudId] : null;
++  },
++
++  /**
+    * Returns the hudId that is corresponding to the hud activated for the
+    * passed aContentWindow. If there is no matching hudId null is returned.
+    *
+    * @param nsIDOMWindow aContentWindow
+    * @returns string or null
+    */
+   getHudIdByWindow: function HS_getHudIdByWindow(aContentWindow)
+   {
+     let windowId = this.getWindowId(aContentWindow);
+     return this.getHudIdByWindowId(windowId);
+   },
+ 
+   /**
+-   * Returns the hudReference for a given output node.
+-   *
+-   * @param nsIDOMNode aNode currently either a xul:vbox, the HUDBox, or a
+-   * richlistbox, the outputNode.
+-   * @returns a HUD | null
+-   */
+-  getHudReferenceForOutputNode: function HS_getHudReferenceForOutputNode(aNode)
+-  {
+-    let node = aNode;
+-    // starting from richlistbox, need to find hudbox
+-    while (!node.id && !node.classList.contains("hud-box")) {
+-      if (node.parentNode) {
+-        node = node.parentNode;
+-      } else {
+-        return null;
+-      }
+-    }
+-    return this.getHudReferenceById(node.id);
+-  },
+-
+-  /**
+    * Returns the hudReference for a given id.
+    *
+    * @param string aId
+    * @returns Object
+    */
+   getHudReferenceById: function HS_getHudReferenceById(aId)
+   {
+     return aId in this.hudReferences ? this.hudReferences[aId] : null;
+   },
+ 
+   /**
+-   * Gets an array that contains all the HUD IDs.
+-   * @returns array
+-   */
+-  displaysIndex: function HS_displaysIndex()
+-  {
+-    return Object.keys(this.hudReferences);
+-  },
+-
+-  /**
+    * Returns the hudId that is corresponding to the given outer window ID.
+    *
+    * @param number aWindowId
+    *        the outer window ID
+    * @returns string the hudId
+    */
+   getHudIdByWindowId: function HS_getHudIdByWindowId(aWindowId)
+   {
+@@ -2597,39 +2580,16 @@ HUD_SERVICE.prototype =
+     var firefoxMixin = new JSTermFirefoxMixin(context, aParentNode);
+     var jsTerm = new JSTerm(context, aParentNode, firefoxMixin, aConsole);
+ 
+     // TODO: injection of additional functionality needs re-thinking/api
+     // see bug 559748
+   },
+ 
+   /**
+-   * Passed a HUDId, the corresponding window is returned
+-   *
+-   * @param string aHUDId
+-   * @returns nsIDOMWindow
+-   */
+-  getContentWindowFromHUDId: function HS_getContentWindowFromHUDId(aHUDId)
+-  {
+-    var hud = this.getHudReferenceById(aHUDId).HUDBox;
+-    var nodes = hud.parentNode.childNodes;
+-
+-    for (var i = 0; i < nodes.length; i++) {
+-      var node = nodes[i];
+-
+-      if (node.localName == "stack" &&
+-          node.firstChild &&
+-          node.firstChild.contentWindow) {
+-        return node.firstChild.contentWindow;
+-      }
+-    }
+-    throw new Error("HS_getContentWindowFromHUD: Cannot get contentWindow");
+-  },
+-
+-  /**
+    * Creates a generator that always returns a unique number for use in the
+    * indexes
+    *
+    * @returns Generator
+    */
+   createSequencer: function HS_createSequencer(aInt)
+   {
+     function sequencer(aInt)
+@@ -5749,17 +5709,17 @@ ConsoleUtils = {
+     }
+ 
+     if (!isRepeated) {
+       outputNode.appendChild(aNode);
+     }
+ 
+     HUDService.regroupOutput(outputNode);
+ 
+-    if (pruneConsoleOutputIfNecessary(outputNode, aNode.category) == 0) {
++    if (pruneConsoleOutputIfNecessary(aHUDId, aNode.category) == 0) {
+       // We can't very well scroll to make the message node visible if the log
+       // limit is zero and the node was destroyed in the first place.
+       return;
+     }
+ 
+     let isInputOutput = aNode.classList.contains("webconsole-msg-input") ||
+                         aNode.classList.contains("webconsole-msg-output");
+     let isFiltered = aNode.classList.contains("hud-filtered-by-string") ||

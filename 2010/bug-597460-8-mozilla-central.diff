@@ -1,0 +1,345 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1710,32 +1710,64 @@ HUD_SERVICE.prototype =
+    */
+   adjustVisibilityForMessageType:
+   function HS_adjustVisibilityForMessageType(aHUDId, aMessageType, aState)
+   {
+     let displayNode = this.getOutputNodeById(aHUDId);
+     let outputNode = displayNode.querySelector(".hud-output-node");
+     let doc = outputNode.ownerDocument;
+ 
+-    this.liftNode(outputNode, function() {
+-      let xpath = ".//*[contains(@class, 'hud-msg-node') and " +
+-        "contains(@class, 'hud-" + aMessageType + "')]";
+-      let result = doc.evaluate(xpath, outputNode, null,
+-        Ci.nsIDOMXPathResult.UNORDERED_NODE_SNAPSHOT_TYPE, null);
+-      for (let i = 0; i < result.snapshotLength; i++) {
+-        if (aState) {
+-          result.snapshotItem(i).classList.remove("hud-filtered-by-type");
+-        } else {
+-          result.snapshotItem(i).classList.add("hud-filtered-by-type");
++    this.maintainScrollPosition(outputNode, function() {
++      this.liftNode(outputNode, function() {
++        let xpath = ".//*[contains(@class, 'hud-msg-node') and " +
++          "contains(@class, 'hud-" + aMessageType + "')]";
++        let result = doc.evaluate(xpath, outputNode, null,
++          Ci.nsIDOMXPathResult.UNORDERED_NODE_SNAPSHOT_TYPE, null);
++        for (let i = 0; i < result.snapshotLength; i++) {
++          if (aState) {
++            result.snapshotItem(i).classList.remove("hud-filtered-by-type");
++          }
++          else {
++            result.snapshotItem(i).classList.add("hud-filtered-by-type");
++          }
+         }
+-      }
++      });
+     });
+   },
+ 
+   /**
++   * Maintain the scroll position after the execution of a callback function.
++   *
++   * @param nsIDOMNode aOutputNode
++   *        The outputNode for which the scroll position is rememebered.
++   * @param function aCallback
++   *        The callback function you want to execute.
++   * @returns void
++   */
++  maintainScrollPosition:
++  function HS_maintainScrollPosition(aOutputNode, aCallback)
++  {
++    let oldScrollTop = aOutputNode.scrollTop;
++    let scrolledToBottom = oldScrollTop +
++      aOutputNode.clientHeight == aOutputNode.scrollHeight;
++
++    aCallback.call(this);
++
++    // Scroll to the bottom if the scroll was at the bottom.
++    if (scrolledToBottom) {
++      aOutputNode.scrollTop = aOutputNode.scrollHeight -
++        aOutputNode.clientHeight;
++    }
++    else {
++      // Remember the scroll position.
++      aOutputNode.scrollTop = oldScrollTop;
++    }
++  },
++
++  /**
+    * Returns the source code of the XPath contains() function necessary to
+    * match the given query string.
+    *
+    * @param string The query string to convert.
+    * @returns string
+    */
+   buildXPathFunctionForString: function HS_buildXPathFunctionForString(aStr)
+   {
+@@ -1775,71 +1807,81 @@ HUD_SERVICE.prototype =
+    */
+   adjustVisibilityOnSearchStringChange:
+   function HS_adjustVisibilityOnSearchStringChange(aHUDId, aSearchString)
+   {
+     let fn = this.buildXPathFunctionForString(aSearchString);
+     let displayNode = this.getOutputNodeById(aHUDId);
+     let outputNode = displayNode.querySelector(".hud-output-node");
+     let doc = outputNode.ownerDocument;
+-    this.liftNode(outputNode, function() {
+-      let xpath = './/*[contains(@class, "hud-msg-node") and ' +
+-        'not(contains(@class, "hud-filtered-by-string")) and not(' + fn + ')]';
+-      let result = doc.evaluate(xpath, outputNode, null,
+-        Ci.nsIDOMXPathResult.UNORDERED_NODE_SNAPSHOT_TYPE, null);
+-      for (let i = 0; i < result.snapshotLength; i++) {
+-        result.snapshotItem(i).classList.add("hud-filtered-by-string");
+-      }
+-
+-      xpath = './/*[contains(@class, "hud-msg-node") and contains(@class, ' +
+-        '"hud-filtered-by-string") and ' + fn + ']';
+-      result = doc.evaluate(xpath, outputNode, null,
+-        Ci.nsIDOMXPathResult.UNORDERED_NODE_SNAPSHOT_TYPE, null);
+-      for (let i = 0; i < result.snapshotLength; i++) {
+-        result.snapshotItem(i).classList.remove("hud-filtered-by-string");
+-      }
++
++    this.maintainScrollPosition(outputNode, function() {
++      this.liftNode(outputNode, function() {
++        let xpath = './/*[contains(@class, "hud-msg-node") and ' +
++          'not(contains(@class, "hud-filtered-by-string")) and not(' + fn + ')]';
++        let result = doc.evaluate(xpath, outputNode, null,
++          Ci.nsIDOMXPathResult.UNORDERED_NODE_SNAPSHOT_TYPE, null);
++        for (let i = 0; i < result.snapshotLength; i++) {
++          result.snapshotItem(i).classList.add("hud-filtered-by-string");
++        }
++
++        xpath = './/*[contains(@class, "hud-msg-node") and contains(@class, ' +
++          '"hud-filtered-by-string") and ' + fn + ']';
++        result = doc.evaluate(xpath, outputNode, null,
++          Ci.nsIDOMXPathResult.UNORDERED_NODE_SNAPSHOT_TYPE, null);
++        for (let i = 0; i < result.snapshotLength; i++) {
++          result.snapshotItem(i).classList.remove("hud-filtered-by-string");
++        }
++      });
+     });
+   },
+ 
+   /**
+    * Makes a newly-inserted node invisible if the user has filtered it out.
+    *
+    * @param string aHUDId
+    *        The ID of the HUD to alter.
+    * @param nsIDOMNode aNewNode
+    *        The newly-inserted console message.
+-   * @returns void
++   * @returns boolean
++   *          True if the new node was hidden (filtered out) or false otherwise.
+    */
+   adjustVisibilityForNewlyInsertedNode:
+   function HS_adjustVisibilityForNewlyInsertedNode(aHUDId, aNewNode) {
+     // Filter on the search string.
+     let searchString = this.getFilterStringByHUDId(aHUDId);
+     let xpath = ".[" + this.buildXPathFunctionForString(searchString) + "]";
+     let doc = aNewNode.ownerDocument;
+     let result = doc.evaluate(xpath, aNewNode, null,
+       Ci.nsIDOMXPathResult.UNORDERED_NODE_SNAPSHOT_TYPE, null);
++    let hidden = false;
++
+     if (result.snapshotLength === 0) {
+       // The string filter didn't match, so the node is filtered.
+       aNewNode.classList.add("hud-filtered-by-string");
++      hidden = true;
+     }
+ 
+     // Filter by the message type.
+     let classes = aNewNode.classList;
+     let msgType = null;
+     for (let i = 0; i < classes.length; i++) {
+       let klass = classes.item(i);
+       if (klass !== "hud-msg-node" && klass.indexOf("hud-") === 0) {
+         msgType = klass.substring(4);   // Strip off "hud-".
+         break;
+       }
+     }
+     if (msgType !== null && !this.getFilterState(aHUDId, msgType)) {
+       // The node is filtered by type.
+       aNewNode.classList.add("hud-filtered-by-type");
+-    }
++      hidden = true;
++    }
++
++    return hidden;
+   },
+ 
+   /**
+    * Keeps a reference for each HeadsUpDisplay that is created
+    */
+   hudReferences: {},
+ 
+   /**
+@@ -2167,17 +2209,16 @@ HUD_SERVICE.prototype =
+     if (!aMessage) {
+       throw new Error(ERRORS.MISSING_ARGS);
+     }
+ 
+     let lastGroupNode = this.appendGroupIfNecessary(aConsoleNode,
+                                                     aMessage.timestamp);
+ 
+     lastGroupNode.appendChild(aMessageNode);
+-    ConsoleUtils.scrollToVisible(aMessageNode);
+ 
+     // store this message in the storage module:
+     this.storage.recordEntry(aMessage.hudId, aMessage);
+ 
+     pruneConsoleOutputIfNecessary(aConsoleNode);
+   },
+ 
+   /**
+@@ -3386,17 +3427,22 @@ HeadsUpDisplay.prototype = {
+     this.outputNode.addEventListener("DOMNodeInserted", function(ev) {
+       // DOMNodeInserted is also called when the output node is being *itself*
+       // (re)inserted into the DOM (which happens during a search, for
+       // example). For this reason, we need to ensure that we only check
+       // message nodes.
+       let node = ev.target;
+       if (node.nodeType === node.ELEMENT_NODE &&
+           node.classList.contains("hud-msg-node")) {
+-        HUDService.adjustVisibilityForNewlyInsertedNode(self.hudId, ev.target);
++        let hidden = HUDService.
++          adjustVisibilityForNewlyInsertedNode(self.hudId, ev.target);
++
++        if (!hidden) {
++          ConsoleUtils.scrollToVisible(node);
++        }
+       }
+     }, false);
+ 
+     this.filterSpacer = this.makeXULNode("spacer");
+     this.filterSpacer.setAttribute("flex", "1");
+ 
+     this.filterBox = this.makeXULNode("textbox");
+     this.filterBox.setAttribute("class", "compact hud-filter-box");
+@@ -4372,17 +4418,16 @@ JSTerm.prototype = {
+ 
+     // TODO: format the aOutputObject and don't just use the
+     // aOuputObject.toString() function: [object object] -> Object {prop, ...}
+     // See bug 586249.
+     let textNode = this.textFactory(aOutputObject + "\n");
+     node.appendChild(textNode);
+ 
+     lastGroupNode.appendChild(node);
+-    ConsoleUtils.scrollToVisible(node);
+     pruneConsoleOutputIfNecessary(this.outputNode);
+   },
+ 
+   /**
+    * Writes a message to the HUD that originates from the interactive
+    * JavaScript console.
+    *
+    * @param string aOutputMessage
+@@ -4410,19 +4455,17 @@ JSTerm.prototype = {
+       let classes = this.cssClassOverride.split(" ");
+       for (let i = 0; i < classes.length; i++) {
+         node.classList.add(classes[i]);
+       }
+     }
+ 
+     var textNode = this.textFactory(aOutputMessage + "\n");
+     node.appendChild(textNode);
+-
+     lastGroupNode.appendChild(node);
+-    ConsoleUtils.scrollToVisible(node);
+     pruneConsoleOutputIfNecessary(this.outputNode);
+   },
+ 
+   clearOutput: function JST_clearOutput()
+   {
+     let outputNode = this.outputNode;
+ 
+     while (outputNode.firstChild) {
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -101,16 +101,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_601352_scroll.js \
+ 	browser_webconsole_bug_592442_closing_brackets.js \
+ 	browser_webconsole_bug_593003_iframe_wrong_hud.js \
+ 	browser_webconsole_bug_601909_remember_height.js \
+ 	browser_webconsole_bug_613013_console_api_iframe.js \
+ 	browser_webconsole_bug_597756_reopen_closed_tab.js \
+ 	browser_webconsole_bug_600183_charset.js \
+ 	browser_webconsole_bug_601177_log_levels.js \
++	browser_webconsole_bug_597460_filter_scroll.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597460_filter_scroll.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597460_filter_scroll.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597460_filter_scroll.js
+@@ -0,0 +1,60 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-network.html";
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  hud = HUDService.hudReferences[hudId];
++
++  for (let i = 0; i < 200; i++) {
++    hud.console.log("test message " + i);
++  }
++
++  HUDService.setFilterState(hudId, "network", false);
++
++  hud.filterBox.value = "test message";
++  HUDService.updateFilterText(hud.filterBox);
++
++  browser.addEventListener("load", tabReload, true);
++
++  executeSoon(function() {
++    content.location.reload();
++  });
++}
++
++function tabReload(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  let msgNode = hud.outputNode.querySelector(".hud-network");
++  ok(msgNode, "found network message");
++  ok(msgNode.classList.contains("hud-filtered-by-type"),
++    "network message is filtered by type");
++  ok(msgNode.classList.contains("hud-filtered-by-string"),
++    "network message is filtered by string");
++
++  ok(hud.outputNode.scrollTop > 0, "scroll location is not at the top");
++
++  is(hud.outputNode.scrollTop,
++    hud.outputNode.scrollHeight - hud.outputNode.clientHeight,
++    "scroll location is correct");
++
++  executeSoon(finishTest);
++}
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoad, true);
++}
++

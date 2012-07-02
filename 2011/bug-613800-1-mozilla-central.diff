@@ -1,0 +1,25 @@
+diff --git a/toolkit/components/prompts/src/nsPrompter.js b/toolkit/components/prompts/src/nsPrompter.js
+--- a/toolkit/components/prompts/src/nsPrompter.js
++++ b/toolkit/components/prompts/src/nsPrompter.js
+@@ -498,17 +498,20 @@ Ci.nsIAuthPrompt2, Ci.nsIWritablePropert
+         let prefValue = false;
+         if (Services.prefs.getPrefType(prefName) == Services.prefs.PREF_BOOL)
+             prefValue = Services.prefs.getBoolPref(prefName);
+ 
+         let allowTabModal = this.allowTabModal && prefValue;
+ 
+         if (allowTabModal && this.domWin) {
+             let tabPrompt = PromptUtils.getTabModalPrompt(this.domWin);
+-            if (tabPrompt) {
++            let docShell = this.domWin.QueryInterface(Ci.nsIInterfaceRequestor)
++                                      .getInterface(Ci.nsIWebNavigation)
++                                      .QueryInterface(Ci.nsIDocShell);
++            if (tabPrompt && !docShell.isInUnload) {
+                 openTabPrompt(this.domWin, tabPrompt, args);
+                 return;
+             }
+         }
+ 
+         // If we can't do a tab modal prompt, fallback to using a window-modal dialog.
+         const COMMON_DIALOG = "chrome://global/content/commonDialog.xul";
+         const SELECT_DIALOG = "chrome://global/content/selectDialog.xul";

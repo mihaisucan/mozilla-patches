@@ -1,0 +1,609 @@
+# HG changeset patch
+# Parent 35f07e776828551527a400b9edb32df8c27dbc2f
+
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_578437_page_reload.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_578437_page_reload.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_578437_page_reload.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_578437_page_reload.js
+@@ -54,17 +54,16 @@ function onLoad() {
+   browser.addEventListener("DOMContentLoaded", testPageReload, false);
+   content.location.reload();
+ }
+ 
+ function testPageReload() {
+ 
+   browser.removeEventListener("DOMContentLoaded", testPageReload, false);
+ 
+-  let hudId = HUDService.displaysIndex()[0];
+   let console = browser.contentWindow.wrappedJSObject.console;
+ 
+   is(typeof console, "object", "window.console is an object, after page reload");
+   is(typeof console.log, "function", "console.log is a function");
+   is(typeof console.info, "function", "console.info is a function");
+   is(typeof console.warn, "function", "console.warn is a function");
+   is(typeof console.error, "function", "console.error is a function");
+   is(typeof console.exception, "function", "console.exception is a function");
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580030_errors_after_page_reload.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580030_errors_after_page_reload.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580030_errors_after_page_reload.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580030_errors_after_page_reload.js
+@@ -87,19 +87,17 @@ var consoleObserver = {
+     // Ignore errors we don't care about.
+     if (!(aMessage instanceof Ci.nsIScriptError) ||
+       aMessage.category != "content javascript") {
+       return;
+     }
+ 
+     Services.console.unregisterListener(this);
+ 
+-    hudId = HUDService.displaysIndex()[0];
+-    hud = HUDService.hudReferences[hudId];
+-    outputNode = hud.outputNode;
++    let outputNode = HUDService.getHudByWindow(content).outputNode;
+ 
+     executeSoon(function() {
+       let msg = "Found the error message after page reload";
+       testLogEntry(outputNode, "fooBazBaz", msg);
+       finishTest();
+     });
+   }
+ };
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580400_groups.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580400_groups.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580400_groups.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_580400_groups.js
+@@ -47,19 +47,17 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testGroups, false);
+ }
+ 
+ function testGroups() {
+   browser.removeEventListener("DOMContentLoaded", testGroups, false);
+ 
+   openConsole();
+ 
+-  let hudId = HUDService.displaysIndex()[0];
+-
+-  let HUD = HUDService.hudReferences[hudId];
++  let HUD = HUDService.getHudByWindow(content);
+   let jsterm = HUD.jsterm;
+   let outputNode = jsterm.outputNode;
+ 
+   let timestamp0 = Date.now();
+   jsterm.execute("0");
+   is(outputNode.querySelectorAll(".hud-group").length, 1,
+     "one group exists after the first console message");
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_582201_duplicate_errors.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_582201_duplicate_errors.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_582201_duplicate_errors.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_582201_duplicate_errors.js
+@@ -48,17 +48,17 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testDuplicateErrors, false);
+ }
+ 
+ function testDuplicateErrors() {
+   browser.removeEventListener("DOMContentLoaded", testDuplicateErrors,
+                               false);
+   openConsole();
+ 
+-  let hudId = HUDService.displaysIndex()[0];
++  let hudId = HUDService.getHudIdByWindow(content);
+   HUDService.clearDisplay(hudId);
+ 
+   Services.console.registerListener(consoleObserver);
+ 
+   content.location.reload();
+ }
+ 
+ var consoleObserver = {
+@@ -69,19 +69,17 @@ var consoleObserver = {
+     // we ignore errors we don't care about
+     if (!(aMessage instanceof Ci.nsIScriptError) ||
+       aMessage.category != "content javascript") {
+       return;
+     }
+ 
+     Services.console.unregisterListener(this);
+ 
+-    hudId = HUDService.displaysIndex()[0];
+-    hud = HUDService.hudReferences[hudId];
+-    outputNode = hud.outputNode;
++    let outputNode = HUDService.getHudByWindow(content).outputNode;
+ 
+     executeSoon(function () {
+       var text = outputNode.textContent;
+       var error1pos = text.indexOf("fooDuplicateError1");
+       ok(error1pos > -1, "found fooDuplicateError1");
+       if (error1pos > -1) {
+         ok(text.indexOf("fooDuplicateError1", error1pos + 1) == -1,
+           "no duplicate for fooDuplicateError1");
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586388_select_all.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586388_select_all.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586388_select_all.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_586388_select_all.js
+@@ -16,26 +16,25 @@ function test() {
+                            testSelectionWhenMovingBetweenBoxes, false);
+ }
+ 
+ function testSelectionWhenMovingBetweenBoxes() {
+   browser.removeEventListener("DOMContentLoaded",
+                               testSelectionWhenMovingBetweenBoxes, false);
+   openConsole();
+ 
+-  let hudId = HUDService.displaysIndex()[0];
+-  let jsterm = HUDService.hudReferences[hudId].jsterm;
++  let jsterm = HUDService.getHudByWindow(content).jsterm;
+ 
+   // Fill the console with some output.
+   jsterm.clearOutput();
+   jsterm.execute("1 + 2");
+   jsterm.execute("3 + 4");
+   jsterm.execute("5 + 6");
+ 
+-  outputNode = jsterm.outputNode;
++  let outputNode = jsterm.outputNode;
+   let groupNode = outputNode.querySelector(".hud-group");
+ 
+   ok(groupNode.childNodes.length >= 3, "the output node has children after " +
+      "executing some JavaScript");
+ 
+   // Test that the global Firefox "Select All" functionality (e.g. Edit >
+   // Select All) works properly in the Web Console.
+   let selection = window.getSelection();
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_587617_output_copy.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_587617_output_copy.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_587617_output_copy.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_587617_output_copy.js
+@@ -16,22 +16,20 @@ function test() {
+ }
+ 
+ function tabLoaded() {
+   browser.removeEventListener("load", tabLoaded, true);
+   openConsole();
+ 
+   // See bugs 574036, 586386 and 587617.
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-  let HUD = HUDService.hudReferences[hudId].HUDBox;
+-  let filterBox = HUD.querySelector(".hud-filter-box");
+-  outputNode = HUD.querySelector(".hud-output-node");
++  let HUD = HUDService.getHudByWindow(content);
++  let outputNode = HUD.outputNode;
+   let selection = getSelection();
+-  let jstermInput = HUD.querySelector(".jsterm-input-node");
++  let jstermInput = HUD.jsterm.inputNode;
+   let console = browser.contentWindow.wrappedJSObject.console;
+   let contentSelection = browser.contentWindow.wrappedJSObject.getSelection();
+ 
+   let make_selection = function () {
+     let controller =
+       top.document.commandDispatcher.
+       getControllerForCommand("cmd_copy");
+     is(controller.isCommandEnabled("cmd_copy"), false, "cmd_copy is disabled");
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_589162_css_filter.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_589162_css_filter.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_589162_css_filter.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_589162_css_filter.js
+@@ -11,26 +11,24 @@
+ 
+ const TEST_URI = "data:text/html,<div style='font-size:3em;" +
+   "foobarCssParser:baz'>test CSS parser filter</div>";
+ 
+ function onContentLoaded()
+ {
+   browser.removeEventListener("load", arguments.callee, true);
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-  HUD = HUDService.hudReferences[hudId].HUDBox;
+-  let filterBox = HUD.querySelector(".hud-filter-box");
+-  let outputNode = HUD.querySelector(".hud-output-node");
++  let HUD = HUDService.getHudByWindow(content);
++  let hudId = HUD.hudId;
++  let outputNode = HUD.outputNode;
+ 
+   let msg = "the unknown CSS property warning is displayed";
+   testLogEntry(outputNode, "foobarCssParser", msg, true);
+ 
+   HUDService.setFilterState(hudId, "cssparser", false);
+-  let nodes = HUD.querySelectorAll(".hud-msg-node");
+ 
+   executeSoon(
+     function (){
+       HUDService.setFilterState(hudId, "cssparser", false);
+ 
+       let msg = "the unknown CSS property warning is not displayed, " +
+                 "after filtering";
+       testLogEntry(outputNode, "foobarCssParser", msg, true, true);
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_592442_closing_brackets.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_592442_closing_brackets.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_592442_closing_brackets.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_592442_closing_brackets.js
+@@ -17,18 +17,18 @@ function test() {
+   addTab("data:text/html,test for bug 592442");
+   browser.addEventListener("load", testExtraneousClosingBrackets, true);
+ }
+ 
+ function testExtraneousClosingBrackets(aEvent) {
+   browser.removeEventListener(aEvent.type, arguments.callee, true);
+ 
+   openConsole();
+-  let hudId = HUDService.displaysIndex()[0];
+-  let jsterm = HUDService.hudReferences[hudId].jsterm;
++
++  let jsterm = HUDService.getHudByWindow(content).jsterm;
+ 
+   jsterm.setInputValue("document.getElementById)");
+ 
+   let error = false;
+   try {
+     jsterm.complete(jsterm.COMPLETE_HINT_ONLY);
+   }
+   catch (ex) {
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595350_multiple_windows_and_tabs.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595350_multiple_windows_and_tabs.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595350_multiple_windows_and_tabs.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595350_multiple_windows_and_tabs.js
+@@ -57,27 +57,27 @@ function performTest() {
+     let tab = openTabs[i];
+     HUDService.activateHUDForContext(tab);
+     let hudId = HUDService.getHudIdByWindow(tab.linkedBrowser.contentWindow);
+     ok(hudId, "HUD is open for tab " + i);
+     let HUD = HUDService.hudReferences[hudId];
+     HUD.console.log("message for tab " + i);
+   }
+ 
+-  let displays = HUDService.displaysIndex();
++  let displays = Object.keys(HUDService.hudReferences);
+   is(displays.length, 4, "four displays found");
+ 
+   win2.close();
+ 
+   executeSoon(function() {
+     win1.gBrowser.removeTab(openTabs[0]);
+     win1.gBrowser.removeTab(openTabs[1]);
+ 
+     executeSoon(function() {
+-      displays = HUDService.displaysIndex();
++      displays = Object.keys(HUDService.hudReferences);
+       is(displays.length, 0, "no displays found");
+       ok(!HUDService.storage, "no storage found");
+       ok(!HUDService.httpObserver, "no httpObserver found");
+ 
+       displays = openTabs = win1 = win2 = null;
+ 
+       finishTest();
+     });
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601667_filter_buttons.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601667_filter_buttons.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601667_filter_buttons.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_601667_filter_buttons.js
+@@ -9,18 +9,19 @@ function test() {
+   addTab(TEST_URI);
+   browser.addEventListener("load", testFilterButtons, true);
+ }
+ 
+ function testFilterButtons() {
+   browser.removeEventListener("load", testFilterButtons, true);
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-  hudBox = HUDService.hudReferences[hudId].HUDBox;
++  let hud = HUDService.getHudByWindow(content);
++  hudId = hud.hudId;
++  hudBox = hud.HUDBox;
+ 
+   testMenuFilterButton("net");
+   testMenuFilterButton("css");
+   testMenuFilterButton("js");
+   testMenuFilterButton("webdev");
+ 
+   finishTest();
+ }
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_completion.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_completion.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_completion.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_completion.js
+@@ -47,20 +47,17 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testCompletion, false);
+ }
+ 
+ function testCompletion() {
+   browser.removeEventListener("DOMContentLoaded", testCompletion, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-
+-  var HUD = HUDService.hudReferences[hudId];
+-  var jsterm = HUD.jsterm;
++  var jsterm = HUDService.getHudByWindow(content).jsterm;
+   var input = jsterm.inputNode;
+ 
+   // Test typing 'docu'.
+   input.value = "docu";
+   input.setSelectionRange(4, 4);
+   jsterm.complete(jsterm.COMPLETE_HINT_ONLY);
+   is(input.value, "docu", "'docu' completion");
+   is(jsterm.completeNode.value, "    ment", "'docu' completion");
+@@ -95,12 +92,12 @@ function testCompletion() {
+   jsterm.history.splice(0);   // workaround for bug 592552
+ 
+   input.value = "docu";
+   jsterm.complete(jsterm.COMPLETE_HINT_ONLY);
+   is(jsterm.completeNode.value, "    ment", "'docu' completion");
+   jsterm.execute();
+   is(jsterm.completeNode.value, "", "clear completion on execute()");
+ 
+-  HUD = jsterm = input = null;
++  jsterm = input = null;
+   finishTest();
+ }
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_consoleonpage.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_consoleonpage.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_consoleonpage.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_consoleonpage.js
+@@ -18,20 +18,19 @@ function test()
+     browser.removeEventListener("load", arguments.callee, true);
+     testOpenWebConsole();
+   }, true);
+ }
+ 
+ function testOpenWebConsole()
+ {
+   openConsole();
+-  is(HUDService.displaysIndex().length, 1, "WebConsole was opened");
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-  hud = HUDService.hudReferences[hudId];
++  hud = HUDService.getHudByWindow(content);
++  ok(hud, "WebConsole was opened");
+ 
+   testOwnConsole();
+ }
+ 
+ function testConsoleOnPage(console) {
+   isnot(console, undefined, "Console object defined on page");
+   is(console.foo, "bar", "Custom console is not overwritten");
+ }
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_execution_scope.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_execution_scope.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_execution_scope.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_execution_scope.js
+@@ -48,20 +48,17 @@ function test() {
+ }
+ 
+ function testExecutionScope() {
+   browser.removeEventListener("DOMContentLoaded", testExecutionScope,
+                               false);
+ 
+   openConsole();
+ 
+-  let hudId = HUDService.displaysIndex()[0];
+-
+-  let HUD = HUDService.hudReferences[hudId];
+-  let jsterm = HUD.jsterm;
++  let jsterm = HUDService.getHudByWindow(content).jsterm;
+ 
+   jsterm.clearOutput();
+   jsterm.execute("location;");
+ 
+   let nodes = jsterm.outputNode.querySelectorAll(".hud-msg-node");
+   is(nodes.length, 1, "Three children in output");
+ 
+   is(/location;/.test(nodes[0].textContent), true,
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_history.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_history.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_history.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_history.js
+@@ -51,19 +51,17 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testHistory, false);
+ }
+ 
+ function testHistory() {
+   browser.removeEventListener("DOMContentLoaded", testHistory, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-  let HUD = HUDService.hudReferences[hudId];
+-  let jsterm = HUD.jsterm;
++  let jsterm = HUDService.getHudByWindow(content).jsterm;
+   let input = jsterm.inputNode;
+ 
+   let executeList = ["document", "window", "window.location"];
+ 
+   for each (var item in executeList) {
+     input.value = item;
+     jsterm.execute();
+   }
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_hud_getters.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_hud_getters.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_hud_getters.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_hud_getters.js
+@@ -48,19 +48,17 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testHUDGetters, false);
+ }
+ 
+ function testHUDGetters() {
+   browser.removeEventListener("DOMContentLoaded", testHUDGetters, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-
+-  var HUD = HUDService.hudReferences[hudId];
++  var HUD = HUDService.getHudByWindow(content);
+   var jsterm = HUD.jsterm;
+   var klass = jsterm.inputNode.getAttribute("class");
+   ok(klass == "jsterm-input-node", "We have the input node.");
+ 
+   var hudconsole = HUD.console;
+   is(typeof hudconsole, "object", "HUD.console is an object");
+   is(typeof hudconsole.log, "function", "HUD.console.log is a function");
+   is(typeof hudconsole.info, "function", "HUD.console.info is a function");
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_js_input_and_output_styling.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_js_input_and_output_styling.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_js_input_and_output_styling.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_js_input_and_output_styling.js
+@@ -50,19 +50,17 @@ function test() {
+ }
+ 
+ function testJSInputAndOutputStyling() {
+   browser.removeEventListener("DOMContentLoaded",
+                               testJSInputAndOutputStyling, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-
+-  let jsterm = HUDService.hudReferences[hudId].jsterm;
++  let jsterm = HUDService.getHudByWindow(content).jsterm;
+ 
+   jsterm.clearOutput();
+   jsterm.execute("2 + 2");
+ 
+   let nodes = jsterm.outputNode.querySelectorAll(".hud-msg-node");
+   let jsInputNode = nodes[0];
+   isnot(jsInputNode.textContent.indexOf("2 + 2"), -1,
+     "JS input node contains '2 + 2'");
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_js_input_expansion.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_js_input_expansion.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_js_input_expansion.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_js_input_expansion.js
+@@ -48,20 +48,17 @@ function test() {
+ }
+ 
+ function testJSInputExpansion() {
+   browser.removeEventListener("DOMContentLoaded", testJSInputExpansion,
+                               false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-
+-  let HUD = HUDService.hudReferences[hudId];
+-  let jsterm = HUD.jsterm;
++  let jsterm = HUDService.getHudByWindow(content).jsterm;
+   let input = jsterm.inputNode;
+   input.focus();
+ 
+   is(input.getAttribute("multiline"), "true", "multiline is enabled");
+   // Tests if the inputNode expands.
+   input.value = "hello\nworld\n";
+   let length = input.value.length;
+   input.selectionEnd = length;
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_null_and_undefined_output.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_null_and_undefined_output.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_null_and_undefined_output.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_null_and_undefined_output.js
+@@ -50,21 +50,18 @@ function test() {
+ }
+ 
+ function testNullAndUndefinedOutput() {
+   browser.removeEventListener("DOMContentLoaded",
+                               testNullAndUndefinedOutput, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-
+-  let HUD = HUDService.hudReferences[hudId];
+-  let jsterm = HUD.jsterm;
+-  outputNode = jsterm.outputNode;
++  let jsterm = HUDService.getHudByWindow(content).jsterm;
++  let outputNode = jsterm.outputNode;
+ 
+   jsterm.clearOutput();
+   jsterm.execute("null;");
+ 
+   let nodes = outputNode.querySelectorAll(".hud-msg-node");
+   is(nodes.length, 2, "2 nodes in output");
+   ok(nodes[1].textContent.indexOf("null") > -1, "'null' printed to output");
+ 
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_output_order.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_output_order.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_output_order.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_output_order.js
+@@ -48,21 +48,18 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testOutputOrder, false);
+ }
+ 
+ function testOutputOrder() {
+   browser.removeEventListener("DOMContentLoaded", testOutputOrder, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-
+-  let HUD = HUDService.hudReferences[hudId];
+-  let jsterm = HUD.jsterm;
+-  outputNode = jsterm.outputNode;
++  let jsterm = HUDService.getHudByWindow(content).jsterm;
++  let outputNode = jsterm.outputNode;
+ 
+   jsterm.clearOutput();
+   jsterm.execute("console.log('foo', 'bar');");
+ 
+   let nodes = outputNode.querySelectorAll(".hud-msg-node");
+   is(nodes.length, 3, "3 children in output");
+ 
+   let executedStringFirst =
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_property_panel.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_property_panel.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_property_panel.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_property_panel.js
+@@ -48,20 +48,17 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testPropertyPanel, false);
+ }
+ 
+ function testPropertyPanel() {
+   browser.removeEventListener("DOMContentLoaded", testPropertyPanel, false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-
+-  var HUD = HUDService.hudReferences[hudId];
+-  var jsterm = HUD.jsterm;
++  var jsterm = HUDService.getHudByWindow(content).jsterm;
+ 
+   let propPanel = jsterm.openPropertyPanel("Test", [
+     1,
+     /abc/,
+     null,
+     undefined,
+     function test() {},
+     {}
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_property_provider.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_property_provider.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_property_provider.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_property_provider.js
+@@ -49,19 +49,17 @@ function test() {
+ }
+ 
+ function testPropertyProvider() {
+   browser.removeEventListener("DOMContentLoaded", testPropertyProvider,
+                               false);
+ 
+   openConsole();
+ 
+-  hudId = HUDService.displaysIndex()[0];
+-
+-  var HUD = HUDService.hudReferences[hudId];
++  var HUD = HUDService.getHudByWindow(content);
+   var jsterm = HUD.jsterm;
+   var context = jsterm.sandbox.window;
+   var completion;
+ 
+   // Test if the propertyProvider can be accessed from the jsterm object.
+   ok (jsterm.propertyProvider !== undefined, "JSPropertyProvider is defined");
+ 
+   completion = jsterm.propertyProvider(context, "thisIsNotDefined");
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_registries.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_registries.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_registries.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_registries.js
+@@ -48,20 +48,18 @@ function test() {
+   browser.addEventListener("DOMContentLoaded", testRegistries, false);
+ }
+ 
+ function testRegistries() {
+   browser.removeEventListener("DOMContentLoaded", testRegistries, false);
+ 
+   openConsole();
+ 
+-  var displaysIdx = HUDService.displaysIndex();
+-  ok(displaysIdx.length == 1, "one display id found");
+-
+-  var display = displaysIdx[0];
+-  ok(HUDService.hudReferences[display], "we have a HUD");
++  let hud = HUDService.getHudByWindow(content);
++  ok(hud, "we have a HUD");
++  ok(HUDService.hudReferences[hud.hudId], "we have a HUD in hudReferences");
+ 
+   let windowID = HUDService.getWindowId(content);
+-  is(HUDService.windowIds[windowID], display, "windowIds is working");
++  is(HUDService.windowIds[windowID], hud.hudId, "windowIds are working");
+ 
+   finishTest();
+ }
+ 

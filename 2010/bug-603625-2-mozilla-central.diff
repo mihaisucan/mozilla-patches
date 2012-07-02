@@ -1,0 +1,530 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -933,35 +933,37 @@ NetworkPanel.prototype =
+ 
+     for (let key in sortedList) {
+       if (aIgnoreCookie && key == "Cookie") {
+         continue;
+       }
+ 
+       /**
+        * The following code creates the HTML:
+-       *
+-       * <span class="property-name">${line}:</span>
+-       * <span class="property-value">${aList[line]}</span><br>
+-       *
++       * <tr>
++       * <th scope="row" class="property-name">${line}:</th>
++       * <td class="property-value">${aList[line]}</td>
++       * </tr>
+        * and adds it to parent.
+        */
++      let row = doc.createElement("tr");
+       let textNode = doc.createTextNode(key + ":");
+-      let span = doc.createElement("span");
+-      span.setAttribute("class", "property-name");
+-      span.appendChild(textNode);
+-      parent.appendChild(span);
++      let th = doc.createElement("th");
++      th.setAttribute("scope", "row");
++      th.setAttribute("class", "property-name");
++      th.appendChild(textNode);
++      row.appendChild(th);
+ 
+       textNode = doc.createTextNode(sortedList[key]);
+-      span = doc.createElement("span");
+-      span.setAttribute("class", "property-value");
+-      span.appendChild(textNode);
+-      parent.appendChild(span);
+-
+-      parent.appendChild(doc.createElement("br"));
++      let td = doc.createElement("td");
++      td.setAttribute("class", "property-value");
++      td.appendChild(textNode);
++      row.appendChild(td);
++
++      parent.appendChild(row);
+     }
+   },
+ 
+   /**
+    * Displays the node with id=aId.
+    *
+    * @param string aId
+    * @returns void
+@@ -2266,17 +2268,17 @@ HUD_SERVICE.prototype =
+   {
+     let doc = aNode.ownerDocument;
+     let parent = doc.getElementById("mainPopupSet");
+     let netPanel = new NetworkPanel(parent, aHttpActivity);
+     netPanel.linkNode = aNode;
+ 
+     let panel = netPanel.panel;
+     panel.openPopup(aNode, "after_pointer", 0, 0, false, false);
+-    panel.sizeTo(350, 400);
++    panel.sizeTo(450, 500);
+     aHttpActivity.panels.push(Cu.getWeakReference(netPanel));
+     return netPanel;
+   },
+ 
+   /**
+    * Begin observing HTTP traffic that we care about,
+    * namely traffic that originates inside any context that a Heads Up Display
+    * is active for.
+diff --git a/toolkit/components/console/hudservice/NetworkPanel.xhtml b/toolkit/components/console/hudservice/NetworkPanel.xhtml
+--- a/toolkit/components/console/hudservice/NetworkPanel.xhtml
++++ b/toolkit/components/console/hudservice/NetworkPanel.xhtml
+@@ -24,16 +24,17 @@
+    - The Initial Developer of the Original Code is
+    - Mozilla Foundation.
+    - Portions created by the Initial Developer are Copyright (C) 2010
+    - the Initial Developer. All Rights Reserved.
+    -
+    - Contributor(s):
+    -   Joe Walker <jwalker@mozilla.com>
+    -   Julian Viereck <jviereck@mozilla.com>
++   -   Mihai Șucan <mihai.sucan@gmail.com>
+    -
+    - Alternatively, the contents of this file may be used under the terms of
+    - either the GNU General Public License Version 2 or later (the "GPL"), or
+    - the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+    - in which case the provisions of the GPL or the LGPL are applicable instead
+    - of those above. If you wish to allow use of your version of this file only
+    - under the terms of either the GPL or the LGPL, and not to allow others to
+    - use your version of this file under the terms of the MPL, indicate your
+@@ -46,80 +47,100 @@
+ 
+ 
+ <html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
+ <head>
+   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
+   <link rel="stylesheet" href="chrome://global/skin/webConsole_networkPanel.css" type="text/css"/>
+ </head>
+ <body role="application">
+-<div id="header">
+-  <span class="property-name">&networkPanel.requestURL;:</span>
+-  <span class="property-value" id="headUrl"></span><br />
+-  <span class="property-name">&networkPanel.requestMethod;:</span>
+-  <span class="property-value" id="headMethod"></span><br />
+-  <span class="property-name">&networkPanel.statusCode;:</span>
+-  <span class="property-value" id="headStatus"></span>
+-</div>
++<table id="header" cellspacing="0" cellpadding="3" border="0">
++  <tr>
++    <th class="property-name"
++        scope="row">&networkPanel.requestURL;:</th>
++    <td class="property-value"
++        id="headUrl"></td>
++  </tr>
++  <tr>
++    <th class="property-name"
++        scope="row">&networkPanel.requestMethod;:</th>
++    <td class="property-value"
++        id="headMethod"></td>
++  </tr>
++  <tr>
++    <th class="property-name"
++      scope="row">&networkPanel.statusCode;:</th>
++    <td class="property-value"
++        id="headStatus"></td>
++  </tr>
++</table>
+ 
+ <div class="group">
+   <h1>
+     &networkPanel.requestHeaders;
+     <span id="requestHeadersInfo" class="info"></span>
+   </h1>
+-    <div class="property-header" id="requestHeadersContent"></div>
++    <table class="property-table" id="requestHeadersContent" cellspacing="0" 
++      cellpadding="3" border="0"></table>
+ 
+   <div id="requestCookie" style="display:none">
+     <h1>&networkPanel.requestCookie;</h1>
+-      <div class="property-header" id="requestCookieContent"></div>
++      <table class="property-table" id="requestCookieContent" cellspacing="0" 
++        cellpadding="3" border="0"></table>
+   </div>
+ 
+   <div id="requestBody" style="display:none">
+     <h1>&networkPanel.requestBody;</h1>
+-      <div class="property-header" id="requestBodyContent"></div>
++      <table class="property-table" id="requestBodyContent" cellspacing="0" 
++        cellpadding="3" border="0"></table>
+   </div>
+   <div id="requestFormData" style="display:none">
+     <h1>&networkPanel.requestFormData;</h1>
+-      <div class="property-header" id="requestFormDataContent"></div>
++      <table class="property-table" id="requestFormDataContent" cellspacing="0" 
++        cellpadding="3" border="0"></table>
+   </div>
+ </div>
+ 
+ <div class="group" id="responseContainer" style="display:none">
+   <h1>
+     &networkPanel.responseHeaders;
+     <span id="responseHeadersInfo" class="info">&Delta;</span>
+   </h1>
+-    <div class="property-header" id="responseHeadersContent"></div>
++    <table class="property-table" id="responseHeadersContent" cellspacing="0" 
++      cellpadding="3" border="0"></table>
+ 
+   <div id="responseBody" style="display:none">
+     <h1>
+       &networkPanel.responseBody;
+       <span class="info" id="responseBodyInfo">&Delta;</span>
+     </h1>
+-      <div class="property-header" id="responseBodyContent"></div>
++      <table class="property-table" id="responseBodyContent" cellspacing="0" 
++        cellpadding="3" border="0"></table>
+   </div>
+   <div id="responseBodyCached" style="display:none">
+     <h1>
+       &networkPanel.responseBodyCached;
+       <span class="info" id="responseBodyCachedInfo">&Delta;</span>
+     </h1>
+-      <div class="property-header" id="responseBodyCachedContent"></div>
++      <table class="property-table" id="responseBodyCachedContent" 
++        cellspacing="0" cellpadding="3" border="0"></table>
+   </div>
+   <div id="responseNoBody" style="display:none">
+     <h1>
+       &networkPanel.responseNoBody;
+       <span id="responseNoBodyInfo" class="info">&Delta;</span>
+     </h1>
+   </div>
+   <div id="responseBodyUnknownType" style="display:none">
+     <h1>
+       &networkPanel.responseBodyUnknownType;
+       <span id="responseBodyUnknownTypeInfo" class="info">&Delta;</span>
+     </h1>
+-    <div class="property-header" id="responseBodyUnknownTypeContent"></div>
++    <table class="property-table" id="responseBodyUnknownTypeContent" 
++      cellspacing="0" cellpadding="3" border="0"></table>
+   </div>
+   <div id="responseImage" style="display:none">
+     <h1>
+       &networkPanel.responseImage;
+       <span id="responseImageInfo" class="info"></span>
+     </h1>
+     <div id="responseImageNodeDiv">
+       <img id="responseImageNode" />
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_network_panel.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_network_panel.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_network_panel.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_network_panel.js
+@@ -80,19 +80,26 @@ function checkNodeContent(aPanel, aId, a
+   else {
+     ok(false, "Got false value for " + aId + ": " + node.textContent + " doesn't have " + aContent);
+   }
+ }
+ 
+ function checkNodeKeyValue(aPanel, aId, aKey, aValue) {
+   let node = aPanel.document.getElementById(aId);
+ 
+-  let testHTML = '<span xmlns="http://www.w3.org/1999/xhtml" class="property-name">' + aKey + ':</span>';
+-  testHTML += '<span xmlns="http://www.w3.org/1999/xhtml" class="property-value">' + aValue + '</span>';
+-  isnot(node.innerHTML.indexOf(testHTML), -1, "checking content of " + aId);
++  let headers = node.querySelectorAll("th");
++  for (let i = 0; i < headers.length; i++) {
++    if (headers[i].textContent == (aKey + ":")) {
++      is(headers[i].nextElementSibling.textContent, aValue,
++         "checking content of " + aId + " for key " + aKey);
++      return;
++    }
++  }
++
++  ok(false, "content check failed for " + aId + ", key " + aKey);
+ }
+ 
+ function testGen() {
+   let hudId = HUDService.displaysIndex()[0];
+   let hudBox = HUDService.getHeadsUpDisplay(hudId);
+   let filterBox = hudBox.querySelector(".hud-filter-box");
+ 
+   var httpActivity = {
+diff --git a/toolkit/themes/gnomestripe/global/webConsole_networkPanel.css b/toolkit/themes/gnomestripe/global/webConsole_networkPanel.css
+--- a/toolkit/themes/gnomestripe/global/webConsole_networkPanel.css
++++ b/toolkit/themes/gnomestripe/global/webConsole_networkPanel.css
+@@ -37,19 +37,20 @@
+  * ***** END LICENSE BLOCK ***** */
+ 
+ body {
+   font-family: Lucida Grande, sans-serif;
+   font-size: 11px;
+   background: #EEE;
+ }
+ 
+-div#header {
++#header {
+   padding: 5px;
+   overflow-x:auto;
++  display: block;
+ }
+ 
+ h1 {
+   font-size: 13px;
+   padding: 2px 10px;
+   margin: 0px;
+   background: -moz-linear-gradient(top, #BBB, #999);
+   border-radius: 2px;
+@@ -58,44 +59,49 @@ h1 {
+ 
+ h1 .info {
+   font-size: 11px;
+   float: right;
+   color: #333;
+   padding-right: 3px;
+ }
+ 
+-div.property-header {
++.property-table {
+   padding: 2px 5px;
+   background: -moz-linear-gradient(top, #FFF, #F8F8F8);
+   color: #333;
++  width: 100%;
+   max-height: 330px;
+-  overflow-y: auto;
+-  overflow-x: auto;
+-  white-space: pre-wrap;
++  display: block;
++  overflow: auto;
+ }
+ 
+-span.property-name {
++.property-name {
+   font-size: 11px;
+   font-weight: bold;
+-  padding-right: 4px;
+   color: #000;
++  white-space: nowrap;
++  text-align: right;
++  vertical-align: top;
++  width: 10%;
+ }
+ 
+-span.property-value {
++.property-value {
+   padding-right: 5px;
+   font-size: 11px;
++  word-wrap: break-word;
++  width: 90%;
+ }
+ 
+ div.group {
+   margin-top: 10px;
+ }
+ 
+ div.group,
+-div#header {
++#header {
+   background: #FFF;
+   border-color: #E1E1E1;
+   border-style: solid;
+   border-width: 1px;
+   box-shadow: 0 1px 1.5px rgba(0, 0, 0, 0.2);
+   border-radius: 4px 4px 4px 4px;
+ }
+ 
+diff --git a/toolkit/themes/pinstripe/global/webConsole_networkPanel.css b/toolkit/themes/pinstripe/global/webConsole_networkPanel.css
+--- a/toolkit/themes/pinstripe/global/webConsole_networkPanel.css
++++ b/toolkit/themes/pinstripe/global/webConsole_networkPanel.css
+@@ -16,16 +16,17 @@
+  * The Initial Developer of the Original Code is
+  *   Mozilla Corporation
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Joe Walker <jwalker@mozilla.com>
+  *   Julian Viereck <jviereck@mozilla.com>
++ *   Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -37,19 +38,20 @@
+  * ***** END LICENSE BLOCK ***** */
+ 
+ body {
+   font-family: Lucida Grande, sans-serif;
+   font-size: 11px;
+   background: #EEE;
+ }
+ 
+-div#header {
++#header {
+   padding: 5px;
+   overflow-x:auto;
++  display: block;
+ }
+ 
+ h1 {
+   font-size: 13px;
+   padding: 2px 10px;
+   margin: 0px;
+   background: -moz-linear-gradient(top, #BBB, #999);
+   border-radius: 2px;
+@@ -58,44 +60,50 @@ h1 {
+ 
+ h1 .info {
+   font-size: 11px;
+   float: right;
+   color: #333;
+   padding-right: 3px;
+ }
+ 
+-div.property-header {
++.property-table {
+   padding: 2px 5px;
+   background: -moz-linear-gradient(top, #FFF, #F8F8F8);
+   color: #333;
++  width: 100%;
+   max-height: 330px;
+-  overflow-y: auto;
+-  overflow-x: auto;
+-  white-space: pre-wrap;
++  display: block;
++  overflow: auto;
+ }
+ 
+-span.property-name {
++.property-name {
+   font-size: 11px;
+   font-weight: bold;
+   padding-right: 4px;
+   color: #000;
++  white-space: nowrap;
++  text-align: right;
++  vertical-align: top;
++  width: 10%;
+ }
+ 
+-span.property-value {
++.property-value {
+   padding-right: 5px;
+   font-size: 11px;
++  word-wrap: break-word;
++  width: 90%;
+ }
+ 
+ div.group {
+   margin-top: 10px;
+ }
+ 
+ div.group,
+-div#header {
++#header {
+   background: #FFF;
+   border-color: #E1E1E1;
+   border-style: solid;
+   border-width: 1px;
+   box-shadow: 0 1px 1.5px rgba(0, 0, 0, 0.2);
+   border-radius: 4px 4px 4px 4px;
+ }
+ 
+diff --git a/toolkit/themes/winstripe/global/webConsole_networkPanel.css b/toolkit/themes/winstripe/global/webConsole_networkPanel.css
+--- a/toolkit/themes/winstripe/global/webConsole_networkPanel.css
++++ b/toolkit/themes/winstripe/global/webConsole_networkPanel.css
+@@ -16,16 +16,17 @@
+  * The Initial Developer of the Original Code is
+  *   Mozilla Corporation
+  * Portions created by the Initial Developer are Copyright (C) 2010
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Joe Walker <jwalker@mozilla.com>
+  *   Julian Viereck <jviereck@mozilla.com>
++ *   Mihai Șucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -37,19 +38,20 @@
+  * ***** END LICENSE BLOCK ***** */
+ 
+ body {
+   font-family: Lucida Grande, sans-serif;
+   font-size: 11px;
+   background: #EEE;
+ }
+ 
+-div#header {
++#header {
+   padding: 5px;
+   overflow-x: auto;
++  display: block;
+ }
+ 
+ h1 {
+   font-size: 13px;
+   padding: 2px 10px;
+   margin: 0px;
+   background: -moz-linear-gradient(top, #BBB, #999);
+   border-radius: 2px;
+@@ -58,44 +60,50 @@ h1 {
+ 
+ h1 .info {
+   font-size: 11px;
+   float: right;
+   color: #333;
+   padding-right: 3px;
+ }
+ 
+-div.property-header {
++.property-table {
+   padding: 2px 5px;
+   background: -moz-linear-gradient(top, #FFF, #F8F8F8);
+   color: #333;
++  width: 100%;
+   max-height: 330px;
+-  overflow-y: auto;
+-  overflow-x: auto;
+-  white-space: pre-wrap;
++  display: block;
++  overflow: auto;
+ }
+ 
+-span.property-name {
++.property-table-header {
+   font-size: 11px;
+   font-weight: bold;
+   padding-right: 4px;
+   color: #000;
++  white-space: nowrap;
++  text-align: right;
++  vertical-align: top;
++  width: 10%;
+ }
+ 
+-span.property-value {
++.property-table-value {
+   padding-right: 5px;
+   font-size: 11px;
++  word-wrap: break-word;
++  width: 90%;
+ }
+ 
+ div.group {
+   margin-top: 10px;
+ }
+ 
+ div.group,
+-div#header {
++#header {
+   background: #FFF;
+   border-color: #E1E1E1;
+   border-style: solid;
+   border-width: 1px;
+   box-shadow: 0 1px 1.5px rgba(0, 0, 0, 0.2);
+   border-radius: 4px 4px 4px 4px;
+ }
+ 

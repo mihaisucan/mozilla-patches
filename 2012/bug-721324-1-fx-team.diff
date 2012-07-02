@@ -1,0 +1,630 @@
+diff --git a/browser/devtools/jar.mn b/browser/devtools/jar.mn
+--- a/browser/devtools/jar.mn
++++ b/browser/devtools/jar.mn
+@@ -6,11 +6,10 @@ browser.jar:
+     content/browser/splitview.css                 (shared/splitview.css)
+ *   content/browser/styleeditor.xul               (styleeditor/styleeditor.xul)
+     content/browser/styleeditor.css               (styleeditor/styleeditor.css)
+     content/browser/devtools/csshtmltree.xul      (styleinspector/csshtmltree.xul)
+     content/browser/devtools/cssruleview.xul      (styleinspector/cssruleview.xul)
+     content/browser/devtools/styleinspector.css   (styleinspector/styleinspector.css)
+     content/browser/orion.js                      (sourceeditor/orion/orion.js)
+     content/browser/orion.css                     (sourceeditor/orion/orion.css)
+-    content/browser/orion-mozilla.css             (sourceeditor/orion/mozilla.css)
+     content/browser/source-editor-overlay.xul     (sourceeditor/source-editor-overlay.xul)
+ 
+diff --git a/browser/devtools/sourceeditor/orion/mozilla.css b/browser/devtools/sourceeditor/orion/mozilla.css
+deleted file mode 100644
+--- a/browser/devtools/sourceeditor/orion/mozilla.css
++++ /dev/null
+@@ -1,129 +0,0 @@
+-/* Any copyright is dedicated to the Public Domain.
+-   http://creativecommons.org/publicdomain/zero/1.0/ */
+-
+-.viewContainer {
+-  background: #cddae5; /* This will be seen as the continuation of the ruler */
+-  font-family: monospace;
+-  font-size: inherit; /* inherit browser's default monospace font size */
+-}
+-
+-.view {
+-  color: black; /* Default text color */
+-  background: #f0f0ff; /* Background of the editor */
+-  padding-left: 0;
+-}
+-
+-.readonly > .view {
+-  background: #f0f0ff;
+-}
+-
+-/* One line */
+-.viewContent > div {
+-  padding-left: 4px; /* Margin between the ruler and the editor */
+-}
+-
+-/* Styles for rulers */
+-.ruler.lines {
+-  text-align: right;
+-}
+-
+-/* Styles for the line number ruler */
+-.rulerLines {
+-  border-right: 1px solid #b4c4d3;
+-  background: #cddae5;
+-  color: #7a8a99;
+-  min-width: 1.4em;
+-  padding-left: 4px;
+-  padding-right: 4px;
+-  text-align: end;
+-}
+-
+-.token_singleline_comment {
+-  color: #45a946; /* green */
+-}
+-
+-.token_multiline_comment {
+-  color: #45a946; /* green */
+-}
+-
+-.token_doc_comment {
+-  color: #45a946; /* green */
+-}
+-
+-.token_doc_html_markup {
+-  color: #dd0058; /* purple */
+-}
+-
+-.token_doc_tag {
+-  color: #dd0058; /* purple */
+-}
+-
+-.token_task_tag { /* "TODO" */
+-  color: black;
+-  background: yellow;
+-}
+-
+-.token_string {
+-  color: #1e66b1; /* blue */
+-  font-style: italic;
+-}
+-
+-.token_keyword {
+-  color: #dd0058; /* purple */
+-}
+-
+-.token_space {
+-  /* images/white_space.png */
+-  background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAkAAAAJCAIAAABv85FHAAAABnRSTlMA/wAAAACkwsAdAAAAIUlEQVR4nGP4z8CAC+GUIEXuABhgkTuABEiRw2cmae4EAH05X7xDolNRAAAAAElFTkSuQmCC");
+-  background-repeat: no-repeat;
+-  background-position: center center;
+-}
+-
+-.token_tab {
+-  /* images/white_tab.png */
+-  background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAJCAIAAACJ2loDAAAABnRSTlMA/wD/AP83WBt9AAAAMklEQVR4nGP4TwRgoK6i52c3bz5w6zMSA6tJn28d2Lx589nnCAYu63AaSLxJRLoJPwAAeNk0aG4opfMAAAAASUVORK5CYII=");
+-  background-repeat: no-repeat;
+-  background-position: left center;
+-}
+-
+-.line_caret { /* Current line */
+-  background: #dae2ee; /* lighter than the background */
+-}
+-
+-.readonly .line_caret {
+-  background: #cddae5; /* a bit darker than the background */
+-}
+-
+-/* Styling for html syntax highlighting */
+-.entity-name-tag {
+-  color: #dd0058; /* purple */
+-}
+-
+-.entity-other-attribute-name {
+-  color: #dd0058; /* purple */
+-}
+-
+-.punctuation-definition-comment {
+-  color: #45a946; /* green */
+-}
+-
+-.comment {
+-  color: #45a946; /* green */
+-}
+-
+-.string-quoted {
+-  color: #1e66b1; /* blue */
+-  font-style: italic;
+-}
+-
+-.invalid {
+-  color: red;
+-  font-weight: bold;
+-}
+-
+-.annotationRange.currentBracket {
+-}
+-
+-.annotationRange.matchingBracket {
+-  outline: 1px solid grey;
+-}
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -59,17 +59,17 @@ const ORION_IFRAME = "data:text/html;cha
+ 
+ const XUL_NS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
+ 
+ /**
+  * Predefined themes for syntax highlighting. This objects maps
+  * SourceEditor.THEMES to Orion CSS files.
+  */
+ const ORION_THEMES = {
+-  mozilla: ["chrome://browser/content/orion-mozilla.css"],
++  mozilla: ["chrome://browser/skin/devtools/orion.css"],
+ };
+ 
+ /**
+  * Known editor events you can listen for. This object maps SourceEditor.EVENTS
+  * to Orion events.
+  */
+ const ORION_EVENTS = {
+   ContextMenu: "ContextMenu",
+diff --git a/browser/themes/gnomestripe/devtools/orion.css b/browser/themes/gnomestripe/devtools/orion.css
+new file mode 100644
+--- /dev/null
++++ b/browser/themes/gnomestripe/devtools/orion.css
+@@ -0,0 +1,121 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
++ * You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++.viewContainer {
++  background: #cddae5; /* This will be seen as the continuation of the ruler */
++  font-family: monospace;
++  font-size: inherit; /* inherit browser's default monospace font size */
++}
++
++.view {
++  color: black; /* Default text color */
++  background: #f0f0ff; /* Background of the editor */
++  padding-left: 0;
++}
++
++.readonly > .view {
++  background: #f0f0ff;
++}
++
++/* One line */
++.viewContent > div {
++  padding-left: 4px; /* Margin between the ruler and the editor */
++}
++
++/* Styles for the line number ruler */
++.rulerLines {
++  border-right: 1px solid #b4c4d3;
++  background: #cddae5;
++  color: #7a8a99;
++  padding-left: 4px;
++  padding-right: 4px;
++  text-align: end;
++}
++
++.token_singleline_comment {
++  color: #45a946; /* green */
++}
++
++.token_multiline_comment {
++  color: #45a946; /* green */
++}
++
++.token_doc_comment {
++  color: #45a946; /* green */
++}
++
++.token_doc_html_markup {
++  color: #dd0058; /* purple */
++}
++
++.token_doc_tag {
++  color: #dd0058; /* purple */
++}
++
++.token_task_tag { /* "TODO" */
++  color: black;
++  background: yellow;
++}
++
++.token_string {
++  color: #1e66b1; /* blue */
++  font-style: italic;
++}
++
++.token_keyword {
++  color: #dd0058; /* purple */
++}
++
++.token_space {
++  /* images/white_space.png */
++  background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAkAAAAJCAIAAABv85FHAAAABnRSTlMA/wAAAACkwsAdAAAAIUlEQVR4nGP4z8CAC+GUIEXuABhgkTuABEiRw2cmae4EAH05X7xDolNRAAAAAElFTkSuQmCC");
++  background-repeat: no-repeat;
++  background-position: center center;
++}
++
++.token_tab {
++  /* images/white_tab.png */
++  background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAJCAIAAACJ2loDAAAABnRSTlMA/wD/AP83WBt9AAAAMklEQVR4nGP4TwRgoK6i52c3bz5w6zMSA6tJn28d2Lx589nnCAYu63AaSLxJRLoJPwAAeNk0aG4opfMAAAAASUVORK5CYII=");
++  background-repeat: no-repeat;
++  background-position: left center;
++}
++
++.line_caret { /* Current line */
++  background: #dae2ee; /* lighter than the background */
++}
++
++.readonly .line_caret {
++  background: #cddae5; /* a bit darker than the background */
++}
++
++/* Styling for html syntax highlighting */
++.entity-name-tag {
++  color: #dd0058; /* purple */
++}
++
++.entity-other-attribute-name {
++  color: #dd0058; /* purple */
++}
++
++.punctuation-definition-comment {
++  color: #45a946; /* green */
++}
++
++.comment {
++  color: #45a946; /* green */
++}
++
++.string-quoted {
++  color: #1e66b1; /* blue */
++  font-style: italic;
++}
++
++.invalid {
++  color: red;
++  font-weight: bold;
++}
++
++.annotationRange.matchingBracket {
++  outline: 1px solid grey;
++}
+diff --git a/browser/themes/gnomestripe/jar.mn b/browser/themes/gnomestripe/jar.mn
+--- a/browser/themes/gnomestripe/jar.mn
++++ b/browser/themes/gnomestripe/jar.mn
+@@ -88,16 +88,17 @@ browser.jar:
+   skin/classic/browser/devtools/common.css            (devtools/common.css)
+   skin/classic/browser/devtools/arrows.png            (devtools/arrows.png)
+   skin/classic/browser/devtools/goto-mdn.png          (devtools/goto-mdn.png)
+   skin/classic/browser/devtools/csshtmltree.css       (devtools/csshtmltree.css)
+   skin/classic/browser/devtools/webconsole.css                  (devtools/webconsole.css)
+   skin/classic/browser/devtools/webconsole_networkpanel.css     (devtools/webconsole_networkpanel.css)
+   skin/classic/browser/devtools/webconsole.png                  (devtools/webconsole.png)
+   skin/classic/browser/devtools/gcli.css              (devtools/gcli.css)
++  skin/classic/browser/devtools/orion.css             (devtools/orion.css)
+   skin/classic/browser/devtools/breadcrumbs/ltr-end-pressed.png              (devtools/breadcrumbs/ltr-end-pressed.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-end-selected-pressed.png     (devtools/breadcrumbs/ltr-end-selected-pressed.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-end-selected.png             (devtools/breadcrumbs/ltr-end-selected.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-end.png                      (devtools/breadcrumbs/ltr-end.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-middle-pressed.png           (devtools/breadcrumbs/ltr-middle-pressed.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-middle-selected-pressed.png  (devtools/breadcrumbs/ltr-middle-selected-pressed.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-middle-selected.png          (devtools/breadcrumbs/ltr-middle-selected.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-middle.png                   (devtools/breadcrumbs/ltr-middle.png)
+diff --git a/browser/themes/pinstripe/devtools/orion.css b/browser/themes/pinstripe/devtools/orion.css
+new file mode 100644
+--- /dev/null
++++ b/browser/themes/pinstripe/devtools/orion.css
+@@ -0,0 +1,121 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
++ * You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++.viewContainer {
++  background: #cddae5; /* This will be seen as the continuation of the ruler */
++  font-family: monospace;
++  font-size: inherit; /* inherit browser's default monospace font size */
++}
++
++.view {
++  color: black; /* Default text color */
++  background: #f0f0ff; /* Background of the editor */
++  padding-left: 0;
++}
++
++.readonly > .view {
++  background: #f0f0ff;
++}
++
++/* One line */
++.viewContent > div {
++  padding-left: 4px; /* Margin between the ruler and the editor */
++}
++
++/* Styles for the line number ruler */
++.rulerLines {
++  border-right: 1px solid #b4c4d3;
++  background: #cddae5;
++  color: #7a8a99;
++  padding-left: 4px;
++  padding-right: 4px;
++  text-align: end;
++}
++
++.token_singleline_comment {
++  color: #45a946; /* green */
++}
++
++.token_multiline_comment {
++  color: #45a946; /* green */
++}
++
++.token_doc_comment {
++  color: #45a946; /* green */
++}
++
++.token_doc_html_markup {
++  color: #dd0058; /* purple */
++}
++
++.token_doc_tag {
++  color: #dd0058; /* purple */
++}
++
++.token_task_tag { /* "TODO" */
++  color: black;
++  background: yellow;
++}
++
++.token_string {
++  color: #1e66b1; /* blue */
++  font-style: italic;
++}
++
++.token_keyword {
++  color: #dd0058; /* purple */
++}
++
++.token_space {
++  /* images/white_space.png */
++  background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAkAAAAJCAIAAABv85FHAAAABnRSTlMA/wAAAACkwsAdAAAAIUlEQVR4nGP4z8CAC+GUIEXuABhgkTuABEiRw2cmae4EAH05X7xDolNRAAAAAElFTkSuQmCC");
++  background-repeat: no-repeat;
++  background-position: center center;
++}
++
++.token_tab {
++  /* images/white_tab.png */
++  background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAJCAIAAACJ2loDAAAABnRSTlMA/wD/AP83WBt9AAAAMklEQVR4nGP4TwRgoK6i52c3bz5w6zMSA6tJn28d2Lx589nnCAYu63AaSLxJRLoJPwAAeNk0aG4opfMAAAAASUVORK5CYII=");
++  background-repeat: no-repeat;
++  background-position: left center;
++}
++
++.line_caret { /* Current line */
++  background: #dae2ee; /* lighter than the background */
++}
++
++.readonly .line_caret {
++  background: #cddae5; /* a bit darker than the background */
++}
++
++/* Styling for html syntax highlighting */
++.entity-name-tag {
++  color: #dd0058; /* purple */
++}
++
++.entity-other-attribute-name {
++  color: #dd0058; /* purple */
++}
++
++.punctuation-definition-comment {
++  color: #45a946; /* green */
++}
++
++.comment {
++  color: #45a946; /* green */
++}
++
++.string-quoted {
++  color: #1e66b1; /* blue */
++  font-style: italic;
++}
++
++.invalid {
++  color: red;
++  font-weight: bold;
++}
++
++.annotationRange.matchingBracket {
++  outline: 1px solid grey;
++}
+diff --git a/browser/themes/pinstripe/jar.mn b/browser/themes/pinstripe/jar.mn
+--- a/browser/themes/pinstripe/jar.mn
++++ b/browser/themes/pinstripe/jar.mn
+@@ -124,16 +124,17 @@ browser.jar:
+   skin/classic/browser/tabview/stack-expander.png           (tabview/stack-expander.png)
+   skin/classic/browser/tabview/tabview.png                  (tabview/tabview.png)
+   skin/classic/browser/tabview/tabview.css                  (tabview/tabview.css)
+ * skin/classic/browser/devtools/common.css                  (devtools/common.css)
+   skin/classic/browser/devtools/arrows.png                  (devtools/arrows.png)
+   skin/classic/browser/devtools/goto-mdn.png                (devtools/goto-mdn.png)
+   skin/classic/browser/devtools/csshtmltree.css             (devtools/csshtmltree.css)
+   skin/classic/browser/devtools/gcli.css                    (devtools/gcli.css)
++  skin/classic/browser/devtools/orion.css                   (devtools/orion.css)
+   skin/classic/browser/devtools/toolbarbutton-close.png     (devtools/toolbarbutton-close.png)
+ * skin/classic/browser/devtools/webconsole.css                  (devtools/webconsole.css)
+   skin/classic/browser/devtools/webconsole_networkpanel.css     (devtools/webconsole_networkpanel.css)
+   skin/classic/browser/devtools/webconsole.png                  (devtools/webconsole.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-end-pressed.png              (devtools/breadcrumbs/ltr-end-pressed.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-end-selected-pressed.png     (devtools/breadcrumbs/ltr-end-selected-pressed.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-end-selected.png             (devtools/breadcrumbs/ltr-end-selected.png)
+   skin/classic/browser/devtools/breadcrumbs/ltr-end.png                      (devtools/breadcrumbs/ltr-end.png)
+diff --git a/browser/themes/winstripe/devtools/orion.css b/browser/themes/winstripe/devtools/orion.css
+new file mode 100644
+--- /dev/null
++++ b/browser/themes/winstripe/devtools/orion.css
+@@ -0,0 +1,121 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
++ * You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++.viewContainer {
++  background: #cddae5; /* This will be seen as the continuation of the ruler */
++  font-family: monospace;
++  font-size: inherit; /* inherit browser's default monospace font size */
++}
++
++.view {
++  color: black; /* Default text color */
++  background: #f0f0ff; /* Background of the editor */
++  padding-left: 0;
++}
++
++.readonly > .view {
++  background: #f0f0ff;
++}
++
++/* One line */
++.viewContent > div {
++  padding-left: 4px; /* Margin between the ruler and the editor */
++}
++
++/* Styles for the line number ruler */
++.rulerLines {
++  border-right: 1px solid #b4c4d3;
++  background: #cddae5;
++  color: #7a8a99;
++  padding-left: 4px;
++  padding-right: 4px;
++  text-align: end;
++}
++
++.token_singleline_comment {
++  color: #45a946; /* green */
++}
++
++.token_multiline_comment {
++  color: #45a946; /* green */
++}
++
++.token_doc_comment {
++  color: #45a946; /* green */
++}
++
++.token_doc_html_markup {
++  color: #dd0058; /* purple */
++}
++
++.token_doc_tag {
++  color: #dd0058; /* purple */
++}
++
++.token_task_tag { /* "TODO" */
++  color: black;
++  background: yellow;
++}
++
++.token_string {
++  color: #1e66b1; /* blue */
++  font-style: italic;
++}
++
++.token_keyword {
++  color: #dd0058; /* purple */
++}
++
++.token_space {
++  /* images/white_space.png */
++  background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAkAAAAJCAIAAABv85FHAAAABnRSTlMA/wAAAACkwsAdAAAAIUlEQVR4nGP4z8CAC+GUIEXuABhgkTuABEiRw2cmae4EAH05X7xDolNRAAAAAElFTkSuQmCC");
++  background-repeat: no-repeat;
++  background-position: center center;
++}
++
++.token_tab {
++  /* images/white_tab.png */
++  background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAJCAIAAACJ2loDAAAABnRSTlMA/wD/AP83WBt9AAAAMklEQVR4nGP4TwRgoK6i52c3bz5w6zMSA6tJn28d2Lx589nnCAYu63AaSLxJRLoJPwAAeNk0aG4opfMAAAAASUVORK5CYII=");
++  background-repeat: no-repeat;
++  background-position: left center;
++}
++
++.line_caret { /* Current line */
++  background: #dae2ee; /* lighter than the background */
++}
++
++.readonly .line_caret {
++  background: #cddae5; /* a bit darker than the background */
++}
++
++/* Styling for html syntax highlighting */
++.entity-name-tag {
++  color: #dd0058; /* purple */
++}
++
++.entity-other-attribute-name {
++  color: #dd0058; /* purple */
++}
++
++.punctuation-definition-comment {
++  color: #45a946; /* green */
++}
++
++.comment {
++  color: #45a946; /* green */
++}
++
++.string-quoted {
++  color: #1e66b1; /* blue */
++  font-style: italic;
++}
++
++.invalid {
++  color: red;
++  font-weight: bold;
++}
++
++.annotationRange.matchingBracket {
++  outline: 1px solid grey;
++}
+diff --git a/browser/themes/winstripe/jar.mn b/browser/themes/winstripe/jar.mn
+--- a/browser/themes/winstripe/jar.mn
++++ b/browser/themes/winstripe/jar.mn
+@@ -108,16 +108,17 @@ browser.jar:
+         skin/classic/browser/tabview/tabview.png                    (tabview/tabview.png)
+         skin/classic/browser/tabview/tabview-inverted.png           (tabview/tabview-inverted.png)
+         skin/classic/browser/tabview/tabview.css                    (tabview/tabview.css)
+         skin/classic/browser/devtools/common.css                    (devtools/common.css)
+         skin/classic/browser/devtools/arrows.png                    (devtools/arrows.png)
+         skin/classic/browser/devtools/goto-mdn.png                  (devtools/goto-mdn.png)
+         skin/classic/browser/devtools/csshtmltree.css               (devtools/csshtmltree.css)
+         skin/classic/browser/devtools/gcli.css                      (devtools/gcli.css)
++        skin/classic/browser/devtools/orion.css                     (devtools/orion.css)
+         skin/classic/browser/devtools/toolbarbutton-close.png       (devtools/toolbarbutton-close.png)
+         skin/classic/browser/devtools/webconsole.css                  (devtools/webconsole.css)
+         skin/classic/browser/devtools/webconsole_networkpanel.css     (devtools/webconsole_networkpanel.css)
+         skin/classic/browser/devtools/webconsole.png                  (devtools/webconsole.png)
+         skin/classic/browser/devtools/breadcrumbs/ltr-end-pressed.png              (devtools/breadcrumbs/ltr-end-pressed.png)
+         skin/classic/browser/devtools/breadcrumbs/ltr-end-selected-pressed.png     (devtools/breadcrumbs/ltr-end-selected-pressed.png)
+         skin/classic/browser/devtools/breadcrumbs/ltr-end-selected.png             (devtools/breadcrumbs/ltr-end-selected.png)
+         skin/classic/browser/devtools/breadcrumbs/ltr-end.png                      (devtools/breadcrumbs/ltr-end.png)
+@@ -270,16 +271,17 @@ browser.jar:
+         skin/classic/aero/browser/tabview/tabview.png                (tabview/tabview.png)
+         skin/classic/aero/browser/tabview/tabview-inverted.png       (tabview/tabview-inverted.png)
+         skin/classic/aero/browser/tabview/tabview.css                (tabview/tabview.css)
+         skin/classic/aero/browser/devtools/common.css                (devtools/common.css)
+         skin/classic/aero/browser/devtools/arrows.png                (devtools/arrows.png)
+         skin/classic/aero/browser/devtools/goto-mdn.png              (devtools/goto-mdn.png)
+         skin/classic/aero/browser/devtools/csshtmltree.css           (devtools/csshtmltree.css)
+         skin/classic/aero/browser/devtools/gcli.css                  (devtools/gcli.css)
++        skin/classic/aero/browser/devtools/orion.css                 (devtools/orion.css)
+         skin/classic/aero/browser/devtools/toolbarbutton-close.png   (devtools/toolbarbutton-close.png)
+         skin/classic/aero/browser/devtools/webconsole.css                  (devtools/webconsole.css)
+         skin/classic/aero/browser/devtools/webconsole_networkpanel.css     (devtools/webconsole_networkpanel.css)
+         skin/classic/aero/browser/devtools/webconsole.png                  (devtools/webconsole.png)
+         skin/classic/aero/browser/devtools/breadcrumbs/ltr-end-pressed.png              (devtools/breadcrumbs/ltr-end-pressed.png)
+         skin/classic/aero/browser/devtools/breadcrumbs/ltr-end-selected-pressed.png     (devtools/breadcrumbs/ltr-end-selected-pressed.png)
+         skin/classic/aero/browser/devtools/breadcrumbs/ltr-end-selected.png             (devtools/breadcrumbs/ltr-end-selected.png)
+         skin/classic/aero/browser/devtools/breadcrumbs/ltr-end.png                      (devtools/breadcrumbs/ltr-end.png)

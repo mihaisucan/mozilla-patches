@@ -1,0 +1,893 @@
+diff -r 771ddc7c8c16 toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm	Wed Jul 07 21:12:15 2010 +0300
++++ b/toolkit/components/console/hudservice/HUDService.jsm	Fri Jul 09 21:22:24 2010 +0300
+@@ -726,17 +726,17 @@ HUD_SERVICE.prototype =
+       }
+     }
+     else {
+       // log everything
+       aConsoleNode.appendChild(aMessageNode);
+       aMessageNode.scrollIntoView(false);
+     }
+     // store this message in the storage module:
+-    this.storage.recordEntry(aMessage.hudId, aMessage);
++    this.storage.recordEntry(aMessage);
+   },
+ 
+   /**
+    * logs a message to the Heads Up Display that originates
+    * in the nsIConsoleService
+    *
+    * @param nsIConsoleMessage aMessage
+    * @param nsIDOMNode aConsoleNode
+@@ -749,17 +749,17 @@ HUD_SERVICE.prototype =
+                                                    aFilterState,
+                                                    aFilterString)
+   {
+     if (aFilterState){
+       aConsoleNode.appendChild(aMessageNode);
+       aMessageNode.scrollIntoView(false);
+     }
+     // store this message in the storage module:
+-    this.storage.recordEntry(aMessage.hudId, aMessage);
++    this.storage.recordEntry(aMessage);
+   },
+ 
+   /**
+    * Logs a Message.
+    * @param aMessage
+    *        The message to log, which is a JS object, this is the
+    *        "raw" log message
+    * @param aConsoleNode
+@@ -3233,45 +3233,75 @@ HeadsUpDisplayUICommands = {
+ };
+ 
+ //////////////////////////////////////////////////////////////////////////
+ // ConsoleStorage
+ //////////////////////////////////////////////////////////////////////////
+ 
+ var prefs = Services.prefs;
+ 
+-const GLOBAL_STORAGE_INDEX_ID = "GLOBAL_CONSOLE";
+ const PREFS_BRANCH_PREF = "devtools.hud.display.filter";
+ const PREFS_PREFIX = "devtools.hud.display.filter.";
+ const PREFS = { mutation: PREFS_PREFIX + "mutation",
+                 network: PREFS_PREFIX + "network",
+                 cssparser: PREFS_PREFIX + "cssparser",
+                 exception: PREFS_PREFIX + "exception",
+                 error: PREFS_PREFIX + "error",
+                 info: PREFS_PREFIX + "info",
+                 warn: PREFS_PREFIX + "warn",
+                 log: PREFS_PREFIX + "log",
+                 global: PREFS_PREFIX + "global",
+               };
+ 
+ function ConsoleStorage()
+ {
+   this.sequencer = null;
+-  this.consoleDisplays = {};
+-  // each display will have an index that tracks each ConsoleEntry
+-  this.displayIndexes = {};
+-  this.globalStorageIndex = [];
+-  this.globalDisplay = {};
+-  this.createDisplay(GLOBAL_STORAGE_INDEX_ID);
+-  // TODO: need to create a method that truncates the message
+-  // see bug 570543
++
++  // All entries are stored here. Each element is an entry, and the key is the 
++  // ID.
++  this.entries = {};
++
++  // Entries associated to their HUDs. Keys hold the hudId, and the values are 
++  // arrays with IDs of entries belonging to each HUD.
++  this.hudIndex = {};
+ 
+   // store an index of display prefs
+   this.displayPrefs = {};
+ 
++  // Index size. This keeps track of how many entries are in the index.
++  this.indexSize = 0;
++
++  // Index space. This is used to track how many entries are freed in the 
++  // hudIndex.
++  this.indexSpace = 0;
++
++  // The first entry in storage. This is also the oldest entry.
++  this.firstEntry = null;
++
++  // The last entry in storage. This is also the newest entry.
++  this.newestEntry = null;
++
++  // The maximum number of stored entries. This is the global value, meaning 
++  // that the storage will not hold more entries than allowed here, irrespective 
++  // of the number of HUDs.
++  this.maxEntries = 5000;
++
++  // Entries older than N seconds will be deleted.
++  this.oldestEntryAllowed = 300; // seconds
++
++  // The truncation interval in seconds. How often should the entries be 
++  // truncated?
++  this.truncationDelay = 30; // seconds
++
++  // The truncation interval.
++  // @private
++  // FIXME: which chromeWindow?
++  //this.truncationInterval_ = chromeWindow.setInterval(this.truncateEntries,
++  //  this.truncationDelay);
++
+   // check prefs for existence, create & load if absent, load them if present
+   let filterPrefs;
+   let defaultDisplayPrefs;
+ 
+   try {
+     filterPrefs = prefs.getBoolPref(PREFS_BRANCH_PREF);
+   }
+   catch (ex) {
+@@ -3333,134 +3363,338 @@ ConsoleStorage.prototype = {
+     prefs.setBoolPref(PREFS.exception, (aPrefsObject.exception ? true : false));
+     prefs.setBoolPref(PREFS.error, (aPrefsObject.error ? true : false));
+     prefs.setBoolPref(PREFS.info, (aPrefsObject.info ? true : false));
+     prefs.setBoolPref(PREFS.warn, (aPrefsObject.warn ? true : false));
+     prefs.setBoolPref(PREFS.log, (aPrefsObject.log ? true : false));
+     prefs.setBoolPref(PREFS.global, (aPrefsObject.global ? true : false));
+   },
+ 
+-  sequenceId: function CS_sequencerId()
++  sequenceId: function CS_sequenceId()
+   {
+     if (!this.sequencer) {
+       this.sequencer = this.createSequencer();
+     }
+     return this.sequencer.next();
+   },
+ 
+   createSequencer: function CS_createSequencer()
+   {
+     function sequencer(aInt) {
+       while(1) {
+         aInt++;
+         yield aInt;
+       }
+     }
+-    return sequencer(-1);
++    return sequencer(0);
+   },
+ 
+-  globalStore: function CS_globalStore(aIndex)
++  /**
++   * Record multiple entries at once.
++   *
++   * @param array aEntries the array of entries you want recorded.
++   * @returns boolean true if all entries were added without any errors, or 
++   * false otherwise.
++   */
++  recordEntries: function CS_recordEntries(aEntries)
+   {
+-    return this.displayStore(GLOBAL_CONSOLE_DOM_NODE_ID);
++    var result = true;
++    for (let i = 0, n = aEntries.length; i < n; i++) {
++      if (!this.recordEntry(aEntries[i])) {
++        result = false;
++      }
++    }
++    return result;
+   },
+ 
+-  displayStore: function CS_displayStore(aId)
++  /**
++   * Retrieve the stored entries by HUD ID.
++   *
++   * @param aHudId the HUD ID you want.
++   * @returns generator over entries belonging to the given HUD ID.
++   */
++  displayStore: function CS_displayStore(aHudId)
+   {
+     var self = this;
+-    var idx = -1;
+-    var id = aId;
+-    var aLength = self.displayIndexes[id].length;
+-
+-    function displayStoreGenerator(aInt, aLength)
+-    {
+-      // create a generator object to iterate through any of the display stores
+-      // from any index-starting-point
+-      while(1) {
+-        // throw if we exceed the length of displayIndexes?
+-        aInt++;
+-        var indexIt = self.displayIndexes[id];
+-        var index = indexIt[aInt];
+-        if (aLength < aInt) {
+-          // try to see if we have more entries:
+-          var newLength = self.displayIndexes[id].length;
+-          if (newLength > aLength) {
+-            aLength = newLength;
+-          }
+-          else {
+-            throw new StopIteration();
+-          }
+-        }
+-        var entry = self.consoleDisplays[id][index];
+-        yield entry;
++
++    if (!(aHudId in self.hudIndex)) {
++      return;
++    }
++
++    if (!pos) {
++      pos = 0;
++    }
++
++    var pos = self.hudIndex[aHudId].space_ - 1;
++
++    while(1) {
++      pos++;
++
++      if (!(aHudId in self.hudIndex)) {
++        break;
++      }
++
++      let index = self.hudIndex[aHudId];
++
++      // skip any removed entries.
++      if (index.space_ > pos) {
++        pos = index.space_;
++      }
++
++      let id = index[pos];
++      if (!id) {
++        // we have reached the end of the array for this HUD.
++        break;
++      }
++
++      if (!(id in self.entries)) {
++        // we may have reached an element that was deleted in the meantime.
++        continue;
++      }
++
++      let reset = yield self.entries[id];
++      if (reset) {
++        pos = index.space_ - 1;
+       }
+     }
+-
+-    return displayStoreGenerator(-1, aLength);
+   },
+ 
+-  recordEntries: function CS_recordEntries(aHUDId, aConfigArray)
++  /**
++   * Record an entry in the storage.
++   *
++   * @param object aEntry the entry object.
++   * @returns integer the entry ID.
++   */
++  recordEntry: function CS_recordEntry(aEntry)
+   {
+-    var len = aConfigArray.length;
+-    for (var i = 0; i < len; i++){
+-      this.recordEntry(aHUDId, aConfigArray[i]);
++    var id = this.sequenceId();
++    var hudId = aEntry.hudId || aEntry.hudId == 0 ? aEntry.hudId : -1;
++    if (!(hudId in this.hudIndex)) {
++      this.createDisplay(hudId);
++    }
++
++    aEntry.storageId = id;
++
++    if (this.lastEntry) {
++      aEntry.previousEntry = this.lastEntry;
++      this.entries[this.lastEntry].nextEntry = id;
++    }
++    this.lastEntry = id;
++
++    if (!this.indexSize) {
++      this.firstEntry = id;
++    }
++
++    this.entries[id] = aEntry;
++    this.hudIndex[hudId].push(id);
++    this.indexSize++;
++
++    // Execute the truncateEntries() method every 10 entries.
++    // FIXME: this code is here instead of executing the truncation with an 
++    // interval.
++    if (!(this.indexSize % 10)) {
++      this.truncateEntries();
++    }
++
++    return id;
++  },
++
++  /**
++   * Retrieve an entry from the storage.
++   *
++   * @param integer aId The entry ID.
++   * @returns object The entry object.
++   */
++  getEntry: function CS_getEntry(aId)
++  {
++    return this.entries[aId];
++  },
++
++  /**
++   * Update an entry in the storage.
++   *
++   * @param object aEntry the entry object, which must have the storageId 
++   * property to indicate which entry will be updated.
++   * @returns boolean True if the update was sucessful, or false otherwise.
++   */
++  updateEntry: function CS_updateEntry(aEntry)
++  {
++    // TODO: update networking log entries with subsequent http transactions
++    // see bug 568634
++
++    if (!("storageId" in aEntry) || !(aEntry.storageId in this.entries)) {
++      return false;
++    }
++
++    var oldEntry = this.entries[aEntry.storageId];
++    aEntry.previousEntry = oldEntry.previousEntry;
++    aEntry.nextEntry = oldEntry.nextEntry;
++
++    this.entries[aEntry.storageId] = aEntry;
++
++    return true;
++  },
++
++  /**
++   * Register a HUD in the console storage.
++   *
++   * @param aId the HUD ID.
++   * @returns boolean true if successful, or false otherwise.
++   */
++  createDisplay: function CS_createDisplay(aHudId)
++  {
++    if (!(aHudId in this.hudIndex)) {
++      this.hudIndex[aHudId] = [];
++      this.hudIndex[aHudId].space_ = 0;
++      return true;
++    }
++    else {
++      return false;
+     }
+   },
+ 
+-
+-  recordEntry: function CS_recordEntry(aHUDId, aConfig)
++  /**
++   * Unregister a HUD. This clears all the entries associated with the HUD.
++   *
++   * @param aId the HUD ID.
++   * @returns boolean true if successful, or false otherwise.
++   */
++  removeDisplay: function CS_removeDisplay(aHudId)
+   {
+-    var id = this.sequenceId();
+-
+-    this.globalStorageIndex[id] = { hudId: aHUDId };
+-
+-    var displayStorage = this.consoleDisplays[aHUDId];
+-
+-    var displayIndex = this.displayIndexes[aHUDId];
+-
+-    if (displayStorage && displayIndex) {
+-      var entry = new ConsoleEntry(aConfig, id);
+-      displayIndex.push(entry.id);
+-      displayStorage[entry.id] = entry;
+-      return entry;
++    if (!(aHudId in this.hudIndex)) {
++      return false;
+     }
+-    else {
+-      throw new Error("Cannot get displayStorage or index object for id " + aHUDId);
++
++    var hudEntries = this.hudIndex[aHudId];
++    var entry, id;
++    for (let i = hudEntries.space_, n = hudEntries.length; i < n; i++) {
++      id = hudEntries[i];
++      entry = this.entries[id];
++      // some entries may have been truncated already, if hudEntries.space_ > 0.
++      if (!entry) {
++        continue;
++      }
++
++      if (this.firstEntry == id) {
++        this.firstEntry = entry.nextEntry;
++      }
++
++      if (this.lastEntry == id) {
++        this.lastEntry = entry.previousEntry;
++      }
++
++      if (entry.previousEntry) {
++        this.entries[entry.previousEntry].nextEntry = entry.nextEntry;
++      }
++
++      if (entry.nextEntry) {
++        this.entries[entry.nextEntry].previousEntry = entry.previousEntry;
++      }
++
++      delete this.entries[entry.storageId];
++      this.indexSize--;
++    }
++
++    this.indexSpace -= hudEntries.space_;
++    hudEntries = null;
++    delete this.hudIndex[aHudId];
++
++    return true;
++  },
++
++  /**
++   * Truncate stored entries. This function removes the oldest entries.
++   * @returns void
++   */
++  truncateEntries: function CS_truncateEntries()
++  {
++    if (!this.indexSize) {
++      return;
++    }
++
++    // Remove anything that is above the limit of maximum number of allowed 
++    // entries.
++    if (this.indexSize > this.maxEntries) {
++      let diff = this.indexSize - this.maxEntries;
++      let entry = this.entries[this.firstEntry];
++      for (let nextEntry, i = 0; entry && i < diff; i++) {
++        nextEntry = entry.nextEntry;
++
++        this.firstEntry = nextEntry;
++        this.hudIndex[entry.hudId].space_++;
++        this.indexSpace++;
++        this.indexSize--;
++        delete this.entries[entry.storageId];
++
++        if (nextEntry) {
++          entry = this.entries[nextEntry];
++          delete entry.previousEntry;
++        }
++        else {
++          break;
++        }
++      }
++    }
++
++    // Remove obsolete entries.
++    var ts = ConsoleUtils.timestamp() - this.oldestEntryAllowed*1000;
++    var entry = this.entries[this.firstEntry];
++    for (let nextEntry, i = 0, n = this.indexSize; entry && i < n; i++) {
++      nextEntry = entry.nextEntry;
++
++      if (entry.timestamp < ts) {
++        this.firstEntry = nextEntry;
++        this.hudIndex[entry.hudId].space_++;
++        this.indexSpace++;
++        this.indexSize--;
++        delete this.entries[entry.storageId];
++
++        if (nextEntry) {
++          entry = this.entries[nextEntry];
++          delete entry.previousEntry;
++        }
++        else {
++          break;
++        }
++      }
++      else if (entry.timestamp >= ts) {
++        break;
++      }
++    }
++
++    if (!this.indexSize) {
++      this.clearAll(); // ensure everything is cleared.
++    }
++
++    // Clean the hudIndex, if needed.
++    if (this.indexSpace >= (this.indexSize/2)) {
++      let hud;
++      for (let hudId in this.hudIndex) {
++        hud = this.hudIndex[hudId];
++        if (hud.space_) {
++          hud.splice(0, hud.space_);
++          hud.space_ = 0;
++        }
++      }
++      this.indexSpace = 0;
+     }
+   },
+ 
+-  getEntry: function CS_getEntry(aId)
++  /**
++   * Clear the storage by removing all entries.
++   * @returns void
++   */
++  clearAll: function CS_clearAll()
+   {
+-    var display = this.globalStorageIndex[aId];
+-    var storName = display.hudId;
+-    return this.consoleDisplays[storName][aId];
+-  },
+-
+-  updateEntry: function CS_updateEntry(aUUID)
+-  {
+-    // update an individual entry
+-    // TODO: see bug 568634
+-  },
+-
+-  createDisplay: function CS_createdisplay(aId)
+-  {
+-    if (!this.consoleDisplays[aId]) {
+-      this.consoleDisplays[aId] = {};
+-      this.displayIndexes[aId] = [];
+-    }
+-  },
+-
+-  removeDisplay: function CS_removeDisplay(aId)
+-  {
+-    try {
+-      delete this.consoleDisplays[aId];
+-      delete this.displayIndexes[aId];
+-    }
+-    catch (ex) {
+-      Cu.reportError("Could not remove console display for id " + aId);
+-    }
++    this.entries = {};
++    this.hudIndex = {};
++    this.indexSpace = 0;
++    this.indexSize = 0;
++    this.firstEntry = null;
++    this.lastEntry = null;
+   }
+ };
+ 
+ /**
+  * A Console log entry
+  *
+  * @param JSObject aConfig, object literal with ConsolEntry properties
+  * @param integer aId
+diff -r 771ddc7c8c16 toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Wed Jul 07 21:12:15 2010 +0300
++++ b/toolkit/components/console/hudservice/tests/browser/browser_HUDServiceTestsAll.js	Fri Jul 09 21:22:24 2010 +0300
+@@ -347,92 +347,270 @@ function testCompletion()
+   // Test pressing shift_tab.
+   jsterm.complete(jsterm.COMPLETE_BACKWARD);
+   is(input.value, "document.getElementById", "'document.getElem' untab completion");
+   is(input.selectionStart, 16, "start selection is alright");
+   is(input.selectionEnd, 23, "end selection is alright");
+ }
+ 
+ function testCreateDisplay() {
+-  ok(typeof cs.consoleDisplays == "object",
+-     "consoledisplays exist");
+-  ok(typeof cs.displayIndexes == "object",
+-     "console indexes exist");
+-  cs.createDisplay("foo");
+-  ok(typeof cs.consoleDisplays["foo"] == "object",
+-     "foo display exists");
+-  ok(typeof cs.displayIndexes["foo"] == "object",
+-     "foo index exists");
++  ok(typeof cs.entries == "object", "cs.entries exists");
++  ok(typeof cs.hudIndex == "object", "cs.hudIndex exists");
++
++  ok(cs.createDisplay("foo"), "cs.createDisplay() worked");
++
++  ok(typeof cs.hudIndex.foo == "object", "cs.hudIndex.foo exists");
++
++  ok(!cs.createDisplay("foo"), "cs.createDisplay() worked again");
++
++  ok(cs.removeDisplay("foo"), "cs.removeDisplay() worked");
++
++  ok(!cs.hudIndex.foo, "cs.hudIndex.foo was removed");
++
++  ok(!cs.removeDisplay("foo"), "cs.removeDisplay() worked again");
+ }
+ 
+ function testRecordEntry() {
+-  var config = {
++  cs.clearAll();
++  is(cs.indexSize, 0, "storage is empty");
++
++  var entry = {
++    id: 0,
++    hudId: "foo",
++    logLevel: "network",
++    message: "HumminaHummina!",
++    timestamp: (new Date()).getTime() - 60000,
++    activity: {
++      stage: "barStage",
++      data: "bar bar bar bar"
++    }
++  };
++
++  var storageId = cs.recordEntry(entry);
++  ok(!isNaN(storageId), "storageId is a number");
++  is(entry.storageId, storageId, "entry.storageId == " + storageId);
++
++  is(cs.indexSize, 1, "we added one entry");
++  ok(cs.entries[storageId], "entry found in storage");
++
++  is(cs.hudIndex.foo.length, 1, "hudIndex.foo.length == 1");
++
++  entry = cs.getEntry(storageId);
++  is(entry.storageId, storageId,
++    "we got the entry back through the getEntry() interface");
++  is(entry.id, 0, "entry.id == 0");
++
++  is(cs.firstEntry, entry.storageId, "cs.firstEntry == " + entry.storageId);
++  is(cs.lastEntry, entry.storageId, "cs.lastEntry == " + entry.storageId);
++}
++
++function testRecordManyEntries() {
++  var entries = [];
++  var ts = (new Date()).getTime();
++
++  for (let entry, i = 1; i < 1000; i++){
++    entry = {
++      id: i,
++      hudId: "foo",
++      logLevel: "network",
++      message: "HumminaHummina!",
++      timestamp: ts+i,
++      activity: {
++        stage: "barStage",
++        data: "bar bar bar bar"
++      }
++    };
++    entries.push(entry);
++  }
++
++  var start = Date.now();
++  ok(cs.recordEntries(entries), "recordEntries() was successful");
++  var elapsed = Date.now() - start;
++
++  is(cs.indexSize, entries.length+1, cs.indexSize +
++    " entries in storage now. it took " + elapsed + " ms");
++
++  is(cs.hudIndex.foo.length, entries.length + 1,
++    "hudIndex.foo holds " + (entries.length + 1));
++
++  var firstEntry = cs.getEntry(cs.firstEntry);
++  var secondEntry = cs.getEntry(firstEntry.nextEntry);
++  var lastEntry = cs.getEntry(cs.lastEntry);
++  var secondToLastEntry = cs.getEntry(lastEntry.previousEntry);
++
++  is(firstEntry.id, 0, "cs.firstEntry.id == 0");
++  is(secondEntry.id, 1, "secondEntry.id == 1");
++  is(lastEntry.id, 999, "cs.lastEntry.id == 999");
++  is(secondToLastEntry.id, 998, "secondToLastEntry.id == 998");
++}
++
++function testRemoveDisplay() {
++  var entries = [];
++
++  for (let i = 0; i < 3; i++) {
++    entries.push({
++      id: 2000,
++      hudId: "foo2",
++      logLevel: "network",
++      message: "HumminaHummina!",
++      activity: {
++        stage: "barStage",
++        data: "bar bar bar bar"
++    }});
++  }
++
++  entries[2].hudId = 'foo3';
++
++  cs.recordEntries(entries);
++
++  is(cs.indexSize, 1003, "cs.indexSize == 1002");
++  is(cs.hudIndex.foo2.length, 2, "cs.hudIndex.foo2.length == 2");
++  is(cs.hudIndex.foo3.length, 1, "cs.hudIndex.foo3.length == 1");
++
++  is(cs.lastEntry, entries[2].storageId,
++      "cs.lastEntry == " + entries[2].storageId);
++  is(cs.getEntry(entries[0].previousEntry).id, 999,
++    "cs.getEntry(entries[0].previousEntry).id == 999");
++
++  ok(cs.removeDisplay("foo2"), "cs.removeDisplay('foo2') worked");
++
++  is(cs.getEntry(entries[2].previousEntry).id, 999,
++    "cs.getEntry(entries[2].previousEntry).id == 999");
++  is(cs.getEntry(entries[2].previousEntry).nextEntry, entries[2].storageId,
++    "cs.getEntry(entries[2].previousEntry).nextEntry == " +
++    entries[2].storageId);
++
++  ok(cs.removeDisplay("foo3"), "cs.removeDisplay('foo3') worked");
++
++  is(cs.getEntry(cs.lastEntry).id, 999, "cs.getEntry(cs.lastEntry).id == 999");
++
++  is(cs.indexSpace, 0, "cs.indexSpace == 0");
++  is(cs.indexSize, 1000, "cs.indexSize == 1000");
++}
++
++function testUpdateEntry() {
++  var entry = {
++    id: 1000,
++    hudId: "foo",
+     logLevel: "network",
+     message: "HumminaHummina!",
+     activity: {
+       stage: "barStage",
+       data: "bar bar bar bar"
+     }
+   };
+-  var entry = cs.recordEntry("foo", config);
+-  var res = entry.id;
+-  ok(entry.id != null, "Entry.id is: " + res);
+-  ok(cs.displayIndexes["foo"].length == 1,
+-     "We added one entry.");
+-  entry = cs.getEntry(res);
+-  ok(entry.id > -1,
+-     "We got an entry through the global interface");
++
++  var storageId = cs.recordEntry(entry);
++  ok(storageId, "record new entry");
++  is(cs.indexSize, 1001, "cs.indexSize == 1001");
++
++  entry.newProperty = "new value";
++  entry.message = "HumminaHumminaUpdate!";
++
++  ok(cs.updateEntry(entry), "cs.updateEntry() was successful");
++
++  entry = cs.getEntry(storageId);
++  is(entry.storageId, storageId,
++    "we got the updated entry back through the getEntry() interface");
++  is(entry.id, 1000, "entry.id == 1000");
++  is(entry.newProperty, "new value", "entry.newProperty is correct");
++  is(entry.message, "HumminaHumminaUpdate!", "entry.message is correct");
++  is(cs.getEntry(entry.previousEntry).id, 999, "entry.previousEntry.id == 999");
++  is(cs.lastEntry, entry.storageId, "cs.lastEntry == " + entry.storageId);
+ }
+ 
+-function testRecordManyEntries() {
+-  var configArr = [];
++function testStorageTruncate() {
++  // make sure the current state is as expected.
++  is(cs.indexSize, 1001, "cs.indexSize == 1001");
++  is(cs.indexSpace, 0, "cs.indexSpace == 0");
+ 
+-  for (var i = 0; i < 1000; i++){
+-    let config = {
+-      logLevel: "network",
+-      message: "HumminaHummina!",
+-      activity: {
+-        stage: "barStage",
+-        data: "bar bar bar bar"
+-      }
+-    };
+-    configArr.push(config);
+-  }
++  cs.maxEntries = 2000;
++  cs.oldestEntryAllowed = 80;
+ 
+-  var start = Date.now();
+-  cs.recordEntries("foo", configArr);
+-  var end = Date.now();
+-  var elapsed = end - start;
+-  ok(cs.displayIndexes["foo"].length == 1001,
+-     "1001 entries in foo now");
++  // the following must have no effect, because the entries we have are not too 
++  // many and they are not too old.
++  cs.truncateEntries();
++
++  is(cs.indexSize, 1001, "cs.indexSize == 1001");
++  is(cs.indexSpace, 0, "cs.indexSpace == 0");
++
++  // this must remove the first entry we added. it has a timestamp of over 50 
++  // seconds.
++  cs.oldestEntryAllowed = 50;
++  cs.truncateEntries();
++
++  is(cs.indexSpace, 1, "cs.indexSpace == 1");
++  is(cs.indexSize, 1000, "cs.indexSize == 1000");
++  is(cs.hudIndex.foo.length, 1001, "cs.hudIndex.foo.length == 1001");
++  is(cs.hudIndex.foo.space_, 1, "cs.hudIndex.foo.space_ == 1");
++
++  // try to retrieve the entry that was removed. here it is expected that the 
++  // entry.storageId still exists in hudIndex.foo[0].
++  ok(!cs.getEntry(cs.hudIndex.foo[0]), "oldest entry truncated");
++
++  is(cs.getEntry(cs.firstEntry).id, 1, "cs.firstEntry.id == 1");
++
++  // this must remove 300 of the oldest entries.
++  cs.maxEntries = 700;
++  cs.truncateEntries();
++
++  is(cs.indexSpace, 301, "cs.indexSpace == 301");
++  is(cs.indexSize, cs.maxEntries, "cs.indexSize == " + cs.maxEntries);
++  is(cs.hudIndex.foo.length, 1001, "cs.hudIndex.foo.length == 1001");
++  is(cs.hudIndex.foo.space_, 301, "cs.hudIndex.foo.space_ == 301");
++
++  is(cs.getEntry(cs.firstEntry).id, 301, "cs.firstEntry.id == 301");
++
++  // this must remove another set of 500 of the oldest entries.
++  cs.maxEntries = 200;
++  cs.truncateEntries();
++
++  // this time we expect indexSpace to be 0, and that the actual clean up of 
++  // hudIndex has been performed. we expect this because cs.indexSpace > 
++  // cs.hudIndex.length/2.
++  is(cs.indexSpace, 0, "cs.indexSpace == 0");
++  is(cs.indexSize, cs.maxEntries, "cs.indexSize == " + cs.maxEntries);
++  is(cs.hudIndex.foo.length, cs.maxEntries, "cs.hudIndex.foo.length == " +
++    cs.maxEntries);
++  is(cs.hudIndex.foo.space_, 0, "cs.hudIndex.foo.space_ == 0");
++
++  // check if the oldest entry is the correct one
++  is(cs.getEntry(cs.firstEntry).id, 801, "cs.firstEntry.id == 801");
++
++  // check if the newest entry is the correct one
++  is(cs.getEntry(cs.lastEntry).id, 1000, "cs.lastEntry.id == 1000");
+ }
+ 
+ function testIteration() {
+-  var id = "foo";
+-  var it = cs.displayStore(id);
+-  var entry = it.next();
+-  var entry2 = it.next();
++  var it = cs.displayStore("foo");
++  var entries = [];
+ 
+-  let entries = [];
+-  for (var i = 0; i < 100; i++) {
+-    let _entry = it.next();
+-    entries.push(_entry);
++  for (let entry, i = 0; i < 100; i++) {
++    entry = it.next();
++    entries.push(entry);
+   }
+ 
+-  ok(entries.length == 100, "entries length == 100");
++  is(entries.length, 100, "entries.length == 100");
+ 
+-  let entries2 = [];
++  var entries2 = [];
+ 
+-  for (var i = 0; i < 100; i++){
+-    let _entry = it.next();
+-    entries2.push(_entry);
++  for (let entry, i = 0; i < 100; i++){
++    entry = it.next();
++    entries2.push(entry);
+   }
+ 
+-  ok(entries[0].id != entries2[0].id,
+-     "two distinct pages of log entries");
++  is(entries2.length, 100, "entries2.length == 100");
++
++  is(entries[0].id, 801, "entries[0].id == 801");
++  is(entries[1].id, 802, "entries[1].id == 802");
++  is(entries2[0].id, 901, "entries2[0].id == 901");
++  is(entries2[1].id, 902, "entries2[1].id == 902");
++
++  it.send(1);
++  is(it.next().id, entries[1].id, "iterator reset worked");
+ }
+ 
+ function testHUDGetters()
+ {
+   var HUD = HUDService.hudWeakReferences[hudId].get();
+   var jsterm = HUD.jsterm;
+   var klass = jsterm.inputNode.getAttribute("class");
+   ok(klass == "jsterm-input-node", "We have the input node.");
+@@ -478,16 +656,19 @@ function test() {
+ 
+       testNet();
+       // testDOMMutation();
+ 
+       // ConsoleStorageTests
+       testCreateDisplay();
+       testRecordEntry();
+       testRecordManyEntries();
++      testRemoveDisplay();
++      testUpdateEntry();
++      testStorageTruncate();
+       testIteration();
+       testCompletion();
+       testPropertyProvider();
+ 
+       // testUnregister();
+       executeSoon(function () {
+         HUDService.deactivateHUDForContext(tab);
+         HUDService.shutdown();

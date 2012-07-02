@@ -1,0 +1,462 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1330027579 -7200
+# Node ID 6e7098ea61caaf6a76900de5f83d57b253faa756
+# Parent  ccf5cb9f338270a6accd664be3e06a38ebca33b2
+Bug 723069 - The debugger should allow breakpoints to be set in the embedded editor
+
+diff --git a/browser/devtools/debugger/DebuggerUI.jsm b/browser/devtools/debugger/DebuggerUI.jsm
+--- a/browser/devtools/debugger/DebuggerUI.jsm
++++ b/browser/devtools/debugger/DebuggerUI.jsm
+@@ -19,16 +19,17 @@
+  *   Mozilla Foundation
+  * Portions created by the Initial Developer are Copyright (C) 2011
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Dave Camp <dcamp@mozilla.com> (original author)
+  *   Panos Astithas <past@mozilla.com>
+  *   Victor Porof <vporof@mozilla.com>
++ *   Mihai Sucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -55,19 +56,23 @@ let EXPORTED_SYMBOLS = ["DebuggerUI"];
+ 
+ /**
+  * Creates a pane that will host the debugger UI.
+  */
+ function DebuggerPane(aTab) {
+   this._tab = aTab;
+   this._close = this.close.bind(this);
+   this._debugTab = this.debugTab.bind(this);
++  this._breakpoints = {};
+ }
+ 
+ DebuggerPane.prototype = {
++  _handlingEditorBreakpointEvent: false,
++  _externalBreakpointsChange: false,
++
+   /**
+    * Creates and initializes the widgets contained in the debugger UI.
+    */
+   create: function DP_create(gBrowser) {
+     this._tab._scriptDebugger = this;
+ 
+     this._nbox = gBrowser.getNotificationBox(this._tab.linkedBrowser);
+     this._splitter = gBrowser.parentNode.ownerDocument.createElement("splitter");
+@@ -82,40 +87,168 @@ DebuggerPane.prototype = {
+ 
+     this.frame.addEventListener("DOMContentLoaded", function initPane(aEvent) {
+       if (aEvent.target != self.frame.contentDocument) {
+         return;
+       }
+       self.frame.removeEventListener("DOMContentLoaded", initPane, true);
+       // Initialize the source editor.
+       self.frame.contentWindow.editor = self.editor = new SourceEditor();
++      self.frame.contentWindow.updateEditorBreakpoints =
++        self._updateEditorBreakpoints.bind(self);
+ 
+       let config = {
+         mode: SourceEditor.MODES.JAVASCRIPT,
+         showLineNumbers: true,
+-        readOnly: true
++        readOnly: true,
++        showAnnotationRuler: true,
++        showOverviewRuler: true,
+       };
+ 
+       let editorPlaceholder = self.frame.contentDocument.getElementById("editor");
+       self.editor.init(editorPlaceholder, config, self._onEditorLoad.bind(self));
+     }, true);
+     this.frame.addEventListener("DebuggerClose", this._close, true);
+ 
+     this.frame.setAttribute("src", "chrome://browser/content/debugger.xul");
+   },
+ 
+   /**
+    * The load event handler for the source editor. This method does post-load
+    * editor initialization.
+    */
+   _onEditorLoad: function DP__onEditorLoad() {
++    this.editor.addEventListener(SourceEditor.EVENTS.BREAKPOINT_CHANGE,
++                                 this._onEditorBreakpointChange.bind(this));
+     // Connect to the debugger server.
+     this.connect();
+   },
+ 
++  _onEditorBreakpointChange: function DP__onEditorBreakpointChange(aEvent) {
++    if (this._externalBreakpointsChange) {
++      return;
++    }
++
++    this._handlingEditorBreakpointEvent = true;
++    aEvent.added.forEach(this._onEditorBreakpointAdd, this);
++    aEvent.removed.forEach(this._onEditorBreakpointRemove, this);
++    this._handlingEditorBreakpointEvent = false;
++  },
++
++  _selectedScript: function DP__selectedScript()
++  {
++    return this.debuggerWindow.DebuggerView.Scripts.selectedScript();
++  },
++
++  _onEditorBreakpointAdd: function DP__onEditorBreakpointAdd(aBreakpoint) {
++    let location = {
++      url: this._selectedScript(),
++      line: aBreakpoint.line + 1,
++    };
++
++    if (location.url) {
++      this.addBreakpoint(location);
++    }
++  },
++
++  _onEditorBreakpointRemove: function DP__onEditorBreakpointRemove(aBreakpoint) {
++    let url = this._selectedScript();
++    let line = aBreakpoint.line + 1;
++    if (!url) {
++      return;
++    }
++
++    let breakpoint = this.getBreakpoint(url, line);
++    if (breakpoint) {
++      this.removeBreakpoint(breakpoint.id);
++    }
++  },
++
++  _updateEditorBreakpoints: function DP__updateEditorBreakpoints()
++  {
++    let url = this._selectedScript();
++    if (!url) {
++      return;
++    }
++
++    this._externalBreakpointsChange = true;
++    for each (let breakpoint in this._breakpoints) {
++      if (breakpoint.url == url) {
++        this.editor.addBreakpoint(breakpoint.line - 1);
++      }
++    }
++    this._externalBreakpointsChange = false;
++  },
++
++  addBreakpoint: function DP_addBreakpoint(aLocation, aCallback) {
++    let breakpoint = {
++      url: aLocation.url,
++      line: aLocation.line,
++    };
++
++    this.activeThread.setBreakpoint(aLocation, function(aResponse, aBpClient) {
++      if (!aResponse.error) {
++        breakpoint.id = aBpClient.actor;
++        breakpoint.client = aBpClient;
++        this._breakpoints[breakpoint.id] = breakpoint;
++
++        if (!this._handlingEditorBreakpointEvent) {
++          let url = this._selectedScript();
++          if (url == breakpoint.url) {
++            this._externalBreakpointsChange = true;
++            this.editor.addBreakpoint(breakpoint.line - 1);
++            this._externalBreakpointsChange = false;
++          }
++        }
++      }
++
++      if (aCallback) {
++        aCallback(breakpoint, aResponse.error);
++      }
++    }.bind(this));
++  },
++
++  removeBreakpoint: function DP_removeBreakpoint(aBreakpointId, aCallback) {
++    let breakpoint = this._breakpoints[aBreakpointId];
++    if (!breakpoint) {
++      if (aCallback) {
++        aCallback();
++      }
++      return;
++    }
++
++    delete this._breakpoints[aBreakpointId];
++
++    if (!this._handlingEditorBreakpointEvent) {
++      let url = this._selectedScript();
++      if (url == breakpoint.url) {
++        this._externalBreakpointsChange = true;
++        this.editor.removeBreakpoint(breakpoint.line - 1);
++        this._externalBreakpointsChange = false;
++      }
++    }
++
++    try {
++      breakpoint.client.remove(aCallback);
++    } catch (ex) { }
++  },
++
++  getBreakpoints: function DP_getBreakpoints() {
++    return this._breakpoints;
++  },
++
++  getBreakpoint: function DP_getBreakpoint(aUrl, aLine) {
++    for each (let breakpoint in this._breakpoints) {
++      if (breakpoint.url == aUrl && breakpoint.line == aLine) {
++        return breakpoint;
++      }
++    }
++    return null;
++  },
++
+   /**
+    * Closes the debugger UI removing child nodes and event listeners.
+    */
+   close: function DP_close() {
+     if (this._tab) {
+       this._tab._scriptDebugger = null;
+       this._tab = null;
+     }
+@@ -335,16 +468,17 @@ DebuggerUI.prototype = {
+     let doc = dbg.frame.contentDocument;
+     let scripts = doc.getElementById("scripts");
+     let elt = scripts.getElementsByAttribute("value", aSourceUrl)[0];
+     let script = elt.getUserData("sourceScript");
+     script.loaded = true;
+     script.text = aSourceText;
+     script.contentType = aContentType;
+     elt.setUserData("sourceScript", script, null);
++    dbg._updateEditorBreakpoints();
+   }
+ };
+ 
+ /**
+  * Various debugger UI preferences (currently just the pane height).
+  */
+ let DebuggerUIPreferences = {
+ 
+diff --git a/browser/devtools/debugger/debugger-view.js b/browser/devtools/debugger/debugger-view.js
+--- a/browser/devtools/debugger/debugger-view.js
++++ b/browser/devtools/debugger/debugger-view.js
+@@ -17,16 +17,17 @@
+  *
+  * The Initial Developer of the Original Code is
+  *   Mozilla Foundation
+  * Portions created by the Initial Developer are Copyright (C) 2011
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Victor Porof <vporof@mozilla.com> (original author)
++ *   Mihai Sucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -1106,16 +1107,21 @@ DebuggerView.Scripts = {
+     for (let i = 0; i < this._scripts.itemCount; i++) {
+       if (this._scripts.getItemAtIndex(i).value == aUrl) {
+         this._scripts.selectedIndex = i;
+         break;
+       }
+     }
+    },
+ 
++   selectedScript: function DVS_selectedScript() {
++    return this._scripts.selectedItem ?
++           this._scripts.selectedItem.value : null;
++   },
++
+   /**
+    * Adds a script to the scripts container.
+    * If the script already exists (was previously added), null is returned.
+    * Otherwise, the newly created element is returned.
+    *
+    * @param string aUrl
+    *        The script url.
+    * @param string aScript
+diff --git a/browser/devtools/debugger/debugger.js b/browser/devtools/debugger/debugger.js
+--- a/browser/devtools/debugger/debugger.js
++++ b/browser/devtools/debugger/debugger.js
+@@ -543,16 +543,17 @@ var SourceScripts = {
+     if (!aScript.loaded) {
+       // Notify the chrome code that we need to load a script file.
+       var evt = document.createEvent("CustomEvent");
+       evt.initCustomEvent("Debugger:LoadSource", true, false, aScript.url);
+       document.documentElement.dispatchEvent(evt);
+       window.editor.setText(DebuggerView.getStr("loadingText"));
+     } else {
+       window.editor.setText(aScript.text);
++      window.updateEditorBreakpoints();
+     }
+   }
+ };
+ 
+ SourceScripts.onPaused = SourceScripts.onPaused.bind(SourceScripts);
+ SourceScripts.onScripts = SourceScripts.onScripts.bind(SourceScripts);
+ SourceScripts.onNewScript = SourceScripts.onNewScript.bind(SourceScripts);
+ SourceScripts.onScriptsCleared = SourceScripts.onScriptsCleared.bind(SourceScripts);
+diff --git a/browser/devtools/webconsole/GcliCommands.jsm b/browser/devtools/webconsole/GcliCommands.jsm
+--- a/browser/devtools/webconsole/GcliCommands.jsm
++++ b/browser/devtools/webconsole/GcliCommands.jsm
+@@ -15,16 +15,17 @@
+  *
+  * The Initial Developer of the Original Code is
+  * The Mozilla Foundation.
+  * Portions created by the Initial Developer are Copyright (C) 2011
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Joe Walker <jwalker@mozilla.com> (original author)
++ *   Mihai Sucan <mihai.sucan@gmail.com>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+@@ -155,18 +156,16 @@ gcli.addCommand({
+    ],
+    exec: function(args, context) {
+      let hud = HUDService.getHudReferenceById(context.environment.hudId);
+      let StyleEditor = hud.gcliterm.document.defaultView.StyleEditor;
+      StyleEditor.openChrome(args.resource.element, args.line);
+    }
+ });
+ 
+-let breakpoints = [];
+-
+ /**
+  * 'break' command
+  */
+ gcli.addCommand({
+   name: "break",
+   description: gcli.lookup("breakDesc"),
+   manual: gcli.lookup("breakManual")
+ });
+@@ -175,27 +174,34 @@ gcli.addCommand({
+ /**
+  * 'break list' command
+  */
+ gcli.addCommand({
+   name: "break list",
+   description: gcli.lookup("breaklistDesc"),
+   returnType: "html",
+   exec: function(args, context) {
+-    if (breakpoints.length === 0) {
++    let win = HUDService.currentContext();
++    let dbg = win.DebuggerUI.getDebugger(win.gBrowser.selectedTab);
++    if (!dbg) {
++      return gcli.lookup("breakaddDebuggerStopped");
++    }
++    let breakpoints = dbg.getBreakpoints();
++
++    if (Object.keys(breakpoints).length === 0) {
+       return gcli.lookup("breaklistNone");
+     }
+ 
+     let reply = gcli.lookup("breaklistIntro");
+     reply += "<ol>";
+-    breakpoints.forEach(function(breakpoint) {
++    for each (let breakpoint in breakpoints) {
+       let text = gcli.lookupFormat("breaklistLineEntry",
+-                                   [breakpoint.file, breakpoint.line]);
++                                   [breakpoint.url, breakpoint.line]);
+       reply += "<li>" + text + "</li>";
+-    });
++    };
+     reply += "</ol>";
+     return reply;
+   }
+ });
+ 
+ 
+ /**
+  * 'break add' command
+@@ -243,24 +249,21 @@ gcli.addCommand({
+     args.type = "line";
+     let win = HUDService.currentContext();
+     let dbg = win.DebuggerUI.getDebugger(win.gBrowser.selectedTab);
+     if (!dbg) {
+       return gcli.lookup("breakaddDebuggerStopped");
+     }
+     var promise = context.createPromise();
+     let position = { url: args.file, line: args.line };
+-    dbg.activeThread.setBreakpoint(position, function(aResponse, aBpClient) {
+-      if (aResponse.error) {
+-        promise.resolve(gcli.lookupFormat("breakaddFailed",
+-                        [ aResponse.error ]));
++    dbg.addBreakpoint(position, function(aBreakpoint, aError) {
++      if (aError) {
++        promise.resolve(gcli.lookupFormat("breakaddFailed", [aError]));
+         return;
+       }
+-      args.client = aBpClient;
+-      breakpoints.push(args);
+       promise.resolve(gcli.lookup("breakaddAdded"));
+     });
+     return promise;
+   }
+ });
+ 
+ 
+ /**
+@@ -270,28 +273,45 @@ gcli.addCommand({
+   name: "break del",
+   description: gcli.lookup("breakdelDesc"),
+   params: [
+     {
+       name: "breakid",
+       type: {
+         name: "number",
+         min: 0,
+-        max: function() { return breakpoints.length - 1; }
++        max: function() {
++          let win = HUDService.currentContext();
++          let dbg = win.DebuggerUI.getDebugger(win.gBrowser.selectedTab);
++          if (!dbg) {
++            return gcli.lookup("breakaddDebuggerStopped");
++          }
++          return Object.keys(dbg.getBreakpoints()).length - 1;
++        },
+       },
+       description: gcli.lookup("breakdelBreakidDesc")
+     }
+   ],
+   returnType: "html",
+   exec: function(args, context) {
+-    let breakpoint = breakpoints.splice(args.breakid, 1)[0];
++    let win = HUDService.currentContext();
++    let dbg = win.DebuggerUI.getDebugger(win.gBrowser.selectedTab);
++    if (!dbg) {
++      return gcli.lookup("breakaddDebuggerStopped");
++    }
++
++    let breakpointId = Object.keys(dbg.getBreakpoints())[args.breakid];
++    if (!breakpointId) {
++      return gcli.lookup("breakdelRemoved");
++    }
++
+     var promise = context.createPromise();
+     try {
+-      breakpoint.client.remove(function(aResponse) {
+-                                 promise.resolve(gcli.lookup("breakdelRemoved"));
+-                               });
++      dbg.removeBreakpoint(breakpointId, function() {
++        promise.resolve(gcli.lookup("breakdelRemoved"));
++      });
+     } catch (ex) {
+       // If the debugger has been closed already, don't scare the user.
+       promise.resolve(gcli.lookup("breakdelRemoved"));
+     }
+     return promise;
+   }
+ });

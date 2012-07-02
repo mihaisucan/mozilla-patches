@@ -1,0 +1,503 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1321032986 -7200
+# Node ID 107c07cfa7990254d478112136709252766132f7
+# Parent  c69e0a065741eb652b6b07431581884ee4bad012
+Bug 583041 - Style Editor - fix Orion-related problems
+
+diff --git a/browser/devtools/sourceeditor/orion/README b/browser/devtools/sourceeditor/orion/README
+--- a/browser/devtools/sourceeditor/orion/README
++++ b/browser/devtools/sourceeditor/orion/README
+@@ -20,16 +20,18 @@ Orion version: git clone from 2011-10-26
+     https://github.com/mihaisucan/orion.client/tree/bug-362107
+       see https://bugs.eclipse.org/bugs/show_bug.cgi?id=362107
+   + patch for Eclipse Bug 362428 - _getXToOffset() throws:
+     https://github.com/mihaisucan/orion.client/tree/bug-362428
+       see https://bugs.eclipse.org/bugs/show_bug.cgi?id=362428
+   + patch for Eclipse Bug 362835 - Pasted HTML shows twice:
+     https://github.com/mihaisucan/orion.client/tree/bug-362835
+       see https://bugs.eclipse.org/bugs/show_bug.cgi?id=362835
++  + patch for Eclipse Bug 363508 - Selection is broken after TextView hide/unhide
++    see https://bugs.eclipse.org/bugs/show_bug.cgi?id=363508
+ 
+ # License
+ 
+ The following files are licensed according to the contents in the LICENSE
+ file:
+   orion.js
+   orion.css
+ 
+diff --git a/browser/devtools/sourceeditor/orion/orion.js b/browser/devtools/sourceeditor/orion/orion.js
+--- a/browser/devtools/sourceeditor/orion/orion.js
++++ b/browser/devtools/sourceeditor/orion/orion.js
+@@ -1947,17 +1947,17 @@ if (typeof window !== "undefined" && typ
+  * All rights reserved. This program and the accompanying materials are made 
+  * available under the terms of the Eclipse Public License v1.0 
+  * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution 
+  * License v1.0 (http://www.eclipse.org/org/documents/edl-v10.html). 
+  * 
+  * Contributors: 
+  *		Felipe Heidrich (IBM Corporation) - initial API and implementation
+  *		Silenio Quarti (IBM Corporation) - initial API and implementation
+- *		Mihai Sucan (Mozilla Foundation) - fix for Bug#334583 Bug#348471 Bug#349485 Bug#350595 Bug#360726 Bug#361180 Bug#358623 Bug#362286 Bug#362107 Bug#362428 Bug#362835
++ *		Mihai Sucan (Mozilla Foundation) - fix for Bug#334583 Bug#348471 Bug#349485 Bug#350595 Bug#360726 Bug#361180 Bug#358623 Bug#362286 Bug#362107 Bug#362428 Bug#362835 Bug#363508
+  ******************************************************************************/
+ 
+ /*global window document navigator setTimeout clearTimeout XMLHttpRequest define */
+ 
+ /**
+  * @namespace The global container for Orion APIs.
+  */ 
+ var orion = orion || {};
+@@ -3859,16 +3859,18 @@ orion.textview.TextView = (function() {
+ 				}
+ 
+ 				this._isMouseDown = true;
+ 				this._handleMouse(e);
+ 				if (isOpera || isChrome) {
+ 					if (!this._hasFocus) {
+ 						this.focus();
+ 					}
++				}
++				if (e.preventDefault) {
+ 					e.preventDefault();
+ 				}
+ 			}
+ 		},
+ 		_handleMouseMove: function (e) {
+ 			if (!e) { e = window.event; }
+ 			this._setLinksVisible(!this._isMouseDown && (isMac ? e.metaKey : e.ctrlKey));
+ 			if (!this._isMouseDown) {
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -553,16 +553,38 @@ SourceEditor.prototype = {
+    * Focus the editor.
+    */
+   focus: function SE_focus()
+   {
+     this._view.focus();
+   },
+ 
+   /**
++   * Get the first visible line number.
++   *
++   * @return number
++   *         The line number, counting from 0.
++   */
++  getTopIndex: function SE_getTopIndex()
++  {
++    return this._view.getTopIndex();
++  },
++
++  /**
++   * Set the first visible line number.
++   *
++   * @param number aTopIndex
++   *         The line number, counting from 0.
++   */
++  setTopIndex: function SE_setTopIndex(aTopIndex)
++  {
++    this._view.setTopIndex(aTopIndex);
++  },
++
++  /**
+    * Check if the editor has focus.
+    *
+    * @return boolean
+    *         True if the editor is focused, false otherwise.
+    */
+   hasFocus: function SE_hasFocus()
+   {
+     return this._iframe.ownerDocument.activeElement === this._iframe;
+diff --git a/browser/devtools/styleeditor/SplitView.jsm b/browser/devtools/styleeditor/SplitView.jsm
+--- a/browser/devtools/styleeditor/SplitView.jsm
++++ b/browser/devtools/styleeditor/SplitView.jsm
+@@ -155,22 +155,23 @@ SplitView.prototype = {
+   set activeSummary(aSummary)
+   {
+     if (aSummary == this._activeSummary) {
+       return;
+     }
+ 
+     if (this._activeSummary) {
+       let binding = this._activeSummary.getUserData(BINDING_USERDATA);
+-      this._activeSummary.classList.remove("splitview-active");
+-      binding._details.classList.remove("splitview-active");
+ 
+       if (binding.onHide) {
+         binding.onHide(this._activeSummary, binding._details, binding.data);
+       }
++
++      this._activeSummary.classList.remove("splitview-active");
++      binding._details.classList.remove("splitview-active");
+     }
+ 
+     if (!aSummary) {
+       return;
+     }
+ 
+     let binding = aSummary.getUserData(BINDING_USERDATA);
+     aSummary.classList.add("splitview-active");
+diff --git a/browser/devtools/styleeditor/StyleEditor.jsm b/browser/devtools/styleeditor/StyleEditor.jsm
+--- a/browser/devtools/styleeditor/StyleEditor.jsm
++++ b/browser/devtools/styleeditor/StyleEditor.jsm
+@@ -83,17 +83,18 @@ function StyleEditor(aDocument, aStyleSh
+ 
+   this._document = aDocument; // @see contentDocument
+   this._inputElement = null;  // @see inputElement
+   this._sourceEditor = null;  // @see sourceEditor
+ 
+   this._state = {             // state to handle inputElement attach/detach
+     text: "",                 // seamlessly
+     selection: {start: 0, end: 0},
+-    readOnly: false
++    readOnly: false,
++    topIndex: 0,              // the first visible line
+   };
+ 
+   this._styleSheet = aStyleSheet;
+   this._styleSheetIndex = -1; // unknown for now, will be set after load
+ 
+   this._loaded = false;
+ 
+   this._flags = [];           // @see flags
+@@ -101,18 +102,16 @@ function StyleEditor(aDocument, aStyleSh
+ 
+   this._errorMessage = null;  // @see errorMessage
+ 
+   // listeners for significant editor actions. @see addActionListener
+   this._actionListeners = [];
+ 
+   // this is to perform pending updates before editor closing
+   this._onWindowUnloadBinding = this._onWindowUnload.bind(this);
+-  // this is to proxy the focus event to underlying SourceEditor
+-  this._onInputElementFocusBinding = this._onInputElementFocus.bind(this);
+   this._focusOnSourceEditorReady = false;
+ }
+ 
+ StyleEditor.prototype = {
+   /**
+    * Retrieve the content document this editor will apply changes to.
+    *
+    * @return DOMDocument
+@@ -172,64 +171,65 @@ StyleEditor.prototype = {
+ 
+     if (this._inputElement) {
+       // detach from current input element
+       if (this._sourceEditor) {
+         // save existing state first (for seamless reattach)
+         this._state = {
+           text: this._sourceEditor.getText(),
+           selection: this._sourceEditor.getSelection(),
+-          readOnly: this._sourceEditor.readOnly
++          readOnly: this._sourceEditor.readOnly,
++          topIndex: this._sourceEditor.getTopIndex(),
+         };
+         this._sourceEditor.destroy();
+         this._sourceEditor = null;
+       }
+ 
+       this.window.removeEventListener("unload",
+                                       this._onWindowUnloadBinding, false);
+-      this._inputElement.removeEventListener("focus",
+-        this._onInputElementFocusBinding, true);
+       this._triggerAction("Detach");
+     }
+ 
+     this._inputElement = aElement;
+     if (!aElement) {
+       return;
+     }
+ 
+     // attach to new input element
+     this.window.addEventListener("unload", this._onWindowUnloadBinding, false);
+     this._focusOnSourceEditorReady = false;
+-    aElement.addEventListener("focus", this._onInputElementFocusBinding, true);
+ 
+     this._sourceEditor = null; // set it only when ready (safe to use)
+ 
+     let sourceEditor = new SourceEditor();
+     let config = {
+       placeholderText: this._state.text, //! this is initialText (bug 680371)
+       showLineNumbers: true,
+       mode: SourceEditor.MODES.CSS,
+       readOnly: this._state.readOnly,
+       keys: this._getKeyBindings()
+     };
+ 
+     sourceEditor.init(aElement, config, function onSourceEditorReady() {
+-      sourceEditor.setSelection(this._state.selection.start,
+-                                this._state.selection.end);
+-
+-      if (this._focusOnSourceEditorReady) {
+-        sourceEditor.focus();
+-      }
+-
+       sourceEditor.addEventListener(SourceEditor.EVENTS.TEXT_CHANGED,
+                                     function onTextChanged(aEvent) {
+         this.updateStyleSheet();
+       }.bind(this));
+ 
+       this._sourceEditor = sourceEditor;
++
++      if (this._focusOnSourceEditorReady) {
++        this._focusOnSourceEditorReady = false;
++        sourceEditor.focus();
++      }
++
++      sourceEditor.setTopIndex(this._state.topIndex);
++      sourceEditor.setSelection(this._state.selection.start,
++                                this._state.selection.end);
++
+       this._triggerAction("Attach");
+     }.bind(this));
+   },
+ 
+   /**
+    * Retrieve the underlying SourceEditor instance for this StyleEditor.
+    * Can be null if not ready or Style Editor is detached/headless.
+    *
+@@ -908,39 +908,59 @@ StyleEditor.prototype = {
+   _onWindowUnload: function SE__onWindowUnload(aEvent)
+   {
+     if (this._updateTask) {
+       this.updateStyleSheet(true);
+     }
+   },
+ 
+   /**
+-    * Focus event handler to automatically proxy inputElement's focus event to
+-    * SourceEditor whenever it is ready.
+-    * SourceEditor should probably have a command buffer so that timing issues
+-    * related to iframe implementation details are handled by itself rather than
+-    * by all its users.
+-    */
+-  _onInputElementFocus: function SE__onInputElementFocus(aEvent)
++   * Focus the Style Editor input.
++   */
++  focus: function SE_focus()
+   {
+     if (this._sourceEditor) {
+       this._sourceEditor.focus();
+     } else {
+       this._focusOnSourceEditorReady = true;
+     }
+   },
+ 
+   /**
++   * Event handler for when the editor is shown. Call this after the editor is
++   * shown.
++   */
++  onShow: function SE_onShow()
++  {
++    if (this._sourceEditor) {
++      this._sourceEditor.setTopIndex(this._state.topIndex);
++    }
++    this.focus();
++  },
++
++  /**
++   * Event handler for when the editor is hidden. Call this before the editor is
++   * hidden.
++   */
++  onHide: function SE_onHide()
++  {
++    if (this._sourceEditor) {
++      this._state.topIndex = this._sourceEditor.getTopIndex();
++    }
++  },
++
++  /**
+     * Persist StyleEditor extra data to the attached DOM stylesheet expando.
+     * The expando on the DOM stylesheet is used to restore user-facing state
+     * when the StyleEditor is closed and then reopened again.
+     *
+     * @see styleSheet
+     */
+-  _persistExpando: function SE__persistExpando() {
++  _persistExpando: function SE__persistExpando()
++  {
+     if (!this._styleSheet) {
+       return; // not loaded
+     }
+     let name = STYLESHEET_EXPANDO + this.styleSheetIndex;
+     let expando = this.contentDocument.getUserData(name);
+     if (!expando) {
+       expando = {};
+       this.contentDocument.setUserData(name, expando, null);
+@@ -949,17 +969,18 @@ StyleEditor.prototype = {
+     expando._savedFile = this._savedFile;
+   },
+ 
+   /**
+     * Restore the attached DOM stylesheet expando into this editor state.
+     *
+     * @see styleSheet
+     */
+-  _restoreExpando: function SE__restoreExpando() {
++  _restoreExpando: function SE__restoreExpando()
++  {
+     if (!this._styleSheet) {
+       return; // not loaded
+     }
+     let name = STYLESHEET_EXPANDO + this.styleSheetIndex;
+     let expando = this.contentDocument.getUserData(name);
+     if (expando) {
+       this._flags = expando._flags;
+       this._savedFile = expando._savedFile;
+@@ -967,37 +988,58 @@ StyleEditor.prototype = {
+   },
+ 
+   /**
+     * Retrieve custom key bindings objects as expected by SourceEditor.
+     * SourceEditor action names are not displayed to the user.
+     *
+     * @return Array
+     */
+-  _getKeyBindings: function () {
++  _getKeyBindings: function SE__getKeyBindings()
++  {
+     let bindings = [];
+ 
+     bindings.push({
+       action: "StyleEditor.save",
+       code: _("saveStyleSheet.commandkey"),
+       accel: true,
+       callback: function save() {
+         this.saveToFile(this._savedFile);
+       }.bind(this)
+     });
++
+     bindings.push({
+       action: "StyleEditor.saveAs",
+       code: _("saveStyleSheet.commandkey"),
+       accel: true,
+       shift: true,
+       callback: function saveAs() {
+         this.saveToFile();
+       }.bind(this)
+     });
+ 
++    bindings.push({
++      action: "undo",
++      code: _("undo.commandkey"),
++      accel: true,
++      callback: function undo() {
++        this._sourceEditor.undo();
++      }.bind(this)
++    });
++
++    bindings.push({
++      action: "redo",
++      code: _("redo.commandkey"),
++      accel: true,
++      shift: true,
++      callback: function redo() {
++        this._sourceEditor.redo();
++      }.bind(this)
++    });
++
+     return bindings;
+   }
+ };
+ 
+ /**
+  * List of StyleEditor UI flags.
+  * A Style Editor add-on using its own flag needs to add it to this object.
+  *
+diff --git a/browser/devtools/styleeditor/StyleEditorChrome.jsm b/browser/devtools/styleeditor/StyleEditorChrome.jsm
+--- a/browser/devtools/styleeditor/StyleEditorChrome.jsm
++++ b/browser/devtools/styleeditor/StyleEditorChrome.jsm
+@@ -447,23 +447,26 @@ StyleEditorChrome.prototype = {
+         // autofocus the first or new stylesheet
+         if (editor.styleSheetIndex == 0 ||
+             editor.hasFlag(StyleEditorFlags.NEW)) {
+           this._view.activeSummary = aSummary;
+         }
+ 
+         this._triggerChromeListeners("EditorAdded", [editor]);
+       }.bind(this),
++      onHide: function ASV_onItemShow(aSummary, aDetails, aData) {
++        aData.editor.onHide();
++      },
+       onShow: function ASV_onItemShow(aSummary, aDetails, aData) {
+         let editor = aData.editor;
+         if (!editor.inputElement) {
+           // attach editor to input element the first time it is shown
+           editor.inputElement = aDetails.querySelector(".stylesheet-editor-input");
+         }
+-        editor.inputElement.focus();
++        editor.onShow();
+       }
+     });
+   },
+ 
+   /**
+    * Called when an editor flag changed.
+    *
+    * @param StyleEditor aEditor
+@@ -471,17 +474,17 @@ StyleEditorChrome.prototype = {
+    * @see StyleEditor.flags
+    */
+   onFlagChange: function SEAL_onFlagChange(aEditor, aFlagName)
+   {
+     this._updateSummaryForEditor(aEditor);
+   },
+ 
+   /**
+-   * Called when  when changes have been committed/applied to the live DOM
++   * Called when when changes have been committed/applied to the live DOM
+    * stylesheet.
+    *
+    * @param StyleEditor aEditor
+    */
+   onCommit: function SEAL_onCommit(aEditor)
+   {
+     this._updateSummaryForEditor(aEditor);
+   },
+diff --git a/browser/devtools/styleeditor/styleeditor.xul b/browser/devtools/styleeditor/styleeditor.xul
+--- a/browser/devtools/styleeditor/styleeditor.xul
++++ b/browser/devtools/styleeditor/styleeditor.xul
+@@ -109,17 +109,17 @@
+           <h1><a class="stylesheet-saveButton" href="#"
+                  title="&saveButton.tooltip;"
+                  accesskey="&saveButton.accesskey;">&saveButton.label;</a></h1>
+         </hgroup>
+       </div>
+     </li>
+ 
+     <xul:box id="splitview-tpl-details-stylesheet" class="splitview-details">
+-      <div class="stylesheet-editor-input textbox" tabindex="0"
++      <div class="stylesheet-editor-input textbox"
+            data-placeholder="&editorTextbox.placeholder;"></div>
+     </xul:box>
+   </div> <!-- #splitview-templates -->
+ </xul:box>   <!-- .splitview-root -->
+ 
+ <xul:script type="application/javascript"><![CDATA[
+ Components.utils.import("resource:///modules/devtools/StyleEditorChrome.jsm");
+ let chromeRoot = document.getElementById("style-editor-chrome");
+diff --git a/browser/locales/en-US/chrome/browser/devtools/styleeditor.properties b/browser/locales/en-US/chrome/browser/devtools/styleeditor.properties
+--- a/browser/locales/en-US/chrome/browser/devtools/styleeditor.properties
++++ b/browser/locales/en-US/chrome/browser/devtools/styleeditor.properties
+@@ -46,8 +46,19 @@ importStyleSheet.filter=CSS files
+ saveStyleSheet.title=Save style sheet
+ 
+ # LOCALIZATION NOTE  (saveStyleSheet.title): This is the *.css filter title
+ saveStyleSheet.filter=CSS files
+ 
+ # LOCALIZATION NOTE  (saveStyleSheet.commandkey): This the key to use in
+ # conjunction with accel (Command on Mac or Ctrl on other platforms) to Save
+ saveStyleSheet.commandkey=S
++
++# LOCALIZATION NOTE  (undo.commandkey): This the key to use in
++# conjunction with accel (Command on Mac or Ctrl on other platforms) to Undo a
++# change in the editor.
++undo.commandkey=Z
++
++# LOCALIZATION NOTE  (redo.commandkey): This the key to use in
++# conjunction with accel+shift (accel is Command on Mac or Ctrl on other
++# platforms) to Redo a change in the editor.
++redo.commandkey=Z
++

@@ -1,0 +1,137 @@
+# HG changeset patch
+# Date 1309538088 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Parent 8c12da06b016c915df104ad19f77e3a8ee90b738
+Bug 592469 - Web Console cleanup: part 2 - HUDService - remove getOutputNodeById()
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1487,17 +1487,17 @@ HUD_SERVICE.prototype =
+    * @param string|nsIDOMNode aHUD
+    *        Either the ID of a HUD or the DOM node corresponding to an outer
+    *        HUD box.
+    * @returns void
+    */
+   clearDisplay: function HS_clearDisplay(aHUD)
+   {
+     if (typeof(aHUD) === "string") {
+-      aHUD = this.getOutputNodeById(aHUD);
++      aHUD = this.getHudReferenceById(aHUD).HUDBox;
+     }
+ 
+     let hudRef = HUDService.getHudReferenceForOutputNode(aHUD);
+ 
+     if (hudRef) {
+       hudRef.cssNodes = {};
+     }
+ 
+@@ -1618,18 +1618,17 @@ HUD_SERVICE.prototype =
+    * @param boolean aState
+    *        True if the filter named by @aMessageType is being turned on; false
+    *        otherwise.
+    * @returns void
+    */
+   adjustVisibilityForMessageType:
+   function HS_adjustVisibilityForMessageType(aHUDId, aPrefKey, aState)
+   {
+-    let displayNode = this.getOutputNodeById(aHUDId);
+-    let outputNode = displayNode.querySelector(".hud-output-node");
++    let outputNode = this.getHudReferenceById(aHUDId).outputNode;
+     let doc = outputNode.ownerDocument;
+ 
+     // Look for message nodes ("hud-msg-node") with the given preference key
+     // ("hud-msg-error", "hud-msg-cssparser", etc.) and add or remove the
+     // "hud-filtered-by-type" class, which turns on or off the display.
+ 
+     let xpath = ".//*[contains(@class, 'hud-msg-node') and " +
+       "contains(concat(@class, ' '), 'hud-" + aPrefKey + " ')]";
+@@ -1678,19 +1677,17 @@ HUD_SERVICE.prototype =
+    *        The ID of the HUD to alter.
+    * @param string aSearchString
+    *        The new search string.
+    * @returns void
+    */
+   adjustVisibilityOnSearchStringChange:
+   function HS_adjustVisibilityOnSearchStringChange(aHUDId, aSearchString)
+   {
+-    let displayNode = this.getOutputNodeById(aHUDId);
+-    let outputNode = displayNode.querySelector(".hud-output-node");
+-    let doc = outputNode.ownerDocument;
++    let outputNode = this.getHudReferenceById(aHUDId).outputNode;
+ 
+     let nodes = outputNode.querySelectorAll(".hud-msg-node");
+ 
+     for (let i = 0; i < nodes.length; ++i) {
+       let node = nodes[i];
+ 
+       // hide nodes that match the strings
+       let text = node.clipboardText;
+@@ -1894,18 +1891,18 @@ HUD_SERVICE.prototype =
+   {
+     let windowId = this.getWindowId(aContentWindow);
+     return this.getHudIdByWindowId(windowId);
+   },
+ 
+   /**
+    * Returns the hudReference for a given output node.
+    *
+-   * @param nsIDOMNode aNode (currently either a xul:vbox as returned by
+-   *        getOutputNodeById() or a richlistbox).
++   * @param nsIDOMNode aNode currently either a xul:vbox, the HUDBox, or a
++   * richlistbox, the outputNode.
+    * @returns a HUD | null
+    */
+   getHudReferenceForOutputNode: function HS_getHudReferenceForOutputNode(aNode)
+   {
+     let node = aNode;
+     // starting from richlistbox, need to find hudbox
+     while (!node.id && !node.classList.contains("hud-box")) {
+       if (node.parentNode) {
+@@ -1924,27 +1921,16 @@ HUD_SERVICE.prototype =
+    * @returns Object
+    */
+   getHudReferenceById: function HS_getHudReferenceById(aId)
+   {
+     return aId in this.hudReferences ? this.hudReferences[aId] : null;
+   },
+ 
+   /**
+-   * Gets the Web Console DOM node, the .hud-box.
+-   *
+-   * @param string aId
+-   * @returns nsIDOMNode
+-   */
+-  getOutputNodeById: function HS_getOutputNodeById(aId)
+-  {
+-    return this.getHudReferenceById(aId).HUDBox;
+-  },
+-
+-  /**
+    * Gets an array that contains all the HUD IDs.
+    * @returns array
+    */
+   displaysIndex: function HS_displaysIndex()
+   {
+     return Object.keys(this.hudReferences);
+   },
+ 
+@@ -2892,17 +2878,17 @@ HUD_SERVICE.prototype =
+    * @param string aDirection Whether to animate the console appearing
+    *        (ANIMATE_IN) or disappearing (ANIMATE_OUT).
+    * @param function aCallback An optional callback, which will be called with
+    *        the "transitionend" event passed as a parameter once the animation
+    *        finishes.
+    */
+   animate: function HS_animate(aHUDId, aDirection, aCallback)
+   {
+-    let hudBox = this.getOutputNodeById(aHUDId);
++    let hudBox = this.getHudReferenceById(aHUDId).HUDBox;
+     if (!hudBox.classList.contains("animated")) {
+       if (aCallback) {
+         aCallback();
+       }
+       return;
+     }
+ 
+     switch (aDirection) {

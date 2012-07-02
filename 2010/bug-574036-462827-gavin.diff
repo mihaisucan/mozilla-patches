@@ -1,0 +1,176 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -69,17 +69,18 @@ function LogFactory(aMessagePrefix)
+   }
+   return log;
+ }
+ 
+ let log = LogFactory("*** HUDService:");
+ 
+ const ELEMENT_NS_URI = "http://www.w3.org/1999/xhtml";
+ const ELEMENT_NS = "html:";
+-const HUD_STYLESHEET_URI = "chrome://global/skin/headsUpDisplay.css";
++const HUD_THEME_STYLESHEET_URI = "chrome://global/skin/headsUpDisplay.css";
++const HUD_STYLESHEET_URI = "data:text/plain,.hud-output-node { white-space: pre-wrap; -moz-user-select: text; -moz-user-focus: normal; }";
+ const HUD_STRINGS_URI = "chrome://global/locale/headsUpDisplay.properties";
+ 
+ XPCOMUtils.defineLazyGetter(this, "stringBundle", function () {
+   return Services.strings.createBundle(HUD_STRINGS_URI);
+ });
+ 
+ const ERRORS = { LOG_MESSAGE_MISSING_ARGS:
+                  "Missing arguments: aMessage, aConsoleNode and aMessageNode are required.",
+@@ -99,18 +100,20 @@ function HUD_SERVICE()
+   }
+ 
+   this.mixins = mixins;
+   this.storage = new ConsoleStorage();
+   this.defaultFilterPrefs = this.storage.defaultDisplayPrefs;
+   this.defaultGlobalConsolePrefs = this.storage.defaultGlobalConsolePrefs;
+ 
+   // load stylesheet with StyleSheetService
+-  var uri = Services.io.newURI(HUD_STYLESHEET_URI, null, null);
+-  sss.loadAndRegisterSheet(uri, sss.AGENT_SHEET);
++  var themeSheetURI = Services.io.newURI(HUD_THEME_STYLESHEET_URI, null, null);
++  var contentSheetURI = Services.io.newURI(HUD_STYLESHEET_URI, null, null);
++  sss.loadAndRegisterSheet(themeSheetURI, sss.AGENT_SHEET);
++  sss.loadAndRegisterSheet(contentSheetURI, sss.AGENT_SHEET);
+ 
+   // begin observing HTTP traffic
+   this.startHTTPObservation();
+ };
+ 
+ HUD_SERVICE.prototype =
+ {
+   /**
+@@ -2466,17 +2469,17 @@ JSTerm.prototype = {
+   writeOutput: function JST_writeOutput(aOutputMessage, aIsInput)
+   {
+     var node = this.elementFactory("div");
+     if (aIsInput) {
+       node.setAttribute("class", "jsterm-input-line");
+       aOutputMessage = "> " + aOutputMessage;
+     }
+     else {
+-      node.setAttribute("class", "jsterm-output-line");
++      node.setAttribute("class", "jsterm-output-line hud-msg-node");
+     }
+ 
+     if (this.cssClassOverride) {
+       let classes = this.cssClassOverride.split(" ");
+       for (let i = 0; i < classes.length; i++) {
+         node.classList.add(classes[i]);
+       }
+     }
+@@ -2927,17 +2930,17 @@ LogMessage.prototype = {
+     var self = this;
+ 
+     var messageObject = {
+       logLevel: self.level,
+       message: self.message,
+       timestamp: ts,
+       activity: self.activityObject,
+       origin: self.origin,
+-      hudId: self.message.hudId,
++      hudId: self.message.hudId
+     };
+ 
+     this.messageObject = messageObject;
+   }
+ };
+ 
+ 
+ /**
+diff --git a/toolkit/themes/pinstripe/global/headsUpDisplay.css b/toolkit/themes/pinstripe/global/headsUpDisplay.css
+--- a/toolkit/themes/pinstripe/global/headsUpDisplay.css
++++ b/toolkit/themes/pinstripe/global/headsUpDisplay.css
+@@ -50,21 +50,16 @@
+ }
+ 
+ .hud-main-label {
+     font-size: 1em;
+     padding-top: 0.33em;
+     font-weight: bold;
+ }
+ 
+-.hud-output-node div {
+-    -moz-user-select: text;
+-    white-space: pre-wrap;
+-}
+-
+ .hud-output-node .hud-network {
+     color: blue;
+ }
+ 
+ .hud-output-node .hud-error {
+     color: red;
+ }
+ 
+@@ -122,20 +117,16 @@
+     color: white; 
+     background-color: black; 
+     overflow: auto; 
+     overflow-x: auto; 
+     position: absolute; 
+     -moz-box-direction: reverse;
+ }
+ 
+-.jsterm-output-node div {
+-    -moz-user-select: text;
+-}
+-
+ .jsterm-scroll-to-node {
+     height: 1px; width: 1px; position: relative; top: 92%; display: block;
+ }
+ 
+ .jsterm-input-node {
+     width: 98%;
+     font-family: monospace;
+     font-size: 1.2em; 
+diff --git a/toolkit/themes/winstripe/global/headsUpDisplay.css b/toolkit/themes/winstripe/global/headsUpDisplay.css
+--- a/toolkit/themes/winstripe/global/headsUpDisplay.css
++++ b/toolkit/themes/winstripe/global/headsUpDisplay.css
+@@ -50,21 +50,16 @@
+ }
+ 
+ .hud-main-label {
+     font-size: 1em;
+     padding-top: 0.33em;
+     font-weight: bold;
+ }
+ 
+-.hud-output-node div {
+-    -moz-user-select: text;
+-    white-space: pre-wrap;
+-}
+-
+ .hud-output-node .hud-network {
+     color: blue;
+ }
+ 
+ .hud-output-node .hud-error {
+     color: red;
+ }
+ 
+@@ -122,20 +117,16 @@
+     color: white; 
+     background-color: black; 
+     overflow: auto; 
+     overflow-x: auto; 
+     position: absolute; 
+     -moz-box-direction: reverse;
+ }
+ 
+-.jsterm-output-node div {
+-    -moz-user-select: text;
+-}
+-
+ .jsterm-scroll-to-node {
+     height: 1px; width: 1px; position: relative; top: 92%; display: block;
+ }
+ 
+ .jsterm-input-node {
+     width: 98%;
+     font-family: monospace;
+     font-size: 1.2em; 

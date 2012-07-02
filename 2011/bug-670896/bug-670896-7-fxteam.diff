@@ -1,0 +1,1549 @@
+# HG changeset patch
+# Parent e940df2b1821ff4a02927cdc5e7d3a4bb3d121ec
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1314218675 -10800
+
+Bug 670896 - Add inner window ID and timestamp to nsIScriptError2
+
+diff --git a/browser/devtools/scratchpad/scratchpad.js b/browser/devtools/scratchpad/scratchpad.js
+--- a/browser/devtools/scratchpad/scratchpad.js
++++ b/browser/devtools/scratchpad/scratchpad.js
+@@ -275,17 +275,17 @@ var Scratchpad = {
+       let contentWindow = this.gBrowser.selectedBrowser.contentWindow;
+ 
+       let scriptError = Cc["@mozilla.org/scripterror;1"].
+                         createInstance(Ci.nsIScriptError2);
+ 
+       scriptError.initWithWindowID(ex.message + "\n" + ex.stack, ex.fileName,
+                                    "", ex.lineNumber, 0, scriptError.errorFlag,
+                                    "content javascript",
+-                                   this.getWindowId(contentWindow));
++                                   this.getInnerWindowId(contentWindow));
+ 
+       Services.console.logMessage(scriptError);
+     }
+ 
+     return result;
+   },
+ 
+   /**
+@@ -628,26 +628,26 @@ var Scratchpad = {
+     this._chromeSandbox = null;
+     this._contentSandbox = null;
+     this._previousWindow = null;
+     this._previousBrowser = null;
+     this._previousLocation = null;
+   },
+ 
+   /**
+-   * Gets the ID of the outer window of the given DOM window object.
++   * Gets the ID of the inner window of the given DOM window object.
+    *
+    * @param nsIDOMWindow aWindow
+    * @return integer
+-   *         the outer window ID
++   *         the inner window ID
+    */
+-  getWindowId: function SP_getWindowId(aWindow)
++  getInnerWindowId: function SP_getInnerWindowId(aWindow)
+   {
+     return aWindow.QueryInterface(Ci.nsIInterfaceRequestor).
+-           getInterface(Ci.nsIDOMWindowUtils).outerWindowID;
++           getInterface(Ci.nsIDOMWindowUtils).currentInnerWindowID;
+   },
+ 
+   /**
+    * The Scratchpad window DOMContentLoaded event handler. This method
+    * initializes the Scratchpad window and source editor.
+    *
+    * @param nsIDOMEvent aEvent
+    */
+diff --git a/content/base/public/nsContentUtils.h b/content/base/public/nsContentUtils.h
+--- a/content/base/public/nsContentUtils.h
++++ b/content/base/public/nsContentUtils.h
+@@ -738,18 +738,18 @@ public:
+    *   @param aParamsLength Length of aParams.
+    *   @param aURI URI of resource containing error (may be null).
+    *   @param aSourceLine The text of the line that contains the error (may be
+               empty).
+    *   @param aLineNumber Line number within resource containing error.
+    *   @param aColumnNumber Column number within resource containing error.
+    *   @param aErrorFlags See nsIScriptError.
+    *   @param aCategory Name of module reporting error.
+-   *   @param [aWindowId=0] (Optional) The window ID of the outer window the
+-   *          message originates from.
++   *   @param [aInnerWindowId=0] (Optional) The window ID of the inner window
++   *          the message originates from.
+    */
+   enum PropertiesFile {
+     eCSS_PROPERTIES,
+     eXBL_PROPERTIES,
+     eXUL_PROPERTIES,
+     eLAYOUT_PROPERTIES,
+     eFORMS_PROPERTIES,
+     ePRINTING_PROPERTIES,
+@@ -764,17 +764,17 @@ public:
+                                   const PRUnichar **aParams,
+                                   PRUint32 aParamsLength,
+                                   nsIURI* aURI,
+                                   const nsAFlatString& aSourceLine,
+                                   PRUint32 aLineNumber,
+                                   PRUint32 aColumnNumber,
+                                   PRUint32 aErrorFlags,
+                                   const char *aCategory,
+-                                  PRUint64 aWindowId = 0);
++                                  PRUint64 aInnerWindowId = 0);
+ 
+   /**
+    * Report a localized error message to the error console.
+    *   @param aFile Properties file containing localized message.
+    *   @param aMessageName Name of localized message.
+    *   @param aParams Parameters to be substituted into localized message.
+    *   @param aParamsLength Length of aParams.
+    *   @param aURI URI of resource containing error (may be null).
+diff --git a/content/base/public/nsIDocument.h b/content/base/public/nsIDocument.h
+--- a/content/base/public/nsIDocument.h
++++ b/content/base/public/nsIDocument.h
+@@ -716,16 +716,25 @@ public:
+    */
+   PRUint64 OuterWindowID() const
+   {
+     nsPIDOMWindow *window = GetWindow();
+     return window ? window->WindowID() : 0;
+   }
+ 
+   /**
++   * Return the inner window ID.
++   */
++  PRUint64 InnerWindowID()
++  {
++    nsPIDOMWindow *window = GetInnerWindow();
++    return window ? window->WindowID() : 0;
++  }
++
++  /**
+    * Get the script loader for this document
+    */ 
+   virtual nsScriptLoader* ScriptLoader() = 0;
+ 
+   /**
+    * Add/Remove an element to the document's id and name hashes
+    */
+   virtual void AddToIdTable(Element* aElement, nsIAtom* aId) = 0;
+diff --git a/content/base/src/nsContentUtils.cpp b/content/base/src/nsContentUtils.cpp
+--- a/content/base/src/nsContentUtils.cpp
++++ b/content/base/src/nsContentUtils.cpp
+@@ -2729,17 +2729,17 @@ nsContentUtils::ReportToConsole(Properti
+                                 const PRUnichar **aParams,
+                                 PRUint32 aParamsLength,
+                                 nsIURI* aURI,
+                                 const nsAFlatString& aSourceLine,
+                                 PRUint32 aLineNumber,
+                                 PRUint32 aColumnNumber,
+                                 PRUint32 aErrorFlags,
+                                 const char *aCategory,
+-                                PRUint64 aWindowId)
++                                PRUint64 aInnerWindowId)
+ {
+   NS_ASSERTION((aParams && aParamsLength) || (!aParams && !aParamsLength),
+                "Supply either both parameters and their number or no"
+                "parameters and 0.");
+ 
+   nsresult rv;
+   if (!sConsoleService) { // only need to bother null-checking here
+     rv = CallGetService(NS_CONSOLESERVICE_CONTRACTID, &sConsoleService);
+@@ -2763,17 +2763,18 @@ nsContentUtils::ReportToConsole(Properti
+   nsCOMPtr<nsIScriptError2> errorObject =
+       do_CreateInstance(NS_SCRIPTERROR_CONTRACTID, &rv);
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   rv = errorObject->InitWithWindowID(errorText.get(),
+                                      NS_ConvertUTF8toUTF16(spec).get(), // file name
+                                      aSourceLine.get(),
+                                      aLineNumber, aColumnNumber,
+-                                     aErrorFlags, aCategory, aWindowId);
++                                     aErrorFlags, aCategory,
++                                     aInnerWindowId);
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   nsCOMPtr<nsIScriptError> logError = do_QueryInterface(errorObject);
+   return sConsoleService->LogMessage(logError);
+ }
+ 
+ /* static */ nsresult
+ nsContentUtils::ReportToConsole(PropertiesFile aFile,
+@@ -2784,27 +2785,27 @@ nsContentUtils::ReportToConsole(Properti
+                                 const nsAFlatString& aSourceLine,
+                                 PRUint32 aLineNumber,
+                                 PRUint32 aColumnNumber,
+                                 PRUint32 aErrorFlags,
+                                 const char *aCategory,
+                                 nsIDocument* aDocument)
+ {
+   nsIURI* uri = aURI;
+-  PRUint64 windowID = 0;
++  PRUint64 innerWindowID = 0;
+   if (aDocument) {
+     if (!uri) {
+       uri = aDocument->GetDocumentURI();
+     }
+-    windowID = aDocument->OuterWindowID();
++    innerWindowID = aDocument->InnerWindowID();
+   }
+ 
+   return ReportToConsole(aFile, aMessageName, aParams, aParamsLength, uri,
+                          aSourceLine, aLineNumber, aColumnNumber, aErrorFlags,
+-                         aCategory, windowID);
++                         aCategory, innerWindowID);
+ }
+ 
+ PRBool
+ nsContentUtils::IsChromeDoc(nsIDocument *aDocument)
+ {
+   if (!aDocument) {
+     return PR_FALSE;
+   }
+diff --git a/content/base/src/nsEventSource.cpp b/content/base/src/nsEventSource.cpp
+--- a/content/base/src/nsEventSource.cpp
++++ b/content/base/src/nsEventSource.cpp
+@@ -80,17 +80,17 @@ using namespace mozilla;
+ nsEventSource::nsEventSource() :
+   mStatus(PARSE_STATE_OFF),
+   mFrozen(PR_FALSE),
+   mErrorLoadOnRedirect(PR_FALSE),
+   mGoingToDispatchAllMessages(PR_FALSE),
+   mLastConvertionResult(NS_OK),
+   mReadyState(nsIEventSource::CONNECTING),
+   mScriptLine(0),
+-  mWindowID(0)
++  mInnerWindowID(0)
+ {
+ }
+ 
+ nsEventSource::~nsEventSource()
+ {
+   Close();
+ 
+   if (mListenerManager) {
+@@ -248,17 +248,17 @@ nsEventSource::Init(nsIPrincipal* aPrinc
+     do_GetService("@mozilla.org/js/xpc/ContextStack;1");
+   JSContext* cx = nsnull;
+   if (stack && NS_SUCCEEDED(stack->Peek(&cx)) && cx) {
+     const char *filename;
+     if (nsJSUtils::GetCallingLocation(cx, &filename, &mScriptLine)) {
+       mScriptFile.AssignASCII(filename);
+     }
+ 
+-    mWindowID = nsJSUtils::GetCurrentlyRunningCodeWindowID(cx);
++    mInnerWindowID = nsJSUtils::GetCurrentlyRunningCodeInnerWindowID(cx);
+   }
+ 
+   // Get the load group for the page. When requesting we'll add ourselves to it.
+   // This way any pending requests will be automatically aborted if the user
+   // leaves the page.
+   if (mScriptContext) {
+     nsCOMPtr<nsIDocument> doc =
+       nsContentUtils::GetDocumentFromScriptContext(mScriptContext);
+@@ -1067,17 +1067,17 @@ nsEventSource::PrintErrorOnConsole(const
+   }
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   errObj->InitWithWindowID(message.get(),
+                            mScriptFile.get(),
+                            nsnull,
+                            mScriptLine, 0,
+                            nsIScriptError::errorFlag,
+-                           "Event Source", mWindowID);
++                           "Event Source", mInnerWindowID);
+ 
+   // print the error message directly to the JS console
+   nsCOMPtr<nsIScriptError> logError = do_QueryInterface(errObj);
+   rv = console->LogMessage(logError);
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   return NS_OK;
+ }
+diff --git a/content/base/src/nsEventSource.h b/content/base/src/nsEventSource.h
+--- a/content/base/src/nsEventSource.h
++++ b/content/base/src/nsEventSource.h
+@@ -247,21 +247,21 @@ protected:
+ 
+   PRUint32 mRedirectFlags;
+   nsCOMPtr<nsIAsyncVerifyRedirectCallback> mRedirectCallback;
+   nsCOMPtr<nsIChannel> mNewRedirectChannel;
+ 
+   // Event Source owner information:
+   // - the script file name
+   // - source code line number where the Event Source object was constructed.
+-  // - the window ID of the outer window where the script lives. Note that this
+-  // may not be the same as the Event Source owner window.
++  // - the ID of the inner window where the script lives. Note that this may not
++  //   be the same as the Event Source owner window.
+   // These attributes are used for error reporting.
+   nsString mScriptFile;
+   PRUint32 mScriptLine;
+-  PRUint64 mWindowID;
++  PRUint64 mInnerWindowID;
+ 
+ private:
+   nsEventSource(const nsEventSource& x);   // prevent bad usage
+   nsEventSource& operator=(const nsEventSource& x);
+ };
+ 
+ #endif // nsEventSource_h__
+diff --git a/content/base/src/nsWebSocket.cpp b/content/base/src/nsWebSocket.cpp
+--- a/content/base/src/nsWebSocket.cpp
++++ b/content/base/src/nsWebSocket.cpp
+@@ -352,17 +352,17 @@ nsWebSocketEstablishedConnection::PrintE
+   }
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   errorObject->InitWithWindowID
+     (message.get(),
+      NS_ConvertUTF8toUTF16(mOwner->GetScriptFile()).get(),
+      nsnull,
+      mOwner->GetScriptLine(), 0, nsIScriptError::errorFlag,
+-     "Web Socket", mOwner->WindowID()
++     "Web Socket", mOwner->InnerWindowID()
+      );
+   
+   // print the error message directly to the JS console
+   nsCOMPtr<nsIScriptError> logError(do_QueryInterface(errorObject));
+   rv = console->LogMessage(logError);
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   return NS_OK;
+@@ -626,17 +626,17 @@ nsWebSocketEstablishedConnection::GetInt
+ nsWebSocket::nsWebSocket() : mKeepingAlive(PR_FALSE),
+                              mCheckMustKeepAlive(PR_TRUE),
+                              mTriggeredCloseEvent(PR_FALSE),
+                              mClientReasonCode(0),
+                              mServerReasonCode(nsIWebSocketChannel::CLOSE_ABNORMAL),
+                              mReadyState(nsIMozWebSocket::CONNECTING),
+                              mOutgoingBufferedAmount(0),
+                              mScriptLine(0),
+-                             mWindowID(0)
++                             mInnerWindowID(0)
+ {
+   NS_ABORT_IF_FALSE(NS_IsMainThread(), "Not running on main thread");
+ }
+ 
+ nsWebSocket::~nsWebSocket()
+ {
+   NS_ABORT_IF_FALSE(NS_IsMainThread(), "Not running on main thread");
+   if (mConnection) {
+@@ -1423,17 +1423,17 @@ nsWebSocket::Init(nsIPrincipal* aPrincip
+       }
+ 
+       jsbytecode *pc = JS_GetFramePC(cx, fp);
+       if (script && pc) {
+         mScriptLine = JS_PCToLineNumber(cx, script, pc);
+       }
+     }
+ 
+-    mWindowID = nsJSUtils::GetCurrentlyRunningCodeWindowID(cx);
++    mInnerWindowID = nsJSUtils::GetCurrentlyRunningCodeInnerWindowID(cx);
+   }
+ 
+   // parses the url
+   rv = ParseURL(PromiseFlatString(aURL));
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   // Don't allow https:// to open ws://
+   if (!mSecure && 
+diff --git a/content/base/src/nsWebSocket.h b/content/base/src/nsWebSocket.h
+--- a/content/base/src/nsWebSocket.h
++++ b/content/base/src/nsWebSocket.h
+@@ -94,17 +94,17 @@ public:
+                               PRUint8 optional_argc);
+   NS_IMETHOD RemoveEventListener(const nsAString& aType,
+                                  nsIDOMEventListener* aListener,
+                                  PRBool aUseCapture);
+ 
+   // Determine if preferences allow WebSocket
+   static PRBool PrefEnabled();
+ 
+-  const PRUint64 WindowID() const { return mWindowID; }
++  const PRUint64 InnerWindowID() const { return mInnerWindowID; }
+   const nsCString& GetScriptFile() const { return mScriptFile; }
+   const PRUint32 GetScriptLine() const { return mScriptLine; }
+ 
+ protected:
+   nsresult ParseURL(const nsString& aURL);
+   nsresult EstablishConnection();
+ 
+   nsresult CreateAndDispatchSimpleEvent(const nsString& aName);
+@@ -159,21 +159,21 @@ protected:
+   nsRefPtr<nsWebSocketEstablishedConnection> mConnection;
+   PRUint32 mOutgoingBufferedAmount; // actually, we get this value from
+                                     // mConnection when we are connected,
+                                     // but we need this one after disconnecting.
+ 
+   // Web Socket owner information:
+   // - the script file name, UTF8 encoded.
+   // - source code line number where the Web Socket object was constructed.
+-  // - the window ID of the outer window where the script lives. Note that this 
+-  // may not be the same as the Web Socket owner window.
++  // - the ID of the inner window where the script lives. Note that this may not
++  //   be the same as the Web Socket owner window.
+   // These attributes are used for error reporting.
+   nsCString mScriptFile;
+   PRUint32 mScriptLine;
+-  PRUint64 mWindowID;
++  PRUint64 mInnerWindowID;
+ 
+ private:
+   nsWebSocket(const nsWebSocket& x);   // prevent bad usage
+   nsWebSocket& operator=(const nsWebSocket& x);
+ };
+ 
+ #endif
+diff --git a/content/xml/document/src/nsXMLDocument.cpp b/content/xml/document/src/nsXMLDocument.cpp
+--- a/content/xml/document/src/nsXMLDocument.cpp
++++ b/content/xml/document/src/nsXMLDocument.cpp
+@@ -377,18 +377,18 @@ nsXMLDocument::Load(const nsAString& aUr
+       nsCOMPtr<nsIScriptError2> errorObject =
+           do_CreateInstance(NS_SCRIPTERROR_CONTRACTID, &rv);
+       NS_ENSURE_SUCCESS(rv, rv);
+ 
+       rv = errorObject->InitWithWindowID(error.get(), NS_ConvertUTF8toUTF16(spec).get(),
+                                          nsnull, 0, 0, nsIScriptError::warningFlag,
+                                          "DOM",
+                                          callingDoc ?
+-                                           callingDoc->OuterWindowID() :
+-                                           this->OuterWindowID());
++                                           callingDoc->InnerWindowID() :
++                                           this->InnerWindowID());
+ 
+       NS_ENSURE_SUCCESS(rv, rv);
+ 
+       nsCOMPtr<nsIConsoleService> consoleService =
+         do_GetService(NS_CONSOLESERVICE_CONTRACTID);
+       nsCOMPtr<nsIScriptError> logError = do_QueryInterface(errorObject);
+       if (consoleService && logError) {
+         consoleService->LogMessage(logError);
+diff --git a/dom/base/nsDOMClassInfo.cpp b/dom/base/nsDOMClassInfo.cpp
+--- a/dom/base/nsDOMClassInfo.cpp
++++ b/dom/base/nsDOMClassInfo.cpp
+@@ -1710,17 +1710,17 @@ PrintWarningOnConsole(JSContext *cx, con
+ 
+   nsresult rv = scriptError->InitWithWindowID(msg.get(),
+                                               sourcefile.get(),
+                                               EmptyString().get(),
+                                               lineno,
+                                               0, // column for error is not available
+                                               nsIScriptError::warningFlag,
+                                               "DOM:HTML",
+-                                              nsJSUtils::GetCurrentlyRunningCodeWindowID(cx));
++                                              nsJSUtils::GetCurrentlyRunningCodeInnerWindowID(cx));
+ 
+   if (NS_SUCCEEDED(rv)){
+     nsCOMPtr<nsIScriptError> logError = do_QueryInterface(scriptError);
+     consoleService->LogMessage(logError);
+   }
+ }
+ 
+ static inline JSString *
+diff --git a/dom/base/nsGlobalWindow.h b/dom/base/nsGlobalWindow.h
+--- a/dom/base/nsGlobalWindow.h
++++ b/dom/base/nsGlobalWindow.h
+@@ -525,16 +525,21 @@ public:
+     return mSerial;
+   }
+ 
+   static nsGlobalWindow* GetOuterWindowWithId(PRUint64 aWindowID) {
+     nsGlobalWindow* outerWindow = sWindowsById->Get(aWindowID);
+     return outerWindow && !outerWindow->IsInnerWindow() ? outerWindow : nsnull;
+   }
+ 
++  static nsGlobalWindow* GetInnerWindowWithId(PRUint64 aInnerWindowID) {
++    nsGlobalWindow* innerWindow = sWindowsById->Get(aInnerWindowID);
++    return innerWindow && innerWindow->IsInnerWindow() ? innerWindow : nsnull;
++  }
++
+   static bool HasIndexedDBSupport();
+ 
+   static bool HasPerformanceSupport();
+ 
+   static WindowByIdTable* GetWindowsTable() {
+     return sWindowsById;
+   }
+ 
+diff --git a/dom/base/nsJSEnvironment.cpp b/dom/base/nsJSEnvironment.cpp
+--- a/dom/base/nsJSEnvironment.cpp
++++ b/dom/base/nsJSEnvironment.cpp
+@@ -262,21 +262,21 @@ class ScriptErrorEvent : public nsRunnab
+ {
+ public:
+   ScriptErrorEvent(nsIScriptGlobalObject* aScriptGlobal,
+                    PRUint32 aLineNr, PRUint32 aColumn, PRUint32 aFlags,
+                    const nsAString& aErrorMsg,
+                    const nsAString& aFileName,
+                    const nsAString& aSourceLine,
+                    PRBool aDispatchEvent,
+-                   PRUint64 aWindowID)
++                   PRUint64 aInnerWindowID)
+   : mScriptGlobal(aScriptGlobal), mLineNr(aLineNr), mColumn(aColumn),
+     mFlags(aFlags), mErrorMsg(aErrorMsg), mFileName(aFileName),
+     mSourceLine(aSourceLine), mDispatchEvent(aDispatchEvent),
+-    mWindowID(aWindowID)
++    mInnerWindowID(aInnerWindowID)
+   {}
+ 
+   NS_IMETHOD Run()
+   {
+     nsEventStatus status = nsEventStatus_eIgnore;
+     // First, notify the DOM that we have a script error.
+     if (mDispatchEvent) {
+       nsCOMPtr<nsPIDOMWindow> win(do_QueryInterface(mScriptGlobal));
+@@ -359,17 +359,17 @@ public:
+           ? "chrome javascript"
+           : "content javascript";
+ 
+         nsCOMPtr<nsIScriptError2> error2(do_QueryInterface(errorObject));
+         if (error2) {
+           rv = error2->InitWithWindowID(mErrorMsg.get(), mFileName.get(),
+                                         mSourceLine.get(),
+                                         mLineNr, mColumn, mFlags,
+-                                        category, mWindowID);
++                                        category, mInnerWindowID);
+         } else {
+           rv = errorObject->Init(mErrorMsg.get(), mFileName.get(),
+                                  mSourceLine.get(),
+                                  mLineNr, mColumn, mFlags,
+                                  category);
+         }
+ 
+         if (NS_SUCCEEDED(rv)) {
+@@ -388,17 +388,17 @@ public:
+   nsCOMPtr<nsIScriptGlobalObject> mScriptGlobal;
+   PRUint32                        mLineNr;
+   PRUint32                        mColumn;
+   PRUint32                        mFlags;
+   nsString                        mErrorMsg;
+   nsString                        mFileName;
+   nsString                        mSourceLine;
+   PRBool                          mDispatchEvent;
+-  PRUint64                        mWindowID;
++  PRUint64                        mInnerWindowID;
+ 
+   static PRBool sHandlingScriptError;
+ };
+ 
+ PRBool ScriptErrorEvent::sHandlingScriptError = PR_FALSE;
+ 
+ // NOTE: This function could be refactored to use the above.  The only reason
+ // it has not been done is that the code below only fills the error event
+@@ -469,23 +469,29 @@ NS_ScriptErrorReporter(JSContext *cx,
+        * event because the dom event handler would encounter
+        * an OOM exception trying to process the event, and
+        * then we'd need to generate a new OOM event for that
+        * new OOM instance -- this isn't pretty.
+        */
+       nsAutoString sourceLine;
+       sourceLine.Assign(reinterpret_cast<const PRUnichar*>(report->uclinebuf));
+       nsCOMPtr<nsPIDOMWindow> win = do_QueryInterface(globalObject);
+-      PRUint64 windowID = win ? win->WindowID() : 0;
++      PRUint64 innerWindowID = 0;
++      if (win) {
++        nsCOMPtr<nsPIDOMWindow> innerWin = win->GetCurrentInnerWindow();
++        if (innerWin) {
++          innerWindowID = innerWin->WindowID();
++        }
++      }
+       nsContentUtils::AddScriptRunner(
+         new ScriptErrorEvent(globalObject, report->lineno,
+                              report->uctokenptr - report->uclinebuf,
+                              report->flags, msg, fileName, sourceLine,
+                              report->errorNumber != JSMSG_OUT_OF_MEMORY,
+-                             windowID));
++                             innerWindowID));
+     }
+   }
+ 
+ #ifdef DEBUG
+   // Print it to stderr as well, for the benefit of those invoking
+   // mozilla with -console.
+   nsCAutoString error;
+   error.Assign("JavaScript ");
+diff --git a/dom/base/nsJSUtils.cpp b/dom/base/nsJSUtils.cpp
+--- a/dom/base/nsJSUtils.cpp
++++ b/dom/base/nsJSUtils.cpp
+@@ -158,29 +158,29 @@ nsJSUtils::GetDynamicScriptGlobal(JSCont
+ 
+ nsIScriptContext *
+ nsJSUtils::GetDynamicScriptContext(JSContext *aContext)
+ {
+   return GetScriptContextFromJSContext(aContext);
+ }
+ 
+ PRUint64
+-nsJSUtils::GetCurrentlyRunningCodeWindowID(JSContext *aContext)
++nsJSUtils::GetCurrentlyRunningCodeInnerWindowID(JSContext *aContext)
+ {
+   if (!aContext)
+     return 0;
+ 
+-  PRUint64 windowID = 0;
++  PRUint64 innerWindowID = 0;
+ 
+   JSObject *jsGlobal = JS_GetGlobalForScopeChain(aContext);
+   if (jsGlobal) {
+     nsIScriptGlobalObject *scriptGlobal = GetStaticScriptGlobal(aContext,
+                                                                 jsGlobal);
+     if (scriptGlobal) {
+       nsCOMPtr<nsPIDOMWindow> win = do_QueryInterface(scriptGlobal);
+       if (win)
+-        windowID = win->GetOuterWindow()->WindowID();
++        innerWindowID = win->WindowID();
+     }
+   }
+ 
+-  return windowID;
++  return innerWindowID;
+ }
+ 
+diff --git a/dom/base/nsJSUtils.h b/dom/base/nsJSUtils.h
+--- a/dom/base/nsJSUtils.h
++++ b/dom/base/nsJSUtils.h
+@@ -66,24 +66,24 @@ public:
+   static nsIScriptContext *GetStaticScriptContext(JSContext* aContext,
+                                                   JSObject* aObj);
+ 
+   static nsIScriptGlobalObject *GetDynamicScriptGlobal(JSContext *aContext);
+ 
+   static nsIScriptContext *GetDynamicScriptContext(JSContext *aContext);
+ 
+   /**
+-   * Retrieve the outer window ID based on the given JSContext.
++   * Retrieve the inner window ID based on the given JSContext.
+    *
+    * @param JSContext aContext
+-   *        The JSContext from which you want to find the outer window ID.
++   *        The JSContext from which you want to find the inner window ID.
+    *
+-   * @returns PRUint64 the outer window ID.
++   * @returns PRUint64 the inner window ID.
+    */
+-  static PRUint64 GetCurrentlyRunningCodeWindowID(JSContext *aContext);
++  static PRUint64 GetCurrentlyRunningCodeInnerWindowID(JSContext *aContext);
+ };
+ 
+ 
+ class nsDependentJSString : public nsDependentString
+ {
+ public:
+   /**
+    * In the case of string ids, getting the string's chars is infallible, so
+diff --git a/dom/workers/WorkerPrivate.cpp b/dom/workers/WorkerPrivate.cpp
+--- a/dom/workers/WorkerPrivate.cpp
++++ b/dom/workers/WorkerPrivate.cpp
+@@ -890,45 +890,45 @@ public:
+   bool
+   WorkerRun(JSContext* aCx, WorkerPrivate* aWorkerPrivate)
+   {
+     JSObject* target = aWorkerPrivate->GetJSObject();
+     if (target) {
+       aWorkerPrivate->AssertInnerWindowIsCorrect();
+     }
+ 
+-    PRUint64 windowId;
++    PRUint64 innerWindowId;
+ 
+     WorkerPrivate* parent = aWorkerPrivate->GetParent();
+     if (parent) {
+-      windowId = 0;
++      innerWindowId = 0;
+     }
+     else {
+       AssertIsOnMainThread();
+ 
+       if (aWorkerPrivate->IsSuspended()) {
+         aWorkerPrivate->QueueRunnable(this);
+         return true;
+       }
+ 
+-      windowId = aWorkerPrivate->GetOuterWindowId();
++      innerWindowId = aWorkerPrivate->GetInnerWindowId();
+     }
+ 
+     return ReportErrorRunnable::ReportError(aCx, parent, true, target, mMessage,
+                                             mFilename, mLine, mLineNumber,
+                                             mColumnNumber, mFlags,
+-                                            mErrorNumber, windowId);
++                                            mErrorNumber, innerWindowId);
+   }
+ 
+   static bool
+   ReportError(JSContext* aCx, WorkerPrivate* aWorkerPrivate,
+               bool aFireAtScope, JSObject* aTarget, const nsString& aMessage,
+               const nsString& aFilename, const nsString& aLine,
+               PRUint32 aLineNumber, PRUint32 aColumnNumber, PRUint32 aFlags,
+-              PRUint32 aErrorNumber, PRUint64 aWindowId)
++              PRUint32 aErrorNumber, PRUint64 aInnerWindowId)
+   {
+     if (aWorkerPrivate) {
+       aWorkerPrivate->AssertIsOnWorkerThread();
+     }
+     else {
+       AssertIsOnMainThread();
+     }
+ 
+@@ -1025,17 +1025,17 @@ public:
+     nsCOMPtr<nsIConsoleMessage> consoleMessage;
+ 
+     if (scriptError) {
+       if (NS_SUCCEEDED(scriptError->InitWithWindowID(aMessage.get(),
+                                                      aFilename.get(),
+                                                      aLine.get(), aLineNumber,
+                                                      aColumnNumber, aFlags,
+                                                      "Web Worker",
+-                                                     aWindowId))) {
++                                                     aInnerWindowId))) {
+         consoleMessage = do_QueryInterface(scriptError);
+         NS_ASSERTION(consoleMessage, "This should never fail!");
+       }
+       else {
+         NS_WARNING("Failed to init script error!");
+       }
+     }
+ 
+@@ -1927,20 +1927,20 @@ WorkerPrivateParent<Derived>::PostMessag
+     new MessageEventRunnable(ParentAsWorkerPrivate(),
+                              WorkerRunnable::WorkerThread, buffer,
+                              clonedObjects);
+   return runnable->Dispatch(aCx);
+ }
+ 
+ template <class Derived>
+ PRUint64
+-WorkerPrivateParent<Derived>::GetOuterWindowId()
++WorkerPrivateParent<Derived>::GetInnerWindowId()
+ {
+   AssertIsOnMainThread();
+-  return mDocument->OuterWindowID();
++  return mDocument->InnerWindowID();
+ }
+ 
+ template <class Derived>
+ void
+ WorkerPrivateParent<Derived>::UpdateJSContextOptions(JSContext* aCx,
+                                                      PRUint32 aOptions)
+ {
+   AssertIsOnParentThread();
+diff --git a/dom/workers/WorkerPrivate.h b/dom/workers/WorkerPrivate.h
+--- a/dom/workers/WorkerPrivate.h
++++ b/dom/workers/WorkerPrivate.h
+@@ -294,17 +294,17 @@ public:
+ 
+   void
+   ForgetMainThreadObjects(nsTArray<nsCOMPtr<nsISupports> >& aDoomed);
+ 
+   bool
+   PostMessage(JSContext* aCx, jsval aMessage);
+ 
+   PRUint64
+-  GetOuterWindowId();
++  GetInnerWindowId();
+ 
+   void
+   UpdateJSContextOptions(JSContext* aCx, PRUint32 aOptions);
+ 
+ #ifdef JS_GC_ZEAL
+   void
+   UpdateGCZeal(JSContext* aCx, PRUint8 aGCZeal);
+ #endif
+diff --git a/js/src/xpconnect/idl/nsIScriptError.idl b/js/src/xpconnect/idl/nsIScriptError.idl
+--- a/js/src/xpconnect/idl/nsIScriptError.idl
++++ b/js/src/xpconnect/idl/nsIScriptError.idl
+@@ -91,33 +91,41 @@ interface nsIScriptError : nsIConsoleMes
+ 
+     AUTF8String toString();
+ };
+ 
+ /**
+  * An interface that nsIScriptError objects can implement to allow
+  * them to be initialized with a window id.
+  */
+-[scriptable, uuid(35cd0f6a-f5bb-497a-ba83-9c8d089b52cd)]
++[scriptable, uuid(4472646b-c928-4d76-9e7c-6b91da7f24cc)]
+ interface nsIScriptError2 : nsISupports {
+     /* Get the window id this was initialized with.  Zero will be
+-       returned if init() was used instead of initWithWindowId(). */
++       returned if init() was used instead of initWithWindowID(). */
+     readonly attribute unsigned long long outerWindowID;
+ 
++    /* Get the inner window id this was initialized with.  Zero will be
++       returned if init() was used instead of initWithWindowID(). */
++    readonly attribute unsigned long long innerWindowID;
++
++    /* Elapsed time, in milliseconds, from a platform-specific zero time to the
++       time the message was created. */
++    readonly attribute long long timeStamp;
++
+     /* This should be called instead of nsIScriptError.init to
+        initialize with a window id.  The window id should be for the
+-       outer window associated with this error. */
++       inner window associated with this error. */
+     void initWithWindowID(in wstring message,
+                           in wstring sourceName,
+                           in wstring sourceLine,
+                           in PRUint32 lineNumber,
+                           in PRUint32 columnNumber,
+                           in PRUint32 flags,
+                           in string category,
+-                          in unsigned long long windowID);
++                          in unsigned long long innerWindowID);
+ };
+ 
+ %{ C++
+ #define NS_SCRIPTERROR_CLASSNAME "Script Error"
+ 
+ #define NS_SCRIPTERROR_CID \
+ { 0xe38e53b9, 0x5bb0, 0x456a, { 0xb5, 0x53, 0x57, 0x93, 0x70, 0xcb, 0x15, 0x67 }}
+ 
+diff --git a/js/src/xpconnect/src/nsScriptError.cpp b/js/src/xpconnect/src/nsScriptError.cpp
+--- a/js/src/xpconnect/src/nsScriptError.cpp
++++ b/js/src/xpconnect/src/nsScriptError.cpp
+@@ -38,29 +38,33 @@
+  * ***** END LICENSE BLOCK ***** */
+ 
+ /*
+  * nsIScriptError implementation.  Defined here, lacking a JS-specific
+  * place to put XPCOM things.
+  */
+ 
+ #include "xpcprivate.h"
++#include "nsGlobalWindow.h"
++#include "nsPIDOMWindow.h"
+ 
+ NS_IMPL_THREADSAFE_ISUPPORTS3(nsScriptError, nsIConsoleMessage, nsIScriptError,
+                               nsIScriptError2)
+ 
+ nsScriptError::nsScriptError()
+     :  mMessage(),
+        mSourceName(),
+        mLineNumber(0),
+        mSourceLine(),
+        mColumnNumber(0),
+        mFlags(0),
+        mCategory(),
+-       mWindowID(0)
++       mOuterWindowID(0),
++       mInnerWindowID(0),
++       mTimeStamp(0)
+ {
+ }
+ 
+ nsScriptError::~nsScriptError() {}
+ 
+ // nsIConsoleMessage methods
+ NS_IMETHODIMP
+ nsScriptError::GetMessageMoz(PRUnichar **result) {
+@@ -137,26 +141,37 @@ nsScriptError::Init(const PRUnichar *mes
+ NS_IMETHODIMP
+ nsScriptError::InitWithWindowID(const PRUnichar *message,
+                                 const PRUnichar *sourceName,
+                                 const PRUnichar *sourceLine,
+                                 PRUint32 lineNumber,
+                                 PRUint32 columnNumber,
+                                 PRUint32 flags,
+                                 const char *category,
+-                                PRUint64 aWindowID)
++                                PRUint64 aInnerWindowID)
+ {
+     mMessage.Assign(message);
+     mSourceName.Assign(sourceName);
+     mLineNumber = lineNumber;
+     mSourceLine.Assign(sourceLine);
+     mColumnNumber = columnNumber;
+     mFlags = flags;
+     mCategory.Assign(category);
+-    mWindowID = aWindowID;
++    mTimeStamp = PR_Now() / 1000;
++    mInnerWindowID = aInnerWindowID;
++
++    if(aInnerWindowID) {
++        nsGlobalWindow* window =
++          nsGlobalWindow::GetInnerWindowWithId(aInnerWindowID);
++        if(window) {
++            nsPIDOMWindow* outer = window->GetOuterWindow();
++            if(outer)
++                mOuterWindowID = outer->WindowID();
++        }
++    }
+ 
+     return NS_OK;
+ }
+ 
+ NS_IMETHODIMP
+ nsScriptError::ToString(nsACString& /*UTF8*/ aResult)
+ {
+     static const char format0[] =
+@@ -213,13 +228,27 @@ nsScriptError::ToString(nsACString& /*UT
+         return NS_ERROR_OUT_OF_MEMORY;
+ 
+     aResult.Assign(temp);
+     JS_smprintf_free(temp);
+     return NS_OK;
+ }
+ 
+ NS_IMETHODIMP
+-nsScriptError::GetOuterWindowID(PRUint64 *aWindowID)
++nsScriptError::GetOuterWindowID(PRUint64 *aOuterWindowID)
+ {
+-    *aWindowID = mWindowID;
++    *aOuterWindowID = mOuterWindowID;
+     return NS_OK;
+ }
++
++NS_IMETHODIMP
++nsScriptError::GetInnerWindowID(PRUint64 *aInnerWindowID)
++{
++    *aInnerWindowID = mInnerWindowID;
++    return NS_OK;
++}
++
++NS_IMETHODIMP
++nsScriptError::GetTimeStamp(PRInt64 *aTimeStamp)
++{
++    *aTimeStamp = mTimeStamp;
++    return NS_OK;
++}
+diff --git a/js/src/xpconnect/src/xpccomponents.cpp b/js/src/xpconnect/src/xpccomponents.cpp
+--- a/js/src/xpconnect/src/xpccomponents.cpp
++++ b/js/src/xpconnect/src/xpccomponents.cpp
+@@ -2875,17 +2875,17 @@ nsXPCComponents_Utils::ReportError()
+     if(argc < 1)
+         return NS_ERROR_XPC_NOT_ENOUGH_ARGS;
+ 
+     jsval* argv;
+     rv = cc->GetArgvPtr(&argv);
+     if(NS_FAILED(rv) || !argv)
+         return NS_OK;
+ 
+-    const PRUint64 windowID = nsJSUtils::GetCurrentlyRunningCodeWindowID(cx);
++    const PRUint64 innerWindowID = nsJSUtils::GetCurrentlyRunningCodeInnerWindowID(cx);
+ 
+     JSErrorReport* err = JS_ErrorFromException(cx, argv[0]);
+     if(err)
+     {
+         // It's a proper JS Error
+         nsAutoString fileUni;
+         CopyUTF8toUTF16(err->filename, fileUni);
+ 
+@@ -2894,17 +2894,17 @@ nsXPCComponents_Utils::ReportError()
+         rv = scripterr->InitWithWindowID(reinterpret_cast<const PRUnichar*>
+                                                        (err->ucmessage),
+                                          fileUni.get(),
+                                          reinterpret_cast<const PRUnichar*>
+                                                          (err->uclinebuf),
+                                          err->lineno,
+                                          column,
+                                          err->flags,
+-                                         "XPConnect JavaScript", windowID);
++                                         "XPConnect JavaScript", innerWindowID);
+         if(NS_FAILED(rv))
+             return NS_OK;
+ 
+         nsCOMPtr<nsIScriptError> logError = do_QueryInterface(scripterr);
+         console->LogMessage(logError);
+         return NS_OK;
+     }
+ 
+@@ -2930,18 +2930,18 @@ nsXPCComponents_Utils::ReportError()
+ 
+         const jschar *msgchars = JS_GetStringCharsZ(cx, msgstr);
+         if (!msgchars)
+             return NS_OK;
+ 
+         rv = scripterr->InitWithWindowID(reinterpret_cast<const PRUnichar *>(msgchars),
+                                          NS_ConvertUTF8toUTF16(fileName).get(),
+                                          nsnull,
+-                                         lineNo, 0,
+-                                         0, "XPConnect JavaScript", windowID);
++                                         lineNo, 0, 0,
++                                         "XPConnect JavaScript", innerWindowID);
+         if(NS_SUCCEEDED(rv))
+         {
+             nsCOMPtr<nsIScriptError> logError = do_QueryInterface(scripterr);
+             console->LogMessage(logError);
+         }
+     }
+ 
+     return NS_OK;
+diff --git a/js/src/xpconnect/src/xpcconvert.cpp b/js/src/xpconnect/src/xpcconvert.cpp
+--- a/js/src/xpconnect/src/xpcconvert.cpp
++++ b/js/src/xpconnect/src/xpcconvert.cpp
+@@ -1822,17 +1822,17 @@ XPCConvert::JSErrorToXPCException(XPCCal
+             return NS_ERROR_OUT_OF_MEMORY;
+ 
+ 
+         data->InitWithWindowID(bestMessage.get(),
+                                NS_ConvertASCIItoUTF16(report->filename).get(),
+                                (const PRUnichar *)report->uclinebuf, report->lineno,
+                                report->uctokenptr - report->uclinebuf, report->flags,
+                                "XPConnect JavaScript",
+-                               nsJSUtils::GetCurrentlyRunningCodeWindowID(ccx.GetJSContext()));
++                               nsJSUtils::GetCurrentlyRunningCodeInnerWindowID(ccx.GetJSContext()));
+     }
+ 
+     if(data)
+     {
+         nsCAutoString formattedMsg;
+         data->ToString(formattedMsg);
+ 
+         rv = ConstructException(NS_ERROR_XPC_JAVASCRIPT_ERROR_WITH_DETAILS,
+diff --git a/js/src/xpconnect/src/xpcprivate.h b/js/src/xpconnect/src/xpcprivate.h
+--- a/js/src/xpconnect/src/xpcprivate.h
++++ b/js/src/xpconnect/src/xpcprivate.h
+@@ -3880,17 +3880,19 @@ public:
+ private:
+     nsString mMessage;
+     nsString mSourceName;
+     PRUint32 mLineNumber;
+     nsString mSourceLine;
+     PRUint32 mColumnNumber;
+     PRUint32 mFlags;
+     nsCString mCategory;
+-    PRUint64 mWindowID;
++    PRUint64 mOuterWindowID;
++    PRUint64 mInnerWindowID;
++    PRUint64 mTimeStamp;
+ };
+ 
+ /***************************************************************************/
+ 
+ class NS_STACK_CLASS AutoJSErrorAndExceptionEater
+ {
+ public:
+     AutoJSErrorAndExceptionEater(JSContext* aCX
+diff --git a/js/src/xpconnect/src/xpcwrappedjsclass.cpp b/js/src/xpconnect/src/xpcwrappedjsclass.cpp
+--- a/js/src/xpconnect/src/xpcwrappedjsclass.cpp
++++ b/js/src/xpconnect/src/xpcwrappedjsclass.cpp
+@@ -1213,17 +1213,17 @@ nsXPCWrappedJSClass::CheckForException(X
+ 
+                                 nsCOMPtr<nsIScriptError2> scriptError2 =
+                                     do_QueryInterface(scriptError);
+                                 rv = scriptError2->InitWithWindowID(newMessage.get(),
+                                                                     NS_ConvertASCIItoUTF16(sourceName).get(),
+                                                                     nsnull,
+                                                                     lineNumber, 0, 0,
+                                                                     "XPConnect JavaScript",
+-                                                                    nsJSUtils::GetCurrentlyRunningCodeWindowID(cx));
++                                                                    nsJSUtils::GetCurrentlyRunningCodeInnerWindowID(cx));
+                                 if(NS_FAILED(rv))
+                                     scriptError = nsnull;
+                             }
+                         }
+                     }
+                     if(nsnull != scriptError)
+                         consoleService->LogMessage(scriptError);
+                 }
+diff --git a/layout/style/nsCSSScanner.cpp b/layout/style/nsCSSScanner.cpp
+--- a/layout/style/nsCSSScanner.cpp
++++ b/layout/style/nsCSSScanner.cpp
+@@ -280,17 +280,17 @@ nsCSSToken::AppendToString(nsString& aBu
+ 
+ nsCSSScanner::nsCSSScanner()
+   : mInputStream(nsnull)
+   , mReadPointer(nsnull)
+   , mLowLevelError(NS_OK)
+   , mSVGMode(PR_FALSE)
+ #ifdef CSS_REPORT_PARSE_ERRORS
+   , mError(mErrorBuf, NS_ARRAY_LENGTH(mErrorBuf), 0)
+-  , mWindowID(0)
++  , mInnerWindowID(0)
+   , mWindowIDCached(PR_FALSE)
+   , mSheet(nsnull)
+   , mLoader(nsnull)
+ #endif
+ {
+   MOZ_COUNT_CTOR(nsCSSScanner);
+   mPushback = mLocalPushback;
+   mPushbackSize = NS_ARRAY_LENGTH(mLocalPushback);
+@@ -444,39 +444,40 @@ nsCSSScanner::OutputError()
+ {
+   if (mError.IsEmpty()) return;
+  
+   // Log it to the Error console
+ 
+   if (InitGlobals() && gReportErrors) {
+     if (!mWindowIDCached) {
+       if (mSheet) {
+-        mWindowID = mSheet->FindOwningWindowID();
++        mInnerWindowID = mSheet->FindOwningWindowInnerID();
+       }
+-      if (mWindowID == 0 && mLoader) {
++      if (mInnerWindowID == 0 && mLoader) {
+         nsIDocument* doc = mLoader->GetDocument();
+         if (doc) {
+-          mWindowID = doc->OuterWindowID();
++          mInnerWindowID = doc->InnerWindowID();
+         }
+       }
+       mWindowIDCached = PR_TRUE;
+     }
+ 
+     nsresult rv;
+     nsCOMPtr<nsIScriptError2> errorObject =
+       do_CreateInstance(gScriptErrorFactory, &rv);
+ 
+     if (NS_SUCCEEDED(rv)) {
+       rv = errorObject->InitWithWindowID(mError.get(),
+                                          NS_ConvertUTF8toUTF16(mFileName).get(),
+                                          EmptyString().get(),
+                                          mErrorLineNumber,
+                                          mErrorColNumber,
+                                          nsIScriptError::warningFlag,
+-                                         "CSS Parser", mWindowID);
++                                         "CSS Parser",
++                                         mInnerWindowID);
+       if (NS_SUCCEEDED(rv)) {
+         nsCOMPtr<nsIScriptError> logError = do_QueryInterface(errorObject);
+         gConsoleService->LogMessage(logError);
+       }
+     }
+   }
+   ClearError();
+ }
+@@ -617,17 +618,17 @@ nsCSSScanner::Close()
+   mInputStream = nsnull;
+   mReadPointer = nsnull;
+ 
+   // Clean things up so we don't hold on to memory if our parser gets recycled.
+ #ifdef CSS_REPORT_PARSE_ERRORS
+   mFileName.Truncate();
+   mURI = nsnull;
+   mError.Truncate();
+-  mWindowID = 0;
++  mInnerWindowID = 0;
+   mWindowIDCached = PR_FALSE;
+   mSheet = nsnull;
+   mLoader = nsnull;
+ #endif
+   if (mPushback != mLocalPushback) {
+     delete [] mPushback;
+     mPushback = mLocalPushback;
+     mPushbackSize = NS_ARRAY_LENGTH(mLocalPushback);
+diff --git a/layout/style/nsCSSScanner.h b/layout/style/nsCSSScanner.h
+--- a/layout/style/nsCSSScanner.h
++++ b/layout/style/nsCSSScanner.h
+@@ -243,16 +243,16 @@ protected:
+   // True if we are in SVG mode; false in "normal" CSS
+   PRPackedBool mSVGMode;
+ #ifdef CSS_REPORT_PARSE_ERRORS
+   nsXPIDLCString mFileName;
+   nsCOMPtr<nsIURI> mURI;  // Cached so we know to not refetch mFileName
+   PRUint32 mErrorLineNumber, mColNumber, mErrorColNumber;
+   nsFixedString mError;
+   PRUnichar mErrorBuf[200];
+-  PRUint64 mWindowID;
++  PRUint64 mInnerWindowID;
+   PRBool mWindowIDCached;
+   nsCSSStyleSheet* mSheet;
+   mozilla::css::Loader* mLoader;
+ #endif
+ };
+ 
+ #endif /* nsCSSScanner_h___ */
+diff --git a/layout/style/nsCSSStyleSheet.cpp b/layout/style/nsCSSStyleSheet.cpp
+--- a/layout/style/nsCSSStyleSheet.cpp
++++ b/layout/style/nsCSSStyleSheet.cpp
+@@ -1247,46 +1247,46 @@ nsCSSStyleSheet::SetOwningDocument(nsIDo
+   for (nsCSSStyleSheet* child = mInner->mFirstChild;
+        child; child = child->mNext) {
+     if (child->mParent == this) {
+       child->SetOwningDocument(aDocument);
+     }
+   }
+ }
+ 
+-/* virtual */ PRUint64
+-nsCSSStyleSheet::FindOwningWindowID() const
++PRUint64
++nsCSSStyleSheet::FindOwningWindowInnerID() const
+ {
+   PRUint64 windowID = 0;
+   if (mDocument) {
+-    windowID = mDocument->OuterWindowID();
++    windowID = mDocument->InnerWindowID();
+   }
+ 
+   if (windowID == 0 && mOwningNode) {
+     nsCOMPtr<nsIContent> node = do_QueryInterface(mOwningNode);
+     if (node) {
+       nsIDocument* doc = node->GetOwnerDoc();
+       if (doc) {
+-        windowID = doc->OuterWindowID();
++        windowID = doc->InnerWindowID();
+       }
+     }
+   }
+ 
+   if (windowID == 0 && mOwnerRule) {
+     nsCOMPtr<nsIStyleSheet> sheet = static_cast<css::Rule*>(mOwnerRule)->GetStyleSheet();
+     if (sheet) {
+       nsRefPtr<nsCSSStyleSheet> cssSheet = do_QueryObject(sheet);
+       if (cssSheet) {
+-        windowID = cssSheet->FindOwningWindowID();
++        windowID = cssSheet->FindOwningWindowInnerID();
+       }
+     }
+   }
+ 
+   if (windowID == 0 && mParent) {
+-    windowID = mParent->FindOwningWindowID();
++    windowID = mParent->FindOwningWindowInnerID();
+   }
+ 
+   return windowID;
+ }
+ 
+ void
+ nsCSSStyleSheet::AppendStyleSheet(nsCSSStyleSheet* aSheet)
+ {
+diff --git a/layout/style/nsCSSStyleSheet.h b/layout/style/nsCSSStyleSheet.h
+--- a/layout/style/nsCSSStyleSheet.h
++++ b/layout/style/nsCSSStyleSheet.h
+@@ -150,18 +150,18 @@ public:
+   virtual PRBool IsApplicable() const;
+   virtual void SetEnabled(PRBool aEnabled);
+   virtual PRBool IsComplete() const;
+   virtual void SetComplete();
+   virtual nsIStyleSheet* GetParentSheet() const;  // may be null
+   virtual nsIDocument* GetOwningDocument() const;  // may be null
+   virtual void SetOwningDocument(nsIDocument* aDocument);
+ 
+-  // Find the ID of the owner outer window.
+-  virtual PRUint64 FindOwningWindowID() const;
++  // Find the ID of the owner inner window.
++  PRUint64 FindOwningWindowInnerID() const;
+ #ifdef DEBUG
+   virtual void List(FILE* out = stdout, PRInt32 aIndent = 0) const;
+ #endif
+ 
+   void AppendStyleSheet(nsCSSStyleSheet* aSheet);
+   void InsertStyleSheetAt(nsCSSStyleSheet* aSheet, PRInt32 aIndex);
+ 
+   // XXX do these belong here or are they generic?
+diff --git a/layout/style/nsFontFaceLoader.cpp b/layout/style/nsFontFaceLoader.cpp
+--- a/layout/style/nsFontFaceLoader.cpp
++++ b/layout/style/nsFontFaceLoader.cpp
+@@ -793,24 +793,24 @@ nsUserFontSet::LogMessage(gfxProxyFontEn
+     rv = sheet->GetHref(href);
+     NS_ENSURE_SUCCESS(rv, rv);
+   }
+ 
+   nsCOMPtr<nsIScriptError2> scriptError =
+     do_CreateInstance(NS_SCRIPTERROR_CONTRACTID, &rv);
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+-  PRUint64 windowID = GetPresContext()->Document()->OuterWindowID();
++  PRUint64 innerWindowID = GetPresContext()->Document()->InnerWindowID();
+   rv = scriptError->InitWithWindowID(NS_ConvertUTF8toUTF16(msg).get(),
+                                      href.get(),   // file
+                                      text.get(),   // src line
+                                      0, 0,         // line & column number
+                                      aFlags,       // flags
+                                      "CSS Loader", // category (make separate?)
+-                                     windowID);
++                                     innerWindowID);
+   if (NS_SUCCEEDED(rv)){
+     nsCOMPtr<nsIScriptError> logError = do_QueryInterface(scriptError);
+     if (logError) {
+       console->LogMessage(logError);
+     }
+   }
+ 
+   return NS_OK;
+diff --git a/modules/libpr0n/src/Decoder.cpp b/modules/libpr0n/src/Decoder.cpp
+--- a/modules/libpr0n/src/Decoder.cpp
++++ b/modules/libpr0n/src/Decoder.cpp
+@@ -128,17 +128,17 @@ Decoder::Finish()
+       nsAutoString msg(NS_LITERAL_STRING("Image corrupt or truncated: ") +
+                        NS_ConvertASCIItoUTF16(mImage->GetURIString()));
+ 
+       errorObject->InitWithWindowID
+         (msg.get(),
+          NS_ConvertUTF8toUTF16(mImage->GetURIString()).get(),
+          nsnull,
+          0, 0, nsIScriptError::errorFlag,
+-         "Image", mImage->WindowID()
++         "Image", mImage->InnerWindowID()
+          );
+   
+       nsCOMPtr<nsIScriptError> error = do_QueryInterface(errorObject);
+       consoleService->LogMessage(error);
+     }
+ 
+     // If we only have a data error, see if things are worth salvaging
+     bool salvage = !HasDecoderError() && mImage->GetNumFrames();
+diff --git a/modules/libpr0n/src/Image.cpp b/modules/libpr0n/src/Image.cpp
+--- a/modules/libpr0n/src/Image.cpp
++++ b/modules/libpr0n/src/Image.cpp
+@@ -37,17 +37,17 @@
+ 
+ #include "Image.h"
+ 
+ namespace mozilla {
+ namespace imagelib {
+ 
+ // Constructor
+ Image::Image(imgStatusTracker* aStatusTracker) :
+-  mWindowId(0),
++  mInnerWindowId(0),
+   mAnimationConsumers(0),
+   mAnimationMode(kNormalAnimMode),
+   mInitialized(PR_FALSE),
+   mAnimating(PR_FALSE),
+   mError(PR_FALSE)
+ {
+   if (aStatusTracker) {
+     mStatusTracker = aStatusTracker;
+diff --git a/modules/libpr0n/src/Image.h b/modules/libpr0n/src/Image.h
+--- a/modules/libpr0n/src/Image.h
++++ b/modules/libpr0n/src/Image.h
+@@ -120,36 +120,36 @@ public:
+   static eDecoderType GetDecoderType(const char *aMimeType);
+ 
+   void IncrementAnimationConsumers();
+   void DecrementAnimationConsumers();
+ #ifdef DEBUG
+   PRUint32 GetAnimationConsumers() { return mAnimationConsumers; }
+ #endif
+ 
+-  void SetWindowID(PRUint64 aWindowId) {
+-    mWindowId = aWindowId;
++  void SetInnerWindowID(PRUint64 aInnerWindowId) {
++    mInnerWindowId = aInnerWindowId;
+   }
+-  PRUint64 WindowID() const { return mWindowId; }
++  PRUint64 InnerWindowID() const { return mInnerWindowId; }
+ 
+   PRBool HasError() { return mError; }
+ 
+ protected:
+   Image(imgStatusTracker* aStatusTracker);
+ 
+   /**
+    * Decides whether animation should or should not be happening,
+    * and makes sure the right thing is being done.
+    */
+   virtual void EvaluateAnimation();
+ 
+   virtual nsresult StartAnimation() = 0;
+   virtual nsresult StopAnimation() = 0;
+ 
+-  PRUint64 mWindowId;
++  PRUint64 mInnerWindowId;
+ 
+   // Member data shared by all implementations of this abstract class
+   nsAutoPtr<imgStatusTracker> mStatusTracker;
+   PRUint32                    mAnimationConsumers;
+   PRUint16                    mAnimationMode;   // Enum values in imgIContainer
+   PRPackedBool                mInitialized:1;   // Have we been initalized?
+   PRPackedBool                mAnimating:1;     // Are we currently animating?
+   PRPackedBool                mError:1;         // Error handling
+diff --git a/modules/libpr0n/src/imgLoader.cpp b/modules/libpr0n/src/imgLoader.cpp
+--- a/modules/libpr0n/src/imgLoader.cpp
++++ b/modules/libpr0n/src/imgLoader.cpp
+@@ -1704,20 +1704,20 @@ NS_IMETHODIMP imgLoader::LoadImage(nsIUR
+     nsCOMPtr<nsILoadGroup> loadGroup =
+         do_CreateInstance(NS_LOADGROUP_CONTRACTID);
+     newChannel->SetLoadGroup(loadGroup);
+ 
+     void *cacheId = NS_GetCurrentThread();
+     request->Init(aURI, aURI, loadGroup, newChannel, entry, cacheId, aCX,
+                   aLoadingPrincipal, corsmode);
+ 
+-    // Pass the windowID of the loading document, if possible.
++    // Pass the inner window ID of the loading document, if possible.
+     nsCOMPtr<nsIDocument> doc = do_QueryInterface(aCX);
+     if (doc) {
+-      request->SetWindowID(doc->OuterWindowID());
++      request->SetInnerWindowID(doc->InnerWindowID());
+     }
+ 
+     // create the proxy listener
+     nsCOMPtr<nsIStreamListener> pl = new ProxyListener(request.get());
+ 
+     // See if we need to insert a CORS proxy between the proxy listener and the
+     // request.
+     nsCOMPtr<nsIStreamListener> listener = pl;
+diff --git a/modules/libpr0n/src/imgRequest.cpp b/modules/libpr0n/src/imgRequest.cpp
+--- a/modules/libpr0n/src/imgRequest.cpp
++++ b/modules/libpr0n/src/imgRequest.cpp
+@@ -179,18 +179,19 @@ NS_IMPL_ISUPPORTS8(imgRequest,
+                    nsIStreamListener, nsIRequestObserver,
+                    nsISupportsWeakReference,
+                    nsIChannelEventSink,
+                    nsIInterfaceRequestor,
+                    nsIAsyncVerifyRedirectCallback)
+ 
+ imgRequest::imgRequest() : 
+   mCacheId(0), mValidator(nsnull), mImageSniffers("image-sniffing-services"),
+-  mWindowId(0), mCORSMode(imgIRequest::CORS_NONE), mDecodeRequested(PR_FALSE),
+-  mIsMultiPartChannel(PR_FALSE), mGotData(PR_FALSE), mIsInCache(PR_FALSE)
++  mInnerWindowId(0), mCORSMode(imgIRequest::CORS_NONE),
++  mDecodeRequested(PR_FALSE), mIsMultiPartChannel(PR_FALSE), mGotData(PR_FALSE),
++  mIsInCache(PR_FALSE)
+ {}
+ 
+ imgRequest::~imgRequest()
+ {
+   if (mURI) {
+     nsCAutoString spec;
+     mURI->GetSpec(spec);
+     LOG_FUNC_WITH_PARAM(gImgLog, "imgRequest::~imgRequest()", "keyuri", spec.get());
+@@ -1030,17 +1031,17 @@ NS_IMETHODIMP imgRequest::OnDataAvailabl
+     }
+ 
+     /* now we have mimetype, so we can infer the image type that we want */
+     if (mContentType.EqualsLiteral(SVG_MIMETYPE)) {
+       mImage = new VectorImage(mStatusTracker.forget());
+     } else {
+       mImage = new RasterImage(mStatusTracker.forget());
+     }
+-    mImage->SetWindowID(mWindowId);
++    mImage->SetInnerWindowID(mInnerWindowId);
+     imageType = mImage->GetType();
+ 
+     // Notify any imgRequestProxys that are observing us that we have an Image.
+     nsTObserverArray<imgRequestProxy*>::ForwardIterator iter(mObservers);
+     while (iter.HasMore()) {
+       iter.GetNext()->SetImage(mImage);
+     }
+ 
+diff --git a/modules/libpr0n/src/imgRequest.h b/modules/libpr0n/src/imgRequest.h
+--- a/modules/libpr0n/src/imgRequest.h
++++ b/modules/libpr0n/src/imgRequest.h
+@@ -118,22 +118,22 @@ public:
+   void CancelAndAbort(nsresult aStatus);
+ 
+   // Methods that get forwarded to the Image, or deferred until it's
+   // instantiated.
+   nsresult LockImage();
+   nsresult UnlockImage();
+   nsresult RequestDecode();
+ 
+-  inline void SetWindowID(PRUint64 aWindowId) {
+-    mWindowId = aWindowId;
++  inline void SetInnerWindowID(PRUint64 aInnerWindowId) {
++    mInnerWindowId = aInnerWindowId;
+   }
+ 
+-  inline PRUint64 WindowID() const {
+-    return mWindowId;
++  inline PRUint64 InnerWindowID() const {
++    return mInnerWindowId;
+   }
+ 
+   // Set the cache validation information (expiry time, whether we must
+   // validate, etc) on the cache entry based on the request information.
+   // If this function is called multiple times, the information set earliest
+   // wins.
+   static void SetCacheValidation(imgCacheEntry* aEntry, nsIRequest* aRequest);
+ 
+@@ -252,18 +252,18 @@ private:
+ 
+   void *mLoadId;
+ 
+   imgCacheValidator *mValidator;
+   nsCategoryCache<nsIContentSniffer> mImageSniffers;
+   nsCOMPtr<nsIAsyncVerifyRedirectCallback> mRedirectCallback;
+   nsCOMPtr<nsIChannel> mNewRedirectChannel;
+ 
+-  // Originating outer window ID. Used for error reporting.
+-  PRUint64 mWindowId;
++  // The ID of the inner window origin, used for error reporting.
++  PRUint64 mInnerWindowId;
+ 
+   // The CORS mode (defined in imgIRequest) this image was loaded with. By
+   // default, imgIRequest::CORS_NONE.
+   PRInt32 mCORSMode;
+ 
+   // Sometimes consumers want to do things before the image is ready. Let them,
+   // and apply the action when the image becomes available.
+   PRPackedBool mDecodeRequested : 1;
+diff --git a/parser/htmlparser/src/nsExpatDriver.cpp b/parser/htmlparser/src/nsExpatDriver.cpp
+--- a/parser/htmlparser/src/nsExpatDriver.cpp
++++ b/parser/htmlparser/src/nsExpatDriver.cpp
+@@ -371,17 +371,17 @@ nsExpatDriver::nsExpatDriver()
+     mInCData(PR_FALSE),
+     mInInternalSubset(PR_FALSE),
+     mInExternalDTD(PR_FALSE),
+     mMadeFinalCallToExpat(PR_FALSE),
+     mIsFinalChunk(PR_FALSE),
+     mInternalState(NS_OK),
+     mExpatBuffered(0),
+     mCatalogData(nsnull),
+-    mWindowID(0)
++    mInnerWindowID(0)
+ {
+ }
+ 
+ nsExpatDriver::~nsExpatDriver()
+ {
+   if (mExpatParser) {
+     XML_ParserFree(mExpatParser);
+   }
+@@ -948,17 +948,17 @@ nsExpatDriver::HandleError()
+   nsresult rv = NS_ERROR_FAILURE;
+   if (serr) {
+     nsCOMPtr<nsIScriptError2> serr2(do_QueryInterface(serr));
+     rv = serr2->InitWithWindowID(description.get(),
+                                  mURISpec.get(),
+                                  mLastLine.get(),
+                                  lineNumber, colNumber,
+                                  nsIScriptError::errorFlag, "malformed-xml",
+-                                 mWindowID);
++                                 mInnerWindowID);
+   }
+ 
+   // If it didn't initialize, we can't do any logging.
+   PRBool shouldReportError = NS_SUCCEEDED(rv);
+ 
+   if (mSink && shouldReportError) {
+     rv = mSink->ReportError(errorText.get(), 
+                             sourceText.get(), 
+@@ -1245,18 +1245,21 @@ nsExpatDriver::WillBuildModel(const CPar
+     if (!win) {
+       PRBool aHasHadScriptHandlingObject;
+       nsIScriptGlobalObject *global =
+         doc->GetScriptHandlingObject(aHasHadScriptHandlingObject);
+       if (global) {
+         win = do_QueryInterface(global);
+       }
+     }
++    if (win && !win->IsInnerWindow()) {
++      win = win->GetCurrentInnerWindow();
++    }
+     if (win) {
+-      mWindowID = win->GetOuterWindow()->WindowID();
++      mInnerWindowID = win->WindowID();
+     }
+   }
+ 
+   // Set up the callbacks
+   XML_SetXmlDeclHandler(mExpatParser, Driver_HandleXMLDeclaration); 
+   XML_SetElementHandler(mExpatParser, Driver_HandleStartElement,
+                         Driver_HandleEndElement);
+   XML_SetCharacterDataHandler(mExpatParser, Driver_HandleCharacterData);
+diff --git a/parser/htmlparser/src/nsExpatDriver.h b/parser/htmlparser/src/nsExpatDriver.h
+--- a/parser/htmlparser/src/nsExpatDriver.h
++++ b/parser/htmlparser/src/nsExpatDriver.h
+@@ -164,12 +164,12 @@ private:
+   nsCOMPtr<nsIContentSink> mOriginalSink;
+   nsCOMPtr<nsIExpatSink> mSink;
+   nsCOMPtr<nsIExtendedExpatSink> mExtendedSink;
+ 
+   const nsCatalogData* mCatalogData; // weak
+   nsString         mURISpec;
+ 
+   // Used for error reporting.
+-  PRUint64         mWindowID;
++  PRUint64         mInnerWindowID;
+ };
+ 
+ #endif

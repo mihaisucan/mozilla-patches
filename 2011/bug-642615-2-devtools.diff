@@ -1,0 +1,169 @@
+# HG changeset patch
+# Parent 553f9e7f33c6ece5bebe6faf3c685a3fa251a61c
+# Date 1301684712 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+
+Bug 642615 - If I paste over an auto-suggestion in web console, the suggested text remains
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -4511,16 +4511,26 @@ JSTerm.prototype = {
+             // control-e
+             tmp = self.codeInputString;
+             self.setInputValue("");
+             setTimeout(function(){
+               self.setInputValue(tmp);
+             }, 0);
+             break;
+           default:
++            // Store the current inputNode value. If the value is the same
++            // after keyDown event was handled (after 0ms) then the user
++            // moved the cursor. If the value changed, then call the complete
++            // function to show completion on new value.
++            let value = self.inputNode.value;
++            setTimeout(function() {
++              if (self.inputNode.value !== value) {
++                self.complete(self.COMPLETE_HINT_ONLY);
++              }
++            }, 0);
+             return;
+         }
+         return;
+       }
+       else if (aEvent.shiftKey &&
+           aEvent.keyCode == Ci.nsIDOMKeyEvent.DOM_VK_RETURN) {
+         // shift return
+         // TODO: expand the inputNode height by one line
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -126,16 +126,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_621644_jsterm_dollar.js \
+ 	browser_webconsole_bug_632817.js \
+ 	browser_webconsole_bug_611795.js \
+ 	browser_webconsole_bug_618311_close_panels.js \
+ 	browser_webconsole_bug_618311_private_browsing.js \
+ 	browser_webconsole_bug_632347_iterators_generators.js \
+ 	browser_webconsole_bug_642108_refForOutputNode.js \
+ 	browser_webconsole_bug_642108_pruneTest.js \
++	browser_webconsole_bug_642615_autocomplete.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_642615_autocomplete.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_642615_autocomplete.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_642615_autocomplete.js
+@@ -0,0 +1,106 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Web Console test suite.
++ *
++ * The Initial Developer of the Original Code is
++ * The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2011
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Mihai Sucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "data:text/html,<p>test for bug 642615";
++
++XPCOMUtils.defineLazyServiceGetter(this, "clipboardHelper",
++                                   "@mozilla.org/widget/clipboardhelper;1",
++                                   "nsIClipboardHelper");
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let HUD = HUDService.hudReferences[hudId];
++  let jsterm = HUD.jsterm;
++
++  jsterm.clearOutput();
++
++  ok(!jsterm.completionValue, "no completionValue");
++
++  jsterm.setInputValue("doc");
++
++  // wait for key "u"
++  jsterm.inputNode.addEventListener("keyup", function() {
++    jsterm.inputNode.removeEventListener("keyup", arguments.callee, false);
++
++    executeSoon(function() {
++      let completionValue = jsterm.completionValue;
++      ok(completionValue, "we have a completionValue");
++
++      clipboardHelper.copyString("foobazbarBug642615");
++
++      // wait for Ctrl-V
++      jsterm.inputNode.addEventListener("keyup", function() {
++        jsterm.inputNode.removeEventListener("keyup", arguments.callee, false);
++
++        executeSoon(function() {
++          ok(!jsterm.completionValue,
++             "no completionValue after clipboard paste");
++
++          // wait for Ctrl-Z
++          jsterm.inputNode.addEventListener("keyup", function() {
++            jsterm.inputNode.removeEventListener("keyup", arguments.callee,
++                                                 false);
++
++            executeSoon(function() {
++              is(jsterm.completionValue, completionValue,
++                 "same completionValue after undo");
++
++              executeSoon(finishTest);
++            });
++          }, false);
++
++          EventUtils.synthesizeKey("Z", {ctrlKey: true});
++        });
++      }, false);
++
++      EventUtils.synthesizeKey("V", {ctrlKey: true});
++    });
++  }, false);
++
++  EventUtils.synthesizeKey("u", {});
++}
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoad, true);
++}
++

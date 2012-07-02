@@ -1,0 +1,603 @@
+# HG changeset patch
+# Date 1303245630 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Parent b0f20b507d96fe038e3efe78525c8fb0177f0cf5
+bug 636725: unit tests for Workspace
+
+diff --git a/browser/base/content/test/Makefile.in b/browser/base/content/test/Makefile.in
+--- a/browser/base/content/test/Makefile.in
++++ b/browser/base/content/test/Makefile.in
+@@ -187,16 +187,22 @@ _BROWSER_FILES = \
+                  browser_inspector_domPanel.js \
+                  browser_inspector_iframeTest.js \
+                  browser_inspector_scrolling.js \
+                  browser_inspector_store.js \
+                  browser_inspector_tab_switch.js \
+                  browser_inspector_treePanel_output.js \
+                  browser_inspector_treePanel_input.html \
+                  browser_inspector_treePanel_result.html \
++                 browser_workspace_initialization.js \
++                 browser_workspace_contexts.js \
++                 browser_workspace_execute_print.js \
++                 browser_workspace_inspect.js \
++                 browser_workspace_files.js \
++                 browser_workspace_ui.js \
+                  browser_overflowScroll.js \
+                  browser_pageInfo.js \
+                  browser_page_style_menu.js \
+                  browser_pinnedTabs.js \
+                  browser_plainTextLinks.js \
+                  browser_pluginnotification.js \
+                  browser_relatedTabs.js \
+                  browser_sanitize-passwordDisabledHosts.js \
+diff --git a/browser/base/content/test/browser_workspace_contexts.js b/browser/base/content/test/browser_workspace_contexts.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_workspace_contexts.js
+@@ -0,0 +1,93 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++// Reference to the Workspace chrome window object.
++let gWorkspaceWindow;
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++
++    gWorkspaceWindow = Workspace.openWorkspace();
++    gWorkspaceWindow.addEventListener("load", runTests, false);
++  }, true);
++
++  content.location = "data:text/html,test context switch in Workspace";
++}
++
++function runTests()
++{
++  gWorkspaceWindow.removeEventListener("load", arguments.callee, false);
++
++  let ws = gWorkspaceWindow.Workspace;
++
++  let contentMenu = gWorkspaceWindow.document.getElementById("ws-menu-content");
++  let chromeMenu = gWorkspaceWindow.document.getElementById("ws-menu-chrome");
++  let statusbar = ws.statusbarStatus;
++
++  ok(contentMenu, "found #ws-menu-content");
++  ok(chromeMenu, "found #ws-menu-chrome");
++  ok(statusbar, "found Workspace.statusbarStatus");
++
++  ws.setContentContext();
++
++  is(ws.executionContext, gWorkspaceWindow.WORKSPACE_CONTEXT_CONTENT,
++     "executionContext is content");
++
++  is(contentMenu.getAttribute("checked"), "true",
++     "content menuitem is checked");
++
++  ok(!chromeMenu.hasAttribute("checked"),
++     "chrome menuitem is not checked");
++
++  is(statusbar.getAttribute("label"), contentMenu.getAttribute("label"),
++     "statusbar label is correct");
++
++  ok(ws.textbox, "textbox exists");
++  ws.textbox.value = "window.foobarBug636725 = 'aloha';";
++
++  ok(!content.wrappedJSObject.foobarBug636725,
++     "no content.foobarBug636725");
++
++  ws.execute();
++
++  is(content.wrappedJSObject.foobarBug636725, "aloha",
++     "content.foobarBug636725 has been set");
++
++  ws.setChromeContext();
++
++  is(ws.executionContext, gWorkspaceWindow.WORKSPACE_CONTEXT_CHROME,
++     "executionContext is chrome");
++
++  is(chromeMenu.getAttribute("checked"), "true",
++     "chrome menuitem is checked");
++
++  ok(!contentMenu.hasAttribute("checked"),
++     "content menuitem is not checked");
++
++  is(statusbar.getAttribute("label"), chromeMenu.getAttribute("label"),
++     "statusbar label is correct");
++
++  ws.textbox.value = "window.foobarBug636725 = 'aloha2';";
++
++  ok(!window.foobarBug636725, "no window.foobarBug636725");
++
++  ws.execute();
++
++  is(window.foobarBug636725, "aloha2", "window.foobarBug636725 has been set");
++
++  ws.textbox.value = "window.gBrowser";
++
++  is(typeof ws.execute()[1].addTab, "function",
++     "chrome context has access to chrome objects");
++
++  gWorkspaceWindow.close();
++  gWorkspaceWindow = null;
++  gBrowser.removeCurrentTab();
++  finish();
++}
+diff --git a/browser/base/content/test/browser_workspace_execute_print.js b/browser/base/content/test/browser_workspace_execute_print.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_workspace_execute_print.js
+@@ -0,0 +1,115 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++// Reference to the Workspace chrome window object.
++let gWorkspaceWindow;
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++
++    gWorkspaceWindow = Workspace.openWorkspace();
++    gWorkspaceWindow.addEventListener("load", runTests, false);
++  }, true);
++
++  content.location = "data:text/html,<p>test execute() and print() in Workspace";
++}
++
++function runTests()
++{
++  gWorkspaceWindow.removeEventListener("load", arguments.callee, false);
++
++  let ws = gWorkspaceWindow.Workspace;
++
++  content.wrappedJSObject.foobarBug636725 = 1;
++
++  ok(ws.textbox, "textbox exists");
++  ws.textbox.value = "++window.foobarBug636725";
++
++  let exec = ws.execute();
++  is(exec[0], ws.textbox.value, "execute()[0] is correct");
++  is(exec[1], content.wrappedJSObject.foobarBug636725,
++     "execute()[1] is correct");
++
++  is(ws.textbox.value, "++window.foobarBug636725",
++     "execute() does not change the textbox value");
++
++  is(content.wrappedJSObject.foobarBug636725, 2,
++     "execute() updated window.foobarBug636725");
++
++  ws.print();
++
++  is(content.wrappedJSObject.foobarBug636725, 3,
++     "print() updated window.foobarBug636725");
++
++  is(ws.textbox.value, "++window.foobarBug636725/*\n3\n*/",
++     "print() shows evaluation result in the textbox");
++
++  is(ws.selectedText, "/*\n3\n*/", "selectedText is correct");
++  is(ws.textbox.selectionStart, 24, "selectionStart is correct");
++  is(ws.textbox.selectionEnd, 31, "selectionEnd is correct");
++
++  // Test selection execute() and print().
++
++  ws.textbox.value = "window.foobarBug636725 = 'a';\n" +
++                     "window.foobarBug636725 = 'b';";
++
++  ws.selectRange(1, 2);
++
++  is(ws.textbox.selectionStart, 1, "selectionStart is 1");
++  is(ws.textbox.selectionEnd, 2, "selectionEnd is 2");
++
++  ws.selectRange(0, 29);
++
++  is(ws.textbox.selectionStart, 0, "selectionStart is 0");
++  is(ws.textbox.selectionEnd, 29, "selectionEnd is 29");
++
++  exec = ws.execute();
++
++  is(exec[0], "window.foobarBug636725 = 'a';",
++     "execute()[0] is correct");
++  is(exec[1], "a",
++     "execute()[1] is correct");
++
++  is(ws.textbox.value, "window.foobarBug636725 = 'a';\n" +
++                       "window.foobarBug636725 = 'b';",
++     "execute() does not change the textbox value");
++
++  is(content.wrappedJSObject.foobarBug636725, "a",
++     "execute() worked for the selected range");
++
++  ws.textbox.value = "window.foobarBug636725 = 'c';\n" +
++                     "window.foobarBug636725 = 'b';";
++
++  ws.selectRange(0, 22);
++
++  ws.print();
++
++  is(content.wrappedJSObject.foobarBug636725, "a",
++     "print() worked for the selected range");
++
++  is(ws.textbox.value, "window.foobarBug636725" +
++                       "/*\na\n*/" +
++                       " = 'c';\n" +
++                       "window.foobarBug636725 = 'b';",
++     "print() shows evaluation result in the textbox");
++
++  is(ws.selectedText, "/*\na\n*/", "selectedText is correct");
++  is(ws.textbox.selectionStart, 22, "selectionStart is correct");
++  is(ws.textbox.selectionEnd, 29, "selectionEnd is correct");
++
++  ws.deselect();
++
++  ok(!ws.selectedText, "selectedText is empty");
++  is(ws.textbox.selectionStart, ws.textbox.selectionEnd, "deselect() works");
++
++  gWorkspaceWindow.close();
++  gWorkspaceWindow = null;
++  gBrowser.removeCurrentTab();
++  finish();
++}
+diff --git a/browser/base/content/test/browser_workspace_files.js b/browser/base/content/test/browser_workspace_files.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_workspace_files.js
+@@ -0,0 +1,149 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++const Cc = Components.classes;
++const Ci = Components.interfaces;
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/NetUtil.jsm");
++Cu.import("resource://gre/modules/FileUtils.jsm");
++
++// Reference to the Workspace chrome window object.
++let gWorkspaceWindow;
++
++// Reference to the Workspace object.
++let gWorkspace;
++
++// Reference to the temporary nsIFile we will work with.
++let gFile;
++
++// The temporary file content.
++let gFileContent = "hello.world('bug636725');";
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++
++    gWorkspaceWindow = Workspace.openWorkspace();
++    gWorkspaceWindow.addEventListener("load", runTests, false);
++  }, true);
++
++  content.location = "data:text/html,<p>test file open and save in Workspace";
++}
++
++function runTests()
++{
++  gWorkspaceWindow.removeEventListener("load", arguments.callee, false);
++
++  gWorkspace = gWorkspaceWindow.Workspace;
++
++  // Create a temporary file.
++  gFile = FileUtils.getFile("TmpD", ["fileForBug636725.tmp"]);
++  gFile.createUnique(Ci.nsIFile.NORMAL_FILE_TYPE, 0666);
++
++  // Write the temporary file.
++  let fout = Cc["@mozilla.org/network/file-output-stream;1"].
++             createInstance(Ci.nsIFileOutputStream);
++  fout.init(gFile.QueryInterface(Ci.nsILocalFile), 0x02 | 0x08 | 0x20,
++            0644, fout.DEFER_OPEN);
++
++  let converter = Cc["@mozilla.org/intl/scriptableunicodeconverter"].
++                  createInstance(Ci.nsIScriptableUnicodeConverter);
++  converter.charset = "UTF-8";
++  let fileContentStream = converter.convertToInputStream(gFileContent);
++
++  NetUtil.asyncCopy(fileContentStream, fout, tempFileSaved);
++}
++
++function tempFileSaved(aStatus)
++{
++  ok(Components.isSuccessCode(aStatus),
++     "the temporary file was saved successfully");
++
++  // Import the file into Workspace.
++  gWorkspace.importFromFile(gFile.QueryInterface(Ci.nsILocalFile),  true,
++                            fileImported);
++}
++
++function fileImported(aStatus, aFileContent)
++{
++  ok(Components.isSuccessCode(aStatus),
++     "the temporary file was imported successfully with Workspace");
++
++  is(aFileContent, gFileContent,
++     "received data is correct");
++
++  is(gWorkspace.textbox.value, gFileContent,
++     "the textbox.value is correct");
++
++  // Save the file after changes.
++  gFileContent += "// omg, saved!";
++  gWorkspace.textbox.value = gFileContent;
++
++  gWorkspace.exportToFile(gFile.QueryInterface(Ci.nsILocalFile), true, true,
++                          fileExported);
++}
++
++function fileExported(aStatus)
++{
++  ok(Components.isSuccessCode(aStatus),
++     "the temporary file was exported successfully with Workspace");
++
++  let oldContent = gFileContent;
++
++  // Attempt another file save, with confirmation which returns false.
++  gFileContent += "// omg, saved twice!";
++  gWorkspace.textbox.value = gFileContent;
++
++  let oldConfirm = gWorkspaceWindow.confirm;
++  let askedConfirmation = false;
++  gWorkspaceWindow.confirm = function() {
++    askedConfirmation = true;
++    return false;
++  };
++
++  gWorkspace.exportToFile(gFile.QueryInterface(Ci.nsILocalFile), false, true,
++                          fileExported2);
++
++  gWorkspaceWindow.confirm = oldConfirm;
++
++  ok(askedConfirmation, "exportToFile() asked for overwrite confirmation");
++
++  gFileContent = oldContent;
++
++  let channel = NetUtil.newChannel(gFile);
++  channel.contentType = "application/javascript";
++
++  // Read back the temporary file.
++  NetUtil.asyncFetch(channel, fileRead);
++}
++
++function fileExported2()
++{
++  ok(false, "exportToFile() did not cancel file overwrite");
++}
++
++function fileRead(aInputStream, aStatus)
++{
++  ok(Components.isSuccessCode(aStatus),
++     "the temporary file was read back successfully");
++
++  let updatedContent =
++    NetUtil.readInputStreamToString(aInputStream, aInputStream.available());;
++
++  is(updatedContent, gFileContent, "file properly updated");
++
++  // Done!
++  gFile.remove(false);
++  gFile = null;
++  gWorkspace = null;
++  gWorkspaceWindow.close();
++  gWorkspaceWindow = null;
++  gBrowser.removeCurrentTab();
++  finish();
++}
+diff --git a/browser/base/content/test/browser_workspace_initialization.js b/browser/base/content/test/browser_workspace_initialization.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_workspace_initialization.js
+@@ -0,0 +1,39 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++// Reference to the Workspace chrome window object.
++let gWorkspaceWindow;
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++
++    ok(Workspace, "Workspace variable exists");
++
++    gWorkspaceWindow = Workspace.openWorkspace();
++    gWorkspaceWindow.addEventListener("load", runTests, false);
++  }, true);
++
++  content.location = "data:text/html,initialization test for Workspace";
++}
++
++function runTests()
++{
++  gWorkspaceWindow.removeEventListener("load", arguments.callee, false);
++
++  let ws = gWorkspaceWindow.Workspace;
++  ok(ws, "Workspace object exists in new window");
++  is(typeof ws.execute, "function", "Workspace.execute() exists");
++  is(typeof ws.inspect, "function", "Workspace.inspect() exists");
++  is(typeof ws.print, "function", "Workspace.print() exists");
++
++  gWorkspaceWindow.close();
++  gWorkspaceWindow = null;
++  gBrowser.removeCurrentTab();
++  finish();
++}
+diff --git a/browser/base/content/test/browser_workspace_inspect.js b/browser/base/content/test/browser_workspace_inspect.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_workspace_inspect.js
+@@ -0,0 +1,65 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++// Reference to the Workspace chrome window object.
++let gWorkspaceWindow;
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++
++    gWorkspaceWindow = Workspace.openWorkspace();
++    gWorkspaceWindow.addEventListener("load", runTests, false);
++  }, true);
++
++  content.location = "data:text/html,<title>foobarBug636725</title>" +
++    "<p>test inspect() in Workspace";
++}
++
++function runTests()
++{
++  gWorkspaceWindow.removeEventListener("load", arguments.callee, false);
++
++  let ws = gWorkspaceWindow.Workspace;
++
++  ok(ws.textbox, "textbox exists");
++  ws.textbox.value = "document";
++
++  ws.inspect();
++
++  let propPanel = document.querySelector(".workspace_propertyPanel");
++  ok(propPanel, "property panel is open");
++
++  propPanel.addEventListener("popupshown", function() {
++    propPanel.removeEventListener("popupshown", arguments.callee, false);
++
++    let tree = propPanel.querySelector("tree");
++    ok(tree, "property panel tree found");
++
++    let column = tree.columns[0];
++    let found = false;
++
++    for (let i = 0; i < tree.view.rowCount; i++) {
++      let cell = tree.view.getCellText(i, column);
++      if (cell == 'title: "foobarBug636725"') {
++        found = true;
++        break;
++      }
++    }
++    ok(found, "found the document.title property");
++
++    executeSoon(function() {
++      propPanel.hidePopup();
++
++      gWorkspaceWindow.close();
++      gWorkspaceWindow = null;
++      gBrowser.removeCurrentTab();
++      finish();
++    });
++  }, false);
++}
+diff --git a/browser/base/content/test/browser_workspace_ui.js b/browser/base/content/test/browser_workspace_ui.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_workspace_ui.js
+@@ -0,0 +1,80 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++// Reference to the Workspace chrome window object.
++let gWorkspaceWindow;
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++
++    gWorkspaceWindow = Workspace.openWorkspace();
++    gWorkspaceWindow.addEventListener("load", runTests, false);
++  }, true);
++
++  content.location = "data:text/html,<title>foobarBug636725</title>" +
++    "<p>test inspect() in Workspace";
++}
++
++function runTests()
++{
++  gWorkspaceWindow.removeEventListener("load", arguments.callee, false);
++
++  let ws = gWorkspaceWindow.Workspace;
++  let doc = gWorkspaceWindow.document;
++
++  let methodsAndItems = {
++    "ws-menu-newworkspace": "openWorkspace",
++    "ws-menu-open": "openFile",
++    "ws-menu-save": "saveFile",
++    "ws-menu-saveas": "saveFileAs",
++    "ws-text-execute": "execute",
++    "ws-text-inspect": "inspect",
++    "ws-menu-content": "setContentContext",
++    "ws-menu-chrome": "setChromeContext",
++    "ws-menu-errorConsole": "openErrorConsole",
++    "ws-menu-webConsole": "openWebConsole",
++  };
++
++  let lastMethodCalled = null;
++  ws.__noSuchMethod__ = function(aMethodName) {
++    lastMethodCalled = aMethodName;
++  };
++
++  for (let id in methodsAndItems) {
++    lastMethodCalled = null;
++
++    let methodName = methodsAndItems[id];
++    let oldMethod = ws[methodName];
++    ok(oldMethod, "found method " + methodName + " in Workspace object");
++
++    delete ws[methodName];
++
++    let menu = doc.getElementById(id);
++    ok(menu, "found menuitem #" + id);
++
++    try {
++      menu.doCommand();
++    }
++    catch (ex) {
++      ok(false, "exception thrown while executing the command of menuitem #" + id);
++    }
++
++    ok(lastMethodCalled == methodName,
++       "method " + methodName + " invoked by the associated menuitem");
++
++    ws[methodName] = oldMethod;
++  }
++
++  delete ws.__noSuchMethod__;
++
++  gWorkspaceWindow.close();
++  gWorkspaceWindow = null;
++  gBrowser.removeCurrentTab();
++  finish();
++}

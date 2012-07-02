@@ -1,0 +1,142 @@
+# HG changeset patch
+# Date 1308220471 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Parent 6da2c7c5c170e779421c34670d8cc9606f410e22
+Bug 663443 - No indication to which tab a Web Console window belongs
+
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -2818,16 +2818,20 @@ HUD_SERVICE.prototype =
+     let _browser = gBrowser.
+       getBrowserForDocument(aContentWindow.top.document);
+     let nBox = gBrowser.getNotificationBox(_browser);
+     let nBoxId = nBox.getAttribute("id");
+     let hudId = "hud_" + nBoxId;
+     let windowUI = nBox.ownerDocument.getElementById("console_window_" + hudId);
+     if (windowUI) {
+       // The Web Console popup is already open, no need to continue.
++      if (aContentWindow == aContentWindow.top) {
++        let hud = this.hudReferences[hudId];
++        hud.reattachConsole(aContentWindow);
++      }
+       return;
+     }
+ 
+     if (!this.canActivateContext(hudId)) {
+       return;
+     }
+ 
+     this.registerDisplay(hudId);
+@@ -3222,17 +3226,17 @@ HeadsUpDisplay.prototype = {
+     let left = 0;
+     try {
+       left = Services.prefs.getIntPref("devtools.webconsole.left");
+     }
+     catch (ex) {}
+ 
+     let panel = this.chromeDocument.createElementNS(XUL_NS, "panel");
+ 
+-    let label = this.getStr("webConsoleOwnWindowTitle");
++    let label = this.getStr("webConsoleOwnWindowTitle") + " - " + this.uriSpec;
+ 
+     let config = { id: "console_window_" + this.hudId,
+                    label: label,
+                    titlebar: "normal",
+                    noautohide: "true",
+                    norestorefocus: "true",
+                    close: "true",
+                    flex: "1",
+@@ -3505,16 +3509,21 @@ HeadsUpDisplay.prototype = {
+    * @returns void
+    */
+   reattachConsole: function HUD_reattachConsole(aContentWindow)
+   {
+     this.contentWindow = aContentWindow;
+     this.contentDocument = this.contentWindow.document;
+     this.uriSpec = this.contentWindow.location.href;
+ 
++    if (this.consolePanel) {
++      this.consolePanel.label = this.getStr("webConsoleOwnWindowTitle") +
++        " - " + this.uriSpec;
++    }
++
+     if (!this.jsterm) {
+       this.createConsoleInput(this.contentWindow, this.consoleWrap, this.outputNode);
+     }
+     else {
+       this.jsterm.context = Cu.getWeakReference(this.contentWindow);
+       this.jsterm.console = this.console;
+       this.jsterm.createSandbox();
+     }
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -136,16 +136,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_bug_595223_file_uri.js \
+ 	browser_webconsole_bug_632275_getters_document_width.js \
+ 	browser_webconsole_bug_644419_log_limits.js \
+ 	browser_webconsole_bug_646025_console_file_location.js \
+ 	browser_webconsole_position_ui.js \
+ 	browser_webconsole_bug_642615_autocomplete.js \
+ 	browser_webconsole_bug_585991_autocomplete_popup.js \
+ 	browser_webconsole_bug_585991_autocomplete_keys.js \
++	browser_webconsole_bug_663443_panel_title.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_663443_panel_title.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_663443_panel_title.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_663443_panel_title.js
+@@ -0,0 +1,45 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++const TEST_URI = "data:text/html,<p>test for bug 663443. test1";
++
++const POSITION_PREF = "devtools.webconsole.position";
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  Services.prefs.setCharPref(POSITION_PREF, "window");
++
++  openConsole();
++
++  document.addEventListener("popupshown", function() {
++    document.removeEventListener("popupshown", arguments.callee, false);
++
++    let hudId = HUDService.getHudIdByWindow(content);
++    ok(hudId, "Web Console is open");
++
++    let HUD = HUDService.hudReferences[hudId];
++    ok(HUD.consolePanel, "Web Console opened in a panel");
++
++    isnot(HUD.consolePanel.label.indexOf("test1"), -1, "panel title is correct");
++
++    browser.addEventListener("load", function() {
++      browser.removeEventListener("load", arguments.callee, true);
++
++      isnot(HUD.consolePanel.label.indexOf("test2"), -1,
++            "panel title is correct after page navigation");
++
++      Services.prefs.clearUserPref(POSITION_PREF);
++
++      executeSoon(finish);
++    }, true);
++
++    content.location = "data:text/html,<p>test2 for bug 663443";
++  }, false);
++}
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoad, true);
++}

@@ -1,0 +1,448 @@
+diff --git a/content/html/document/src/nsHTMLDocument.cpp b/content/html/document/src/nsHTMLDocument.cpp
+--- a/content/html/document/src/nsHTMLDocument.cpp
++++ b/content/html/document/src/nsHTMLDocument.cpp
+@@ -2519,21 +2519,20 @@ nsHTMLDocument::GetEmbeds(nsIDOMHTMLColl
+   return NS_OK;
+ }
+ 
+ NS_IMETHODIMP
+ nsHTMLDocument::GetSelection(nsAString& aReturn)
+ {
+   aReturn.Truncate();
+ 
+-  nsCOMPtr<nsIConsoleService> consoleService
+-    (do_GetService("@mozilla.org/consoleservice;1"));
+-
+-  if (consoleService) {
+-    consoleService->LogStringMessage(NS_LITERAL_STRING("Deprecated method document.getSelection() called.  Please use window.getSelection() instead.").get());
++  nsCOMPtr<nsIJSContextStack> stack = do_GetService("@mozilla.org/js/xpc/ContextStack;1");
++  JSContext* ccx = nsnull;
++  if (stack && NS_SUCCEEDED(stack->Peek(&ccx)) && ccx) {
++    JS_ReportWarning(ccx, "Deprecated method document.getSelection() called.  Please use window.getSelection() instead.");
+   }
+ 
+   nsCOMPtr<nsIDOMWindow> window = do_QueryInterface(GetScopeObject());
+   nsCOMPtr<nsPIDOMWindow> pwin = do_QueryInterface(window);
+   NS_ENSURE_TRUE(pwin, NS_OK);
+   NS_ASSERTION(pwin->IsInnerWindow(), "Should have inner window here!");
+   NS_ENSURE_TRUE(pwin->GetOuterWindow() &&
+                  pwin->GetOuterWindow()->GetCurrentInnerWindow() == pwin,
+diff --git a/modules/libpr0n/src/Decoder.cpp b/modules/libpr0n/src/Decoder.cpp
+--- a/modules/libpr0n/src/Decoder.cpp
++++ b/modules/libpr0n/src/Decoder.cpp
+@@ -34,16 +34,17 @@
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ #include "Decoder.h"
+ #include "nsIServiceManager.h"
+ #include "nsIConsoleService.h"
++#include "nsIScriptError.h"
+ 
+ namespace mozilla {
+ namespace imagelib {
+ 
+ Decoder::Decoder()
+   : mFrameCount(0)
+   , mFailCode(NS_OK)
+   , mInitialized(false)
+@@ -112,21 +113,35 @@ Decoder::Finish()
+   if (mInFrame && !HasDecoderError())
+     PostFrameStop();
+ 
+   // If PostDecodeDone() has not been called, we need to sent teardown
+   // notifications.
+   if (!IsSizeDecode() && !mDecodeDone) {
+ 
+     // Log data errors to the error console
+-    nsCOMPtr<nsIConsoleService> aConsoleService = do_GetService("@mozilla.org/consoleservice;1");
+-    if (aConsoleService && !HasDecoderError()) {
++    nsCOMPtr<nsIConsoleService> consoleService =
++      do_GetService(NS_CONSOLESERVICE_CONTRACTID);
++    nsCOMPtr<nsIScriptError2> errorObject =
++      do_CreateInstance(NS_SCRIPTERROR_CONTRACTID);
++
++    if (consoleService && errorObject && !HasDecoderError()) {
+       nsAutoString msg(NS_LITERAL_STRING("Image corrupt or truncated: ") +
+                        NS_ConvertASCIItoUTF16(mImage->GetURIString()));
+-      aConsoleService->LogStringMessage(msg.get());
++
++      errorObject->InitWithWindowID
++        (msg.get(),
++         NS_ConvertUTF8toUTF16(mImage->GetURIString()).get(),
++         nsnull,
++         0, 0, nsIScriptError::errorFlag,
++         "Image", mImage->WindowID()
++         );
++  
++      nsCOMPtr<nsIScriptError> error = do_QueryInterface(errorObject);
++      consoleService->LogMessage(error);
+     }
+ 
+     // If we only have a data error, see if things are worth salvaging
+     bool salvage = !HasDecoderError() && mImage->GetNumFrames();
+ 
+     // If we're salvaging, say we finished decoding
+     if (salvage)
+       mImage->DecodingComplete();
+diff --git a/modules/libpr0n/src/Image.cpp b/modules/libpr0n/src/Image.cpp
+--- a/modules/libpr0n/src/Image.cpp
++++ b/modules/libpr0n/src/Image.cpp
+@@ -41,17 +41,18 @@ namespace mozilla {
+ namespace imagelib {
+ 
+ // Constructor
+ Image::Image(imgStatusTracker* aStatusTracker) :
+   mAnimationConsumers(0),
+   mAnimationMode(kNormalAnimMode),
+   mInitialized(PR_FALSE),
+   mAnimating(PR_FALSE),
+-  mError(PR_FALSE)
++  mError(PR_FALSE),
++  mWindowId(0)
+ {
+   if (aStatusTracker) {
+     mStatusTracker = aStatusTracker;
+     mStatusTracker->SetImage(this);
+   } else {
+     mStatusTracker = new imgStatusTracker(this);
+   }
+ }
+diff --git a/modules/libpr0n/src/Image.h b/modules/libpr0n/src/Image.h
+--- a/modules/libpr0n/src/Image.h
++++ b/modules/libpr0n/src/Image.h
+@@ -118,28 +118,35 @@ public:
+   static eDecoderType GetDecoderType(const char *aMimeType);
+ 
+   void IncrementAnimationConsumers();
+   void DecrementAnimationConsumers();
+ #ifdef DEBUG
+   PRUint32 GetAnimationConsumers() { return mAnimationConsumers; }
+ #endif
+ 
++  void SetWindowID(PRUint64 aWindowId) {
++    mWindowId = aWindowId;
++  }
++  PRUint64 WindowID() { return mWindowId; }
++
+ protected:
+   Image(imgStatusTracker* aStatusTracker);
+ 
+   /**
+    * Decides whether animation should or should not be happening,
+    * and makes sure the right thing is being done.
+    */
+   virtual void EvaluateAnimation();
+ 
+   virtual nsresult StartAnimation() = 0;
+   virtual nsresult StopAnimation() = 0;
+ 
++  PRUint64 mWindowId;
++
+   // Member data shared by all implementations of this abstract class
+   nsAutoPtr<imgStatusTracker> mStatusTracker;
+   PRUint32                    mAnimationConsumers;
+   PRUint16                    mAnimationMode;   // Enum values in imgIContainer
+   PRPackedBool                mInitialized:1;   // Have we been initalized?
+   PRPackedBool                mAnimating:1;     // Are we currently animating?
+   PRPackedBool                mError:1;         // Error handling
+ 
+diff --git a/modules/libpr0n/src/imgLoader.cpp b/modules/libpr0n/src/imgLoader.cpp
+--- a/modules/libpr0n/src/imgLoader.cpp
++++ b/modules/libpr0n/src/imgLoader.cpp
+@@ -62,16 +62,18 @@
+ #include "nsIChannelEventSink.h"
+ #include "nsIAsyncVerifyRedirectCallback.h"
+ #include "nsIProxyObjectManager.h"
+ #include "nsIServiceManager.h"
+ #include "nsIFileURL.h"
+ #include "nsThreadUtils.h"
+ #include "nsXPIDLString.h"
+ #include "nsCRT.h"
++#include "nsIDocument.h"
++#include "nsPIDOMWindow.h"
+ 
+ #include "netCore.h"
+ 
+ #include "nsURILoader.h"
+ #include "ImageLogging.h"
+ 
+ #include "nsIComponentRegistrar.h"
+ 
+@@ -1640,16 +1642,25 @@ NS_IMETHODIMP imgLoader::LoadImage(nsIUR
+     // is redirected, we'll have a way to cancel the resulting channel.
+     nsCOMPtr<nsILoadGroup> loadGroup =
+         do_CreateInstance(NS_LOADGROUP_CONTRACTID);
+     newChannel->SetLoadGroup(loadGroup);
+ 
+     void *cacheId = NS_GetCurrentThread();
+     request->Init(aURI, aURI, loadGroup, newChannel, entry, cacheId, aCX);
+ 
++    // Pass the windowID of the loading document, if possible.
++    nsCOMPtr<nsIDocument> doc = do_QueryInterface(aCX);
++    if (doc) {
++      nsCOMPtr<nsPIDOMWindow> win = doc->GetWindow();
++      if (win) {
++        request->SetWindowID(win->WindowID());
++      }
++    }
++
+     // create the proxy listener
+     ProxyListener *pl = new ProxyListener(static_cast<nsIStreamListener *>(request.get()));
+     if (!pl) {
+       request->CancelAndAbort(NS_ERROR_OUT_OF_MEMORY);
+       return NS_ERROR_OUT_OF_MEMORY;
+     }
+ 
+     NS_ADDREF(pl);
+diff --git a/modules/libpr0n/src/imgRequest.cpp b/modules/libpr0n/src/imgRequest.cpp
+--- a/modules/libpr0n/src/imgRequest.cpp
++++ b/modules/libpr0n/src/imgRequest.cpp
+@@ -184,17 +184,17 @@ NS_IMPL_ISUPPORTS8(imgRequest,
+                    nsISupportsWeakReference,
+                    nsIChannelEventSink,
+                    nsIInterfaceRequestor,
+                    nsIAsyncVerifyRedirectCallback)
+ 
+ imgRequest::imgRequest() : 
+   mCacheId(0), mValidator(nsnull), mImageSniffers("image-sniffing-services"),
+   mDecodeRequested(PR_FALSE), mIsMultiPartChannel(PR_FALSE),
+-  mGotData(PR_FALSE), mIsInCache(PR_FALSE)
++  mGotData(PR_FALSE), mIsInCache(PR_FALSE), mWindowId(0)
+ {}
+ 
+ imgRequest::~imgRequest()
+ {
+   if (mKeyURI) {
+     nsCAutoString spec;
+     mKeyURI->GetSpec(spec);
+     LOG_FUNC_WITH_PARAM(gImgLog, "imgRequest::~imgRequest()", "keyuri", spec.get());
+@@ -1020,16 +1020,17 @@ NS_IMETHODIMP imgRequest::OnDataAvailabl
+     }
+ 
+     /* now we have mimetype, so we can infer the image type that we want */
+     if (mContentType.EqualsLiteral(SVG_MIMETYPE)) {
+       mImage = new VectorImage(mStatusTracker.forget());
+     } else {
+       mImage = new RasterImage(mStatusTracker.forget());
+     }
++    mImage->SetWindowID(mWindowId);
+     imageType = mImage->GetType();
+ 
+     // Notify any imgRequestProxys that are observing us that we have an Image.
+     nsTObserverArray<imgRequestProxy*>::ForwardIterator iter(mObservers);
+     while (iter.HasMore()) {
+       iter.GetNext()->SetImage(mImage);
+     }
+ 
+diff --git a/modules/libpr0n/src/imgRequest.h b/modules/libpr0n/src/imgRequest.h
+--- a/modules/libpr0n/src/imgRequest.h
++++ b/modules/libpr0n/src/imgRequest.h
+@@ -115,16 +115,24 @@ public:
+   void CancelAndAbort(nsresult aStatus);
+ 
+   // Methods that get forwarded to the Image, or deferred until it's
+   // instantiated.
+   nsresult LockImage();
+   nsresult UnlockImage();
+   nsresult RequestDecode();
+ 
++  inline void SetWindowID(PRUint64 aWindowId) {
++    mWindowId = aWindowId;
++  }
++
++  inline PRUint64 WindowID() {
++    return mWindowId;
++  }
++
+ private:
+   friend class imgCacheEntry;
+   friend class imgRequestProxy;
+   friend class imgLoader;
+   friend class imgCacheValidator;
+   friend class imgStatusTracker;
+   friend class imgCacheExpirationTracker;
+   friend class imgRequestNotifyRunnable;
+@@ -219,16 +227,20 @@ private:
+ 
+   void *mLoadId;
+   PRTime mLoadTime;
+ 
+   imgCacheValidator *mValidator;
+   nsCategoryCache<nsIContentSniffer> mImageSniffers;
+   nsCOMPtr<nsIAsyncVerifyRedirectCallback> mRedirectCallback;
+   nsCOMPtr<nsIChannel> mNewRedirectChannel;
++
++  // Originating outer window ID. Used for error reporting.
++  PRUint64 mWindowId;
++
+   // Sometimes consumers want to do things before the image is ready. Let them,
+   // and apply the action when the image becomes available.
+   PRPackedBool mDecodeRequested : 1;
+ 
+   PRPackedBool mIsMultiPartChannel : 1;
+   PRPackedBool mGotData : 1;
+   PRPackedBool mIsInCache : 1;
+ };
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -126,16 +126,20 @@ _BROWSER_TEST_PAGES = \
+ 	test-bug-595934-css-loader.html \
+ 	test-bug-595934-css-loader.css \
+ 	test-bug-595934-css-loader.css^headers^ \
+ 	test-bug-595934-dom-html.html \
+ 	test-bug-595934-imagemap.html \
+ 	test-bug-595934-html.html \
+ 	test-bug-595934-malformedxml.xhtml \
+ 	test-bug-595934-svg.xhtml \
++	test-bug-595934-getselection.html \
++	test-bug-595934-getselection.js \
++	test-bug-595934-image.html \
++	test-bug-595934-image.jpg \
+ 	test-bug-597136-external-script-errors.html \
+ 	test-bug-597136-external-script-errors.js \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_595934_message_categories.js
+@@ -44,16 +44,26 @@ const TESTS = [
+     category: "malformed-xml",
+     matchString: "malformed-xml",
+   },
+   { // #6
+     file: "test-bug-595934-svg.xhtml",
+     category: "SVG",
+     matchString: "fooBarSVG",
+   },
++  { // #7
++    file: "test-bug-595934-getselection.html",
++    category: "content javascript",
++    matchString: "getSelection",
++  },
++  { // #8
++    file: "test-bug-595934-image.html",
++    category: "Image",
++    matchString: "corrupt",
++  },
+ ];
+ 
+ let pos = -1;
+ 
+ let TestObserver = {
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
+ 
+   observe: function test_observe(aSubject)
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-getselection.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-getselection.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-getselection.html
+@@ -0,0 +1,16 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: content javascript.
++    (getSelection())</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++    <script type="text/javascript"
++            src="test-bug-595934-getselection.js"></script>
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category "content javascript"
++       (getSelection()).</p>
++  </body>
++</html>
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-getselection.js b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-getselection.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-getselection.js
+@@ -0,0 +1,9 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++window.addEventListener("load", function() {
++  document.getSelection();
++}, false);
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-image.html b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-image.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-image.html
+@@ -0,0 +1,14 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <title>Web Console test for bug 595934 - category: Image</title>
++<!-- Any copyright is dedicated to the Public Domain.
++     http://creativecommons.org/publicdomain/zero/1.0/ -->
++  </head>
++  <body>
++    <p>Web Console test for bug 595934 - category Image.</p>
++    <p><img src="test-bug-595934-image.jpg" alt="corrupted image"></p>
++  </body>
++</html>
++
++
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-bug-595934-image.jpg b/toolkit/components/console/hudservice/tests/browser/test-bug-595934-image.jpg
+new file mode 100644
+index 0000000000000000000000000000000000000000..947e5f11ba13b7a1728ef64fbdedfa5ee25379cf
+GIT binary patch
+literal 2532
+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
+

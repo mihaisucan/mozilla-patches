@@ -1,0 +1,233 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1320339088 -7200
+# Node ID 77b907150c16d376f5ffe4480db755ac0eb32b18
+# Parent  73e8ca9230d61d740d19b2148db2158852a0cfcb
+Bug 699130 - Paste is disabled after using it once in Scratchpad
+
+diff --git a/browser/devtools/scratchpad/scratchpad.js b/browser/devtools/scratchpad/scratchpad.js
+--- a/browser/devtools/scratchpad/scratchpad.js
++++ b/browser/devtools/scratchpad/scratchpad.js
+@@ -792,16 +792,18 @@ var Scratchpad = {
+   /**
+    * The popupshowing event handler for the Edit menu. This method updates the
+    * enabled/disabled state of the Undo and Redo commands, based on the editor
+    * state such that the menu items render correctly for the user when the menu
+    * shows.
+    */
+   onEditPopupShowing: function SP_onEditPopupShowing()
+   {
++    goUpdateGlobalEditMenuItems();
++
+     let undo = document.getElementById("sp-cmd-undo");
+     undo.setAttribute("disabled", !this.editor.canUndo());
+ 
+     let redo = document.getElementById("sp-cmd-redo");
+     redo.setAttribute("disabled", !this.editor.canRedo());
+   },
+ 
+   /**
+diff --git a/browser/devtools/scratchpad/scratchpad.xul b/browser/devtools/scratchpad/scratchpad.xul
+--- a/browser/devtools/scratchpad/scratchpad.xul
++++ b/browser/devtools/scratchpad/scratchpad.xul
+@@ -285,17 +285,18 @@
+                 label="&browserContext.label;"
+                 accesskey="&browserContext.accesskey;"
+                 type="radio"/>
+     </menupopup>
+   </menu>
+ </menubar>
+ 
+ <popupset id="scratchpad-popups">
+-  <menupopup id="scratchpad-text-popup">
++  <menupopup id="scratchpad-text-popup"
++             onpopupshowing="goUpdateGlobalEditMenuItems()">
+     <menuitem id="menu_cut"/>
+     <menuitem id="menu_copy"/>
+     <menuitem id="menu_paste"/>
+     <menuitem id="menu_delete"/>
+     <menuseparator/>
+     <menuitem id="menu_selectAll"/>
+     <menuseparator/>
+     <menuitem id="sp-text-run"
+diff --git a/browser/devtools/scratchpad/test/Makefile.in b/browser/devtools/scratchpad/test/Makefile.in
+--- a/browser/devtools/scratchpad/test/Makefile.in
++++ b/browser/devtools/scratchpad/test/Makefile.in
+@@ -50,11 +50,12 @@ _BROWSER_TEST_FILES = \
+ 		browser_scratchpad_execute_print.js \
+ 		browser_scratchpad_inspect.js \
+ 		browser_scratchpad_files.js \
+ 		browser_scratchpad_ui.js \
+ 		browser_scratchpad_bug_646070_chrome_context_pref.js \
+ 		browser_scratchpad_bug_660560_tab.js \
+ 		browser_scratchpad_open.js \
+ 		browser_scratchpad_restore.js \
++		browser_scratchpad_bug_699130_edit_ui_updates.js \
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/browser/devtools/scratchpad/test/browser_scratchpad_bug_699130_edit_ui_updates.js b/browser/devtools/scratchpad/test/browser_scratchpad_bug_699130_edit_ui_updates.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/scratchpad/test/browser_scratchpad_bug_699130_edit_ui_updates.js
+@@ -0,0 +1,160 @@
++/* vim: set ts=2 et sw=2 tw=80: */
++/* Any copyright is dedicated to the Public Domain.
++   http://creativecommons.org/publicdomain/zero/1.0/ */
++
++"use strict";
++
++Cu.import("resource:///modules/source-editor.jsm");
++
++// Reference to the Scratchpad chrome window object.
++let gScratchpadWindow;
++
++function test()
++{
++  waitForExplicitFinish();
++
++  gBrowser.selectedTab = gBrowser.addTab();
++  gBrowser.selectedBrowser.addEventListener("load", function onLoad() {
++    gBrowser.selectedBrowser.removeEventListener("load", onLoad, true);
++
++    gScratchpadWindow = Scratchpad.openScratchpad();
++    gScratchpadWindow.addEventListener("load", function onScratchpadLoad() {
++      gScratchpadWindow.removeEventListener("load", onScratchpadLoad, false);
++      waitForFocus(runTests, gScratchpadWindow);
++    }, false);
++  }, true);
++
++  content.location = "data:text/html,test Edit menu updates Scratchpad - bug 699130";
++}
++
++function runTests()
++{
++  let sp = gScratchpadWindow.Scratchpad;
++
++  sp.setText("bug 699130: hello world! (edit menu)");
++
++  let pass = 0;
++  let editMenu = gScratchpadWindow.document.getElementById("sp-edit-menu");
++  let editPopup = editMenu.menupopup;
++  let cutItem = gScratchpadWindow.document.getElementById("sp-menu-cut");
++  let pasteItem = gScratchpadWindow.document.getElementById("sp-menu-paste");
++
++  let firstShow = function() {
++    editPopup.removeEventListener("popupshown", firstShow, false);
++
++    ok(cutItem.hasAttribute("disabled"), "cut menuitem is disabled");
++
++    editPopup.addEventListener("popuphidden", firstHide, false);
++    executeSoon(function() {
++      editPopup.hidePopup();
++    });
++  };
++
++  let firstHide = function() {
++    editPopup.removeEventListener("popuphidden", firstHide, false);
++
++    editPopup.addEventListener("popupshown", showAfterSelect, false);
++    sp.selectRange(0, 10);
++    editPopup.openPopupAtScreen(11, 11, false);
++  };
++
++  let showAfterSelect = function() {
++    editPopup.removeEventListener("popupshown", showAfterSelect, false);
++
++    ok(!cutItem.hasAttribute("disabled"), "cut menuitem is enabled after select");
++
++    editPopup.addEventListener("popuphidden", hideAfterSelect, false);
++    executeSoon(function() {
++      editPopup.hidePopup();
++    });
++  };
++
++  let hideAfterSelect = function() {
++    editPopup.removeEventListener("popuphidden", hideAfterSelect, false);
++
++    sp.editor.addEventListener(SourceEditor.EVENTS.TEXT_CHANGED, onCut);
++    executeSoon(function() {
++      EventUtils.synthesizeKey("x", {accelKey: true}, gScratchpadWindow);
++    });
++  };
++
++  let onCut = function() {
++    sp.editor.removeEventListener(SourceEditor.EVENTS.TEXT_CHANGED, onCut);
++
++    editPopup.addEventListener("popupshown", showAfterCut, false);
++    executeSoon(function() {
++      editPopup.openPopupAtScreen(12, 12, false);
++    });
++  };
++
++  let showAfterCut = function() {
++    editPopup.removeEventListener("popupshown", showAfterCut, false);
++
++    ok(cutItem.hasAttribute("disabled"), "cut menuitem is disabled after cut");
++    ok(!pasteItem.hasAttribute("disabled"), "paste menuitem is enabled after cut");
++
++    editPopup.addEventListener("popuphidden", hideAfterCut, false);
++    executeSoon(function() {
++      editPopup.hidePopup();
++    });
++  };
++
++  let hideAfterCut = function() {
++    editPopup.removeEventListener("popuphidden", hideAfterCut, false);
++
++    sp.editor.addEventListener(SourceEditor.EVENTS.TEXT_CHANGED, onPaste);
++    EventUtils.synthesizeKey("v", {accelKey: true}, gScratchpadWindow);
++  };
++
++  let onPaste = function() {
++    sp.editor.removeEventListener(SourceEditor.EVENTS.TEXT_CHANGED, onPaste);
++
++    editPopup.addEventListener("popupshown", showAfterPaste, false);
++    editPopup.openPopupAtScreen(13, 13, false);
++  };
++
++  let showAfterPaste = function() {
++    editPopup.removeEventListener("popupshown", showAfterPaste, false);
++
++    ok(cutItem.hasAttribute("disabled"), "cut menuitem is disabled after paste");
++    ok(!pasteItem.hasAttribute("disabled"), "paste menuitem is enabled after paste");
++
++    editPopup.addEventListener("popuphidden", hideAfterPaste, false);
++    executeSoon(function() {
++      editPopup.hidePopup();
++    });
++  };
++
++  let hideAfterPaste = function() {
++    editPopup.removeEventListener("popuphidden", hideAfterPaste, false);
++
++    if (pass == 0) {
++      pass++;
++      executeSoon(testContextMenu);
++    } else {
++      executeSoon(finishTest);
++    }
++  };
++
++  let testContextMenu = function() {
++    info("will test the context menu");
++    editPopup = gScratchpadWindow.document.getElementById("scratchpad-text-popup");
++    cutItem = gScratchpadWindow.document.getElementById("menu_cut");
++    pasteItem = gScratchpadWindow.document.getElementById("menu_paste");
++
++    sp.setText("bug 699130: hello world! (context menu)");
++    editPopup.addEventListener("popupshown", firstShow, false);
++    editPopup.openPopupAtScreen(10, 10, false);
++  };
++
++  let finishTest = function() {
++    gScratchpadWindow.close();
++    gScratchpadWindow = null;
++    gBrowser.removeCurrentTab();
++    finish();
++  };
++
++  info("will test the Edit menu");
++  editPopup.addEventListener("popupshown", firstShow, false);
++  editPopup.openPopupAtScreen(10, 10, false);
++}

@@ -1,0 +1,250 @@
+diff --git a/browser/base/content/test/Makefile.in b/browser/base/content/test/Makefile.in
+--- a/browser/base/content/test/Makefile.in
++++ b/browser/base/content/test/Makefile.in
+@@ -159,16 +159,18 @@ _BROWSER_FILES = \
+                  browser_bug592338.js \
+                  browser_bug594131.js \
+                  browser_bug595507.js \
+                  browser_bug596687.js \
+                  browser_bug597218.js \
+                  browser_bug598923.js \
+                  browser_bug599325.js \
+                  browser_bug609700.js \
++                 browser_bug615936.js \
++                 browser_bug615936_page.sjs \
+                  browser_contextSearchTabPosition.js \
+                  browser_ctrlTab.js \
+                  browser_discovery.js \
+                  browser_duplicateIDs.js \
+                  browser_gestureSupport.js \
+                  browser_getshortcutoruri.js \
+                  browser_hide_removing.js \
+                  browser_inspector_initialization.js \
+diff --git a/browser/base/content/test/browser_bug615936.js b/browser/base/content/test/browser_bug615936.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_bug615936.js
+@@ -0,0 +1,193 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://mochi.test:8888/browser/browser/base/content/test/browser_bug615936_page.sjs";
++
++let headers = {activityDistributor: null, httpExaminer: null};
++
++XPCOMUtils.defineLazyServiceGetter(this, "activityDistributor",
++                                   "@mozilla.org/network/http-activity-distributor;1",
++                                   "nsIHttpActivityDistributor");
++
++function getWindowForRequest(aRequest)
++{
++  let loadContext = null;
++
++  if (aRequest && aRequest.notificationCallbacks) {
++    try {
++      loadContext = aRequest.notificationCallbacks.
++                    getInterface(Ci.nsILoadContext);
++    } catch (ex) { }
++  }
++
++  if (!loadContext && aRequest && aRequest.loadGroup &&
++      aRequest.loadGroup.notificationCallbacks) {
++    try {
++      loadContext = aRequest.loadGroup.notificationCallbacks.
++                    getInterface(Ci.nsILoadContext);
++    } catch (ex) { }
++  }
++
++  return loadContext ? loadContext.associatedWindow : null;
++}
++
++function ResponseListener() { }
++
++ResponseListener.prototype =
++{
++  originalListener: null,
++
++  setResponseHeader: function RL_setResponseHeader(aRequest)
++  {
++    if (!headers.activityDistributor &&
++        aRequest instanceof Ci.nsIHttpChannel) {
++      headers.activityDistributor = {};
++      try {
++        aRequest.visitResponseHeaders({
++          visitHeader: function(aName, aValue) {
++            headers.activityDistributor[aName] = aValue;
++          }
++        });
++      }
++      catch (ex) {
++        delete headers.activityDistributor;
++      }
++    }
++  },
++
++  onDataAvailable: function RL_onDataAvailable(aRequest, aContext, aInputStream,
++                                                aOffset, aCount)
++  {
++    this.setResponseHeader(aRequest);
++    try {
++      this.originalListener.onDataAvailable(aRequest, aContext, aInputStream,
++                                            aOffset, aCount);
++    }
++    catch(ex) {
++      aRequest.cancel(ex);
++    }
++  },
++
++  onStartRequest: function RL_onStartRequest(aRequest, aContext)
++  {
++    try {
++      this.originalListener.onStartRequest(aRequest, aContext);
++    }
++    catch(ex) {
++      aRequest.cancel(ex);
++    }
++  },
++
++  onStopRequest: function RL_onStopRequest(aRequest, aContext, aStatusCode)
++  {
++    try {
++      this.originalListener.onStopRequest(aRequest, aContext, aStatusCode);
++    }
++    catch (ex) { }
++
++    this.setResponseHeader(aRequest);
++  },
++
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIStreamListener, Ci.nsISupports])
++};
++
++let httpActivityObserver = {
++  observeActivity: function _observeActivity(aChannel, aActivityType,
++                                             aActivitySubtype)
++  {
++    if (aActivityType ==
++          activityDistributor.ACTIVITY_TYPE_HTTP_TRANSACTION ||
++        aActivityType ==
++          activityDistributor.ACTIVITY_TYPE_SOCKET_TRANSPORT) {
++
++      aChannel = aChannel.QueryInterface(Ci.nsIHttpChannel);
++
++      if (aActivitySubtype ==
++          activityDistributor.ACTIVITY_SUBTYPE_REQUEST_HEADER) {
++
++        if (getWindowForRequest(aChannel) !== content) {
++          return;
++        }
++
++        let newListener = new ResponseListener();
++        aChannel.QueryInterface(Ci.nsITraceableChannel);
++        newListener.originalListener = aChannel.setNewListener(newListener);
++      }
++    }
++  },
++};
++
++function httpResponseExaminer(aSubject, aTopic)
++{
++  if (aTopic != "http-on-examine-response" ||
++      !(aSubject instanceof Ci.nsIHttpChannel)) {
++    return;
++  }
++
++  let channel = aSubject.QueryInterface(Ci.nsIHttpChannel);
++  if (getWindowForRequest(channel) !== content) {
++    return;
++  }
++
++  headers.httpExaminer = {};
++  try {
++    channel.visitResponseHeaders({
++      visitHeader: function(aName, aValue) {
++        headers.httpExaminer[aName] = aValue;
++      }
++    });
++  }
++  catch (ex) {
++    delete headers.httpExaminer;
++  }
++}
++
++function performTest()
++{
++  gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++
++  ok(headers.activityDistributor, "activityDistributor headers received");
++  ok(headers.httpExaminer, "http-on-examine-response headers received");
++
++  is(Object.keys(headers.activityDistributor).toString(),
++     Object.keys(headers.httpExaminer).toString(),
++     "identical header names received");
++
++  for (let header in headers.activityDistributor) {
++    is(headers.activityDistributor[header],
++       headers.httpExaminer[header],
++       "header " + header + " is identical from both sources");
++  }
++
++  activityDistributor.removeObserver(httpActivityObserver);
++  Services.obs.removeObserver(httpResponseExaminer, "http-on-examine-response");
++
++  headers = null;
++  activityDistributor = null;
++
++  gBrowser.removeCurrentTab();
++  finish();
++}
++
++function test()
++{
++  waitForExplicitFinish();
++  gBrowser.selectedTab = gBrowser.addTab(TEST_URI);
++
++  gBrowser.selectedBrowser.addEventListener("load", function() {
++    gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);
++
++    activityDistributor.addObserver(httpActivityObserver);
++    Services.obs.addObserver(httpResponseExaminer, "http-on-examine-response", false);
++
++    gBrowser.selectedBrowser.addEventListener("load", performTest, true);
++    content.location.reload();
++  }, true);
++}
+diff --git a/browser/base/content/test/browser_bug615936_page.sjs b/browser/base/content/test/browser_bug615936_page.sjs
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/test/browser_bug615936_page.sjs
+@@ -0,0 +1,25 @@
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++function handleRequest(request, response)
++{
++  var Etag = '"4c881ab-b03-435f0a0f9ef00"';
++  var IfNoneMatch = request.hasHeader("If-None-Match")
++                    ? request.getHeader("If-None-Match")
++                    : "";
++
++  var page = "<!DOCTYPE html><html><body><p>hello world!</p></body></html>";
++
++  response.setHeader("Etag", Etag, false);
++
++  if (IfNoneMatch == Etag) {
++    response.setStatusLine(request.httpVersion, "304", "Not Modified");
++  }
++  else {
++    response.setHeader("Content-Type", "text/html", false);
++    response.setHeader("Content-Length", page.length + "", false);
++    response.write(page);
++  }
++}

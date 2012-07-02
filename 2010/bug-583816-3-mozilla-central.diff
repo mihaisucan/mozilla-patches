@@ -1,0 +1,216 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -4281,30 +4281,29 @@ JSTerm.prototype = {
+               }
+             }
+             break;
+           case 9:
+             // tab key
+             // If there are more than one possible completion, pressing tab
+             // means taking the next completion, shift_tab means taking
+             // the previous completion.
++            var completionResult;
+             if (aEvent.shiftKey) {
+-              self.complete(self.COMPLETE_BACKWARD);
++              completionResult = self.complete(self.COMPLETE_BACKWARD);
+             }
+             else {
+-              self.complete(self.COMPLETE_FORWARD);
++              completionResult = self.complete(self.COMPLETE_FORWARD);
+             }
+-            var bool = aEvent.cancelable;
+-            if (bool) {
+-              aEvent.preventDefault();
++            if (completionResult) {
++              if (aEvent.cancelable) {
++                aEvent.preventDefault();
++              }
++              aEvent.target.focus();
+             }
+-            else {
+-              // noop
+-            }
+-            aEvent.target.focus();
+             break;
+           case 8:
+             // backspace key
+           case 46:
+             // delete key
+             // necessary so that default is not reached.
+             break;
+           default:
+@@ -4405,39 +4404,40 @@ JSTerm.prototype = {
+    *          then the previous completion of all possible completions is used.
+    *    - this.COMPLETE_HINT_ONLY: If there is more than one possible
+    *          completion and the input value stayed the same compared to the
+    *          last time this function was called, then the same completion is
+    *          used again. If there is only one possible completion, then
+    *          the inputNode.value is set to this value and the selection is set
+    *          from the current cursor position to the end of the completed text.
+    *
+-   * @returns void
++   * @returns boolean true if there existed a completion for the current input,
++   *          or false otherwise.
+    */
+   complete: function JSTF_complete(type)
+   {
+     let inputNode = this.inputNode;
+     let inputValue = inputNode.value;
+     // If the inputNode has no value, then don't try to complete on it.
+     if (!inputValue) {
+-      return;
++      return false;
+     }
+     let selStart = inputNode.selectionStart, selEnd = inputNode.selectionEnd;
+ 
+     // 'Normalize' the selection so that end is always after start.
+     if (selStart > selEnd) {
+       let newSelEnd = selStart;
+       selStart = selEnd;
+       selEnd = newSelEnd;
+     }
+ 
+     // Only complete if the selection is at the end of the input.
+     if (selEnd != inputValue.length) {
+       this.lastCompletion = null;
+-      return;
++      return false;
+     }
+ 
+     // Remove the selected text from the inputValue.
+     inputValue = inputValue.substring(0, selStart);
+ 
+     let matches;
+     let matchIndexToUse;
+     let matchOffset;
+@@ -4455,17 +4455,17 @@ JSTerm.prototype = {
+         this.lastCompletion.index ++;
+       }
+       matchIndexToUse = this.lastCompletion.index;
+     }
+     else {
+       // Look up possible completion values.
+       let completion = this.propertyProvider(this.sandbox.window, inputValue);
+       if (!completion) {
+-        return;
++        return false;
+       }
+       matches = completion.matches;
+       matchIndexToUse = 0;
+       matchOffset = completion.matchProp.length
+       // Store this match;
+       this.lastCompletion = {
+         index: 0,
+         value: inputValue,
+@@ -4495,17 +4495,21 @@ JSTerm.prototype = {
+       // should get displayed only without moving the cursor at the end of the
+       // completion.
+       if (matches.length > 1 || type === this.COMPLETE_HINT_ONLY) {
+         inputNode.setSelectionRange(selStart, selEnd);
+       }
+       else {
+         inputNode.setSelectionRange(selEnd, selEnd);
+       }
++
++      return completionStr ? true : false;
+     }
++
++    return false;
+   }
+ };
+ 
+ /**
+  * JSTermFirefoxMixin
+  *
+  * JavaScript Terminal Firefox Mixin
+  *
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -84,16 +84,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_consoleonpage.js \
+ 	browser_webconsole_bug_587617_output_copy.js \
+ 	browser_webconsole_bug_588342_document_focus.js \
+ 	browser_webconsole_bug_585237_line_limit.js \
+ 	browser_webconsole_bug_581231_close_button.js \
+ 	browser_webconsole_bug_582201_duplicate_errors.js \
+ 	browser_webconsole_bug_580454_timestamp_l10n.js \
+ 	browser_webconsole_netlogging.js \
++	browser_webconsole_bug_583816_tab_focus.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_583816_tab_focus.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_583816_tab_focus.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_583816_tab_focus.js
+@@ -0,0 +1,63 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *  Mihai Șucan <mihai.sucan@gmail.com>
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-console.html";
++
++let inputNode;
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  waitForFocus(function() {
++    openConsole();
++
++    let hudId = HUDService.getHudIdByWindow(content);
++    HUD = HUDService.hudWeakReferences[hudId].get();
++
++    let display = HUDService.getOutputNodeById(hudId);
++    inputNode = display.querySelector(".jsterm-input-node");
++
++    inputNode.focus();
++    executeSoon(function() {
++      is(inputNode.getAttribute("focused"), "true", "inputNode is focused");
++      HUD.jsterm.setInputValue("doc");
++      inputNode.addEventListener("keyup", firstTab, false);
++      EventUtils.synthesizeKey("VK_TAB", {});
++    });
++  }, content);
++}
++
++function firstTab(aEvent) {
++  this.removeEventListener(aEvent.type, arguments.callee, false);
++
++  is(inputNode.getAttribute("focused"), "true", "inputNode is still focused");
++  isnot(this.value, "doc", "input autocompleted");
++
++  HUD.jsterm.setInputValue("foobarbaz" + Date.now());
++
++  EventUtils.synthesizeKey("VK_TAB", {});
++
++  executeSoon(secondTab);
++}
++
++function secondTab() {
++  isnot(inputNode.getAttribute("focused"), "true",
++          "inputNode is no longer focused");
++
++  HUD = inputNode = null;
++  HUDService.deactivateHUDForContext(gBrowser.selectedTab);
++  executeSoon(finish);
++}
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", tabLoad, true);
++}
++

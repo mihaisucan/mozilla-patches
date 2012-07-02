@@ -1,0 +1,552 @@
+# HG changeset patch
+# Date 1309981644 -10800
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Parent e3c85139237c84113d1e174fab5b1248257cf372
+Bug 611032 - Errors from before the Web Console is opened do not show
+
+diff --git a/browser/base/content/browser.js b/browser/base/content/browser.js
+--- a/browser/base/content/browser.js
++++ b/browser/base/content/browser.js
+@@ -1687,16 +1687,19 @@ function delayedStartup(isLoadingBlank, 
+   // If the user (or the locale) hasn't enabled the top-level "Character
+   // Encoding" menu via the "browser.menu.showCharacterEncoding" preference,
+   // hide it.
+   if ("true" != gPrefService.getComplexValue("browser.menu.showCharacterEncoding",
+                                              Ci.nsIPrefLocalizedString).data)
+     document.getElementById("appmenu_charsetMenu").hidden = true;
+ #endif
+ 
++  // Enable WebConsoleErrorObserver
++  WebConsoleErrorObserver.init();
++
+   Services.obs.notifyObservers(window, "browser-delayed-startup-finished", "");
+ }
+ 
+ function BrowserShutdown() {
+   // In certain scenarios it's possible for unload to be fired before onload,
+   // (e.g. if the window is being closed after browser.js loads but before the
+   // load completes). In that case, there's nothing to do here.
+   if (!gStartupRan)
+@@ -8544,16 +8547,26 @@ XPCOMUtils.defineLazyGetter(this, "HUDCo
+   try {
+     return HUDService.consoleUI;
+   }
+   catch (ex) {
+     Components.utils.reportError(ex);
+   }
+ });
+ 
++XPCOMUtils.defineLazyGetter(this, "WebConsoleErrorObserver", function () {
++  Cu.import("resource:///modules/HUDService.jsm");
++  try {
++    return WebConsoleErrorObserver;
++  }
++  catch (ex) {
++    Cu.reportError(ex);
++  }
++});
++
+ // Prompt user to restart the browser in safe mode 
+ function safeModeRestart()
+ {
+   // prompt the user to confirm 
+   let promptTitle = gNavigatorBundle.getString("safeModeRestartPromptTitle");
+   let promptMessage = 
+     gNavigatorBundle.getString("safeModeRestartPromptMessage");
+   let restartText = gNavigatorBundle.getString("safeModeRestartButton");
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -48,17 +48,17 @@ const Cu = Components.utils;
+ 
+ const CONSOLEAPI_CLASS_ID = "{b49c18f8-3379-4fc0-8c90-d7772c1a9ff3}";
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource:///modules/NetworkHelper.jsm");
+ Cu.import("resource:///modules/PropertyPanel.jsm");
+ 
+-var EXPORTED_SYMBOLS = ["HUDService", "ConsoleUtils"];
++var EXPORTED_SYMBOLS = ["HUDService", "ConsoleUtils", "WebConsoleErrorObserver"];
+ 
+ XPCOMUtils.defineLazyServiceGetter(this, "scriptError",
+                                    "@mozilla.org/scripterror;1",
+                                    "nsIScriptError");
+ 
+ XPCOMUtils.defineLazyServiceGetter(this, "activityDistributor",
+                                    "@mozilla.org/network/http-activity-distributor;1",
+                                    "nsIHttpActivityDistributor");
+@@ -1500,19 +1500,22 @@ HUD_SERVICE.prototype =
+   },
+ 
+   /**
+    * Clear the specified HeadsUpDisplay
+    *
+    * @param string|nsIDOMNode aHUD
+    *        Either the ID of a HUD or the DOM node corresponding to an outer
+    *        HUD box.
++   * @param boolean aClearStorage
++   *        True if you want to clear the console messages storage associated to
++   *        this Web Console.
+    * @returns void
+    */
+-  clearDisplay: function HS_clearDisplay(aHUD)
++  clearDisplay: function HS_clearDisplay(aHUD, aClearStorage)
+   {
+     if (typeof(aHUD) === "string") {
+       aHUD = this.getOutputNodeById(aHUD);
+     }
+ 
+     let hudRef = HUDService.getHudReferenceForOutputNode(aHUD);
+ 
+     if (hudRef) {
+@@ -1521,16 +1524,21 @@ HUD_SERVICE.prototype =
+ 
+     var outputNode = aHUD.querySelector(".hud-output-node");
+ 
+     while (outputNode.firstChild) {
+       outputNode.removeChild(outputNode.firstChild);
+     }
+ 
+     aHUD.lastTimestamp = 0;
++
++    if (aClearStorage && hudRef) {
++      let windowId = this.getInnerWindowId(hudRef.contentWindow.top);
++      gConsoleStorage.clearEvents(windowId);
++    }
+   },
+ 
+   /**
+    * get a unique ID from the sequence generator
+    *
+    * @returns integer
+    */
+   sequenceId: function HS_sequencerId()
+@@ -1853,17 +1861,17 @@ HUD_SERVICE.prototype =
+     this.storage = new ConsoleStorage();
+     this.defaultFilterPrefs = this.storage.defaultDisplayPrefs;
+     this.defaultGlobalConsolePrefs = this.storage.defaultGlobalConsolePrefs;
+ 
+     // begin observing HTTP traffic
+     this.startHTTPObservation();
+ 
+     HUDWindowObserver.init();
+-    HUDConsoleObserver.init();
++    // NOTE: the WebConsoleErrorObserver is started on delayed startup
+     ConsoleAPIObserver.init();
+   },
+ 
+   /**
+    * Suspend Web Console activity. This is called when all Web Consoles are
+    * closed.
+    *
+    * @returns void
+@@ -1880,17 +1888,17 @@ HUD_SERVICE.prototype =
+     this.openResponseHeaders = {};
+ 
+     // delete the storage as it holds onto channels
+     delete this.storage;
+     delete this.defaultFilterPrefs;
+     delete this.defaultGlobalConsolePrefs;
+ 
+     HUDWindowObserver.uninit();
+-    HUDConsoleObserver.uninit();
++    // WebConsoleErrorObserver will be destroyed on quit-application-granted
+     ConsoleAPIObserver.shutdown();
+   },
+ 
+   /**
+    * Shutdown all HeadsUpDisplays on xpcom-shutdown
+    *
+    * @returns void
+    */
+@@ -3544,17 +3552,30 @@ HeadsUpDisplay.prototype = {
+     let windowId = HUDService.getInnerWindowId(this.contentWindow.top);
+ 
+     let messages = gConsoleStorage.getEvents(windowId);
+ 
+     // Turn off scrolling for the moment.
+     ConsoleUtils.scroll = false;
+ 
+     messages.forEach(function(aMessage) {
+-      HUDService.logConsoleAPIMessage(this.hudId, aMessage);
++      if (aMessage instanceof Ci.nsIScriptError ||
++          aMessage instanceof Ci.nsIScriptError2) {
++        if (aMessage.category == "CSS Parser" || aMessage.category == "CSS Loader") {
++          HUDService.reportPageError(CATEGORY_CSS, aMessage);
++        }
++        else {
++          HUDService.reportPageError(CATEGORY_JS, aMessage);
++        }
++      }
++      else {
++        // In this case the cached message is a console message generated
++        // by the ConsoleAPI, not an nsIScriptError(2)
++        HUDService.logConsoleAPIMessage(this.hudId, aMessage);
++      }
+     }, this);
+ 
+     ConsoleUtils.scroll = true;
+ 
+     // Scroll to bottom.
+     if (this.outputNode.firstChild) {
+       this.outputNode.ensureIndexIsVisible(this.outputNode.childNodes.length - 1);
+     }
+@@ -3955,17 +3976,17 @@ HeadsUpDisplay.prototype = {
+    * @param string aHUDId
+    *        The ID of the console.
+    * @return void
+    */
+   makeClearConsoleButton: function HUD_makeClearConsoleButton(aToolbar)
+   {
+     let hudId = this.hudId;
+     function HUD_clearButton_onCommand() {
+-      HUDService.clearDisplay(hudId);
++      HUDService.clearDisplay(hudId, true);
+     }
+ 
+     let clearButton = this.makeXULNode("toolbarbutton");
+     clearButton.setAttribute("label", this.getStr("btnClear"));
+     clearButton.classList.add("webconsole-clear-console-button");
+     clearButton.addEventListener("command", HUD_clearButton_onCommand, false);
+ 
+     aToolbar.appendChild(clearButton);
+@@ -4410,17 +4431,17 @@ function JSTermHelper(aJSTerm)
+   };
+ 
+   /**
+    * Clears the output of the JSTerm.
+    */
+   aJSTerm.sandbox.clear = function JSTH_clear()
+   {
+     aJSTerm.helperEvaluated = true;
+-    aJSTerm.clearOutput();
++    aJSTerm.clearOutput(true);
+   };
+ 
+   /**
+    * Returns the result of Object.keys(aObject).
+    *
+    * @param object aObject
+    *        Object to return the property names from.
+    * @returns array of string
+@@ -4952,17 +4973,24 @@ JSTerm.prototype = {
+     let type = aResult === null ? "null" : typeof aResult;
+     if (type == "object" && aResult.constructor && aResult.constructor.name) {
+       type = aResult.constructor.name;
+     }
+ 
+     return type.toLowerCase();
+   },
+ 
+-  clearOutput: function JST_clearOutput()
++  /**
++   * Clear the Web Console output.
++   *
++   * @param boolean aClearStorage
++   *        True if you want to clear the console messages storage associated to
++   *        this Web Console.
++   */
++  clearOutput: function JST_clearOutput(aClearStorage)
+   {
+     let outputNode = this.outputNode;
+     let hudRef = HUDService.getHudReferenceForOutputNode(outputNode);
+ 
+     if (hudRef) {
+       hudRef.cssNodes = {};
+     }
+ 
+@@ -4970,16 +4998,21 @@ JSTerm.prototype = {
+       outputNode.removeChild(outputNode.firstChild);
+     }
+ 
+     let hudBox = outputNode;
+     while (!hudBox.classList.contains("hud-box")) {
+       hudBox = hudBox.parentNode;
+     }
+     hudBox.lastTimestamp = 0;
++
++    if (aClearStorage && hudRef) {
++      let windowId = HUDService.getInnerWindowId(hudRef.contentWindow.top);
++      gConsoleStorage.clearEvents(windowId);
++    }
+   },
+ 
+   /**
+    * Updates the size of the input field (command line) to fit its contents.
+    *
+    * @returns void
+    */
+   resizeInput: function JST_resizeInput()
+@@ -6525,45 +6558,45 @@ CommandController.prototype = {
+       case "cmd_selectAll":
+         this.selectAll(outputNode);
+         break;
+     }
+   }
+ };
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+-// HUDConsoleObserver
++// WebConsoleErrorObserver
+ ///////////////////////////////////////////////////////////////////////////////
+ 
+ /**
+- * HUDConsoleObserver: Observes nsIConsoleService for global consoleMessages,
++ * WebConsoleErrorObserver: Observes nsIConsoleService for global consoleMessages,
+  * if a message originates inside a contentWindow we are tracking,
+- * then route that message to the HUDService for logging.
++ * then route that message to the HUDService for logging or caching.
+  */
+ 
+-HUDConsoleObserver = {
++WebConsoleErrorObserver = {
+   QueryInterface: XPCOMUtils.generateQI(
+     [Ci.nsIObserver]
+   ),
+ 
+-  init: function HCO_init()
++  init: function WCEO_init()
+   {
+     Services.console.registerListener(this);
+-    Services.obs.addObserver(this, "xpcom-shutdown", false);
+-  },
+-
+-  uninit: function HCO_uninit()
++    Services.obs.addObserver(this, "quit-application-granted", false);
++  },
++
++  uninit: function WCEO_uninit()
+   {
+     Services.console.unregisterListener(this);
+-    Services.obs.removeObserver(this, "xpcom-shutdown");
+-  },
+-
+-  observe: function HCO_observe(aSubject, aTopic, aData)
+-  {
+-    if (aTopic == "xpcom-shutdown") {
++    Services.obs.removeObserver(this, "quit-application-granted");
++  },
++
++  observe: function WCEO_observe(aSubject, aTopic, aData)
++  {
++    if (aTopic == "quit-application-granted") {
+       this.uninit();
+       return;
+     }
+ 
+     if (!(aSubject instanceof Ci.nsIScriptError) ||
+         !(aSubject instanceof Ci.nsIScriptError2) ||
+         !aSubject.outerWindowID) {
+       return;
+@@ -6580,21 +6613,28 @@ HUDConsoleObserver = {
+       case "XBL Prototype Handler":
+       case "XBL Content Sink":
+       case "xbl javascript":
+         return;
+ 
+       case "CSS Parser":
+       case "CSS Loader":
+         HUDService.reportPageError(CATEGORY_CSS, aSubject);
+-        return;
++        break;
+ 
+       default:
+         HUDService.reportPageError(CATEGORY_JS, aSubject);
+-        return;
++        break;
++    }
++
++    let window = HUDService.getWindowByWindowId(aSubject.outerWindowID);
++    if (window) {
++      // Always cache errors so they show after the Web Console is reopen.
++      let innerWindowId = HUDService.getInnerWindowId(window.top);
++      gConsoleStorage.recordEvent(innerWindowId, aSubject);
+     }
+   }
+ };
+ 
+ /**
+  * A WebProgressListener that listens for location changes, to update HUDService
+  * state information on page navigation.
+  *
+@@ -6698,23 +6738,16 @@ function appName()
+   let name = APP_ID_TABLE[APP_ID];
+ 
+   if (name){
+     return name;
+   }
+   throw new Error("appName: UNSUPPORTED APPLICATION UUID");
+ }
+ 
+-///////////////////////////////////////////////////////////////////////////
+-// HUDService (exported symbol)
+-///////////////////////////////////////////////////////////////////////////
+-
+-try {
+-  // start the HUDService
+-  // This is in a try block because we want to kill everything if
+-  // *any* of this fails
+-  var HUDService = new HUD_SERVICE();
+-}
+-catch (ex) {
+-  Cu.reportError("HUDService failed initialization.\n" + ex);
+-  // TODO: kill anything that may have started up
+-  // see bug 568665
+-}
++XPCOMUtils.defineLazyGetter(this, "HUDService", function () {
++  try {
++    return new HUD_SERVICE();
++  }
++  catch (ex) {
++    Cu.reportError(ex);
++  }
++});
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -140,16 +140,17 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_position_ui.js \
+ 	browser_webconsole_bug_642615_autocomplete.js \
+ 	browser_webconsole_bug_585991_autocomplete_popup.js \
+ 	browser_webconsole_bug_585991_autocomplete_keys.js \
+ 	browser_webconsole_bug_663443_panel_title.js \
+ 	browser_webconsole_bug_660806_history_nav.js \
+ 	browser_webconsole_bug_651501_document_body_autocomplete.js \
+ 	browser_ConsoleAPICachedMessages.js \
++	browser_WebConsoleErrorObserverTests.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+@@ -211,15 +212,16 @@ _BROWSER_TEST_PAGES = \
+ 	test-bug-630733-response-redirect-headers.sjs \
+ 	test-bug-621644-jsterm-dollar.html \
+ 	test-bug-632347-iterators-generators.html \
+ 	test-bug-585956-console-trace.html \
+ 	test-bug-644419-log-limits.html \
+ 	test-bug-632275-getters.html \
+ 	test-bug-646025-console-file-location.html \
+ 	test-file-location.js \
++	test-webconsole-error-observer.html \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_TEST_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_BROWSER_TEST_PAGES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_WebConsoleErrorObserverTests.js b/toolkit/components/console/hudservice/tests/browser/browser_WebConsoleErrorObserverTests.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_WebConsoleErrorObserverTests.js
+@@ -0,0 +1,60 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is DevTools test code.
++ *
++ * The Initial Developer of the Original Code is Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   David Dahl <ddahl@mozilla.com>
++ *   Mihai Sucan <mihai.sucan@gmail.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++const TEST_URI = "http://example.com/browser/toolkit/components/console/hudservice/tests/browser/test-webconsole-error-observer.html";
++
++function test()
++{
++  addTab(TEST_URI);
++  browser.addEventListener("load", testWebConsoleErrorObserver, true);
++}
++
++function testWebConsoleErrorObserver()
++{
++  browser.removeEventListener("load", arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let outputNode = HUDService.getHudReferenceById(hudId).outputNode;
++
++  testLogEntry(outputNode, "bazBug611032", "Found the JavaScript error");
++  testLogEntry(outputNode, "cssColorBug611032", "Found the CSS error");
++
++  finishTest();
++}
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_611795.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_611795.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_611795.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_611795.js
+@@ -39,12 +39,17 @@ function onContentLoaded()
+  */
+ function test()
+ {
+   addTab(TEST_URI);
+   browser.addEventListener("load", function() {
+     browser.removeEventListener("load", arguments.callee, true);
+ 
+     openConsole();
++
++    // Clear cached messages that are shown once the Web Console opens.
++    let hudId = HUDService.getHudIdByWindow(content);
++    HUDService.clearDisplay(hudId, true);
++
+     browser.addEventListener("load", onContentLoaded, true);
+     content.location.reload();
+   }, true);
+ }
+diff --git a/toolkit/components/console/hudservice/tests/browser/test-webconsole-error-observer.html b/toolkit/components/console/hudservice/tests/browser/test-webconsole-error-observer.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/test-webconsole-error-observer.html
+@@ -0,0 +1,19 @@
++<!DOCTYPE HTML>
++<html dir="ltr" xml:lang="en-US" lang="en-US">
++  <head>
++    <title>WebConsoleErrorObserver test - bug 611032</title>
++    <!-- Any copyright is dedicated to the Public Domain.
++         http://creativecommons.org/publicdomain/zero/1.0/ -->
++    <script type="text/javascript">
++      var foo = {};
++      foo.bazBug611032();
++    </script>
++    <style type="text/css">
++      .foo { color: cssColorBug611032; }
++    </style>
++  </head>
++  <body>
++    <h1>WebConsoleErrorObserver test</h1>
++  </body>
++</html>
++

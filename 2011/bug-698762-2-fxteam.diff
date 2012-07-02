@@ -1,0 +1,232 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1320575169 -7200
+# Node ID f1bafd81dfcd58cfeae0775d87e8f10e72082a18
+# Parent  0c3401c00152653c51694f5fbe51ea0245077bb7
+Bug 698762 - Remove unmatched rules from style inspector
+
+diff --git a/browser/devtools/styleinspector/CssHtmlTree.jsm b/browser/devtools/styleinspector/CssHtmlTree.jsm
+--- a/browser/devtools/styleinspector/CssHtmlTree.jsm
++++ b/browser/devtools/styleinspector/CssHtmlTree.jsm
+@@ -439,17 +439,16 @@ function PropertyView(aTree, aName)
+ {
+   this.tree = aTree;
+   this.name = aName;
+   this.getRTLAttr = aTree.getRTLAttr;
+ 
+   this.link = "https://developer.mozilla.org/en/CSS/" + aName;
+ 
+   this.templateMatchedSelectors = aTree.styleDocument.getElementById("templateMatchedSelectors");
+-  this.templateUnmatchedSelectors = aTree.styleDocument.getElementById("templateUnmatchedSelectors");
+ }
+ 
+ PropertyView.prototype = {
+   // The parent element which contains the open attribute
+   element: null,
+ 
+   // Property header node
+   propertyHeader: null,
+@@ -570,37 +569,34 @@ PropertyView.prototype = {
+       this._matchedSelectorViews = null;
+       this._unmatchedSelectorViews = null;
+       this.prevViewedElement = this.tree.viewedElement;
+     }
+ 
+     if (!this.tree.viewedElement || !this.visible) {
+       this.valueNode.innerHTML = "";
+       this.matchedSelectorsContainer.hidden = true;
+-      this.unmatchedSelectorsContainer.hidden = true;
+-      this.unmatchedSelectorTable.innerHTML = "";
+       this.matchedSelectorsContainer.innerHTML = "";
+       this.matchedExpander.removeAttribute("open");
+-      this.unmatchedExpander.removeAttribute("open");
+       return;
+     }
+ 
+     this.valueNode.innerHTML = this.propertyInfo.value;
+     this.refreshAllSelectors();
+   },
+ 
+   /**
+    * Refresh the panel matched rules.
+    */
+   refreshMatchedSelectors: function PropertyView_refreshMatchedSelectors()
+   {
+     let hasMatchedSelectors = this.hasMatchedSelectors;
+     this.matchedSelectorsContainer.hidden = !hasMatchedSelectors;
+ 
+-    if (hasMatchedSelectors || this.hasUnmatchedSelectors) {
++    if (hasMatchedSelectors) {
+       this.propertyHeader.classList.add("expandable");
+     } else {
+       this.propertyHeader.classList.remove("expandable");
+     }
+ 
+     if (this.matchedExpanded && hasMatchedSelectors) {
+       CssHtmlTree.processTemplate(this.templateMatchedSelectors,
+         this.matchedSelectorsContainer, this);
+@@ -649,17 +645,16 @@ PropertyView.prototype = {
+   },
+ 
+   /**
+    * Refresh the panel matched and unmatched rules
+    */
+   refreshAllSelectors: function PropertyView_refreshAllSelectors()
+   {
+     this.refreshMatchedSelectors();
+-    this.refreshUnmatchedSelectors();
+   },
+ 
+   /**
+    * Provide access to the matched SelectorViews that we are currently
+    * displaying.
+    */
+   get matchedSelectorViews()
+   {
+@@ -697,19 +692,16 @@ PropertyView.prototype = {
+    * @param {Event} aEvent Used to determine the class name of the targets click
+    * event. If the class name is "helplink" then the event is allowed to bubble
+    * to the mdn link icon.
+    */
+   propertyHeaderClick: function PropertyView_propertyHeaderClick(aEvent)
+   {
+     if (aEvent.target.className != "helplink") {
+       this.matchedExpanded = !this.matchedExpanded;
+-      if (!this.hasMatchedSelectors && this.hasUnmatchedSelectors) {
+-        this.unmatchedExpanded = !this.unmatchedExpanded;
+-      }
+       this.refreshAllSelectors();
+       aEvent.preventDefault();
+     }
+   },
+ 
+   /**
+    * The action when a user expands unmatched selectors.
+    */
+diff --git a/browser/devtools/styleinspector/csshtmltree.xul b/browser/devtools/styleinspector/csshtmltree.xul
+--- a/browser/devtools/styleinspector/csshtmltree.xul
++++ b/browser/devtools/styleinspector/csshtmltree.xul
+@@ -66,17 +66,16 @@
+ <!-- The output from #templateProperty (below) is appended here. -->
+ <div id="propertyContainer">
+ </div>
+ 
+ <xul:hbox id="footer">
+   <xul:label class="legendKey bestmatch">&bestMatch;</xul:label>
+   <xul:label class="legendKey matched">&matched;</xul:label>
+   <xul:label class="legendKey parentmatch">&parentMatch;</xul:label>
+-  <xul:label class="legendKey unmatched">&unmatched;</xul:label>
+   <xul:spacer flex="1"/>
+   <xul:resizer dir="bottomright"/>
+ </xul:hbox>
+ <!--
+ To visually debug the templates without running firefox, alter the display:none
+ -->
+ <div style="display:none;">
+   <!--
+@@ -131,24 +130,16 @@ To visually debug the templates without 
+             &helpLinkTitle;
+           </a>
+         </div>
+         <div save="${valueNode}" class="property-value" dir="ltr">${value}</div>
+       </div>
+ 
+       <div save="${matchedSelectorsContainer}" class="rulelink">
+       </div>
+-      <div save="${unmatchedSelectorsContainer}" class="rulelink">
+-        <div save="${unmatchedTitleBlock}" onclick="${unmatchedSelectorsClick}"
+-             class="rule-unmatched">
+-          <div save="${unmatchedExpander}" class="expander"/>
+-          <div save="${unmatchedSelectorsTitleNode}">&unmatchedSelectors;</div>
+-        </div>
+-        <div save="${unmatchedSelectorTable}" class="unmatchedSelectorTable"/>
+-      </div>
+     </div>
+   </div>
+ 
+   <!--
+   A templateMatchedSelectors sits inside each templateProperties showing the
+   list of selectors that affect that property. Each needs data like this:
+   {
+     matchedSelectorViews: ..., // from cssHtmlTree.propertyViews[name].matchedSelectorViews
+@@ -166,36 +157,11 @@ To visually debug the templates without 
+           <td class="rule-link">
+             <a target="_blank" href="view-source:${selector.selectorInfo.href}" class="link"
+                 title="${selector.selectorInfo.href}">${selector.selectorInfo.source}</a>
+           </td>
+         </tr>
+       </loop>
+     </table>
+   </div>
+-
+-  <!--
+-  A templateUnmatchedSelectors sits inside each templateProperties showing the
+-  list of selectors that do not affect that property. Each needs data like this:
+-  {
+-    unmatchedSelectorViews: ..., // from cssHtmlTree.propertyViews[name].unmatchedSelectorViews
+-  }
+-  This is a template so the parent does not need to be a table, except that
+-  using a div as the parent causes the DOM to muck with the tr elements
+-  -->
+-  <div id="templateUnmatchedSelectors">
+-    <table>
+-      <loop foreach="selector in ${unmatchedSelectorViews}">
+-        <tr>
+-          <td dir="ltr" class="rule-text ${selector.statusClass}">
+-            ${selector.humanReadableText(__element)}
+-          </td>
+-          <td class="rule-link">
+-            <a target="_blank" href="view-source:${selector.selectorInfo.href}" class="link"
+-                title="${selector.selectorInfo.href}">${selector.selectorInfo.source}</a>
+-          </td>
+-        </tr>
+-      </loop>
+-    </table>
+-  </div>
+ </div>
+ 
+ </xul:window>
+diff --git a/browser/devtools/styleinspector/test/browser/browser_bug683672.js b/browser/devtools/styleinspector/test/browser/browser_bug683672.js
+--- a/browser/devtools/styleinspector/test/browser/browser_bug683672.js
++++ b/browser/devtools/styleinspector/test/browser/browser_bug683672.js
+@@ -33,17 +33,17 @@ function tabLoaded()
+ 
+ function runTests()
+ {
+   Services.obs.removeObserver(runTests, "StyleInspector-opened", false);
+ 
+   ok(stylePanel.isOpen(), "style inspector is open");
+ 
+   testMatchedSelectors();
+-  testUnmatchedSelectors();
++  //testUnmatchedSelectors();
+ 
+   info("finishing up");
+   Services.obs.addObserver(finishUp, "StyleInspector-closed", false);
+   stylePanel.close();
+ }
+ 
+ function testMatchedSelectors()
+ {
+diff --git a/browser/devtools/styleinspector/test/browser/browser_styleinspector.js b/browser/devtools/styleinspector/test/browser/browser_styleinspector.js
+--- a/browser/devtools/styleinspector/test/browser/browser_styleinspector.js
++++ b/browser/devtools/styleinspector/test/browser/browser_styleinspector.js
+@@ -59,17 +59,17 @@ function runStyleInspectorTests()
+   stylePanel.close();
+ }
+ 
+ function SI_CheckProperty()
+ {
+   let cssLogic = stylePanel.cssLogic;
+   let propertyInfo = cssLogic.getPropertyInfo("color");
+   ok(propertyInfo.matchedRuleCount > 0, "color property has matching rules");
+-  ok(propertyInfo.unmatchedRuleCount > 0, "color property has unmatched rules");
++  //ok(propertyInfo.unmatchedRuleCount > 0, "color property has unmatched rules");
+ }
+ 
+ function finishUp()
+ {
+   Services.obs.removeObserver(finishUp, "StyleInspector-closed", false);
+   ok(!stylePanel.isOpen(), "style inspector is closed");
+   doc = stylePanel = null;
+   gBrowser.removeCurrentTab();

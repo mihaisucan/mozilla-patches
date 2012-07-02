@@ -1,0 +1,288 @@
+diff --git a/toolkit/components/console/hudservice/HUDService.jsm b/toolkit/components/console/hudservice/HUDService.jsm
+--- a/toolkit/components/console/hudservice/HUDService.jsm
++++ b/toolkit/components/console/hudservice/HUDService.jsm
+@@ -1112,22 +1112,32 @@ function pruneConsoleOutputIfNecessary(a
+   let logLimit;
+   try {
+     let prefBranch = Services.prefs.getBranch("devtools.hud.");
+     logLimit = prefBranch.getIntPref("loglimit");
+   } catch (e) {
+     logLimit = DEFAULT_LOG_LIMIT;
+   }
+ 
++  let scrollBox = aConsoleNode.scrollBoxObject.element;
++  let oldScrollHeight = scrollBox.scrollHeight;
++  let scrolledToBottom = ConsoleUtils.isOutputScrolledToBottom(aConsoleNode);
++
+   // Prune the nodes.
+   let messageNodes = aConsoleNode.querySelectorAll(".hud-msg-node");
+-  for (let i = 0; i < messageNodes.length - logLimit; i++) {
++  let removeNodes = messageNodes.length - logLimit;
++  for (let i = 0; i < removeNodes; i++) {
+     messageNodes[i].parentNode.removeChild(messageNodes[i]);
+   }
+ 
++  if (!scrolledToBottom && removeNodes > 0 &&
++      oldScrollHeight != scrollBox.scrollHeight) {
++    scrollBox.scrollTop -= oldScrollHeight - scrollBox.scrollHeight;
++  }
++
+   return logLimit;
+ }
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ //// The HUD service
+ 
+ function HUD_SERVICE()
+ {
+@@ -4981,32 +4991,61 @@ ConsoleUtils = {
+    *        The message node to send to the output.
+    * @param string aHUDId
+    *        The ID of the HUD in which to insert this node.
+    */
+   outputMessageNode: function ConsoleUtils_outputMessageNode(aNode, aHUDId) {
+     ConsoleUtils.filterMessageNode(aNode, aHUDId);
+ 
+     let outputNode = HUDService.hudReferences[aHUDId].outputNode;
++
++    let scrolledToBottom = ConsoleUtils.isOutputScrolledToBottom(outputNode);
++
+     outputNode.appendChild(aNode);
+     HUDService.regroupOutput(outputNode);
+ 
+     if (pruneConsoleOutputIfNecessary(outputNode) == 0) {
+       // We can't very well scroll to make the message node visible if the log
+       // limit is zero and the node was destroyed in the first place.
+       return;
+     }
+ 
+-    if (!aNode.classList.contains("hud-filtered-by-string") &&
+-        !aNode.classList.contains("hud-filtered-by-type")) {
++    let isInputOutput = aNode.classList.contains("webconsole-msg-input") ||
++                        aNode.classList.contains("webconsole-msg-output");
++    let isFiltered = aNode.classList.contains("hud-filtered-by-string") ||
++                     aNode.classList.contains("hud-filtered-by-type");
++
++    // Scroll to the new node if it is not filtered, and if the output node is
++    // scrolled at the bottom or if the new node is a jsterm input/output
++    // message.
++    if (!isFiltered && (scrolledToBottom || isInputOutput)) {
+       ConsoleUtils.scrollToVisible(aNode);
+     }
+   },
+ 
+   /**
++   * Check if the given output node is scrolled to the bottom.
++   *
++   * @param nsIDOMNode aOutputNode
++   * @return boolean
++   *         True if the output node is scrolled to the bottom, or false
++   *         otherwise.
++   */
++  isOutputScrolledToBottom:
++  function ConsoleUtils_isOutputScrolledToBottom(aOutputNode)
++  {
++    let lastNodeHeight = aOutputNode.lastChild ?
++                         aOutputNode.lastChild.clientHeight : 0;
++    let scrollBox = aOutputNode.scrollBoxObject.element;
++
++    return scrollBox.scrollTop + scrollBox.clientHeight >=
++           scrollBox.scrollHeight - lastNodeHeight / 2;
++  },
++
++  /**
+    * Abbreviates the given source URL so that it can be displayed flush-right
+    * without being too distracting.
+    *
+    * @param string aSourceURL
+    *        The source URL to shorten.
+    * @return string
+    *         The abbreviated form of the source URL.
+    */
+diff --git a/toolkit/components/console/hudservice/tests/browser/Makefile.in b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+--- a/toolkit/components/console/hudservice/tests/browser/Makefile.in
++++ b/toolkit/components/console/hudservice/tests/browser/Makefile.in
+@@ -111,16 +111,18 @@ _BROWSER_TEST_FILES = \
+ 	browser_webconsole_console_extras.js \
+ 	browser_webconsole_bug_598357_jsterm_output.js \
+ 	browser_webconsole_bug_603750_websocket.js \
+ 	browser_webconsole_abbreviate_source_url.js \
+ 	browser_webconsole_view_source.js \
+ 	browser_webconsole_bug_602572_log_bodies_checkbox.js \
+ 	browser_webconsole_bug_614793_jsterm_scroll.js \
+ 	browser_webconsole_bug_599725_response_headers.js \
++	browser_webconsole_bug_613642_maintain_scroll.js \
++	browser_webconsole_bug_613642_prune_scroll.js \
+ 	head.js \
+ 	$(NULL)
+ 
+ _BROWSER_TEST_PAGES = \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597460_filter_scroll.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597460_filter_scroll.js
+--- a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597460_filter_scroll.js
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_597460_filter_scroll.js
+@@ -43,18 +43,21 @@ function tabReload(aEvent) {
+   ok(msgNode.classList.contains("hud-filtered-by-type"),
+     "network message is filtered by type");
+   ok(msgNode.classList.contains("hud-filtered-by-string"),
+     "network message is filtered by string");
+ 
+   let scrollBox = hud.outputNode.scrollBoxObject.element;
+   ok(scrollBox.scrollTop > 0, "scroll location is not at the top");
+ 
+-  is(scrollBox.scrollTop, scrollBox.scrollHeight - scrollBox.clientHeight,
+-    "scroll location is correct");
++  // Make sure the Web Console output is scrolled as near as possible to the
++  // bottom.
++  let nodeHeight = hud.outputNode.querySelector(".hud-log").clientHeight;
++  ok(scrollBox.scrollTop >= scrollBox.scrollHeight - scrollBox.clientHeight -
++     nodeHeight * 2, "scroll location is correct");
+ 
+   executeSoon(finishTest);
+ }
+ 
+ function test() {
+   addTab(TEST_URI);
+   browser.addEventListener("load", tabLoad, true);
+ }
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613642_maintain_scroll.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613642_maintain_scroll.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613642_maintain_scroll.js
+@@ -0,0 +1,61 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ */
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let hud = HUDService.hudReferences[hudId];
++  let outputNode = hud.outputNode;
++  let scrollBox = outputNode.scrollBoxObject.element;
++
++  for (let i = 0; i < 150; i++) {
++    hud.console.log("test message " + i);
++  }
++
++  let oldScrollTop = scrollBox.scrollTop;
++  ok(oldScrollTop > 0, "scroll location is not at the top");
++
++  // scroll to the first node
++  outputNode.firstChild.focus();
++
++  EventUtils.synthesizeKey("VK_HOME", {});
++
++  let topPosition = scrollBox.scrollTop;
++  isnot(topPosition, oldScrollTop, "scroll location updated (moved to top)");
++
++  executeSoon(function() {
++    // add a message and make sure scroll doesn't change
++    hud.console.log("test message 150");
++
++    is(scrollBox.scrollTop, topPosition, "scroll location is still at the top");
++
++    // scroll back to the bottom
++    outputNode.lastChild.focus();
++    EventUtils.synthesizeKey("VK_END", {});
++
++    executeSoon(function() {
++      oldScrollTop = outputNode.scrollTop;
++
++      hud.console.log("test message 151");
++
++      isnot(scrollBox.scrollTop, oldScrollTop,
++            "scroll location updated (moved to bottom)");
++
++      finishTest();
++    });
++  });
++}
++
++function test() {
++  addTab("data:text/html,Web Console test for bug 613642: remember scroll location");
++  browser.addEventListener("load", tabLoad, true);
++}
+diff --git a/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613642_prune_scroll.js b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613642_prune_scroll.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/console/hudservice/tests/browser/browser_webconsole_bug_613642_prune_scroll.js
+@@ -0,0 +1,67 @@
++/* vim:set ts=2 sw=2 sts=2 et: */
++/*
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ *
++ * Contributor(s):
++ *   Mihai Șucan <mihai.sucan@gmail.com>
++ */
++
++function tabLoad(aEvent) {
++  browser.removeEventListener(aEvent.type, arguments.callee, true);
++
++  openConsole();
++
++  let hudId = HUDService.getHudIdByWindow(content);
++  let hud = HUDService.hudReferences[hudId];
++  let outputNode = hud.outputNode;
++  let oldPref = 200;
++  try {
++    oldPref = Services.prefs.getIntPref("devtools.hud.loglimit");
++  }
++  catch (ex) { }
++
++  Services.prefs.setIntPref("devtools.hud.loglimit", 140);
++  let scrollBoxElement = outputNode.scrollBoxObject.element;
++  let boxObject = outputNode.scrollBoxObject;
++
++  for (let i = 0; i < 150; i++) {
++    hud.console.log("test message " + i);
++  }
++
++  let oldScrollTop = scrollBoxElement.scrollTop;
++  ok(oldScrollTop > 0, "scroll location is not at the top");
++
++  let firstNode = outputNode.firstChild;
++  ok(firstNode, "found the first message");
++
++  let msgNode = outputNode.querySelectorAll("richlistitem")[80];
++  ok(msgNode, "found the 80th message");
++
++  // scroll to the middle message node
++  boxObject.ensureElementIsVisible(msgNode);
++
++  isnot(scrollBoxElement.scrollTop, oldScrollTop,
++        "scroll location updated (scrolled to message)");
++
++  oldScrollTop = scrollBoxElement.scrollTop;
++
++  // add a message
++  hud.console.log("hello world");
++
++  // Scroll location needs to change, because one message is also removed, and
++  // we need to scroll a bit towards the top, to keep the current view in sync.
++  isnot(scrollBoxElement.scrollTop, oldScrollTop,
++        "scroll location updated (added a message)");
++
++  isnot(outputNode.firstChild, firstNode,
++        "first message removed");
++
++  Services.prefs.setIntPref("devtools.hud.loglimit", oldPref);
++  finishTest();
++}
++
++function test() {
++  addTab("data:text/html,Web Console test for bug 613642: maintain scroll with pruning of old messages");
++  browser.addEventListener("load", tabLoad, true);
++}

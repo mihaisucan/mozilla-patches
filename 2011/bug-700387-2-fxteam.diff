@@ -1,0 +1,398 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1320695830 -7200
+# Node ID 8ca340b369cb591f048853a410d55c9fefd7b233
+# Parent  7c054e3df2746eb49d86cb8ecaa23738044a6291
+Bug 700387 - Remove the Style Inspector breadcrumbs
+
+diff --git a/browser/devtools/styleinspector/CssHtmlTree.jsm b/browser/devtools/styleinspector/CssHtmlTree.jsm
+--- a/browser/devtools/styleinspector/CssHtmlTree.jsm
++++ b/browser/devtools/styleinspector/CssHtmlTree.jsm
+@@ -160,19 +160,17 @@ function CssHtmlTree(aStyleInspector)
+   this.getRTLAttr = this.win.getComputedStyle(this.win.gBrowser).direction;
+   this.propertyViews = [];
+ 
+   // The document in which we display the results (csshtmltree.xul).
+   this.styleDocument = this.styleWin.contentWindow.document;
+ 
+   // Nodes used in templating
+   this.root = this.styleDocument.getElementById("root");
+-  this.path = this.styleDocument.getElementById("path");
+   this.templateRoot = this.styleDocument.getElementById("templateRoot");
+-  this.templatePath = this.styleDocument.getElementById("templatePath");
+   this.propertyContainer = this.styleDocument.getElementById("propertyContainer");
+   this.panel = aStyleInspector.panel;
+ 
+   // No results text.
+   this.noResults = this.styleDocument.getElementById("noResults");
+ 
+   // The element that we're inspecting, and the document that it comes from.
+   this.viewedElement = null;
+@@ -265,18 +263,16 @@ CssHtmlTree.prototype = {
+    * @param {nsIDOMElement} aElement The highlighted node to get styles for.
+    */
+   highlight: function CssHtmlTree_highlight(aElement)
+   {
+     this.viewedElement = aElement;
+     this._unmatchedProperties = null;
+     this._matchedProperties = null;
+ 
+-    CssHtmlTree.processTemplate(this.templatePath, this.path, this);
+-
+     if (this.htmlComplete) {
+       this.refreshPanel();
+     } else {
+       if (this._refreshProcess) {
+         this._refreshProcess.cancel();
+       }
+ 
+       CssHtmlTree.processTemplate(this.templateRoot, this.root, this);
+@@ -337,30 +333,16 @@ CssHtmlTree.prototype = {
+         this.noResults.hidden = this.numVisibleProperties > 0
+         Services.obs.notifyObservers(null, "StyleInspector-populated", null);
+       }.bind(this)
+     });
+     this._refreshProcess.schedule();
+   },
+ 
+   /**
+-   * Called when the user clicks on a parent element in the "current element"
+-   * path.
+-   *
+-   * @param {Event} aEvent the DOM Event object.
+-   */
+-  pathClick: function CssHtmlTree_pathClick(aEvent)
+-  {
+-    aEvent.preventDefault();
+-    if (aEvent.target && this.viewedElement != aEvent.target.pathElement) {
+-      this.styleInspector.selectFromPath(aEvent.target.pathElement);
+-    }
+-  },
+-
+-  /**
+    * Called when the user enters a search term.
+    *
+    * @param {Event} aEvent the DOM Event object.
+    */
+   filterChanged: function CssHtmlTree_filterChanged(aEvent)
+   {
+     let win = this.styleWin.contentWindow;
+ 
+@@ -388,28 +370,16 @@ CssHtmlTree.prototype = {
+     this._matchedProperties = null;
+     this.cssLogic.sourceFilter = this.showOnlyUserStyles ?
+                                  CssLogic.FILTER.ALL :
+                                  CssLogic.FILTER.UA;
+     this.refreshPanel();
+   },
+ 
+   /**
+-   * Provide access to the path to get from document.body to the selected
+-   * element.
+-   *
+-   * @return {array} the array holding the path from document.body to the
+-   * selected element.
+-   */
+-  get pathElements()
+-  {
+-    return CssLogic.getShortNamePath(this.viewedElement);
+-  },
+-
+-  /**
+    * The CSS as displayed by the UI.
+    */
+   createStyleViews: function CssHtmlTree_createStyleViews()
+   {
+     if (CssHtmlTree.propertyNames) {
+       return;
+     }
+ 
+@@ -492,18 +462,16 @@ CssHtmlTree.prototype = {
+ 
+     // Remove event listeners
+     this.onlyUserStylesCheckbox.removeEventListener("command",
+       this.onlyUserStylesChanged);
+     this.searchField.removeEventListener("command", this.filterChanged);
+ 
+     // Nodes used in templating
+     delete this.root;
+-    delete this.path;
+-    delete this.templatePath;
+     delete this.propertyContainer;
+     delete this.panel;
+ 
+     // The document in which we display the results (csshtmltree.xul).
+     delete this.styleDocument;
+ 
+     // The element that we're inspecting, and the document that it comes from.
+     delete this.propertyViews;
+diff --git a/browser/devtools/styleinspector/csshtmltree.xul b/browser/devtools/styleinspector/csshtmltree.xul
+--- a/browser/devtools/styleinspector/csshtmltree.xul
++++ b/browser/devtools/styleinspector/csshtmltree.xul
+@@ -58,20 +58,16 @@
+ ]>
+ 
+ <xul:window xmlns="http://www.w3.org/1999/xhtml"
+             xmlns:xul="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul">
+ 
+ <!-- The output from #templateRoot (below) is inserted here. -->
+ <div id="root"></div>
+ 
+-<!-- The output from #templatePath (below) is inserted here. -->
+-<div id="path">
+-</div>
+-
+ <!-- When no properties are found the following block is displayed. -->
+ <div id="noResults" hidden="">
+   &noPropertiesFound;
+ </div>
+ 
+ <!-- The output from #templateProperty (below) is appended here. -->
+ <div id="propertyContainer">
+ </div>
+@@ -95,34 +91,16 @@ To visually debug the templates without 
+                     oncommand="${onlyUserStylesChanged}" checked="true"
+                     label="&userStylesLabel;"/>
+       <xul:textbox class="searchfield" type="search" save="${searchField}"
+                    placeholder="&userStylesSearch;" flex="1"
+                    oncommand="${filterChanged}"/>
+     </xul:hbox>
+   </div>
+ 
+-  <!--
+-  templatePath sits just below the top of the window showing what we're looking
+-  at. For data it needs an instance of CssHtmlTree.
+-  -->
+-  <div id="templatePath">
+-    <span class="selectedElementLabel">
+-      &selectedElementLabel;
+-    </span>
+-    <!-- following broken in RTL mode, see bug 699900 -->
+-    <ol>
+-      <li foreach="item in ${pathElements}">
+-        <a href="#" onclick="${pathClick}" __pathElement="${item.element}">
+-          ${__element.pathElement = item.element; item.display}
+-        </a>
+-      </li>
+-    </ol>
+-  </div>
+-
+ 
+   <!--
+   A templateMatchedSelectors sits inside each templateProperties showing the
+   list of selectors that affect that property. Each needs data like this:
+   {
+     matchedSelectorViews: ..., // from cssHtmlTree.propertyViews[name].matchedSelectorViews
+   }
+   This is a template so the parent does not need to be a table, except that
+diff --git a/browser/themes/gnomestripe/browser/devtools/csshtmltree.css b/browser/themes/gnomestripe/browser/devtools/csshtmltree.css
+--- a/browser/themes/gnomestripe/browser/devtools/csshtmltree.css
++++ b/browser/themes/gnomestripe/browser/devtools/csshtmltree.css
+@@ -43,45 +43,16 @@
+   background: -moz-Field;
+   color: -moz-FieldText;
+ }
+ 
+ #root {
+   display: -moz-box;
+ }
+ 
+-#path {
+-  font-size: 11px;
+-  word-spacing: -1px;
+-  margin-bottom: 0;
+-  color: -moz-dialogtext;
+-  background-color: -moz-dialog;
+-  padding: 4px 5px 0;
+-}
+-#path ol {
+-  list-style: none outside none;
+-  margin: 0;
+-  padding: 0;
+-}
+-#path li {
+-  border-radius: 3px;
+-  padding: 2px 3px;
+-  font-size: 11px;
+-  display: inline-block;
+-}
+-#path li:after {
+-  content: " > ";
+-}
+-#path li:last-child {
+-  font-weight: bold;
+-  color: #0091ff;
+-}
+-#path li:last-child:after {
+-  content: "";
+-}
+ 
+ .property-header {
+   padding: 4px;
+   -moz-padding-start: 0;
+   -moz-padding-end: 5px;
+ }
+ 
+ .rule-unmatched {
+@@ -199,20 +170,16 @@
+ 
+ #propertyContainer {
+   display: -moz-box;
+   -moz-box-orient: vertical;
+   -moz-box-flex: 1;
+   overflow-y: auto;
+ }
+ 
+-.selectedElementLabel {
+-  font-weight: bold;
+-}
+-
+ .darkrow {
+   background-color: rgba(0,0,0,.022);
+ }
+ 
+ #noResults {
+   font-size: 18px;
+   margin-top: 5px;
+   text-align: center;
+diff --git a/browser/themes/pinstripe/browser/devtools/csshtmltree.css b/browser/themes/pinstripe/browser/devtools/csshtmltree.css
+--- a/browser/themes/pinstripe/browser/devtools/csshtmltree.css
++++ b/browser/themes/pinstripe/browser/devtools/csshtmltree.css
+@@ -43,45 +43,16 @@
+   background: -moz-Field;
+   color: -moz-FieldText;
+ }
+ 
+ #root {
+   display: -moz-box;
+ }
+ 
+-#path {
+-  font-size: 11px;
+-  word-spacing: -1px;
+-  margin-bottom: 0;
+-  color: -moz-dialogtext;
+-  background-color: -moz-dialog;
+-  padding: 4px 5px 0;
+-}
+-#path ol {
+-  list-style: none outside none;
+-  margin: 0;
+-  padding: 0;
+-}
+-#path li {
+-  border-radius: 3px;
+-  padding: 2px 3px;
+-  font-size: 11px;
+-  display: inline-block;
+-}
+-#path li:after {
+-  content: " > ";
+-}
+-#path li:last-child {
+-  font-weight: bold;
+-  color: #0091ff;
+-}
+-#path li:last-child:after {
+-  content: "";
+-}
+ 
+ .property-header {
+   padding: 4px;
+   -moz-padding-start: 0;
+   -moz-padding-end: 5px;
+ }
+ 
+ .rule-unmatched {
+@@ -201,20 +172,16 @@
+ 
+ #propertyContainer {
+   display: -moz-box;
+   -moz-box-orient: vertical;
+   -moz-box-flex: 1;
+   overflow-y: auto;
+ }
+ 
+-.selectedElementLabel {
+-  font-weight: bold;
+-}
+-
+ .darkrow {
+   background-color: rgba(0,0,0,.022);
+ }
+ 
+ #noResults {
+   font-size: 18px;
+   margin-top: 5px;
+   text-align: center;
+diff --git a/browser/themes/winstripe/browser/devtools/csshtmltree.css b/browser/themes/winstripe/browser/devtools/csshtmltree.css
+--- a/browser/themes/winstripe/browser/devtools/csshtmltree.css
++++ b/browser/themes/winstripe/browser/devtools/csshtmltree.css
+@@ -43,46 +43,16 @@
+   background: -moz-Field;
+   color: -moz-FieldText;
+ }
+ 
+ #root {
+   display: -moz-box;
+ }
+ 
+-#path {
+-  font-size: 11px;
+-  word-spacing: -1px;
+-  margin-bottom: 0;
+-  color: -moz-dialogtext;
+-  background-color: -moz-dialog;
+-  padding: 4px 5px 0;
+-}
+-#path ol {
+-  list-style: none outside none;
+-  margin: 0;
+-  padding: 0;
+-}
+-#path li {
+-  border-radius: 3px;
+-  padding: 2px 3px;
+-  font-size: 11px;
+-  display: inline-block;
+-}
+-#path li:after {
+-  content: " > ";
+-}
+-#path li:last-child {
+-  font-weight: bold;
+-  color: #0091ff;
+-}
+-#path li:last-child:after {
+-  content: "";
+-}
+-
+ .property-header {
+   padding: 4px;
+   -moz-padding-start: 0;
+   -moz-padding-end: 5px;
+ }
+ 
+ .rule-unmatched {
+   cursor: pointer;
+@@ -201,20 +171,16 @@
+ 
+ #propertyContainer {
+   display: -moz-box;
+   -moz-box-orient: vertical;
+   -moz-box-flex: 1;
+   overflow-y: auto;
+ }
+ 
+-.selectedElementLabel {
+-  font-weight: bold;
+-}
+-
+ .darkrow {
+   background-color: rgba(0,0,0,.022);
+ }
+ 
+ #noResults {
+   font-size: 18px;
+   margin-top: 5px;
+   text-align: center;
