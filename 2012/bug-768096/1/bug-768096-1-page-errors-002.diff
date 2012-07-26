@@ -1,0 +1,1697 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1342790100 -10800
+# Node ID 2c9a9041ee1db830f927c0db867851b28e93faa4
+# Parent  c3475b69ddd6fc194f34e3f60fbdbae3b609a56e
+Bug 768096 - Web Console remote debugging protocol support - Part 1: page errors
+
+diff --git a/browser/devtools/commandline/test/browser_gcli_calllog.js b/browser/devtools/commandline/test/browser_gcli_calllog.js
+--- a/browser/devtools/commandline/test/browser_gcli_calllog.js
++++ b/browser/devtools/commandline/test/browser_gcli_calllog.js
+@@ -37,38 +37,46 @@ function testCallLogStatus() {
+ 
+ function testCallLogExec() {
+   DeveloperToolbarTest.exec({
+     typed: "calllog stop",
+     args: { },
+     outputMatch: /No call logging/,
+   });
+ 
++  let hud = null;
++  function onWebConsoleOpen(aSubject) {
++    Services.obs.removeObserver(onWebConsoleOpen, "web-console-created");
++
++    aSubject.QueryInterface(Ci.nsISupportsString);
++    hud = imported.HUDService.getHudReferenceById(aSubject.data);
++    ok(hud.hudId in imported.HUDService.hudReferences, "console open");
++
++    DeveloperToolbarTest.exec({
++      typed: "calllog stop",
++      args: { },
++      outputMatch: /Stopped call logging/,
++    });
++
++    DeveloperToolbarTest.exec({
++      typed: "console clear",
++      args: {},
++      blankOutput: true,
++    });
++
++    let labels = hud.outputNode.querySelectorAll(".webconsole-msg-output");
++    is(labels.length, 0, "no output in console");
++
++    DeveloperToolbarTest.exec({
++      typed: "console close",
++      args: {},
++      blankOutput: true,
++    });
++  }
++
++  Services.obs.addObserver(onWebConsoleOpen, "web-console-created", false);
++
+   DeveloperToolbarTest.exec({
+     typed: "calllog start",
+     args: { },
+     outputMatch: /Call logging started/,
+   });
+-
+-  let hud = imported.HUDService.getHudByWindow(content);
+-  ok(hud.hudId in imported.HUDService.hudReferences, "console open");
+-
+-  DeveloperToolbarTest.exec({
+-    typed: "calllog stop",
+-    args: { },
+-    outputMatch: /Stopped call logging/,
+-  });
+-
+-  DeveloperToolbarTest.exec({
+-    typed: "console clear",
+-    args: {},
+-    blankOutput: true,
+-  });
+-
+-  let labels = hud.jsterm.outputNode.querySelectorAll(".webconsole-msg-output");
+-  is(labels.length, 0, "no output in console");
+-
+-  DeveloperToolbarTest.exec({
+-    typed: "console close",
+-    args: {},
+-    blankOutput: true,
+-  });
+ }
+diff --git a/browser/devtools/commandline/test/browser_gcli_commands.js b/browser/devtools/commandline/test/browser_gcli_commands.js
+--- a/browser/devtools/commandline/test/browser_gcli_commands.js
++++ b/browser/devtools/commandline/test/browser_gcli_commands.js
+@@ -24,43 +24,54 @@ function testEcho() {
+     typed: "echo message",
+     args: { message: "message" },
+     outputMatch: /^message$/,
+   });
+   */
+ }
+ 
+ function testConsole(tab) {
++  let hud = null;
++  function onWebConsoleOpen(aSubject) {
++    Services.obs.removeObserver(onWebConsoleOpen, "web-console-created");
++
++    aSubject.QueryInterface(Ci.nsISupportsString);
++    hud = imported.HUDService.getHudReferenceById(aSubject.data);
++    ok(hud.hudId in imported.HUDService.hudReferences, "console open");
++
++    hud.jsterm.execute("pprint(window)", onExecute);
++  }
++
++  Services.obs.addObserver(onWebConsoleOpen, "web-console-created", false);
++
+   DeveloperToolbarTest.exec({
+     typed: "console open",
+     args: {},
+     blankOutput: true,
+   });
+ 
+-  let hud = imported.HUDService.getHudByWindow(content);
+-  ok(hud.hudId in imported.HUDService.hudReferences, "console open");
++  function onExecute() {
++    let labels = hud.outputNode.querySelectorAll(".webconsole-msg-output");
++    ok(labels.length > 0, "output for pprint(window)");
+ 
+-  hud.jsterm.execute("pprint(window)");
++    hud._flushCallback = null;
+ 
+-  /*
+-  // The web console is async and we can't force it with hud._flushMessageQueue
+-  // So we are skipping the test for output until we have an event to wait on
+-  let labels = hud.jsterm.outputNode.querySelectorAll(".webconsole-msg-output");
+-  ok(labels.length > 0, "output for pprint(window)");
+-  */
++    DeveloperToolbarTest.exec({
++      typed: "console clear",
++      args: {},
++      blankOutput: true,
++    });
+ 
+-  DeveloperToolbarTest.exec({
+-    typed: "console clear",
+-    args: {},
+-    blankOutput: true,
+-  });
++    let labels = hud.outputNode.querySelectorAll(".webconsole-msg-output");
++    is(labels.length, 0, "no output in console");
+ 
+-  let labels = hud.jsterm.outputNode.querySelectorAll(".webconsole-msg-output");
+-  is(labels.length, 0, "no output in console");
++    DeveloperToolbarTest.exec({
++      typed: "console close",
++      args: {},
++      blankOutput: true,
++    });
+ 
+-  DeveloperToolbarTest.exec({
+-    typed: "console close",
+-    args: {},
+-    blankOutput: true,
+-  });
++    ok(!(hud.hudId in imported.HUDService.hudReferences), "console closed");
+ 
+-  ok(!(hud.hudId in imported.HUDService.hudReferences), "console closed");
++    imported = undefined;
++    finish();
++  }
+ }
+diff --git a/browser/devtools/webconsole/HUDService.jsm b/browser/devtools/webconsole/HUDService.jsm
+--- a/browser/devtools/webconsole/HUDService.jsm
++++ b/browser/devtools/webconsole/HUDService.jsm
+@@ -19,16 +19,24 @@ XPCOMUtils.defineLazyModuleGetter(this, 
+ 
+ XPCOMUtils.defineLazyModuleGetter(this, "WebConsoleUtils",
+                                   "resource:///modules/WebConsoleUtils.jsm");
+ 
+ XPCOMUtils.defineLazyGetter(this, "l10n", function() {
+   return WebConsoleUtils.l10n;
+ });
+ 
++XPCOMUtils.defineLazyModuleGetter(this, "DebuggerServer",
++                                  "resource://gre/modules/devtools/dbg-server.jsm");
++
++XPCOMUtils.defineLazyModuleGetter(this, "DebuggerClient",
++                                  "resource://gre/modules/devtools/dbg-client.jsm");
++
++XPCOMUtils.defineLazyModuleGetter(this, "WebConsoleClient",
++                                  "resource://gre/modules/devtools/dbg-client.jsm");
+ 
+ var EXPORTED_SYMBOLS = ["HUDService"];
+ 
+ function LogFactory(aMessagePrefix)
+ {
+   function log(aMessage) {
+     var _msg = aMessagePrefix + " " + aMessage + "\n";
+     dump(_msg);
+@@ -572,28 +580,47 @@ WebConsole.prototype = {
+   get outputNode()
+   {
+     return this.ui ? this.ui.outputNode : null;
+   },
+ 
+   get gViewSourceUtils() this.chromeWindow.gViewSourceUtils,
+ 
+   /**
++   * Tells if the Web Console initialization via message manager completed.
++   * @private
++   * @type boolean
++   */
++  _messageManagerInitComplete: false,
++
++  /**
++   * Proxy between the Web Console and the remote Web Console instance. This
++   * object holds methods used for connecting, listening and disconnecting from
++   * the remote server, using the remote debugging protocol.
++   *
++   * @see WebConsoleConnectionProxy
++   * @type object
++   */
++  proxy: null,
++
++  /**
+    * Initialize the Web Console instance.
+    * @private
+    */
+   _init: function WC__init()
+   {
+     this.chromeDocument = this.tab.ownerDocument;
+     this.chromeWindow = this.chromeDocument.defaultView;
+     this.messageManager = this.tab.linkedBrowser.messageManager;
+     this.hudId = "hud_" + this.tab.linkedPanel;
+     this.notificationBox = this.chromeDocument
+                            .getElementById(this.tab.linkedPanel);
+ 
++    this.proxy = new WebConsoleConnectionProxy(this);
++    this.proxy.initServer();
+     this._initUI();
+   },
+ 
+   /**
+    * Initialize the Web Console UI. This method sets up the iframe.
+    * @private
+    */
+   _initUI: function WC__initUI()
+@@ -621,16 +648,21 @@ WebConsole.prototype = {
+    */
+   _onIframeLoad: function WC__onIframeLoad()
+   {
+     this.iframe.removeEventListener("load", this._onIframeLoad, true);
+ 
+     this.iframeWindow = this.iframe.contentWindow.wrappedJSObject;
+     this.ui = new this.iframeWindow.WebConsoleFrame(this, this._currentUIPosition);
+     this._setupMessageManager();
++    this.proxy.connect(function() {
++      if (this._messageManagerInitComplete) {
++        this._onInitComplete();
++      }
++    }.bind(this));
+   },
+ 
+   /**
+    * Create a panel to open the web console if it should float above
+    * the content in its own window.
+    * @private
+    */
+   _createOwnWindowPanel: function WC__createOwnWindowPanel()
+@@ -918,31 +950,44 @@ WebConsole.prototype = {
+   {
+     this.messageManager.loadFrameScript(CONTENT_SCRIPT_URL, true);
+ 
+     this._messageListeners.forEach(function(aName) {
+       this.messageManager.addMessageListener(aName, this.ui);
+     }, this);
+ 
+     let message = {
+-      features: ["ConsoleAPI", "JSTerm", "PageError", "NetworkMonitor",
+-                 "LocationChange"],
++      features: ["ConsoleAPI", "JSTerm", "NetworkMonitor", "LocationChange"],
+       cachedMessages: ["ConsoleAPI", "PageError"],
+       NetworkMonitor: { monitorFileActivity: true },
+       JSTerm: { notifyNonNativeConsoleAPI: true },
+       preferences: {
+         "NetworkMonitor.saveRequestAndResponseBodies":
+           this.ui.saveRequestAndResponseBodies,
+       },
+     };
+ 
+     this.sendMessageToContent("WebConsole:Init", message);
+   },
+ 
+   /**
++   * Callback method used to track Web Console initialization via message
++   * manager.
++   *
++   * @private
++   */
++  _onMessageManagerInitComplete: function WC__onMessageManagerInitComplete()
++  {
++    this._messageManagerInitComplete = true;
++    if (this.proxy.connected) {
++      this._onInitComplete();
++    }
++  },
++
++  /**
+    * Callback method for when the Web Console initialization is complete. For
+    * now this method sends the web-console-created notification using the
+    * nsIObserverService.
+    *
+    * @private
+    */
+   _onInitComplete: function WC__onInitComplete()
+   {
+@@ -1052,16 +1097,20 @@ WebConsole.prototype = {
+   destroy: function WC_destroy()
+   {
+     this.sendMessageToContent("WebConsole:Destroy", {});
+ 
+     this._messageListeners.forEach(function(aName) {
+       this.messageManager.removeMessageListener(aName, this.ui);
+     }, this);
+ 
++    if (this.proxy) {
++      this.proxy.disconnect();
++    }
++
+     // Make sure that the console panel does not try to call
+     // deactivateHUDForContext() again.
+     this.consoleWindowUnregisterOnHide = false;
+ 
+     let popupset = this.mainPopupSet;
+     let panels = popupset.querySelectorAll("panel[hudId=" + this.hudId + "]");
+     for (let panel of panels) {
+       if (panel != this.consolePanel) {
+@@ -1086,16 +1135,153 @@ WebConsole.prototype = {
+     }
+ 
+     if (this.splitter.parentNode) {
+       this.splitter.parentNode.removeChild(this.splitter);
+     }
+   },
+ };
+ 
++/**
++ * The WebConsoleConnectionProxy handles the connection between the Web Console
++ * and the application we connect to through the remote debug protocol.
++ *
++ * @constructor
++ * @param object aWebConsole
++ *        The Web Console instance that owns this connection proxy.
++ */
++function WebConsoleConnectionProxy(aWebConsole)
++{
++  this.owner = aWebConsole;
++
++  this._onCachedMessages = this._onCachedMessages.bind(this);
++  this._onPageError = this._onPageError.bind(this);
++}
++
++WebConsoleConnectionProxy.prototype = {
++  /**
++   * The owning Web Console instance.
++   *
++   * @see WebConsole
++   * @type object
++   */
++  owner: null,
++
++  /**
++   * Tells if the connection was established.
++   * @type boolean
++   */
++  connected: false,
++
++  /**
++   * Initialize the debugger server.
++   */
++  initServer: function WCCP_initServer()
++  {
++    if (!DebuggerServer.initialized) {
++      // Always allow connections from nsIPipe transports.
++      DebuggerServer.init(function () { return true; });
++      DebuggerServer.addBrowserActors();
++    }
++  },
++
++  /**
++   * Initialize a debugger client and connects it to the debugger server.
++   *
++   * @param function [aCallback]
++   *        Optional function to invoke when connection is established.
++   */
++  connect: function WCCP_connect(aCallback)
++  {
++    let transport = DebuggerServer.connectPipe();
++    let client = this.client = new DebuggerClient(transport);
++
++    client.addListener("pageError", this._onPageError);
++
++    let listeners = [WebConsoleClient.prototype.LISTENERS.PageError];
++
++    client.connect(function(aType, aTraits) {
++      client.listTabs(function(aResponse) {
++        let tab = aResponse.tabs[aResponse.selected];
++        client.attachConsole(tab.consoleActor, listeners,
++                             this._onAttachConsole.bind(this, aCallback));
++      }.bind(this));
++    }.bind(this));
++  },
++
++  /**
++   * The "attachConsole" response handler.
++   *
++   * @private
++   * @param function [aCallback]
++   *        Optional function to invoke once the connection is established.
++   * @param object aResponse
++   *        The JSON response object received from the server.
++   * @param object aWebConsoleClient
++   *        The WebConsoleClient instance for the attached console, for the
++   *        specific tab we work with.
++   */
++  _onAttachConsole:
++  function WCCP__onAttachConsole(aCallback, aResponse, aWebConsoleClient)
++  {
++    if (aResponse.error) {
++      Cu.reportError("attachConsole failed: " + aResponse.error + " " +
++                     aResponse.message);
++      return;
++    }
++
++    this.webConsoleClient = aWebConsoleClient;
++
++    this.connected = true;
++    aCallback && aCallback();
++
++    //let msg = [this.webConsoleClient.CACHED_MESSAGES.PageError];
++    //this.webConsoleClient.getCachedMessages(msgs,
++    //                                        this._onCachedMessages);
++  },
++
++  // TODO: This is almost working. Need to implement ConsoleAPI support in the
++  // WebConsoleActor and it's done.
++  _onCachedMessages: function WCCP__onCachedMessages(aResponse)
++  {
++    if (aResponse.error) {
++      Cu.reportError("Web Console getCachedMessages error: " + aResponse.error +
++                     " " + aResponse.message);
++      return;
++    }
++    //dump("WCCP__onCachedMessages " + aResponse.messages.length + "\n");
++  },
++
++  /**
++   * The "pageError" message type handler. We redirect any page errors to the UI
++   * for displaying.
++   */
++  _onPageError: function WCCP__onPageError(aType, aPacket)
++  {
++    this.owner.ui.handlePageError(aPacket.pageError);
++  },
++
++  /**
++   * Disconnect the Web Console from the remote server.
++   */
++  disconnect: function WCCP_disconnect()
++  {
++    if (!this.client) {
++      return;
++    }
++
++    this.client.removeListener("pageError", this._onPageError);
++    this.client.close();
++
++    this.client = null;
++    this.webConsoleClient = null;
++    this.connected = false;
++  },
++};
++
+ //////////////////////////////////////////////////////////////////////////
+ // HeadsUpDisplayUICommands
+ //////////////////////////////////////////////////////////////////////////
+ 
+ var HeadsUpDisplayUICommands = {
+   refreshCommand: function UIC_refreshCommand() {
+     var window = HUDService.currentContext();
+     if (!window) {
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js b/browser/devtools/webconsole/test/browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js
+@@ -9,80 +9,106 @@
+  * ***** END LICENSE BLOCK ***** */
+ 
+ const TEST_URI = "http://example.com/browser/browser/devtools/webconsole/test/test-console.html";
+ 
+ let tab1, tab2, win1, win2;
+ let noErrors = true;
+ 
+ function tab1Loaded(aEvent) {
+-  browser.removeEventListener(aEvent.type, arguments.callee, true);
++  browser.removeEventListener(aEvent.type, tab1Loaded, true);
+ 
+   win2 = OpenBrowserWindow();
+   win2.addEventListener("load", win2Loaded, true);
+ }
+ 
+ function win2Loaded(aEvent) {
+-  win2.removeEventListener(aEvent.type, arguments.callee, true);
++  win2.removeEventListener(aEvent.type, win2Loaded, true);
+ 
+   tab2 = win2.gBrowser.addTab();
+   win2.gBrowser.selectedTab = tab2;
+   tab2.linkedBrowser.addEventListener("load", tab2Loaded, true);
+   tab2.linkedBrowser.contentWindow.location = TEST_URI;
+ }
+ 
+ function tab2Loaded(aEvent) {
+-  tab2.linkedBrowser.removeEventListener(aEvent.type, arguments.callee, true);
++  tab2.linkedBrowser.removeEventListener(aEvent.type, tab2Loaded, true);
+ 
+-  waitForFocus(function() {
++  let consolesOpened = 0;
++  function onWebConsoleOpen() {
++    consolesOpened++;
++    if (consolesOpened == 2) {
++      Services.obs.removeObserver(onWebConsoleOpen, "web-console-created");
++      executeSoon(closeConsoles);
++    }
++  }
++
++  Services.obs.addObserver(onWebConsoleOpen, "web-console-created", false);
++
++  function openConsoles() {
+     try {
+       HUDService.activateHUDForContext(tab1);
+     }
+     catch (ex) {
+       ok(false, "HUDService.activateHUDForContext(tab1) exception: " + ex);
+       noErrors = false;
+     }
+ 
+     try {
+       HUDService.activateHUDForContext(tab2);
+     }
+     catch (ex) {
+       ok(false, "HUDService.activateHUDForContext(tab2) exception: " + ex);
+       noErrors = false;
+     }
++  }
++
++  let consolesClosed = 0;
++  function onWebConsoleClose()
++  {
++    consolesClosed++;
++    if (consolesClosed == 2) {
++      Services.obs.removeObserver(onWebConsoleClose, "web-console-destroyed");
++      executeSoon(testEnd);
++    }
++  }
++
++  function closeConsoles() {
++    Services.obs.addObserver(onWebConsoleClose, "web-console-destroyed", false);
+ 
+     try {
+       HUDService.deactivateHUDForContext(tab1);
+     }
+     catch (ex) {
+       ok(false, "HUDService.deactivateHUDForContext(tab1) exception: " + ex);
+       noErrors = false;
+     }
+ 
+     try {
+       HUDService.deactivateHUDForContext(tab2);
+     }
+     catch (ex) {
+       ok(false, "HUDService.deactivateHUDForContext(tab2) exception: " + ex);
+       noErrors = false;
+     }
++  }
+ 
+-    if (noErrors) {
+-      ok(true, "there were no errors");
+-    }
++  function testEnd() {
++    ok(noErrors, "there were no errors");
+ 
+     win2.gBrowser.removeTab(tab2);
+ 
+     executeSoon(function() {
+       win2.close();
+       tab1 = tab2 = win1 = win2 = null;
+       finishTest();
+     });
++  }
+ 
+-  }, tab2.linkedBrowser.contentWindow);
++  waitForFocus(openConsoles, tab2.linkedBrowser.contentWindow);
+ }
+ 
+ function test() {
+   addTab(TEST_URI);
+   browser.addEventListener("load", tab1Loaded, true);
+   tab1 = gBrowser.selectedTab;
+   win1 = window;
+ }
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_601909_remember_height.js b/browser/devtools/webconsole/test/browser_webconsole_bug_601909_remember_height.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_601909_remember_height.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_601909_remember_height.js
+@@ -11,83 +11,97 @@
+ // Minimum console height, in pixels.
+ const MINIMUM_CONSOLE_HEIGHT = 150;
+ 
+ // Minimum page height, in pixels. This prevents the Web Console from
+ // remembering a height that covers the whole page.
+ const MINIMUM_PAGE_HEIGHT = 50;
+ const HEIGHT_PREF = "devtools.hud.height";
+ 
+-let hud, newHeight, height, innerHeight;
++let hud, newHeight, height, innerHeight, testDriver;
+ 
+-function performTests(aWebConsole)
++function testGen()
+ {
+-  hud = aWebConsole.iframe;
+   height = parseInt(hud.style.height);
+ 
+   toggleConsole();
++  yield;
+ 
+   is(newHeight, height, "same height after reopening the console");
+   is(Services.prefs.getIntPref(HEIGHT_PREF), HUDService.lastConsoleHeight,
+     "pref is correct");
+ 
+   setHeight(Math.ceil(innerHeight * 0.5));
+   toggleConsole();
++  yield;
+ 
+   is(newHeight, height, "same height after reopening the console");
+   is(Services.prefs.getIntPref(HEIGHT_PREF), HUDService.lastConsoleHeight,
+     "pref is correct");
+ 
+   setHeight(MINIMUM_CONSOLE_HEIGHT - 1);
+   toggleConsole();
++  yield;
+ 
+   is(newHeight, MINIMUM_CONSOLE_HEIGHT, "minimum console height is respected");
+   is(Services.prefs.getIntPref(HEIGHT_PREF), HUDService.lastConsoleHeight,
+     "pref is correct");
+ 
+   setHeight(innerHeight - MINIMUM_PAGE_HEIGHT + 1);
+   toggleConsole();
++  yield;
+ 
+   is(newHeight, innerHeight - MINIMUM_PAGE_HEIGHT,
+     "minimum page height is respected");
+   is(Services.prefs.getIntPref(HEIGHT_PREF), HUDService.lastConsoleHeight,
+     "pref is correct");
+ 
+   setHeight(Math.ceil(innerHeight * 0.6));
+   Services.prefs.setIntPref(HEIGHT_PREF, -1);
+   toggleConsole();
++  yield;
+ 
+   is(newHeight, height, "same height after reopening the console");
+   is(Services.prefs.getIntPref(HEIGHT_PREF), -1, "pref is not updated");
+ 
+   closeConsole();
+   HUDService.lastConsoleHeight = 0;
+   Services.prefs.setIntPref(HEIGHT_PREF, 0);
+ 
++  hud = testDriver = null;
+   executeSoon(finishTest);
++
++  yield;
+ }
+ 
+ function toggleConsole()
+ {
+-  closeConsole();
+-  openConsole();
++  closeConsole(null, function() {
++    openConsole(null, function() {
++      let hudId = HUDService.getHudIdByWindow(content);
++      hud = HUDService.hudReferences[hudId].iframe;
++      newHeight = parseInt(hud.style.height);
+ 
+-  let hudId = HUDService.getHudIdByWindow(content);
+-  hud = HUDService.hudReferences[hudId].iframe;
+-  newHeight = parseInt(hud.style.height);
++      testDriver.next();
++    });
++  });
+ }
+ 
+ function setHeight(aHeight)
+ {
+   height = aHeight;
+   hud.style.height = height + "px";
+ }
+ 
+ function test()
+ {
+   addTab("data:text/html;charset=utf-8,Web Console test for bug 601909");
+   browser.addEventListener("load", function onLoad() {
+     browser.removeEventListener("load", onLoad, true);
+     innerHeight = content.innerHeight;
+-    openConsole(null, performTests);
++    openConsole(null, function(aHud) {
++      hud = aHud.iframe;
++      testDriver = testGen();
++      testDriver.next();
++    });
+   }, true);
+ }
+ 
+diff --git a/browser/devtools/webconsole/webconsole.js b/browser/devtools/webconsole/webconsole.js
+--- a/browser/devtools/webconsole/webconsole.js
++++ b/browser/devtools/webconsole/webconsole.js
+@@ -229,16 +229,25 @@ WebConsoleFrame.prototype = {
+    * Keep track of the categories we need to prune from time to time.
+    *
+    * @private
+    * @type array
+    */
+   _pruneCategoriesQueue: null,
+ 
+   /**
++   * Function invoked whenever the output queue is emptied. This is used by some
++   * tests.
++   *
++   * @private
++   * @type function
++   */
++  _flushCallback: null,
++
++  /**
+    * Store for tracking repeated CSS nodes.
+    * @private
+    * @type object
+    */
+   _cssNodes: null,
+ 
+   /**
+    * Preferences for filtering messages by type.
+@@ -526,26 +535,22 @@ WebConsoleFrame.prototype = {
+         break;
+       case "JSTerm:InspectObject":
+         this.jsterm.handleInspectObject(aMessage.json);
+         break;
+       case "WebConsole:ConsoleAPI":
+         this.outputMessage(CATEGORY_WEBDEV, this.logConsoleAPIMessage,
+                            [aMessage.json]);
+         break;
+-      case "WebConsole:PageError": {
+-        let pageError = aMessage.json.pageError;
+-        let category = Utils.categoryForScriptError(pageError);
+-        this.outputMessage(category, this.reportPageError,
+-                           [category, pageError]);
++      case "WebConsole:PageError":
++        this.handlePageError(aMessage.json.pageError);
+         break;
+-      }
+       case "WebConsole:CachedMessages":
+         this._displayCachedConsoleMessages(aMessage.json.messages);
+-        this.owner._onInitComplete();
++        this.owner._onMessageManagerInitComplete();
+         break;
+       case "WebConsole:NetworkActivity":
+         this.handleNetworkActivity(aMessage.json);
+         break;
+       case "WebConsole:FileActivity":
+         this.outputMessage(CATEGORY_NETWORK, this.logFileActivity,
+                            [aMessage.json.uri]);
+         break;
+@@ -1081,16 +1086,29 @@ WebConsoleFrame.prototype = {
+                                       aScriptError.errorMessage,
+                                       aScriptError.sourceName,
+                                       aScriptError.lineNumber, null, null,
+                                       aScriptError.timeStamp);
+     return node;
+   },
+ 
+   /**
++   * Handle PageError objects received from the server. This method outputs the
++   * given error.
++   *
++   * @param nsIScriptError aPageError
++   *        The error received from the server.
++   */
++  handlePageError: function WCF_handlePageError(aPageError)
++  {
++    let category = Utils.categoryForScriptError(aPageError);
++    this.outputMessage(category, this.reportPageError, [category, aPageError]);
++  },
++
++  /**
+    * Log network activity.
+    *
+    * @param object aHttpActivity
+    *        The HTTP activity to log.
+    * @return nsIDOMElement|undefined
+    *         The message element to display in the Web Console output.
+    */
+   logNetActivity: function WCF_logNetActivity(aConnectionId)
+@@ -1499,16 +1517,17 @@ WebConsoleFrame.prototype = {
+     // If the queue is not empty, schedule another flush.
+     if (this._outputQueue.length > 0) {
+       this._outputTimeout =
+         this.window.setTimeout(this._flushMessageQueue.bind(this),
+                                OUTPUT_INTERVAL);
+     }
+     else {
+       this._outputTimeout = null;
++      this._flushCallback && this._flushCallback();
+     }
+ 
+     this._lastOutputFlush = Date.now();
+   },
+ 
+   /**
+    * Output a message from the queue.
+    *
+@@ -2180,41 +2199,53 @@ JSTerm.prototype = {
+   },
+ 
+   /**
+    * The "JSTerm:EvalResult" message handler. This is the JSTerm execution
+    * result callback which is invoked whenever JavaScript code evaluation
+    * results come from the content process.
+    *
+    * @private
++   * @param function [aCallback]
++   *        Optional function to invoke when the evaluation result is added to
++   *        the output.
+    * @param object aResponse
+    *        The JSTerm:EvalResult message received from the content process. See
+    *        JSTerm.handleEvalRequest() in HUDService-content.js for further
+    *        details.
+    * @param object aRequest
+    *        The JSTerm:EvalRequest message we sent to the content process.
+    * @see JSTerm.handleEvalRequest() in HUDService-content.js
+    */
+   _executeResultCallback:
+-  function JST__executeResultCallback(aResponse, aRequest)
++  function JST__executeResultCallback(aCallback, aResponse, aRequest)
+   {
+     let errorMessage = aResponse.errorMessage;
+     let resultString = aResponse.resultString;
+ 
+     // Hide undefined results coming from JSTerm helper functions.
+     if (!errorMessage &&
+         resultString == "undefined" &&
+         aResponse.helperResult &&
+         !aResponse.inspectable &&
+         !aResponse.helperRawOutput) {
+       return;
+     }
+ 
+     let afterNode = aRequest.outputNode;
+ 
++    if (aCallback) {
++      let oldFlushCallback = this.hud._flushCallback;
++      this.hud._flushCallback = function() {
++        aCallback();
++        oldFlushCallback && oldFlushCallback();
++        this.hud._flushCallback = oldFlushCallback;
++      }.bind(this);
++    }
++
+     if (aResponse.errorMessage) {
+       this.writeOutput(aResponse.errorMessage, CATEGORY_OUTPUT, SEVERITY_ERROR,
+                        afterNode, aResponse.timestamp);
+     }
+     else if (aResponse.inspectable) {
+       let node = this.writeOutputJS(aResponse.resultString,
+                                     this._evalOutputClick.bind(this, aResponse),
+                                     afterNode, aResponse.timestamp);
+@@ -2227,31 +2258,32 @@ JSTerm.prototype = {
+   },
+ 
+   /**
+    * Execute a string. Execution happens asynchronously in the content process.
+    *
+    * @param string [aExecuteString]
+    *        The string you want to execute. If this is not provided, the current
+    *        user input is used - taken from |this.inputNode.value|.
++   * @param function [aCallback]
++   *        Optional function to invoke when the result is displayed.
+    */
+-  execute: function JST_execute(aExecuteString)
++  execute: function JST_execute(aExecuteString, aCallback)
+   {
+     // attempt to execute the content of the inputNode
+     aExecuteString = aExecuteString || this.inputNode.value;
+     if (!aExecuteString) {
+       this.writeOutput("no value to execute", CATEGORY_OUTPUT, SEVERITY_LOG);
+       return;
+     }
+ 
+     let node = this.writeOutput(aExecuteString, CATEGORY_INPUT, SEVERITY_LOG);
+ 
+-    let messageToContent =
+-      this.evalInContentSandbox(aExecuteString,
+-                                this._executeResultCallback.bind(this));
++    let onResult = this._executeResultCallback.bind(this, aCallback);
++    let messageToContent = this.evalInContentSandbox(aExecuteString, onResult);
+     messageToContent.outputNode = node;
+ 
+     this.history.push(aExecuteString);
+     this.historyIndex++;
+     this.historyPlaceHolder = this.history.length;
+     this.setInputValue("");
+     this.clearCompletion();
+   },
+diff --git a/toolkit/devtools/debugger/dbg-client.jsm b/toolkit/devtools/debugger/dbg-client.jsm
+--- a/toolkit/devtools/debugger/dbg-client.jsm
++++ b/toolkit/devtools/debugger/dbg-client.jsm
+@@ -7,17 +7,18 @@
+ "use strict";
+ const Ci = Components.interfaces;
+ const Cc = Components.classes;
+ const Cu = Components.utils;
+ const Cr = Components.results;
+ 
+ var EXPORTED_SYMBOLS = ["DebuggerTransport",
+                         "DebuggerClient",
+-                        "debuggerSocketConnect"];
++                        "debuggerSocketConnect",
++                        "WebConsoleClient"];
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/NetUtil.jsm");
+ Cu.import("resource://gre/modules/Services.jsm");
+ 
+ XPCOMUtils.defineLazyServiceGetter(this, "socketTransportService",
+                                    "@mozilla.org/network/socket-transport-service;1",
+                                    "nsISocketTransportService");
+@@ -169,17 +170,18 @@ const ThreadStateTypes = {
+ 
+ /**
+  * Set of protocol messages that are sent by the server without a prior request
+  * by the client.
+  */
+ const UnsolicitedNotifications = {
+   "newScript": "newScript",
+   "tabDetached": "tabDetached",
+-  "tabNavigated": "tabNavigated"
++  "tabNavigated": "tabNavigated",
++  "pageError": "pageError",
+ };
+ 
+ /**
+  * Set of debug protocol request types that specify the protocol request being
+  * sent to the server.
+  */
+ const DebugProtocolTypes = {
+   "assign": "assign",
+@@ -192,32 +194,34 @@ const DebugProtocolTypes = {
+   "listTabs": "listTabs",
+   "nameAndParameters": "nameAndParameters",
+   "ownPropertyNames": "ownPropertyNames",
+   "property": "property",
+   "prototype": "prototype",
+   "prototypeAndProperties": "prototypeAndProperties",
+   "resume": "resume",
+   "scripts": "scripts",
+-  "setBreakpoint": "setBreakpoint"
++  "setBreakpoint": "setBreakpoint",
++  "getCachedMessages": "getCachedMessages",
+ };
+ 
+ const ROOT_ACTOR_NAME = "root";
+ 
+ /**
+  * Creates a client for the remote debugging protocol server. This client
+  * provides the means to communicate with the server and exchange the messages
+  * required by the protocol in a traditional JavaScript API.
+  */
+ function DebuggerClient(aTransport)
+ {
+   this._transport = aTransport;
+   this._transport.hooks = this;
+   this._threadClients = {};
+   this._tabClients = {};
++  this._consoleClients = {};
+ 
+   this._pendingRequests = [];
+   this._activeRequests = {};
+   this._eventsEnabled = true;
+ }
+ 
+ DebuggerClient.prototype = {
+   /**
+@@ -263,20 +267,42 @@ DebuggerClient.prototype = {
+     let detachTab = function _detachTab() {
+       if (this.activeTab) {
+         this.activeTab.detach(closeTransport);
+       } else {
+         closeTransport();
+       }
+     }.bind(this);
+ 
+-    if (this.activeThread) {
+-      this.activeThread.detach(detachTab);
+-    } else {
+-      detachTab();
++    let detachThread = function _detachThread() {
++      if (this.activeThread) {
++        this.activeThread.detach(detachTab);
++      } else {
++        detachTab();
++      }
++    }.bind(this);
++
++    let consolesClosed = 0;
++    let consolesToClose = 0;
++
++    let onConsoleClose = function _onConsoleClose() {
++      consolesClosed++;
++      if (consolesClosed >= consolesToClose) {
++        this._consoleClients = {};
++        detachThread();
++      }
++    }.bind(this);
++
++    for each (let client in this._consoleClients) {
++      consolesToClose++;
++      client.close(onConsoleClose);
++    }
++
++    if (!consolesToClose) {
++      detachThread();
+     }
+   },
+ 
+   /**
+    * List the open tabs.
+    *
+    * @param function aOnResponse
+    *        Called with the response packet.
+@@ -296,26 +322,57 @@ DebuggerClient.prototype = {
+    * @param function aOnResponse
+    *        Called with the response packet and a TabClient
+    *        (which will be undefined on error).
+    */
+   attachTab: function DC_attachTab(aTabActor, aOnResponse) {
+     let self = this;
+     let packet = { to: aTabActor, type: DebugProtocolTypes.attach };
+     this.request(packet, function(aResponse) {
++      let tabClient;
+       if (!aResponse.error) {
+-        var tabClient = new TabClient(self, aTabActor);
++        tabClient = new TabClient(self, aTabActor);
+         self._tabClients[aTabActor] = tabClient;
+         self.activeTab = tabClient;
+       }
+       aOnResponse(aResponse, tabClient);
+     });
+   },
+ 
+   /**
++   * Attach to a Web Console actor.
++   *
++   * @param string aConsoleActor
++   *        The actor ID for the console actor to attach to.
++   * @param array aListeners
++   *        The console listeners you want to start.
++   * @param function aOnResponse
++   *        Called with the response packet and a WebConsoleClient
++   *        instance (which will be undefined on error).
++   */
++  attachConsole:
++  function DC_attachConsole(aConsoleActor, aListeners, aOnResponse) {
++    let self = this;
++    let packet = {
++      to: aConsoleActor,
++      type: DebugProtocolTypes.attach,
++      listeners: aListeners,
++    };
++
++    this.request(packet, function(aResponse) {
++      let consoleClient;
++      if (!aResponse.error) {
++        consoleClient = new WebConsoleClient(self, aConsoleActor);
++        self._consoleClients[aConsoleActor] = consoleClient;
++      }
++      aOnResponse(aResponse, consoleClient);
++    });
++  },
++
++  /**
+    * Attach to a thread actor.
+    *
+    * @param string aThreadActor
+    *        The actor ID for the thread to attach.
+    * @param function aOnResponse
+    *        Called with the response packet and a ThreadClient
+    *        (which will be undefined on error).
+    */
+@@ -474,16 +531,113 @@ TabClient.prototype = {
+       }
+     });
+   }
+ };
+ 
+ eventSource(TabClient.prototype);
+ 
+ /**
++ * A WebConsoleClient is used as a front end for the WebConsoleActor that is
++ * created on the server, hiding implementation details.
++ *
++ * @param object aDebuggerClient
++ *        The DebuggerClient instance we live for.
++ * @param string aActor
++ *        The WebConsoleActor ID.
++ */
++function WebConsoleClient(aDebuggerClient, aActor) {
++  this._actor = aActor;
++  this._client = aDebuggerClient;
++}
++
++WebConsoleClient.prototype = {
++  LISTENERS: {
++    PageError: "PageError",
++    ConsoleAPI: "ConsoleAPI",
++  },
++
++  CACHED_MESSAGES: {
++    PageError: "PageError",
++    ConsoleAPI: "ConsoleAPI",
++  },
++
++  /**
++   * Retrieve the cached messages from the server.
++   *
++   * @see this.CACHED_MESSAGES
++   * @param array aTypes
++   *        The array of message types you want from the server. See
++   *        this.CACHED_MESSAGES for known types.
++   * @param function aOnResponse
++   *        The function invoked when the response is received.
++   */
++  getCachedMessages:
++  function WCC_getCachedMessages(aTypes, aOnResponse) {
++    let packet = {
++      to: this._actor,
++      type: DebugProtocolTypes.getCachedMessages,
++      messageTypes: aTypes,
++    };
++    this._client.request(packet, aOnResponse);
++  },
++
++  /**
++   * Start the given Web Console listeners.
++   *
++   * @see this.LISTENERS
++   * @param array aListeners
++   *        Array of listeners you want to start. See this.LISTENERS for
++   *        known listeners.
++   * @param function aOnResponse
++   *        Function to invoke when the server response is received.
++   */
++  startListeners:
++  function WCC_startListeners(aListeners, aOnResponse) {
++    let packet = {
++      to: this._actor,
++      type: DebugProtocolTypes.attach,
++      listeners: aListeners,
++    };
++    this._client.request(packet, aOnResponse);
++  },
++
++  /**
++   * Stop the given Web Console listeners.
++   *
++   * @see this.LISTENERS
++   * @param array aListeners
++   *        Array of listeners you want to stop. See this.LISTENERS for
++   *        known listeners.
++   * @param function aOnResponse
++   *        Function to invoke when the server response is received.
++   */
++  stopListeners:
++  function WCC_stopListeners(aListeners, aOnResponse) {
++    let packet = {
++      to: this._actor,
++      type: DebugProtocolTypes.detach,
++      listeners: aListeners,
++    };
++    this._client.request(packet, aOnResponse);
++  },
++
++  /**
++   * Close the WebConsoleClient. This stops all the listeners on the server and
++   * detaches from the console actor.
++   *
++   * @param function aOnResponse
++   *        Function to invoke when the server response is received.
++   */
++  close: function WCC_close(aOnResponse) {
++    this.stopListeners(null, aOnResponse);
++  },
++};
++
++/**
+  * Creates a thread client for the remote debugging protocol server. This client
+  * is a front to the thread actor created in the server side, hiding the
+  * protocol details in a traditional JavaScript API.
+  *
+  * @param aClient DebuggerClient
+  *        The debugger client parent.
+  * @param aActor string
+  *        The actor ID for this thread.
+diff --git a/toolkit/devtools/debugger/server/dbg-browser-actors.js b/toolkit/devtools/debugger/server/dbg-browser-actors.js
+--- a/toolkit/devtools/debugger/server/dbg-browser-actors.js
++++ b/toolkit/devtools/debugger/server/dbg-browser-actors.js
+@@ -240,27 +240,36 @@ BrowserTabActor.prototype = {
+ 
+   actorPrefix: "tab",
+ 
+   grip: function BTA_grip() {
+     dbg_assert(!this.exited,
+                "grip() shouldn't be called on exited browser actor.");
+     dbg_assert(this.actorID,
+                "tab should have an actorID.");
++
++    this.consoleActor = new WebConsoleActor(this.conn, this.browser);
++    this._createTabActorPool();
++    this._tabPool.addActor(this.consoleActor);
++
+     return { actor: this.actorID,
++             consoleActor: this.consoleActor.actorID,
+              title: this.browser.contentTitle,
+              url: this.browser.currentURI.spec }
+   },
+ 
+   /**
+    * Called when the actor is removed from the connection.
+    */
+   disconnect: function BTA_disconnect() {
+     this._detach();
+ 
++    // Shut down actors that belong to this tab's pool.
++    this._removeTabActorPool();
++
+     if (this._progressListener) {
+       this._progressListener.destroy();
+     }
+   },
+ 
+   /**
+    * Called by the root actor when the underlying tab is closed.
+    */
+@@ -270,37 +279,59 @@ BrowserTabActor.prototype = {
+     }
+ 
+     if (this.attached) {
+       this._detach();
+       this.conn.send({ from: this.actorID,
+                        type: "tabDetached" });
+     }
+ 
++    // Shut down actors that belong to this tab's pool.
++    this._removeTabActorPool();
++
+     if (this._progressListener) {
+       this._progressListener.destroy();
+     }
+     this._browser = null;
+     this._tabbrowser = null;
+   },
+ 
+   /**
++   * Create a pool for tab-lifetime actors.
++   */
++  _createTabActorPool: function BTA_createTabActorPool() {
++    if (this._tabPool) {
++      return;
++    }
++
++    this._tabPool = new ActorPool(this.conn);
++    this.conn.addActorPool(this._tabPool);
++  },
++
++  /**
++   * Remove the pool of tab actors.
++   */
++  _removeTabActorPool: function BTA_removeTabActorPool() {
++    if (this._tabPool) {
++      this.conn.removeActorPool(this._tabPool);
++      this._tabPool = null;
++    }
++  },
++
++  /**
+    * Does the actual work of attching to a tab.
+    */
+   _attach: function BTA_attach() {
+     if (this._attached) {
+       return;
+     }
+ 
+-    // Create a pool for tab-lifetime actors.
+-    dbg_assert(!this._tabPool, "Shouldn't have a tab pool if we weren't attached.");
+-    this._tabPool = new ActorPool(this.conn);
+-    this.conn.addActorPool(this._tabPool);
++    this._createTabActorPool();
+ 
+-    // ... and a pool for context-lifetime actors.
++    // Create a pool for context-lifetime actors.
+     this._pushContext();
+ 
+     // Watch for globals being created in this tab.
+     this.browser.addEventListener("DOMWindowCreated", this._onWindowCreated, true);
+     this.browser.addEventListener("pageshow", this._onWindowCreated, true);
+     this._progressListener = new DebuggerProgressListener(this);
+ 
+     this._attached = true;
+@@ -353,20 +384,16 @@ BrowserTabActor.prototype = {
+       return;
+     }
+ 
+     this.browser.removeEventListener("DOMWindowCreated", this._onWindowCreated, true);
+     this.browser.removeEventListener("pageshow", this._onWindowCreated, true);
+ 
+     this._popContext();
+ 
+-    // Shut down actors that belong to this tab's pool.
+-    this.conn.removeActorPool(this._tabPool);
+-    this._tabPool = null;
+-
+     this._attached = false;
+   },
+ 
+   // Protocol Request Handlers
+ 
+   onAttach: function BTA_onAttach(aRequest) {
+     if (this.exited) {
+       return { type: "exited" };
+diff --git a/toolkit/devtools/debugger/server/dbg-server.js b/toolkit/devtools/debugger/server/dbg-server.js
+--- a/toolkit/devtools/debugger/server/dbg-server.js
++++ b/toolkit/devtools/debugger/server/dbg-server.js
+@@ -111,16 +111,17 @@ var DebuggerServer = {
+     loadSubScript.call(this, aURL);
+   },
+ 
+   /**
+    * Install Firefox-specific actors.
+    */
+   addBrowserActors: function DH_addBrowserActors() {
+     this.addActors("chrome://global/content/devtools/dbg-browser-actors.js");
++    this.addActors("chrome://global/content/devtools/dbg-webconsole-actors.js");
+   },
+ 
+   /**
+    * Listens on the given port for remote debugger connections.
+    *
+    * @param aPort int
+    *        The port to listen on.
+    */
+diff --git a/toolkit/devtools/debugger/server/dbg-webconsole-actors.js b/toolkit/devtools/debugger/server/dbg-webconsole-actors.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/devtools/debugger/server/dbg-webconsole-actors.js
+@@ -0,0 +1,325 @@
++/* -*- Mode: js2; js2-basic-offset: 2; indent-tabs-mode: nil; -*- */
++/* vim: set ts=2 et sw=2 tw=80: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++"use strict";
++
++const Cc = Components.classes;
++const Ci = Components.interfaces;
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++
++XPCOMUtils.defineLazyModuleGetter(this, "Services",
++                                  "resource://gre/modules/Services.jsm");
++
++XPCOMUtils.defineLazyModuleGetter(this, "WebConsoleUtils",
++                                  "resource:///modules/WebConsoleUtils.jsm");
++
++const LISTENERS = {
++  PageError: "PageError",
++  ConsoleAPI: "ConsoleAPI",
++};
++
++const CACHED_MESSAGES = {
++  PageError: "PageError",
++  ConsoleAPI: "ConsoleAPI",
++};
++
++/**
++ * The WebConsoleActor implements capabilities needed for the Web Console
++ * feature.
++ *
++ * @constructor
++ * @param object aConnection
++ *        The connection to the client, DebuggerServerConnection.
++ * @param nsIDOMElement aBrowser
++ *        The xul:browser we live for.
++ */
++function WebConsoleActor(aConnection, aBrowser)
++{
++  this.conn = aConnection;
++  this._browser = aBrowser;
++}
++
++WebConsoleActor.prototype =
++{
++  get contentWindow() this._browser.contentWindow,
++
++  actorPrefix: "console",
++
++  grip: function WCA_grip()
++  {
++    return { actor: this.actorID };
++  },
++
++  /**
++   * Destroy the current WebConsoleActor instance.
++   */
++  disconnect: function WCA_disconnect()
++  {
++    if (this.pageErrorListener) {
++      this.pageErrorListener.destroy();
++      this.pageErrorListener = null;
++    }
++  },
++
++  /**
++   * Handler for the "attach" request.
++   *
++   * @param object aRequest
++   *        The JSON request object received from the Web Console client.
++   */
++  onAttach: function WCA_onAttach(aRequest)
++  {
++    let startedListeners = [];
++
++    while (aRequest.listeners.length > 0) {
++      let listener = aRequest.listeners.shift();
++      switch (listener) {
++        case LISTENERS.PageError:
++          if (!this.pageErrorListener) {
++            this.pageErrorListener =
++              new PageErrorListener(this.contentWindow, this);
++            this.pageErrorListener.init();
++          }
++          startedListeners.push(listener);
++          break;
++      }
++    }
++    return { startedListeners: startedListeners };
++  },
++
++  /**
++   * Handler for the "detach" request.
++   *
++   * @param object aRequest
++   *        The JSON request object received from the Web Console client.
++   */
++  onDetach: function WCA_onDetach(aRequest)
++  {
++    let stoppedListeners = [];
++    let toDetach = aRequest.listeners || [];
++    if (!toDetach.length) {
++      // If no specific listeners are requested to be detached, we stop all
++      // listeners.
++      for each (let listener in LISTENERS) {
++        toDetach.push(listener);
++      }
++    }
++
++    while (toDetach.length > 0) {
++      let listener = toDetach.shift();
++      switch (listener) {
++        case LISTENERS.PageError:
++          if (this.pageErrorListener) {
++            this.pageErrorListener.destroy();
++            this.pageErrorListener = null;
++          }
++          stoppedListeners.push(listener);
++          break;
++      }
++    }
++
++    return { stoppedListeners: stoppedListeners };
++  },
++
++  /**
++   * Handler for the "getCachedMessages" request. This method sends the cached
++   * error messages and the window.console API calls to the client.
++   *
++   * @param object aRequest
++   *        The JSON request object received from the Web Console client.
++   */
++  onGetCachedMessages: function WCA_onGetCachedMessages(aRequest)
++  {
++    let types = aRequest.messageTypes;
++    if (!types) {
++      return {
++        error: "missingParameter",
++        message: "The messageTypes parameter is missing.",
++      };
++    }
++
++    let messages = [];
++
++    while (types.length > 0) {
++      switch (types.shift()) {
++        case CACHED_MESSAGES.ConsoleAPI:
++          if (this.consoleAPIListener) {
++            messages.push.apply(messages,
++                                this.consoleAPIListener.getCachedMessages());
++          }
++          break;
++        case CACHED_MESSAGES.PageError:
++          if (this.pageErrorListener) {
++            messages.push.apply(messages,
++                                this.pageErrorListener.getCachedMessages());
++          }
++          break;
++      }
++    }
++
++    messages.sort(function(a, b) { return a.timeStamp - b.timeStamp; });
++
++    return {
++      from: this.actorID,
++      type: "cachedMessages",
++      messages: messages,
++    };
++  },
++
++  /**
++   * Handler for page errors received from the PageErrorListener. This method
++   * sends the nsIScriptError to the remote Web Console client.
++   *
++   * @param nsIScriptError aPageError
++   *        The page error we need to send to the remote.
++   */
++  onPageError: function WCA_onPageError(aPageError)
++  {
++    let packet = {
++      from: this.actorID,
++      type: "pageError",
++      pageError: aPageError,
++    };
++    this.conn.send(packet);
++  },
++};
++
++WebConsoleActor.prototype.requestTypes =
++{
++  getCachedMessages: WebConsoleActor.prototype.onGetCachedMessages,
++  attach: WebConsoleActor.prototype.onAttach,
++  detach: WebConsoleActor.prototype.onDetach,
++};
++
++///////////////////////////////////////////////////////////////////////////////
++// The page errors listener
++///////////////////////////////////////////////////////////////////////////////
++
++/**
++ * The nsIConsoleService listener. This is used to send all the page errors
++ * (JavaScript, CSS and more) to the remote Web Console instance.
++ *
++ * @constructor
++ * @param nsIDOMWindow aWindow
++ *        The window object for which we are created.
++ * @param object aListener
++ *        The listener object must have a method: onPageError. This method is
++ *        invoked with one argument, the nsIScriptError, whenever a relevant
++ *        page error is received.
++ */
++function PageErrorListener(aWindow, aListener)
++{
++  this.window = aWindow;
++  this.listener = aListener;
++}
++
++PageErrorListener.prototype =
++{
++  QueryInterface: XPCOMUtils.generateQI([Ci.nsIConsoleListener]),
++
++  /**
++   * Initialize the nsIConsoleService listener.
++   */
++  init: function PEL_init()
++  {
++    Services.console.registerListener(this);
++  },
++
++  /**
++   * The nsIConsoleService observer. This method takes all the script error
++   * messages belonging to the current window and sends them to the remote Web
++   * Console instance.
++   *
++   * @param nsIScriptError aScriptError
++   *        The script error object coming from the nsIConsoleService.
++   */
++  observe: function PEL_observe(aScriptError)
++  {
++    if (!this.window || !this.listener ||
++        !(aScriptError instanceof Ci.nsIScriptError) ||
++        !aScriptError.outerWindowID) {
++      return;
++    }
++
++    if (!this.isCategoryAllowed(aScriptError.category)) {
++      return;
++    }
++
++    let errorWindow =
++      WebConsoleUtils.getWindowByOuterId(aScriptError.outerWindowID, this.window);
++    if (!errorWindow || errorWindow.top != this.window) {
++      return;
++    }
++
++    this.listener.onPageError(aScriptError);
++  },
++
++  /**
++   * Check if the given script error category is allowed to be tracked or not.
++   * We ignore chrome-originating errors as we only care about content.
++   *
++   * @param string aCategory
++   *        The nsIScriptError category you want to check.
++   * @return boolean
++   *         True if the category is allowed to be logged, false otherwise.
++   */
++  isCategoryAllowed: function PEL_isCategoryAllowed(aCategory)
++  {
++    switch (aCategory) {
++      case "XPConnect JavaScript":
++      case "component javascript":
++      case "chrome javascript":
++      case "chrome registration":
++      case "XBL":
++      case "XBL Prototype Handler":
++      case "XBL Content Sink":
++      case "xbl javascript":
++        return false;
++    }
++
++    return true;
++  },
++
++  /**
++   * Get the cached page errors for the current inner window.
++   *
++   * @return array
++   *         The array of cached messages. Each element is an nsIScriptError
++   *         with an added _type property so the remote Web Console instance can
++   *         tell the difference between various types of cached messages.
++   */
++  getCachedMessages: function PEL_getCachedMessages()
++  {
++    let innerWindowId = WebConsoleUtils.getInnerWindowId(this.window);
++    let result = [];
++    let errors = {};
++    Services.console.getMessageArray(errors, {});
++
++    (errors.value || []).forEach(function(aError) {
++      if (!(aError instanceof Ci.nsIScriptError) ||
++          aError.innerWindowID != innerWindowId ||
++          !this.isCategoryAllowed(aError.category)) {
++        return;
++      }
++
++      let remoteMessage = WebConsoleUtils.cloneObject(aError);
++      remoteMessage._type = CACHED_MESSAGES.PageError;
++      result.push(remoteMessage);
++    }, this);
++
++    return result;
++  },
++
++  /**
++   * Remove the nsIConsoleService listener.
++   */
++  destroy: function PEL_destroy()
++  {
++    Services.console.unregisterListener(this);
++  },
++};
+diff --git a/toolkit/devtools/jar.mn b/toolkit/devtools/jar.mn
+--- a/toolkit/devtools/jar.mn
++++ b/toolkit/devtools/jar.mn
+@@ -2,8 +2,9 @@
+ # License, v. 2.0. If a copy of the MPL was not distributed with this
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
+ toolkit.jar:
+   content/global/devtools/dbg-transport.js        (debugger/dbg-transport.js)
+   content/global/devtools/dbg-server.js        		(debugger/server/dbg-server.js)
+   content/global/devtools/dbg-script-actors.js    (debugger/server/dbg-script-actors.js)
+   content/global/devtools/dbg-browser-actors.js   (debugger/server/dbg-browser-actors.js)
++  content/global/devtools/dbg-webconsole-actors.js   (debugger/server/dbg-webconsole-actors.js)
