@@ -1,0 +1,24 @@
+diff --git a/browser/devtools/webconsole/HUDService-content.js b/browser/devtools/webconsole/HUDService-content.js
+--- a/browser/devtools/webconsole/HUDService-content.js
++++ b/browser/devtools/webconsole/HUDService-content.js
+@@ -642,18 +642,18 @@ function JSTermHelper(aJSTerm)
+ 
+   /**
+    * Opens a help window in MDN.
+    */
+   aJSTerm.sandbox.help = function JSTH_help()
+   {
+     aJSTerm.helperEvaluated = true;
+     aJSTerm.window.open(
+-        "https://developer.mozilla.org/AppLinks/WebConsoleHelp?locale=" +
+-        aJSTerm.window.navigator.language, "help", "");
++        "https://developer.mozilla.org/docs/Tools/Web_Console/Helpers",
++        "help", "");
+   };
+ 
+   /**
+    * Inspects the passed aObject. This is done by opening the PropertyPanel.
+    *
+    * @param object aObject
+    *        Object to inspect.
+    */

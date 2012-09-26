@@ -1,0 +1,565 @@
+# HG changeset patch
+# User OHZEKI Tetsuharu <saneyuki.s.snyk@gmail.com>
+# Date 1347984509 -10800
+# Node ID 7907bdc1be3cfe836b799cbe47ea7d99d0b7f795
+# Parent  9b77800059a12fb5447054b76df7efe97b052879
+Bug 764572 - add "Open URL" option to net panel items' context menu; r=msucan
+
+diff --git a/browser/devtools/webconsole/test/Makefile.in b/browser/devtools/webconsole/test/Makefile.in
+--- a/browser/devtools/webconsole/test/Makefile.in
++++ b/browser/devtools/webconsole/test/Makefile.in
+@@ -100,16 +100,17 @@ MOCHITEST_BROWSER_FILES = \
+ 	browser_webconsole_bug_663443_panel_title.js \
+ 	browser_webconsole_bug_660806_history_nav.js \
+ 	browser_webconsole_bug_651501_document_body_autocomplete.js \
+ 	browser_webconsole_bug_653531_highlighter_console_helper.js \
+ 	browser_webconsole_bug_659907_console_dir.js \
+ 	browser_webconsole_bug_664131_console_group.js \
+ 	browser_webconsole_bug_704295.js \
+ 	browser_webconsole_bug_658368_time_methods.js \
++	browser_webconsole_bug_764572_output_open_url.js \
+ 	browser_webconsole_bug_622303_persistent_filters.js \
+ 	browser_webconsole_window_zombie.js \
+ 	browser_cached_messages.js \
+ 	browser_bug664688_sandbox_update_after_navigation.js \
+ 	browser_webconsole_menustatus.js \
+ 	browser_result_format_as_string.js \
+ 	browser_webconsole_bug_737873_mixedcontent.js \
+ 	browser_output_breaks_after_console_dir_uninspectable.js \
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_764572_output_open_url.js b/browser/devtools/webconsole/test/browser_webconsole_bug_764572_output_open_url.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_764572_output_open_url.js
+@@ -0,0 +1,226 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
++ * You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// This is a test for the Open URL context menu item
++// that is shown for network requests
++const TEST_URI = "http://example.com/browser/browser/devtools/webconsole/test/test-console.html"
++const COMMAND_NAME = "consoleCmd_openURL";
++const CONTEXT_MENU_ID = "#menu_openURL";
++
++let HUD = null, outputNode = null, contextMenu = null;
++
++function test() {
++  addTab(TEST_URI);
++  browser.addEventListener("load", function onLoad() {
++    browser.removeEventListener("load", onLoad, true);
++    openConsole(null, consoleOpened);
++  }, true);
++}
++
++function consoleOpened(aHud) {
++  HUD = aHud;
++  outputNode = aHud.outputNode;
++  contextMenu = HUD.iframeWindow.document.getElementById("output-contextmenu");
++
++  executeSoon(testOnNotNetActivity);
++}
++
++function testOnNotNetActivity() {
++  HUD.jsterm.clearOutput();
++
++  outputNode = HUD.outputNode;
++  let console = content.wrappedJSObject.console;
++  console.log("bug 764572");
++
++  testOnNotNetActivity_command();
++}
++function testOnNotNetActivity_command () {
++  waitForSuccess({
++    name: "show no net activity in console",
++    validatorFn: function () {
++      return outputNode.textContent.indexOf("bug 764572") > -1;
++    },
++    successFn: function () {
++      outputNode.focus();
++      outputNode.selectedItem = outputNode.querySelector(".webconsole-msg-log");
++
++      // check whether the command is disable
++      goUpdateCommand(COMMAND_NAME);
++      let controller = top.document.commandDispatcher.
++        getControllerForCommand(COMMAND_NAME);
++
++      let isDisabled = !controller || !controller.isCommandEnabled("consoleCmd_openURL");
++      ok(isDisabled, COMMAND_NAME + " should be disabled.");
++      executeSoon(testOnNotNetActivity_contextmenu);
++    },
++    failureFn: testOnNotNetActivity_contextmenu,
++  });
++}
++function testOnNotNetActivity_contextmenu() {
++  let target = outputNode.querySelector(".webconsole-msg-log");
++
++  outputNode.focus();
++  outputNode.selectedItem = target;
++
++  waitForOpenContextMenu(contextMenu, {
++    target: target,
++    successFn: function () {
++      let isHidden = contextMenu.querySelector(CONTEXT_MENU_ID).hidden;
++      ok(isHidden, CONTEXT_MENU_ID + "should be hidden.");
++
++      closeContextMenu(contextMenu);
++      executeSoon(testOnNetActivity);
++    },
++    failureFn: function(){
++      closeContextMenu(contextMenu);
++      executeSoon(testOnNetActivity);
++    },
++  });
++}
++
++function testOnNetActivity() {
++  HUD.jsterm.clearOutput();
++
++  // reload the url to show net activity in console.
++  content.location.reload();
++
++  testOnNetActivity_command();
++}
++
++function testOnNetActivity_command() {
++  waitForSuccess({
++    name: "show TEST_URI's net activity in console",
++    validatorFn: function () {
++      outputNode.focus();
++      outputNode.selectedItem = outputNode.querySelector(".webconsole-msg-network");
++
++      let item = outputNode.selectedItem;
++      return item && item.url;
++    },
++    successFn: function () {
++      outputNode.focus();
++
++      // set up the event handler for TabOpen
++      gBrowser.tabContainer.addEventListener("TabOpen", function onOpen(aEvent) {
++        gBrowser.tabContainer.removeEventListener("TabOpen", onOpen, true);
++
++        let tab = aEvent.target;
++        onTabOpen(tab);
++      }, true);
++
++      // check whether the command is enable
++      goUpdateCommand(COMMAND_NAME);
++      let controller = top.document.commandDispatcher.
++        getControllerForCommand(COMMAND_NAME);
++      ok(controller.isCommandEnabled("consoleCmd_openURL"), COMMAND_NAME + " should be enabled.");
++
++      // try to open url.
++      goDoCommand(COMMAND_NAME);
++    },
++    failureFn: testOnNetActivity_contextmenu,
++  });
++}
++
++// check TabOpen event
++function onTabOpen(aTab) {
++  waitForSuccess({
++    name: "complete to initialize the opening tab",
++    validatorFn: function()
++    {
++      // wait to complete initializing the opend tab.
++      let url = aTab.linkedBrowser.currentURI.spec;
++      return url === TEST_URI;
++    },
++    successFn: function()
++    {
++      gBrowser.removeTab(aTab);
++      executeSoon(testOnNetActivity_contextmenu);
++    },
++    failureFn: testOnNetActivity_contextmenu,
++  });
++}
++
++function testOnNetActivity_contextmenu() {
++  let target = outputNode.querySelector(".webconsole-msg-network");
++
++  outputNode.focus();
++  outputNode.selectedItem = target;
++
++  waitForOpenContextMenu(contextMenu, {
++    target: target,
++    successFn: function () {
++      let isShown = !contextMenu.querySelector(CONTEXT_MENU_ID).hidden;
++      ok(isShown, CONTEXT_MENU_ID + "should be shown.");
++
++      closeContextMenu(contextMenu);
++      executeSoon(finalizeTest);
++    },
++    failureFn: function(){
++      closeContextMenu(contextMenu);
++      executeSoon(finalizeTest);
++    },
++  });
++}
++
++function finalizeTest() {
++  HUD = null;
++  outputNode = null;
++  contextMenu = null
++  finishTest();
++}
++
++/**
++ * Polls a given function waiting for opening context menu.
++ *
++ * @Param {nsIDOMElement} aContextMenu
++ * @param object aOptions
++ *        Options object with the following properties:
++ *        - successFn
++ *        A function called if opening the given context menu - success to return.
++ *        - failureFn
++ *        A function called if not opening the given context menu - fails to return.
++ *        - target
++ *        The target element for showing a context menu.
++ *        - timeout
++ *        Timeout for popup shown, in milliseconds. Default is 5000.
++ */
++function waitForOpenContextMenu(aContextMenu, aOptions) {
++  let start = Date.now();
++  let timeout = aOptions.timeout || 5000;
++  let targetElement = aOptions.target;
++
++  if (!aContextMenu) {
++    ok(false, "Can't get a context menu.");
++    aOptions.failureFn();
++    return;
++  }
++  if (!targetElement) {
++    ok(false, "Can't get a target element.");
++    aOptions.failureFn();
++    return;
++  }
++
++  function onPopupShown() {
++    aContextMenu.removeEventListener("popupshown", onPopupShown);
++    clearTimeout(onTimeout);
++    aOptions.successFn();
++  }
++
++
++  aContextMenu.addEventListener("popupshown", onPopupShown);
++
++  let onTimeout = setTimeout(function(){
++    aContextMenu.removeEventListener("popupshown", onPopupShown);
++    aOptions.failureFn();
++  }, timeout);
++
++  // open a context menu.
++  let eventDetails = { type : "contextmenu", button : 2};
++  EventUtils.synthesizeMouse(targetElement, 2, 2,
++                             eventDetails, targetElement.ownerDocument.defaultView);
++}
++
++function closeContextMenu (aContextMenu) {
++  aContextMenu.hidePopup();
++}
+diff --git a/browser/devtools/webconsole/webconsole.js b/browser/devtools/webconsole/webconsole.js
+--- a/browser/devtools/webconsole/webconsole.js
++++ b/browser/devtools/webconsole/webconsole.js
+@@ -1301,16 +1301,17 @@ WebConsoleFrame.prototype = {
+     linkNode.appendChild(statusNode);
+ 
+     let clipboardText = request.method + " " + request.url;
+ 
+     let messageNode = this.createMessageNode(CATEGORY_NETWORK, severity,
+                                              msgNode, null, null, clipboardText);
+ 
+     messageNode._connectionId = entry.connection;
++    messageNode.url = request.url;
+ 
+     this.makeOutputMessageLink(messageNode, function WCF_net_message_link() {
+       if (!messageNode._panelOpen) {
+         this.openNetworkPanel(messageNode, networkInfo.httpActivity);
+       }
+     }.bind(this));
+ 
+     networkInfo.node = messageNode;
+@@ -2302,16 +2303,30 @@ WebConsoleFrame.prototype = {
+         strings.push("[" + timestampString + "] " + item.clipboardText);
+       }
+     }
+ 
+     clipboardHelper.copyString(strings.join("\n"), this.document);
+   },
+ 
+   /**
++   * Open the selected item's URL in a new tab.
++   */
++  openSelectedItemInTab: function WCF_openSelectedItemInTab()
++  {
++    let item = this.outputNode.selectedItem;
++
++    if (!item || !item.url) {
++      return;
++    }
++
++    this.owner.openLink(item.url);
++  },
++
++  /**
+    * Destroy the HUD object. Call this method to avoid memory leaks when the Web
+    * Console is closed.
+    */
+   destroy: function WCF_destroy()
+   {
+     if (this.jsterm) {
+       this.jsterm.destroy();
+     }
+@@ -3436,41 +3451,57 @@ CommandController.prototype = {
+   /**
+    * Selects all the text in the HUD output.
+    */
+   selectAll: function CommandController_selectAll()
+   {
+     this.owner.outputNode.selectAll();
+   },
+ 
++  /**
++   * Open the URL of the selected message in a new tab.
++   */
++  openURL: function CommandController_openURL()
++  {
++    this.owner.openSelectedItemInTab();
++  },
++
+   supportsCommand: function CommandController_supportsCommand(aCommand)
+   {
+     return this.isCommandEnabled(aCommand);
+   },
+ 
+   isCommandEnabled: function CommandController_isCommandEnabled(aCommand)
+   {
+     switch (aCommand) {
+       case "cmd_copy":
+         // Only enable "copy" if nodes are selected.
+         return this.owner.outputNode.selectedCount > 0;
++      case "consoleCmd_openURL": {
++        // Only enable "open url" if node is Net Activity.
++        let selectedItem = this.owner.outputNode.selectedItem;
++        return selectedItem && selectedItem.url;
++      }
+       case "cmd_fontSizeEnlarge":
+       case "cmd_fontSizeReduce":
+       case "cmd_fontSizeReset":
+       case "cmd_selectAll":
+         return true;
+     }
+   },
+ 
+   doCommand: function CommandController_doCommand(aCommand)
+   {
+     switch (aCommand) {
+       case "cmd_copy":
+         this.copy();
+         break;
++      case "consoleCmd_openURL":
++        this.openURL();
++        break;
+       case "cmd_selectAll":
+         this.selectAll();
+         break;
+       case "cmd_fontSizeEnlarge":
+         this.owner.changeFontSize("+");
+         break;
+       case "cmd_fontSizeReduce":
+         this.owner.changeFontSize("-");
+@@ -3483,8 +3514,119 @@ CommandController.prototype = {
+ };
+ 
+ function gSequenceId()
+ {
+   return gSequenceId.n++;
+ }
+ gSequenceId.n = 0;
+ 
++
++function goUpdateConsoleCommands() {
++  goUpdateCommand("consoleCmd_openURL");
++}
++
++
++
++///////////////////////////////////////////////////////////////////////////////
++// Context Menu
++///////////////////////////////////////////////////////////////////////////////
++
++const CONTEXTMENU_ID = "output-contextmenu";
++
++/*
++ * ConsoleContextMenu: This handle to show/hide a context menu item.
++ */
++let ConsoleContextMenu = {
++  /*
++   * Handle to show/hide context menu item.
++   *
++   * @param nsIDOMEvent aEvent
++   */
++  build: function CCM_build(aEvent)
++  {
++    let popup = aEvent.target;
++    if (popup.id !== CONTEXTMENU_ID) {
++      return;
++    }
++
++    let view = document.querySelector(".hud-output-node");
++    let metadata = this.getSelectionMetadata(view);
++
++    for (let i = 0, l = popup.childNodes.length; i < l; ++i) {
++      let element = popup.childNodes[i];
++      element.hidden = this.shouldHideMenuItem(element, metadata);
++    }
++  },
++
++  /*
++   * Get selection information from the view.
++   *
++   * @param nsIDOMElement aView
++   *        This should be <xul:richlistbox>.
++   *
++   * @return object
++   *         Selection metadata.
++   */
++  getSelectionMetadata: function CCM_getSelectionMetadata(aView)
++  {
++    let metadata = {
++      selectionType: "",
++      selection: new Set(),
++    };
++    let selectedItems = aView.selectedItems;
++
++    metadata.selectionType = (selectedItems > 1) ? "multiple" : "single";
++
++    let selection = metadata.selection;
++    for (let item of selectedItems) {
++      switch (item.category) {
++        case CATEGORY_NETWORK:
++          selection.add("network");
++          break;
++        case CATEGORY_CSS:
++          selection.add("css");
++          break;
++        case CATEGORY_JS:
++          selection.add("js");
++          break;
++        case CATEGORY_WEBDEV:
++          selection.add("webdev");
++          break;
++      }
++    }
++
++    return metadata;
++  },
++
++  /*
++   * Determine if an item should be hidden.
++   *
++   * @param nsIDOMElement aMenuItem
++   * @param object aMetadata
++   * @return boolean
++   *         Whether the given item should be hidden or not.
++   */
++  shouldHideMenuItem: function CCM_shouldHideMenuItem(aMenuItem, aMetadata)
++  {
++    let selectionType = aMenuItem.getAttribute("selectiontype");
++    if (selectionType && !aMetadata.selectionType == selectionType) {
++      return true;
++    }
++
++    let selection = aMenuItem.getAttribute("selection");
++    if (!selection) {
++      return false;
++    }
++
++    let shouldHide = true;
++    let itemData = selection.split("|");
++    for (let type of aMetadata.selection) {
++      // check whether this menu item should show or not.
++      if (itemData.indexOf(type) !== -1) {
++        shouldHide = false;
++        break;
++      }
++    }
++
++    return shouldHide;
++  },
++};
+diff --git a/browser/devtools/webconsole/webconsole.xul b/browser/devtools/webconsole/webconsole.xul
+--- a/browser/devtools/webconsole/webconsole.xul
++++ b/browser/devtools/webconsole/webconsole.xul
+@@ -16,36 +16,45 @@
+         title="&window.title;"
+         windowtype="devtools:webconsole"
+         persist="screenX screenY width height sizemode">
+   <script type="text/javascript" src="chrome://global/content/globalOverlay.js"/>
+   <script type="text/javascript" src="webconsole.js"/>
+ 
+   <commandset id="editMenuCommands"/>
+ 
+-  <commandset>
++  <commandset id="consoleCommands"
++              commandupdater="true"
++              events="richlistbox-select"
++              oncommandupdate="goUpdateConsoleCommands();">
++    <command id="consoleCmd_openURL"
++             oncommand="goDoCommand('consoleCmd_openURL');"/>
+     <command id="cmd_fullZoomEnlarge" oncommand="goDoCommand('cmd_fontSizeEnlarge');"/>
+     <command id="cmd_fullZoomReduce" oncommand="goDoCommand('cmd_fontSizeReduce');"/>
+     <command id="cmd_fullZoomReset" oncommand="goDoCommand('cmd_fontSizeReset');"/>
+   </commandset>
+   <keyset id="fontSizeChangeSet">
+     <key id="key_fullZoomReduce"  key="&fullZoomReduceCmd.commandkey;" command="cmd_fullZoomReduce"  modifiers="accel"/>
+     <key key="&fullZoomReduceCmd.commandkey2;"  command="cmd_fullZoomReduce" modifiers="accel"/>
+     <key id="key_fullZoomEnlarge" key="&fullZoomEnlargeCmd.commandkey;" command="cmd_fullZoomEnlarge" modifiers="accel"/>
+     <key key="&fullZoomEnlargeCmd.commandkey2;" command="cmd_fullZoomEnlarge" modifiers="accel"/>
+     <key key="&fullZoomEnlargeCmd.commandkey3;" command="cmd_fullZoomEnlarge" modifiers="accel"/>
+     <key id="key_fullZoomReset" key="&fullZoomResetCmd.commandkey;" command="cmd_fullZoomReset" modifiers="accel"/>
+     <key key="&fullZoomResetCmd.commandkey2;" command="cmd_fullZoomReset" modifiers="accel"/>
+   </keyset>
+   <keyset id="editMenuKeys"/>
+ 
+   <popupset id="mainPopupSet">
+-    <menupopup id="output-contextmenu">
++    <menupopup id="output-contextmenu"
++               onpopupshowing="ConsoleContextMenu.build(event);">
+       <menuitem id="saveBodiesContextMenu" type="checkbox" label="&saveBodies.label;"
+                 accesskey="&saveBodies.accesskey;"/>
++      <menuitem id="menu_openURL" label="&openURL.label;"
++                accesskey="&openURL.accesskey;" command="consoleCmd_openURL"
++                selection="network" selectionType="single"/>
+       <menuitem id="menu_copy"/>
+       <menuitem id="menu_selectAll"/>
+     </menupopup>
+   </popupset>
+ 
+   <vbox class="hud-outer-wrapper" flex="1">
+     <vbox class="hud-console-wrapper" flex="1">
+       <toolbar class="hud-console-filter-toolbar devtools-toolbar" mode="full">
+diff --git a/browser/locales/en-US/chrome/browser/devtools/webConsole.dtd b/browser/locales/en-US/chrome/browser/devtools/webConsole.dtd
+--- a/browser/locales/en-US/chrome/browser/devtools/webConsole.dtd
++++ b/browser/locales/en-US/chrome/browser/devtools/webConsole.dtd
+@@ -27,16 +27,21 @@
+ <!ENTITY networkPanel.responseImage               "Received Image">
+ <!ENTITY networkPanel.responseImageCached         "Cached Image">
+ 
+ <!-- LOCALIZATION NOTE (saveBodies.label): You can see this string in the Web
+    - Console context menu. -->
+ <!ENTITY saveBodies.label     "Log Request and Response Bodies">
+ <!ENTITY saveBodies.accesskey "L">
+ 
++<!-- LOCALIZATION NOTE (openURL.label): You can see this string in the Web
++   - Console context menu. -->
++<!ENTITY openURL.label     "Open URL in New Tab">
++<!ENTITY openURL.accesskey "T">
++
+ <!-- LOCALIZATION NOTE (btnPageNet.label): This string is used for the menu
+   -  button that allows users to toggle the network logging output.
+   -  This string and the following strings toggle various kinds of output
+   -  filters. -->
+ <!ENTITY btnPageNet.label   "Net">
+ <!ENTITY btnPageNet.tooltip "Log network access">
+ <!ENTITY btnPageCSS.label   "CSS">
+ <!ENTITY btnPageCSS.tooltip "Log CSS parsing errors">
