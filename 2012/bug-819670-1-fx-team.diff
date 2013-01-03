@@ -1,0 +1,138 @@
+# HG changeset patch
+# User Boris Zbarsky <bzbarsky@mit.edu>
+# Date 1354982501 18000
+# Node ID f7e9de1daa9dea77bb9be7a3f72b0bc1ca2f779a
+# Parent  2939067fa4e331d3d41cb450cfc7b4299fa96c4c
+Bug 819670 - Web console object inspection does not handle native getters throwing very well; r=msucan
+
+diff --git a/toolkit/devtools/webconsole/WebConsoleUtils.jsm b/toolkit/devtools/webconsole/WebConsoleUtils.jsm
+--- a/toolkit/devtools/webconsole/WebConsoleUtils.jsm
++++ b/toolkit/devtools/webconsole/WebConsoleUtils.jsm
+@@ -516,20 +516,24 @@ this.WebConsoleUtils = {
+     let result = { name: aProperty };
+     result.configurable = descriptor.configurable;
+     result.enumerable = descriptor.enumerable;
+     result.writable = descriptor.writable;
+     if (descriptor.value !== undefined) {
+       result.value = this.createValueGrip(descriptor.value, aObjectWrapper);
+     }
+     else if (descriptor.get) {
++      let gotValue = false;
+       if (this.isNativeFunction(descriptor.get)) {
+-        result.value = this.createValueGrip(aObject[aProperty], aObjectWrapper);
++        try {
++          result.value = this.createValueGrip(aObject[aProperty], aObjectWrapper);
++          gotValue = true;
++        } catch (e) {}
+       }
+-      else {
++      if (!gotValue) {
+         result.get = this.createValueGrip(descriptor.get, aObjectWrapper);
+         result.set = this.createValueGrip(descriptor.set, aObjectWrapper);
+       }
+     }
+ 
+     // There are cases with properties that have no value and no getter. For
+     // example window.screen.width.
+     if (result.value === undefined && result.get === undefined) {
+diff --git a/toolkit/devtools/webconsole/test/Makefile.in b/toolkit/devtools/webconsole/test/Makefile.in
+--- a/toolkit/devtools/webconsole/test/Makefile.in
++++ b/toolkit/devtools/webconsole/test/Makefile.in
+@@ -16,15 +16,16 @@ MOCHITEST_CHROME_FILES = \
+     test_page_errors.html \
+     test_consoleapi.html \
+     test_jsterm.html \
+     test_object_actor.html \
+     test_network_get.html \
+     test_network_post.html \
+     test_network_longstring.html \
+     test_file_uri.html \
++    test_bug819670_getter_throws.html \
+     network_requests_iframe.html \
+     data.json \
+     data.json^headers^ \
+     common.js \
+     $(NULL)
+ 
+ include $(topsrcdir)/config/rules.mk
+diff --git a/toolkit/devtools/webconsole/test/test_bug819670_getter_throws.html b/toolkit/devtools/webconsole/test/test_bug819670_getter_throws.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/devtools/webconsole/test/test_bug819670_getter_throws.html
+@@ -0,0 +1,76 @@
++<!DOCTYPE HTML>
++<html lang="en">
++<head>
++  <meta charset="utf8">
++  <title>Test for Bug 819670 - Web console object inspection does not handle native getters throwing very well</title>
++  <script type="text/javascript" src="chrome://mochikit/content/tests/SimpleTest/SimpleTest.js"></script>
++  <script type="text/javascript;version=1.8" src="common.js"></script>
++  <!-- Any copyright is dedicated to the Public Domain.
++     - http://creativecommons.org/publicdomain/zero/1.0/ -->
++</head>
++<body>
++<p>Test for Bug 819670 - Web console object inspection does not handle native getters throwing very well</p>
++
++<script class="testbody" type="text/javascript;version=1.8">
++SimpleTest.waitForExplicitFinish();
++
++function startTest()
++{
++  removeEventListener("load", startTest);
++  attachConsole([], onAttach, true);
++}
++
++function onAttach(aState, aResponse)
++{
++  onEvaluate = onEvaluate.bind(null, aState);
++  aState.client.evaluateJS("document.__proto__", onEvaluate);
++}
++
++function onEvaluate(aState, aResponse)
++{
++  checkObject(aResponse, {
++    from: aState.actor,
++    input: "document.__proto__",
++    result: {
++      type: "object",
++      actor: /[a-z]/,
++      inspectable: true,
++    },
++  });
++
++  ok(!aResponse.error, "no js error");
++  ok(!aResponse.helperResult, "no helper result");
++
++  onInspect = onInspect.bind(null, aState);
++  aState.client.inspectObjectProperties(aResponse.result.actor, onInspect);
++}
++
++function onInspect(aState, aResponse)
++{
++  ok(!aResponse.error, "no response error");
++
++  let expectedProps = [
++    { name: "ATTRIBUTE_NODE", value: 2 },
++    { name: "CDATA_SECTION_NODE", value: 4 },
++    { name: "COMMENT_NODE", value: 8 },
++    { name: "DOCUMENT_FRAGMENT_NODE", value: 11 },
++  ];
++
++  let props = aResponse.properties;
++  ok(props, "response properties available");
++
++  if (props) {
++    ok(props.length > expectedProps.length,
++       "number of enumerable properties");
++    checkObject(props, expectedProps);
++  }
++
++  closeDebugger(aState, function() {
++    SimpleTest.finish();
++  });
++}
++
++addEventListener("load", startTest);
++</script>
++</body>
++</html>

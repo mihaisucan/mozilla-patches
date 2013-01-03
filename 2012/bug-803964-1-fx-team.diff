@@ -1,0 +1,30 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1350924457 -10800
+# Node ID fc808f928b4f9fbbd0a1d1bf739c580d2e9c2535
+# Parent  0c34dd4742b6a0581009894955fb739693e6474e
+Bug 803964 - Cannot show window object with inspect viewer in remote web console
+
+diff --git a/dom/base/nsGlobalWindow.cpp b/dom/base/nsGlobalWindow.cpp
+--- a/dom/base/nsGlobalWindow.cpp
++++ b/dom/base/nsGlobalWindow.cpp
+@@ -3361,17 +3361,18 @@ nsGlobalWindow::GetApplicationCache(nsID
+ 
+   return NS_OK;
+ }
+ 
+ NS_IMETHODIMP
+ nsGlobalWindow::GetCrypto(nsIDOMCrypto** aCrypto)
+ {
+ #ifdef MOZ_DISABLE_DOMCRYPTO
+-  return NS_ERROR_NOT_IMPLEMENTED;
++  *aCrypto = nullptr;
++  return NS_OK;
+ #else
+   FORWARD_TO_OUTER(GetCrypto, (aCrypto), NS_ERROR_NOT_INITIALIZED);
+ 
+   if (!mCrypto) {
+     mCrypto = do_CreateInstance(kCryptoContractID);
+   }
+ 
+   NS_IF_ADDREF(*aCrypto = mCrypto);

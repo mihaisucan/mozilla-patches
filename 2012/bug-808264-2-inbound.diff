@@ -1,0 +1,66 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1354568047 -7200
+# Node ID 44a78241e7f15ad6521b64b4cedb0e5e8061745e
+# Parent  c528730a22543c4c279dd8ef0c221f35e8c9548c
+Bug 808264 - Intermittent browser_webconsole_bug_782653_CSS_links_in_Style_Editor.js | Timed out while waiting for: source editor load
+
+diff --git a/browser/devtools/styleeditor/StyleEditorChrome.jsm b/browser/devtools/styleeditor/StyleEditorChrome.jsm
+--- a/browser/devtools/styleeditor/StyleEditorChrome.jsm
++++ b/browser/devtools/styleeditor/StyleEditorChrome.jsm
+@@ -365,27 +365,35 @@ StyleEditorChrome.prototype = {
+           // If a line or column was specified we move the caret appropriately.
+           let self = this;
+           aEditor.addActionListener({
+             onAttach: function SEC_selectSheet_onAttach()
+             {
+               aEditor.removeActionListener(this);
+               self.selectedStyleSheetIndex = aEditor.styleSheetIndex;
+               aEditor.sourceEditor.setCaretPosition(line - 1, col - 1);
++
++              let newSheet = self._styleSheetToSelect.sheet;
++              let newLine = self._styleSheetToSelect.line;
++              let newCol = self._styleSheetToSelect.col;
++              self._styleSheetToSelect = null;
++              if (newSheet != sheet) {
++                self._window.setTimeout(self.selectStyleSheet.bind(self, newSheet, newLine, newCol), 0);
++              }
+             }
+           });
+         } else {
+           // If a line or column was specified we move the caret appropriately.
+           aEditor.sourceEditor.setCaretPosition(line - 1, col - 1);
++          self._styleSheetToSelect = null;
+         }
+       }
+ 
+       this._view.activeSummary = summary;
+       this.selectedStyleSheetIndex = aEditor.styleSheetIndex;
+-      this._styleSheetToSelect = null;
+     }.bind(this);
+ 
+     if (!this.editors.length) {
+       // We are in the main initialization phase so we wait for the editor
+       // containing the target stylesheet to be added and select the target
+       // stylesheet, optionally moving the cursor to a selected line.
+       let self = this;
+       this.addChromeListener({
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_782653_CSS_links_in_Style_Editor.js b/browser/devtools/webconsole/test/browser_webconsole_bug_782653_CSS_links_in_Style_Editor.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_782653_CSS_links_in_Style_Editor.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_782653_CSS_links_in_Style_Editor.js
+@@ -145,11 +145,14 @@ function performLineCheck(aEditor, aLine
+ 
+   waitForSuccess({
+     name: "source editor load",
+     validatorFn: function()
+     {
+       return aEditor.sourceEditor;
+     },
+     successFn: checkForCorrectState,
+-    failureFn: finishTest,
++    failureFn: function() {
++      info("selectedStyleSheetIndex " + SEC.selectedStyleSheetIndex + " expected " + aEditor.styleSheetIndex);
++      finishTest();
++    },
+   });
+ }

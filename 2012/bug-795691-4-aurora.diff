@@ -1,0 +1,51 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1351616349 -7200
+# Node ID 38cfcc3435f4ae11624816949df7594ba95dadd2
+# Parent  bfe50a0051342718bdeddc4ed01e454368db2570
+Bug 795691 - b2g fixes for the web console actors
+
+diff --git a/b2g/chrome/content/dbg-browser-actors.js b/b2g/chrome/content/dbg-browser-actors.js
+--- a/b2g/chrome/content/dbg-browser-actors.js
++++ b/b2g/chrome/content/dbg-browser-actors.js
+@@ -112,17 +112,17 @@ DeviceTabActor.prototype.grip = function
+   let response = {
+     'actor': this.actorID,
+     'title': this.browser.title,
+     'url': this.browser.document.documentURI
+   };
+ 
+   // Walk over tab actors added by extensions and add them to a new ActorPool.
+   let actorPool = new ActorPool(this.conn);
+-  this._createExtraActors(DebuggerServer.globalActorFactories, actorPool);
++  this._createExtraActors(DebuggerServer.tabActorFactories, actorPool);
+   if (!actorPool.isEmpty()) {
+     this._tabActorPool = actorPool;
+     this.conn.addActorPool(this._tabActorPool);
+   }
+ 
+   this._appendExtraActors(response);
+   return response;
+ };
+diff --git a/toolkit/devtools/webconsole/dbg-webconsole-actors.js b/toolkit/devtools/webconsole/dbg-webconsole-actors.js
+--- a/toolkit/devtools/webconsole/dbg-webconsole-actors.js
++++ b/toolkit/devtools/webconsole/dbg-webconsole-actors.js
+@@ -350,16 +350,18 @@ WebConsoleActor.prototype =
+             break;
+           }
+           if (!this.consoleProgressListener) {
+             this.consoleProgressListener =
+               new ConsoleProgressListener(this._browser, this);
+           }
+           this.consoleProgressListener.startMonitor(this.consoleProgressListener.
+                                                     MONITOR_LOCATION_CHANGE);
++          startedListeners.push(listener);
++          break;
+       }
+     }
+     return {
+       startedListeners: startedListeners,
+       nativeConsoleAPI: this.hasNativeConsoleAPI(),
+     };
+   },
+ 

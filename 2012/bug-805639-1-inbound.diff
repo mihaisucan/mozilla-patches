@@ -1,0 +1,29 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1351269330 -10800
+# Node ID 935ae040b103da26bafadca94e582ad25bbb9527
+# Parent  3e9ca49bd35f7e1101a4ee2f9ce04d98ff341a86
+Bug 805639 - Intermittent devtools/webconsole/test/test_file_uri.html | file URI match
+
+diff --git a/toolkit/devtools/webconsole/test/test_file_uri.html b/toolkit/devtools/webconsole/test/test_file_uri.html
+--- a/toolkit/devtools/webconsole/test/test_file_uri.html
++++ b/toolkit/devtools/webconsole/test/test_file_uri.html
+@@ -65,17 +65,17 @@ function onAttach(aState, aResponse)
+ 
+ function onFileActivity(aType, aPacket)
+ {
+   is(aPacket.from, gState.actor, "fileActivity actor");
+ 
+   gState.dbgClient.removeListener("fileActivity", onFileActivity);
+ 
+   info("aPacket.uri: " + aPacket.uri);
+-  ok(/bug798764\.html$/.test(aPacket.uri), "file URI match");
++  ok(/\bbug798764\b.*\.html$/.test(aPacket.uri), "file URI match");
+ 
+   testEnd();
+ }
+ 
+ function testEnd()
+ {
+   if (gTmpFile) {
+     SimpleTest.executeSoon(function() {

@@ -1,0 +1,35 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1351612438 -7200
+# Node ID 96a43fe56ee2a8cd6a3d47759c9e9dd2bf419afc
+# Parent  bb37616b7145a802d3c1f58d05238cc76e3d0e38
+Bug 805960 - Intermittent toolkit/devtools/webconsole/test/test_file_uri.html | an unexpected uncaught JS exception reported through window.onerror - NS_ERROR_FILE_IS_LOCKED
+
+diff --git a/toolkit/devtools/webconsole/test/test_file_uri.html b/toolkit/devtools/webconsole/test/test_file_uri.html
+--- a/toolkit/devtools/webconsole/test/test_file_uri.html
++++ b/toolkit/devtools/webconsole/test/test_file_uri.html
+@@ -74,17 +74,23 @@ function onFileActivity(aType, aPacket)
+ 
+   testEnd();
+ }
+ 
+ function testEnd()
+ {
+   if (gTmpFile) {
+     SimpleTest.executeSoon(function() {
+-      gTmpFile.remove(false);
++      try {
++        gTmpFile.remove(false);
++      }
++      catch (ex if (ex.name == "NS_ERROR_FILE_IS_LOCKED")) {
++        // Sometimes remove() throws because the file is not unlocked soon
++        // enough.
++      }
+       gTmpFile = null;
+     });
+   }
+ 
+   if (gState) {
+     closeDebugger(gState, function() {
+       gState = null;
+       SimpleTest.finish();

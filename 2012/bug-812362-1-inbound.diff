@@ -1,0 +1,76 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1353083300 -7200
+# Node ID 79dd02225e4e9e951c1534ec18b65fb40e6c049a
+# Parent  ce9b597b919a03d5b18401e4235b8f1fba750337
+Bug 812362 - Intermittent browser_webconsole_bug_782653_CSS_links_in_Style_Editor.js | correct line is selected - Got 6, expected 7, | correct line is selected - Got 7, expected 6
+
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_782653_CSS_links_in_Style_Editor.js b/browser/devtools/webconsole/test/browser_webconsole_bug_782653_CSS_links_in_Style_Editor.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_782653_CSS_links_in_Style_Editor.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_782653_CSS_links_in_Style_Editor.js
+@@ -61,33 +61,41 @@ let observer = {
+     {
+       let href = aNode.getAttribute("title");
+       let sheet, i = 0;
+       while((sheet = content.document.styleSheets[i++])) {
+         if (sheet.href == href) {
+           return sheet;
+         }
+       }
+-      ok(false, "no sheet found");
+     }
+ 
+     executeSoon(function() {
+       let styleEditorWin = window.StyleEditor.StyleEditorManager
+                           .getEditorForWindow(content.window);
+       ok(styleEditorWin, "Style Editor window is defined");
+ 
+       waitForFocus(function() {
+         SEC = styleEditorWin.styleEditorChrome;
+         ok(SEC, "Style Editor Chrome is defined");
+ 
+         let sheet = sheetForNode(nodes[0]);
+-        checkStyleEditorForSheetAndLine(sheet, 7, function() {
++        ok(sheet, "sheet found");
++        let line = nodes[0].sourceLine;
++        ok(line, "found source line");
++
++        checkStyleEditorForSheetAndLine(sheet, line - 1, function() {
+           let sheet = sheetForNode(nodes[1]);
++          ok(sheet, "sheet found");
++          let line = nodes[1].sourceLine;
++          ok(line, "found source line");
++
+           EventUtils.sendMouseEvent({ type: "click" }, nodes[1]);
+-          checkStyleEditorForSheetAndLine(sheet, 6, function() {
++
++          checkStyleEditorForSheetAndLine(sheet, line - 1, function() {
+             window.StyleEditor.toggle();
+             finishTest();
+           });
+         });
+       }, styleEditorWin);
+     });
+   }
+ };
+diff --git a/browser/devtools/webconsole/webconsole.js b/browser/devtools/webconsole/webconsole.js
+--- a/browser/devtools/webconsole/webconsole.js
++++ b/browser/devtools/webconsole/webconsole.js
+@@ -2477,16 +2477,17 @@ WebConsoleFrame.prototype = {
+       text = aSourceURL;
+     }
+     else {
+       text = WebConsoleUtils.abbreviateSourceURL(aSourceURL);
+     }
+ 
+     if (aSourceLine) {
+       text += ":" + aSourceLine;
++      locationNode.sourceLine = aSourceLine;
+     }
+ 
+     locationNode.setAttribute("value", text);
+ 
+     // Style appropriately.
+     locationNode.setAttribute("crop", "center");
+     locationNode.setAttribute("title", aSourceURL);
+     locationNode.setAttribute("tooltiptext", aSourceURL);
