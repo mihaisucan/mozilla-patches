@@ -1,0 +1,114 @@
+# HG changeset patch
+# User Cory Gackenheimer <cory.gack@gmail.com>
+# Date 1361827613 -7200
+# Node ID 55aad1ec327e172f049024c03ba552d420730250
+# Parent  c233837cce080ca6c49c1d8cb0ee0931eb1bbc4c
+Bug 623749 - Control + A on windows should select all in Web Console; r=msucan; try: -b do -p linux,linux64,macosx64,win32,win64 -u mochitest-bc -t none
+
+diff --git a/browser/devtools/webconsole/test/Makefile.in b/browser/devtools/webconsole/test/Makefile.in
+--- a/browser/devtools/webconsole/test/Makefile.in
++++ b/browser/devtools/webconsole/test/Makefile.in
+@@ -119,16 +119,22 @@ MOCHITEST_BROWSER_FILES = \
+ 	$(NULL)
+ 
+ ifeq ($(OS_ARCH), Darwin)
+ MOCHITEST_BROWSER_FILES += \
+         browser_webconsole_bug_804845_ctrl_key_nav.js \
+         $(NULL)
+ endif
+ 
++ifeq ($(OS_ARCH),WINNT)
++MOCHITEST_BROWSER_FILES += \
++		browser_webconsole_bug_623749_ctrl_a_select_all_winnt.js \
++		$(NULL)
++endif
++
+ MOCHITEST_BROWSER_FILES += \
+ 	test-console.html \
+ 	test-network.html \
+ 	test-network-request.html \
+ 	test-mutation.html \
+ 	testscript.js \
+ 	test-filter.html \
+ 	test-observe-http-ajax.html \
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_623749_ctrl_a_select_all_winnt.js b/browser/devtools/webconsole/test/browser_webconsole_bug_623749_ctrl_a_select_all_winnt.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_623749_ctrl_a_select_all_winnt.js
+@@ -0,0 +1,32 @@
++/* Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/ */
++
++// Test for https://bugzilla.mozilla.org/show_bug.cgi?id=623749
++// Map Control + A to Select All, In the web console input, on Windows
++
++function test() {
++  addTab("data:text/html;charset=utf-8,Test console for bug 623749");
++  browser.addEventListener("load", function onLoad() {
++    browser.removeEventListener("load", onLoad, true);
++    openConsole(null, runTest);
++  }, true);
++}
++
++function runTest(HUD) {
++  let jsterm = HUD.jsterm;
++  jsterm.setInputValue("Ignore These Four Words");
++  let inputNode = jsterm.inputNode;
++
++  // Test select all with Control + A.
++  EventUtils.synthesizeKey("a", { ctrlKey: true });
++  let inputLength = inputNode.selectionEnd - inputNode.selectionStart;
++  is(inputLength, inputNode.value.length, "Select all of input");
++
++  // Test do nothing on Control + E.
++  jsterm.setInputValue("Ignore These Four Words");
++  inputNode.selectionStart = 0;
++  EventUtils.synthesizeKey("e", { ctrlKey: true });
++  is(inputNode.selectionStart, 0, "Control + E does not move to end of input");
++
++  executeSoon(finishTest);
++}
+diff --git a/browser/devtools/webconsole/webconsole.js b/browser/devtools/webconsole/webconsole.js
+--- a/browser/devtools/webconsole/webconsole.js
++++ b/browser/devtools/webconsole/webconsole.js
+@@ -3110,16 +3110,20 @@ JSTerm.prototype = {
+   keyPress: function JSTF_keyPress(aEvent)
+   {
+     if (aEvent.ctrlKey) {
+       let inputNode = this.inputNode;
+       let closePopup = false;
+       switch (aEvent.charCode) {
+         case 97:
+           // control-a
++          if (Services.appinfo.OS == "WINNT") {
++            closePopup = true;
++            break;
++          }
+           let lineBeginPos = 0;
+           if (this.hasMultilineInput()) {
+             // find index of closest newline <= to cursor
+             for (let i = inputNode.selectionStart-1; i >= 0; i--) {
+               if (inputNode.value.charAt(i) == "\r" ||
+                   inputNode.value.charAt(i) == "\n") {
+                 lineBeginPos = i+1;
+                 break;
+@@ -3127,16 +3131,19 @@ JSTerm.prototype = {
+             }
+           }
+           inputNode.setSelectionRange(lineBeginPos, lineBeginPos);
+           aEvent.preventDefault();
+           closePopup = true;
+           break;
+         case 101:
+           // control-e
++          if (Services.appinfo.OS == "WINNT") {
++            break;
++          }
+           let lineEndPos = inputNode.value.length;
+           if (this.hasMultilineInput()) {
+             // find index of closest newline >= cursor
+             for (let i = inputNode.selectionEnd; i<lineEndPos; i++) {
+               if (inputNode.value.charAt(i) == "\r" ||
+                   inputNode.value.charAt(i) == "\n") {
+                 lineEndPos = i;
+                 break;

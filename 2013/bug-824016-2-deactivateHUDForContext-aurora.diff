@@ -1,0 +1,83 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1358509423 -7200
+# Node ID 699e467d3f3745535f07224207455bd1c91734c8
+# Parent  7e8963c44a23d500c988054779e4922e03f393e9
+Bug 824016 - Intermittent leak in browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js
+
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js b/browser/devtools/webconsole/test/browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_597103_deactivateHUDForContext_unfocused_window.js
+@@ -30,68 +30,62 @@ function win2Loaded(aEvent) {
+ 
+ function tab2Loaded(aEvent) {
+   tab2.linkedBrowser.removeEventListener(aEvent.type, tab2Loaded, true);
+ 
+   let consolesOpened = 0;
+   function onWebConsoleOpen() {
+     consolesOpened++;
+     if (consolesOpened == 2) {
+-      Services.obs.removeObserver(onWebConsoleOpen, "web-console-created");
+       executeSoon(closeConsoles);
+     }
+   }
+ 
+-  Services.obs.addObserver(onWebConsoleOpen, "web-console-created", false);
+-
+   function openConsoles() {
+     try {
+       let target1 = TargetFactory.forTab(tab1);
+-      gDevTools.showToolbox(target1, "webconsole");
++      gDevTools.showToolbox(target1, "webconsole").then(onWebConsoleOpen);
+     }
+     catch (ex) {
+       ok(false, "gDevTools.showToolbox(target1) exception: " + ex);
+       noErrors = false;
+     }
+ 
+     try {
+       let target2 = TargetFactory.forTab(tab2);
+-      gDevTools.showToolbox(target2, "webconsole");
++      gDevTools.showToolbox(target2, "webconsole").then(onWebConsoleOpen);
+     }
+     catch (ex) {
+       ok(false, "gDevTools.showToolbox(target2) exception: " + ex);
+       noErrors = false;
+     }
+   }
+ 
+   let consolesClosed = 0;
+   function onWebConsoleClose()
+   {
+     consolesClosed++;
+     if (consolesClosed == 2) {
+-      Services.obs.removeObserver(onWebConsoleClose, "web-console-destroyed");
+       executeSoon(testEnd);
+     }
+   }
+ 
+   function closeConsoles() {
+-    Services.obs.addObserver(onWebConsoleClose, "web-console-destroyed", false);
+-
+     try {
+       let target1 = TargetFactory.forTab(tab1);
+-      gDevTools.closeToolbox(target1);
++      gDevTools.closeToolbox(target1).then(onWebConsoleClose);
+     }
+     catch (ex) {
+       ok(false, "gDevTools.closeToolbox(target1) exception: " + ex);
+       noErrors = false;
+     }
+ 
+     try {
+       let target2 = TargetFactory.forTab(tab2);
+-      gDevTools.closeToolbox(target2);
++      gDevTools.closeToolbox(target2).then(onWebConsoleClose);
+     }
+     catch (ex) {
+       ok(false, "gDevTools.closeToolbox(target2) exception: " + ex);
+       noErrors = false;
+     }
+   }
+ 
+   function testEnd() {

@@ -1,0 +1,40 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1357757837 -7200
+# Node ID b376af78c6abe6e51a9f185189dab053611c4cd3
+# Parent  94030dd8405e4a7c645d72596e1c1942272a22dd
+Bug 827083 - Cannot attach remote web console to Firefox Android; r=past
+
+diff --git a/browser/devtools/webconsole/WebConsolePanel.jsm b/browser/devtools/webconsole/WebConsolePanel.jsm
+--- a/browser/devtools/webconsole/WebConsolePanel.jsm
++++ b/browser/devtools/webconsole/WebConsolePanel.jsm
+@@ -24,21 +24,26 @@ function WebConsolePanel(iframeWindow, t
+   this._toolbox = toolbox;
+   EventEmitter.decorate(this);
+ }
+ 
+ WebConsolePanel.prototype = {
+   /**
+    * open is effectively an asynchronous constructor
+    */
+-  open: function StyleEditor_open() {
++  open: function WCP_open() {
+     let parentDoc = this._frameWindow.document.defaultView.parent.document;
+     let iframe = parentDoc.getElementById("toolbox-panel-iframe-webconsole");
+-    this.hud = HUDService.activateHUDForContext(this.target.tab, iframe,
+-                                                this._toolbox.target);
++    let tab;
++    if (this.target.isLocalTab) {
++      tab = this.target.tab;
++    } else {
++      tab = HUDService.currentContext().gBrowser.selectedTab;
++    }
++    this.hud = HUDService.activateHUDForContext(tab, iframe, this.target);
+ 
+     let deferred = Promise.defer();
+ 
+     let hudId = this.hud.hudId;
+     let onOpen = function _onWebConsoleOpen(aSubject) {
+       aSubject.QueryInterface(Ci.nsISupportsString);
+       if (hudId == aSubject.data) {
+         Services.obs.removeObserver(onOpen, "web-console-created");

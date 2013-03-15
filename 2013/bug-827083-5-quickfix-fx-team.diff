@@ -1,0 +1,33 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1357930443 -7200
+# Node ID 83063b8f405d5922beb548791b665b2c68ec192c
+# Parent  920997d6cb2d20f0dd194de108de386fcd28c34f
+Bug 827083 - quick fix: address a review comment from Panos; r=past
+
+diff --git a/browser/devtools/webconsole/HUDService.jsm b/browser/devtools/webconsole/HUDService.jsm
+--- a/browser/devtools/webconsole/HUDService.jsm
++++ b/browser/devtools/webconsole/HUDService.jsm
+@@ -421,17 +421,20 @@ var HeadsUpDisplayUICommands = {
+    * Find if there is a Web Console open for the current tab and return the
+    * instance.
+    * @return object|null
+    *         The WebConsole object or null if the active tab has no open Web
+    *         Console.
+    */
+   getOpenHUD: function UIC_getOpenHUD()
+   {
+-    let window = HUDService.currentContext();
+-    let target = TargetFactory.forTab(window.gBrowser.selectedTab);
++    let tab = HUDService.currentContext().gBrowser.selectedTab;
++    if (!tab || !TargetFactory.isKnownTab(tab)) {
++      return null;
++    }
++    let target = TargetFactory.forTab(tab);
+     let toolbox = gDevTools.getToolbox(target);
+     let panel = toolbox ? toolbox.getPanel("webconsole") : null;
+     return panel ? panel.hud : null;
+   },
+ };
+ 
+ const HUDService = new HUD_SERVICE();

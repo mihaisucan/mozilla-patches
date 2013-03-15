@@ -1,0 +1,28 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1362598163 -7200
+# Node ID ecde1b9c9aa39dec414839eb2a3e665e4e9183ac
+# Parent  9f18d05d1ba1f216ba7e4277315ffb912270548f
+Bug 824016 - Intermittent devtools/webconsole/test/browser_webconsole_bug_595350_multiple_windows_and_tabs.js | Timed out while waiting for: 4 web consoles closed; r=past
+
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_595350_multiple_windows_and_tabs.js b/browser/devtools/webconsole/test/browser_webconsole_bug_595350_multiple_windows_and_tabs.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_595350_multiple_windows_and_tabs.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_595350_multiple_windows_and_tabs.js
+@@ -94,16 +94,17 @@ function closeConsoles() {
+   openTabs = win1 = win2 = null;
+ 
+   function onTimeout() {
+     Services.obs.removeObserver(onWebConsoleClose, "web-console-destroyed");
+     executeSoon(finishTest);
+   }
+ 
+   waitForSuccess({
++    timeout: 10000,
+     name: "4 web consoles closed",
+     validatorFn: function()
+     {
+       return consolesClosed == 4;
+     },
+     successFn: onTimeout,
+     failureFn: onTimeout,
+   });

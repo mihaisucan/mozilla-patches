@@ -1,0 +1,66 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1362308930 -7200
+# Node ID beb30a765007dfd4509b271eacf42cc6fbd8b7dc
+# Parent  78a7a63eec08306602db1af5a10e672f67b70064
+Bug 846606 - Intermittent browser_dbg_bug723069_editor-breakpoints.js | Test timed out | correct number of editor breakpoint changes - Got 3, expected 4
+
+diff --git a/browser/devtools/debugger/test/browser_dbg_bug723069_editor-breakpoints.js b/browser/devtools/debugger/test/browser_dbg_bug723069_editor-breakpoints.js
+--- a/browser/devtools/debugger/test/browser_dbg_bug723069_editor-breakpoints.js
++++ b/browser/devtools/debugger/test/browser_dbg_bug723069_editor-breakpoints.js
+@@ -31,26 +31,26 @@ function test()
+     gDebuggee = gTab.linkedBrowser.contentWindow.wrappedJSObject;
+ 
+     let target = TargetFactory.forTab(gTab);
+ 
+     gDevTools.showToolbox(target, "jsdebugger").then(function(toolbox) {
+       info("jsdebugger panel opened");
+       gPane = toolbox.getCurrentPanel();
+       gDebugger = gPane.panelWin;
+-      gDebugger.addEventListener("Debugger:AfterScriptsAdded",
+-                                 onAfterScriptsAdded);
++      gDebugger.addEventListener("Debugger:AfterSourcesAdded",
++                                 onAfterSourcesAdded);
+     });
+   });
+ 
+-  function onAfterScriptsAdded()
++  function onAfterSourcesAdded()
+   {
+     info("scripts added");
+-    gDebugger.removeEventListener("Debugger:AfterScriptsAdded",
+-                                  onAfterScriptsAdded, true);
++    gDebugger.removeEventListener("Debugger:AfterSourcesAdded",
++                                  onAfterSourcesAdded);
+ 
+     gDebugger.addEventListener("Debugger:SourceShown", onSourceShown);
+ 
+     gDebugger.DebuggerController.activeThread.addOneTimeListener("framesadded",
+       function onFramesAdded() {
+         info("frames added");
+         framesAdded = true;
+         executeSoon(startTest);
+@@ -266,18 +266,21 @@ function test()
+           "The first script is displayed.");
+ 
+     executeSoon(function() {
+       info("remove the second breakpoint using the mouse");
+ 
+       gEditor.addEventListener(SourceEditor.EVENTS.BREAKPOINT_CHANGE,
+                                onEditorBreakpointRemoveSecond);
+ 
+-      let testWin = gEditor.editorElement.ownerDocument.defaultView;
+-      EventUtils.synthesizeMouse(gEditor.editorElement, 10, 70, {}, testWin);
++      let iframe = gEditor.editorElement;
++      let testWin = iframe.ownerDocument.defaultView;
++      // flush the layout for the iframe
++      info("rect " + iframe.contentDocument.documentElement.getBoundingClientRect());
++      EventUtils.synthesizeMouse(iframe, 10, 70, {}, testWin);
+     });
+ 
+   }
+ 
+   function onEditorBreakpointRemoveSecond(aEvent)
+   {
+     gEditor.removeEventListener(SourceEditor.EVENTS.BREAKPOINT_CHANGE,
+                                 onEditorBreakpointRemoveSecond);

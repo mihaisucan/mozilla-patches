@@ -1,0 +1,59 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1360068495 -7200
+# Node ID 54ef301885848e7acd8250f205f4873e6ea0c950
+# Parent  a02f96b9ef6f11dc80edca00540cb8516369805c
+Bug 833877 - Add a way to report exceptions in promises; r=dtownsend
+
+diff --git a/addon-sdk/source/lib/sdk/core/promise.js b/addon-sdk/source/lib/sdk/core/promise.js
+--- a/addon-sdk/source/lib/sdk/core/promise.js
++++ b/addon-sdk/source/lib/sdk/core/promise.js
+@@ -4,20 +4,21 @@
+ /*global define: true, Cu: true, __URI__: true */
+ ;(function(id, factory) { // Module boilerplate :(
+   if (typeof(define) === 'function') { // RequireJS
+     define(factory);
+   } else if (typeof(require) === 'function') { // CommonJS
+     factory.call(this, require, exports, module);
+   } else if (~String(this).indexOf('BackstagePass')) { // JSM
+     this[factory.name] = {};
++    var Cu = this.Components.utils;
++    this.console = Cu.import("resource://gre/modules/devtools/Console.jsm", {})
++                  .console;
+     factory(function require(uri) {
+-      var imports = {};
+-      this['Components'].utils.import(uri, imports);
+-      return imports;
++      return Cu.import(uri, {});
+     }, this[factory.name], { uri: __URI__, id: id });
+     this.EXPORTED_SYMBOLS = [factory.name];
+   } else {  // Browser or alike
+     var globals = this
+     factory(function require(id) {
+       return globals[id];
+     }, (globals[id] = {}), { uri: document.location.href + '#' + id, id: id });
+   }
+@@ -48,17 +49,22 @@ function rejection(reason) {
+ function attempt(f) {
+   /**
+   Returns wrapper function that delegates to `f`. If `f` throws then captures
+   error and returns promise that rejects with a thrown error. Otherwise returns
+   return value. (Internal utility)
+   **/
+   return function effort(options) {
+     try { return f(options) }
+-    catch(error) { return rejection(error) }
++    catch(error) {
++      if (exports._reportErrors && typeof(console) == 'object') {
++        console.error(error)
++      }
++      return rejection(error)
++    }
+   }
+ }
+ 
+ function isPromise(value) {
+   /**
+   Returns true if given `value` is promise. Value is assumed to be promise if
+   it implements `then` method.
+   **/
