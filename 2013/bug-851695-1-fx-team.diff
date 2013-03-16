@@ -1,0 +1,134 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1363372735 25200
+# Node ID 7fea107a1df361cd1769a122fd44b41e5e574b06
+# Parent  d8ea11bc4dc26e13a8b9d7988e290cc59d853dcb
+Bug 851695 - Add a |console| object to every JSM global
+
+diff --git a/browser/base/content/browser.js b/browser/base/content/browser.js
+--- a/browser/base/content/browser.js
++++ b/browser/base/content/browser.js
+@@ -115,16 +115,18 @@ XPCOMUtils.defineLazyGetter(this, "Devel
+ });
+ 
+ XPCOMUtils.defineLazyGetter(this, "DebuggerUI", function() {
+   let tmp = {};
+   Cu.import("resource:///modules/devtools/DebuggerUI.jsm", tmp);
+   return new tmp.DebuggerUI(window);
+ });
+ 
++let console = Cu.import("resource://gre/modules/devtools/Console.jsm", {}).console;
++
+ XPCOMUtils.defineLazyModuleGetter(this, "Social",
+   "resource:///modules/Social.jsm");
+ 
+ XPCOMUtils.defineLazyModuleGetter(this, "PageThumbs",
+   "resource://gre/modules/PageThumbs.jsm");
+ 
+ #ifdef MOZ_SAFE_BROWSING
+ XPCOMUtils.defineLazyModuleGetter(this, "SafeBrowsing",
+@@ -1138,16 +1140,21 @@ var gBrowserInit = {
+ 
+     gBrowser.addEventListener("NewPluginInstalled", gPluginHandler.newPluginInstalled, true);
+ #ifdef XP_MACOSX
+     gBrowser.addEventListener("npapi-carbon-event-model-failure", gPluginHandler, true);
+ #endif
+ 
+     Services.obs.addObserver(gPluginHandler.pluginCrashed, "plugin-crashed", false);
+ 
++    Services.obs.addObserver(function(aSubj, aTopic, aData) {
++      dump(aTopic + " subj " + aSubj + "\n");
++      aSubj.console = console;
++    }, "module-global-created", false);
++
+     window.addEventListener("AppCommand", HandleAppCommandEvent, true);
+ 
+     messageManager.loadFrameScript("chrome://browser/content/content.js", true);
+ 
+     // initialize observers and listeners
+     // and give C++ access to gBrowser
+     gBrowser.init();
+     XULBrowserWindow.init();
+diff --git a/browser/devtools/inspector/Highlighter.jsm b/browser/devtools/inspector/Highlighter.jsm
+--- a/browser/devtools/inspector/Highlighter.jsm
++++ b/browser/devtools/inspector/Highlighter.jsm
+@@ -203,16 +203,17 @@ Highlighter.prototype = {
+       this.lock();
+     }
+ 
+     let canHighlightNode = this.selection.isNode() &&
+                           this.selection.isConnected() &&
+                           this.selection.isElementNode();
+ 
+     if (canHighlightNode) {
++      console.debug('selection', this.selection);
+       if (this.selection.reason != "navigateaway") {
+         this.disabled = false;
+       }
+       this.show();
+       this.updateInfobar();
+       this.invalidateSize();
+       if (!this._highlighting &&
+           this.selection.reason != "highlighter") {
+diff --git a/js/xpconnect/loader/mozJSComponentLoader.cpp b/js/xpconnect/loader/mozJSComponentLoader.cpp
+--- a/js/xpconnect/loader/mozJSComponentLoader.cpp
++++ b/js/xpconnect/loader/mozJSComponentLoader.cpp
+@@ -87,16 +87,17 @@ static JSClass kFakeBackstagePassJSClass
+     JS_ResolveStub,
+     JS_ConvertStub
+ };
+ 
+ static const char kJSRuntimeServiceContractID[] = "@mozilla.org/js/xpc/RuntimeService;1";
+ static const char kXPConnectServiceContractID[] = "@mozilla.org/js/xpc/XPConnect;1";
+ static const char kObserverServiceContractID[] = "@mozilla.org/observer-service;1";
+ static const char kJSCachePrefix[] = "jsloader";
++static const char kModuleGlobalCreatedTopic[] = "module-global-created";
+ 
+ /* Some platforms don't have an implementation of PR_MemMap(). */
+ #ifndef XP_OS2
+ #define HAVE_PR_MEMMAP
+ #endif
+ 
+ /**
+  * Buffer sizes for serialization and deserialization of scripts.
+@@ -529,16 +530,17 @@ mozJSComponentLoader::LoadModule(FileLoc
+     nsAutoPtr<ModuleEntry> entry(new ModuleEntry);
+ 
+     rv = ObjectForLocation(file, uri, &entry->obj,
+                            &entry->location, nullptr);
+     if (NS_FAILED(rv)) {
+         return NULL;
+     }
+ 
++
+     nsCOMPtr<nsIXPConnect> xpc = do_GetService(kXPConnectServiceContractID,
+                                                &rv);
+     if (NS_FAILED(rv))
+         return NULL;
+ 
+     nsCOMPtr<nsIComponentManager> cm;
+     rv = NS_GetComponentManager(getter_AddRefs(cm));
+     if (NS_FAILED(rv))
+@@ -753,16 +755,22 @@ mozJSComponentLoader::PrepareObjectForLo
+         backstagePass->SetGlobalObject(global);
+ 
+         JSAutoCompartment ac(aCx, global);
+         if (!JS_DefineFunctions(aCx, global, gGlobalFun) ||
+             !JS_DefineProfilingFunctions(aCx, global)) {
+             return nullptr;
+         }
+ 
++        nsCOMPtr<nsIObserverService> obsSvc =
++            do_GetService(kObserverServiceContractID, &rv);
++        if (NS_SUCCEEDED(rv)) {
++          obsSvc->NotifyObservers(static_cast<nsIGlobalObject *>(backstagePass), kModuleGlobalCreatedTopic, nullptr);
++        }
++
+         if (aReuseLoaderGlobal) {
+             mLoaderGlobal = holder;
+         }
+     }
+ 
+     JSObject* obj;
+     rv = holder->GetJSObject(&obj);
+     NS_ENSURE_SUCCESS(rv, nullptr);
