@@ -1,0 +1,46 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1358506960 -7200
+# Node ID 7e8963c44a23d500c988054779e4922e03f393e9
+# Parent  1292047d5d18b50a60b29cc4038e9dca0753fbef
+Bug 824016 - Intermittent devtools/webconsole/test/browser_webconsole_bug_595350_multiple_windows_and_tabs.js | Timed out while waiting for: 4 web consoles opened (x2) + a leak)
+
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_595350_multiple_windows_and_tabs.js b/browser/devtools/webconsole/test/browser_webconsole_bug_595350_multiple_windows_and_tabs.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_595350_multiple_windows_and_tabs.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_595350_multiple_windows_and_tabs.js
+@@ -60,16 +60,17 @@ function openConsoles() {
+       let window = hud.tab.linkedBrowser.contentWindow;
+       window.console.log("message for tab " + index);
+       consolesOpen++;
+     }.bind(null, i));
+   }
+ 
+   waitForSuccess({
+     name: "4 web consoles opened",
++    timeout: 15000,
+     validatorFn: function()
+     {
+       return consolesOpen == 4;
+     },
+     successFn: closeConsoles,
+     failureFn: closeConsoles,
+   });
+ }
+@@ -94,16 +95,17 @@ function closeConsoles() {
+ 
+   function onTimeout() {
+     Services.obs.removeObserver(onWebConsoleClose, "web-console-destroyed");
+     executeSoon(finishTest);
+   }
+ 
+   waitForSuccess({
+     name: "4 web consoles closed",
++    timeout: 10000,
+     validatorFn: function()
+     {
+       return consolesClosed == 4;
+     },
+     successFn: onTimeout,
+     failureFn: onTimeout,
+   });
+ }

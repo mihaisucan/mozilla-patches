@@ -1,0 +1,71 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1360082681 -7200
+# Node ID a02f96b9ef6f11dc80edca00540cb8516369805c
+# Parent  a936e306f6847308c79cdad851e19545b15bf5f2
+Bug 720180 - Fix exception in the browser_webconsole_bug_588730_text_node_insertion.js test; r=past
+
+diff --git a/browser/devtools/webconsole/webconsole.js b/browser/devtools/webconsole/webconsole.js
+--- a/browser/devtools/webconsole/webconsole.js
++++ b/browser/devtools/webconsole/webconsole.js
+@@ -873,16 +873,20 @@ WebConsoleFrame.prototype = {
+    * @param nsIDOMNode aNode
+    *        The message node to be filtered or not.
+    * @returns boolean
+    *          True if the message is filtered, false otherwise.
+    */
+   _filterRepeatedMessage: function WCF__filterRepeatedMessage(aNode)
+   {
+     let repeatNode = aNode.getElementsByClassName("webconsole-msg-repeat")[0];
++    if (!repeatNode) {
++      return false;
++    }
++
+     let uid = repeatNode._uid;
+     let dupeNode = null;
+ 
+     if (aNode.classList.contains("webconsole-msg-cssparser")) {
+       dupeNode = this._cssNodes[uid];
+       if (!dupeNode) {
+         this._cssNodes[uid] = aNode;
+       }
+@@ -894,17 +898,17 @@ WebConsoleFrame.prototype = {
+               aNode.classList.contains("webconsole-msg-error"))) {
+       let lastMessage = this.outputNode.lastChild;
+       if (!lastMessage) {
+         return false;
+       }
+ 
+       let lastRepeatNode = lastMessage
+                            .getElementsByClassName("webconsole-msg-repeat")[0];
+-      if (lastRepeatNode._uid == uid) {
++      if (lastRepeatNode && lastRepeatNode._uid == uid) {
+         dupeNode = lastMessage;
+       }
+     }
+ 
+     if (dupeNode) {
+       this.mergeFilteredMessageNode(dupeNode, aNode);
+       return true;
+     }
+@@ -2013,17 +2017,19 @@ WebConsoleFrame.prototype = {
+   removeOutputMessage: function WCF_removeOutputMessage(aNode)
+   {
+     if (aNode._objectActors && !aNode._panelOpen) {
+       aNode._objectActors.forEach(this._releaseObject, this);
+     }
+ 
+     if (aNode.classList.contains("webconsole-msg-cssparser")) {
+       let repeatNode = aNode.getElementsByClassName("webconsole-msg-repeat")[0];
+-      delete this._cssNodes[repeatNode._uid];
++      if (repeatNode && repeatNode._uid) {
++        delete this._cssNodes[repeatNode._uid];
++      }
+     }
+     else if (aNode._connectionId &&
+              aNode.classList.contains("webconsole-msg-network")) {
+       delete this._networkRequests[aNode._connectionId];
+       this._releaseObject(aNode._connectionId);
+     }
+     else if (aNode.classList.contains("webconsole-msg-inspector")) {
+       this.pruneConsoleDirNode(aNode);
