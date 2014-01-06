@@ -1,0 +1,61 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1384020576 -7200
+#      Sat Nov 09 20:09:36 2013 +0200
+# Node ID b832cfe690f34ba8caab031d00e450c53759cba2
+# Parent  16949049f03d35250fc483dc4404e38482e8a780
+Bug 934852 - Fix for intermittent browser_scratchpad_throw_output.js | Test timed out; r=me
+
+diff --git a/browser/devtools/scratchpad/test/browser_scratchpad_throw_output.js b/browser/devtools/scratchpad/test/browser_scratchpad_throw_output.js
+--- a/browser/devtools/scratchpad/test/browser_scratchpad_throw_output.js
++++ b/browser/devtools/scratchpad/test/browser_scratchpad_throw_output.js
+@@ -1,14 +1,12 @@
+ /* vim: set ts=2 et sw=2 tw=80: */
+ /* Any copyright is dedicated to the Public Domain.
+    http://creativecommons.org/publicdomain/zero/1.0/ */
+ 
+-let temp = {};
+-Cu.import("resource://gre/modules/devtools/dbg-server.jsm", temp);
+ 
+ function test()
+ {
+   waitForExplicitFinish();
+ 
+   gBrowser.selectedTab = gBrowser.addTab();
+   gBrowser.selectedBrowser.addEventListener("load", function onLoad() {
+     gBrowser.selectedBrowser.removeEventListener("load", onLoad, true);
+@@ -28,23 +26,28 @@ function testThrowOutput()
+     tests.push({
+       method: "display",
+       code: "throw " + value + ";",
+       result: "throw " + value + ";\n/*\nException: " + value + "\n*/",
+       label: "Correct exception message for '" + value + "' is shown"
+     });
+   });
+ 
+-  let longString = Array(temp.DebuggerServer.LONG_STRING_LENGTH + 1).join("a"),
+-      shortedString = longString.substring(0,
+-                        temp.DebuggerServer.LONG_STRING_INITIAL_LENGTH
+-                      ) + "\u2026";
++  let server = Cu.import("resource://gre/modules/devtools/dbg-server.jsm", {})
++               .DebuggerServer;
++
++  let longLength = server.LONG_STRING_LENGTH + 1;
++  let longString = new Array(longLength).join("a");
++  let shortedString = longString.substring(0, server.LONG_STRING_INITIAL_LENGTH) +
++                      "\u2026";
++
+   tests.push({
+     method: "display",
+-    code: "throw '" + longString + "';",
+-    result: "throw '" + longString + "';\n/*\nException: " + shortedString + "\n*/",
++    code: "throw (new Array(" + longLength + ").join('a'));",
++    result: "throw (new Array(" + longLength + ").join('a'));\n" +
++            "/*\nException: " + shortedString + "\n*/",
+     label: "Correct exception message for a longString is shown"
+   });
+ 
+   runAsyncTests(scratchpad, tests).then(function() {
+     finish();
+   });
+ }

@@ -1,0 +1,41 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1379702969 -10800
+#      Fri Sep 20 21:49:29 2013 +0300
+# Node ID 6ae7118b9bf1bb646b6a56c23d8ade9fc96becf9
+# Parent  8db3d638ccd128762563618ec0a2d80df0f60037
+Bug 918210 - Fix for intermittent browser_webconsole_bug_613642_maintain_scroll.js | Test timed out; r=me
+
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_613642_maintain_scroll.js b/browser/devtools/webconsole/test/browser_webconsole_bug_613642_maintain_scroll.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_613642_maintain_scroll.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_613642_maintain_scroll.js
+@@ -34,25 +34,26 @@ function testGen() {
+   yield undefined;
+ 
+   ok(scrollBox.scrollTop > 0, "scroll location is not at the top");
+ 
+   // scroll to the first node
+   outputNode.focus();
+ 
+   scrollBox.onscroll = () => {
+-    if (scrollBox.scrollTop == 0) {
++    info("onscroll top " + scrollBox.scrollTop);
++    if (scrollBox.scrollTop != 0) {
+       // Wait for scroll to 0.
+       return;
+     }
+     scrollBox.onscroll = null;
+-    isnot(scrollBox.scrollTop, 0, "scroll location updated (moved to top)");
++    is(scrollBox.scrollTop, 0, "scroll location updated (moved to top)");
+     testNext();
+   };
+-  EventUtils.synthesizeKey("VK_HOME", {});
++  EventUtils.synthesizeKey("VK_HOME", {}, hud.iframeWindow);
+ 
+   yield undefined;
+ 
+   // add a message and make sure scroll doesn't change
+   content.console.log("test message 150");
+ 
+   waitForMessages({
+     webconsole: hud,

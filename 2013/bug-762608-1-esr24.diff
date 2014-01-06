@@ -1,0 +1,162 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1379351826 -10800
+#      Mon Sep 16 20:17:06 2013 +0300
+# Node ID af0da5c1085283aefcb1c05feb2017391f5aabcc
+# Parent  d6b959018d97e8874fffe31d9e7bc74e3cfcac88
+Bug 762608 - Intermittent browser_webconsole_bug_598357_jsterm_output.js | Timed out while waiting for: console.log message for test #1/#7; r=me
+
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_598357_jsterm_output.js b/browser/devtools/webconsole/test/browser_webconsole_bug_598357_jsterm_output.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_598357_jsterm_output.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_598357_jsterm_output.js
+@@ -145,83 +145,67 @@ function testGen() {
+   let consoleTest = inputValues[cpos][5] || inputValue;
+ 
+   HUD.jsterm.clearOutput();
+ 
+   // Test the console.log() output.
+ 
+   HUD.jsterm.execute("console.log(" + consoleTest + ")");
+ 
+-  waitForSuccess({
+-    name: "console.log message for test #" + cpos,
+-    validatorFn: function()
+-    {
+-      return HUD.outputNode.querySelector(".hud-log");
+-    },
+-    successFn: subtestNext,
+-    failureFn: testNext,
+-  });
++  waitForMessages({
++    webconsole: HUD,
++    messages: [{
++      name: "console API output is correct for inputValues[" + cpos + "]",
++      text: consoleOutput,
++      category: CATEGORY_WEBDEV,
++      severity: SEVERITY_LOG,
++    }],
++  }).then(subtestNext);
+ 
+-  yield;
+-
+-  let outputItem = HUD.outputNode.querySelector(".hud-log:last-child");
+-  ok(outputItem,
+-    "found the window.console output line for inputValues[" + cpos + "]");
+-  ok(outputItem.textContent.indexOf(consoleOutput) > -1,
+-    "console API output is correct for inputValues[" + cpos + "]");
++  yield undefined;
+ 
+   HUD.jsterm.clearOutput();
+ 
+   // Test jsterm print() output.
+ 
+   HUD.jsterm.setInputValue("print(" + inputValue + ")");
+   HUD.jsterm.execute();
+ 
+-  waitForSuccess({
+-    name: "jsterm print() output for test #" + cpos,
+-    validatorFn: function()
+-    {
+-      return HUD.outputNode.querySelector(".webconsole-msg-output:last-child");
+-    },
+-    successFn: subtestNext,
+-    failureFn: testNext,
+-  });
++  waitForMessages({
++    webconsole: HUD,
++    messages: [{
++      name: "jsterm print() output is correct for inputValues[" + cpos + "]",
++      text: printOutput,
++      category: CATEGORY_OUTPUT,
++    }],
++  }).then(subtestNext);
+ 
+-  yield;
+-
+-  outputItem = HUD.outputNode.querySelector(".webconsole-msg-output:" +
+-                                            "last-child");
+-  ok(outputItem,
+-    "found the jsterm print() output line for inputValues[" + cpos + "]");
+-  ok(outputItem.textContent.indexOf(printOutput) > -1,
+-    "jsterm print() output is correct for inputValues[" + cpos + "]");
++  yield undefined;
+ 
+   // Test jsterm execution output.
+ 
+   HUD.jsterm.clearOutput();
+   HUD.jsterm.setInputValue(inputValue);
+   HUD.jsterm.execute();
+ 
+-  waitForSuccess({
+-    name: "jsterm output for test #" + cpos,
+-    validatorFn: function()
+-    {
+-      return HUD.outputNode.querySelector(".webconsole-msg-output:last-child");
+-    },
+-    successFn: subtestNext,
+-    failureFn: testNext,
++  let outputItem;
++  waitForMessages({
++    webconsole: HUD,
++    messages: [{
++      name: "jsterm output is correct for inputValues[" + cpos + "]",
++      text: expectedOutput,
++      category: CATEGORY_OUTPUT,
++    }],
++  }).then(([result]) => {
++    outputItem = [...result.matched][0];
++    ok(outputItem, "found message element");
++    subtestNext();
+   });
+ 
+-  yield;
+-
+-  outputItem = HUD.outputNode.querySelector(".webconsole-msg-output:" +
+-                                            "last-child");
+-  ok(outputItem, "found the jsterm output line for inputValues[" + cpos + "]");
+-  ok(outputItem.textContent.indexOf(expectedOutput) > -1,
+-    "jsterm output is correct for inputValues[" + cpos + "]");
++  yield undefined;
+ 
+   let messageBody = outputItem.querySelector(".webconsole-msg-body");
+   ok(messageBody, "we have the message body for inputValues[" + cpos + "]");
+ 
+   // Test click on output.
+   let eventHandlerID = eventHandlers.length + 1;
+ 
+   let variablesViewShown = function(aEvent, aView, aOptions) {
+@@ -248,22 +232,22 @@ function testGen() {
+   eventHandlers.push(variablesViewShown);
+ 
+   // Send the mousedown, mouseup and click events to check if the variables
+   // view opens.
+   EventUtils.sendMouseEvent({ type: "mousedown" }, messageBody, window);
+   EventUtils.sendMouseEvent({ type: "click" }, messageBody, window);
+ 
+   if (showsVariablesView) {
+-    yield; // wait for the panel to open if we need to.
++    yield undefined; // wait for the panel to open if we need to.
+   }
+ 
+   testNext();
+ 
+-  yield;
++  yield undefined;
+ }
+ 
+ function testEnd() {
+   if (testEnded) {
+     return;
+   }
+ 
+   testEnded = true;
+@@ -284,9 +268,8 @@ function testEnd() {
+   executeSoon(finishTest);
+ }
+ 
+ function test() {
+   requestLongerTimeout(2);
+   addTab(TEST_URI);
+   browser.addEventListener("load", tabLoad, true);
+ }
+-

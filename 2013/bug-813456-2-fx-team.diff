@@ -1,0 +1,433 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1374067227 -10800
+#      Wed Jul 17 16:20:27 2013 +0300
+# Node ID 7724dc889ddc79ad5f73ddf81a0caaaa58e423f9
+# Parent  89db54075df6cc582d8230d439eb8fcb33656469
+Bug 813456 - Display visual cues to make setting breakpoints more discoverable; r=robcee
+
+diff --git a/browser/devtools/sourceeditor/source-editor-orion.jsm b/browser/devtools/sourceeditor/source-editor-orion.jsm
+--- a/browser/devtools/sourceeditor/source-editor-orion.jsm
++++ b/browser/devtools/sourceeditor/source-editor-orion.jsm
+@@ -70,16 +70,18 @@ const ORION_EVENTS = {
+  * Known Orion annotation types.
+  */
+ const ORION_ANNOTATION_TYPES = {
+   currentBracket: "orion.annotation.currentBracket",
+   matchingBracket: "orion.annotation.matchingBracket",
+   breakpoint: "orion.annotation.breakpoint",
+   task: "orion.annotation.task",
+   currentLine: "orion.annotation.currentLine",
++  hoverLine: "mozilla.annotation.hoverLine",
++  tempBreakpoint: "mozilla.annotation.tempBreakpoint",
+   debugLocation: "mozilla.annotation.debugLocation",
+ };
+ 
+ /**
+  * Default key bindings in the Orion editor.
+  */
+ const DEFAULT_KEYBINDINGS = [
+   {
+@@ -326,32 +328,37 @@ SourceEditor.prototype = {
+     let AnnotationModel = window.require("orion/textview/annotations").AnnotationModel;
+ 
+     this._annotationModel = new AnnotationModel(this._model);
+ 
+     if (config.showAnnotationRuler) {
+       this._annotationRuler = new AnnotationRuler(this._annotationModel, "left",
+         {styleClass: "ruler annotations"});
+       this._annotationRuler.onClick = this._annotationRulerClick.bind(this);
++      this._annotationRuler.onMouseOver = this._annotationRulerMouseOver.bind(this);
++      this._annotationRuler.onMouseOut = this._annotationRulerMouseOut.bind(this);
+       this._annotationRuler.addAnnotationType(ORION_ANNOTATION_TYPES.breakpoint);
++      this._annotationRuler.addAnnotationType(ORION_ANNOTATION_TYPES.tempBreakpoint);
+       this._annotationRuler.addAnnotationType(ORION_ANNOTATION_TYPES.debugLocation);
+       this._view.addRuler(this._annotationRuler);
+     }
+ 
+     if (config.showLineNumbers) {
+       let rulerClass = this._annotationRuler ?
+                        "ruler lines linesWithAnnotations" :
+                        "ruler lines";
+ 
+       this._linesRuler = new LineNumberRuler(this._annotationModel, "left",
+         {styleClass: rulerClass}, {styleClass: "rulerLines odd"},
+         {styleClass: "rulerLines even"});
+ 
+       this._linesRuler.onClick = this._linesRulerClick.bind(this);
+       this._linesRuler.onDblClick = this._linesRulerDblClick.bind(this);
++      this._linesRuler.onMouseOver = this._annotationRulerMouseOver.bind(this);
++      this._linesRuler.onMouseOut = this._annotationRulerMouseOut.bind(this);
+       this._view.addRuler(this._linesRuler);
+     }
+ 
+     if (config.showOverviewRuler) {
+       this._overviewRuler = new OverviewRuler(this._annotationModel, "right",
+         {styleClass: "ruler overview"});
+       this._overviewRuler.onClick = this._overviewRulerClick.bind(this);
+ 
+@@ -887,16 +894,17 @@ SourceEditor.prototype = {
+ 
+     let styler = new AnnotationStyler(this._view, this._annotationModel);
+     this._annotationStyler = styler;
+ 
+     styler.addAnnotationType(ORION_ANNOTATION_TYPES.matchingBracket);
+     styler.addAnnotationType(ORION_ANNOTATION_TYPES.currentBracket);
+     styler.addAnnotationType(ORION_ANNOTATION_TYPES.task);
+     styler.addAnnotationType(ORION_ANNOTATION_TYPES.debugLocation);
++    styler.addAnnotationType(ORION_ANNOTATION_TYPES.hoverLine);
+ 
+     if (this._config.highlightCurrentLine) {
+       styler.addAnnotationType(ORION_ANNOTATION_TYPES.currentLine);
+     }
+   },
+ 
+   /**
+    * Retrieve the list of Orion Annotations filtered by type for the given text range.
+@@ -936,27 +944,109 @@ SourceEditor.prototype = {
+    *        The DOM click event object.
+    */
+   _annotationRulerClick: function SE__annotationRulerClick(aLineIndex, aEvent)
+   {
+     if (aLineIndex === undefined || aLineIndex == -1) {
+       return;
+     }
+ 
++    let tempBreakpoints = this._getAnnotationsByType("tempBreakpoint", 0,
++                                                     this.getCharCount());
++    if (tempBreakpoints.length > 0) {
++      tempBreakpoints.forEach(this._annotationModel.removeAnnotation,
++                              this._annotationModel);
++    }
++
+     let lineStart = this.getLineStart(aLineIndex);
+     let lineEnd = this.getLineEnd(aLineIndex);
+     let annotations = this._getAnnotationsByType("breakpoint", lineStart, lineEnd);
+     if (annotations.length > 0) {
+       this.removeBreakpoint(aLineIndex);
++      this._annotationRulerMouseOver(aLineIndex);
+     } else {
+       this.addBreakpoint(aLineIndex);
+     }
+   },
+ 
+   /**
++   * The |mouseover| event handler for the annotation and line rulers. This
++   * method adds a temporary breakpoint annotation to the annotation ruler, such
++   * that the user is given a visual hint that he/she can add a breakpoint.
++   *
++   * @private
++   * @param number aLineIndex
++   *        The line index where the |mouseover| event occurred.
++   */
++  _annotationRulerMouseOver: function SE__annotationRulerMouseOver(aLineIndex)
++  {
++    this._annotationRulerMouseOut(aLineIndex);
++
++    if (aLineIndex === undefined || aLineIndex == -1) {
++      return;
++    }
++
++    let lineStart = this.getLineStart(aLineIndex);
++    let lineEnd = this.getLineEnd(aLineIndex);
++
++    let hoverLine = {
++      type: ORION_ANNOTATION_TYPES.hoverLine,
++      start: lineStart,
++      end: lineEnd,
++      lineStyle: {styleClass: "annotationLine lineRulerHover"},
++    };
++    this._annotationModel.addAnnotation(hoverLine);
++
++    let debugLocations = this._getAnnotationsByType("debugLocation", lineStart,
++                                                    lineEnd);
++    if (debugLocations.length > 0) {
++      return;
++    }
++
++    let breakpoints = this._getAnnotationsByType("breakpoint", lineStart,
++                                                 lineEnd);
++    if (breakpoints.length > 0) {
++      return;
++    }
++
++    let tempBreakpoint = {
++      type: ORION_ANNOTATION_TYPES.tempBreakpoint,
++      start: lineStart,
++      end: lineEnd,
++      style: {styleClass: "annotation tempBreakpoint"},
++      html: "<div class='annotationHTML tempBreakpoint'></div>",
++    };
++
++    this._annotationModel.addAnnotation(tempBreakpoint);
++  },
++
++  /**
++   * The |mouseout| event handler for the annotation and line rulers. This
++   * method removes any temporary breakpoint annotation from the annotation
++   * ruler.
++   * @private
++   */
++  _annotationRulerMouseOut: function SE__annotationRulerMouseOut()
++  {
++    let tempBreakpoints = this._getAnnotationsByType("tempBreakpoint", 0,
++                                                     this.getCharCount());
++    if (tempBreakpoints.length > 0) {
++      tempBreakpoints.forEach(this._annotationModel.removeAnnotation,
++                              this._annotationModel);
++    }
++
++    let hoverLine = this._getAnnotationsByType("hoverLine", 0,
++                                               this.getCharCount());
++    if (hoverLine.length > 0) {
++      hoverLine.forEach(this._annotationModel.removeAnnotation,
++                        this._annotationModel);
++    }
++  },
++
++  /**
+    * The click event handler for the overview ruler. When the user clicks on an
+    * annotation the editor jumps to the associated line.
+    *
+    * @private
+    * @param number aLineIndex
+    *        The line index where the click event occurred.
+    * @param object aEvent
+    *        The DOM click event object.
+diff --git a/browser/themes/linux/devtools/orion.css b/browser/themes/linux/devtools/orion.css
+--- a/browser/themes/linux/devtools/orion.css
++++ b/browser/themes/linux/devtools/orion.css
+@@ -56,26 +56,32 @@
+   background-repeat: no-repeat;
+ }
+ .annotation.task .annotationHTML {
+   background-image: url("chrome://browser/skin/devtools/orion-task.png");
+ }
+ .annotation.breakpoint .annotationHTML {
+   background-image: url("chrome://browser/skin/devtools/orion-breakpoint.png");
+ }
++.annotation.tempBreakpoint .annotationHTML {
++  background-image: url("chrome://browser/skin/devtools/orion-breakpoint.png");
++  opacity: 0.4;
++}
+ .annotation.debugLocation .annotationHTML {
+   background-image: url("chrome://browser/skin/devtools/orion-debug-location.png");
+ }
+ .annotation.breakpoint.debugLocation .annotationHTML,
++.annotation.tempBreakpoint.debugLocation .annotationHTML,
+ .annotation.task.debugLocation .annotationHTML {
+   background-position: center, center;
+   background-repeat: no-repeat, no-repeat;
+   background-size: 75%, 100%;
+ }
+-.annotation.breakpoint.debugLocation .annotationHTML {
++.annotation.breakpoint.debugLocation .annotationHTML,
++.annotation.tempBreakpoint.debugLocation .annotationHTML {
+   background-image: url("chrome://browser/skin/devtools/orion-debug-location.png"),
+                     url("chrome://browser/skin/devtools/orion-breakpoint.png");
+ }
+ 
+ .annotation.task.debugLocation .annotationHTML {
+   background-image: url("chrome://browser/skin/devtools/orion-debug-location.png"),
+                     url("chrome://browser/skin/devtools/orion-task.png");
+ }
+@@ -86,17 +92,18 @@
+   border-radius: 2px;
+   left: 2px;
+   width: 8px;
+ }
+ .annotationOverview.task {
+   background-color: lightgreen;
+   border: 1px solid green;
+ }
+-.annotationOverview.breakpoint {
++.annotationOverview.breakpoint,
++.annotationOverview.tempBreakpoint {
+   background-color: lightblue;
+   border: 1px solid blue;
+ }
+ .annotationOverview.debugLocation {
+   background-color: white;
+   border: 1px solid green;
+ }
+ .annotationOverview.currentBracket {
+@@ -167,16 +174,21 @@
+   background: hsl(208, 93%, 94%);
+ }
+ 
+ .readonly .line_caret,
+ .readonly .annotationLine.currentLine {
+   background: hsl(208, 80%, 90%);
+ }
+ 
++/* Styling used for lines when you hover the line in the ruler */
++.annotationLine.lineRulerHover {
++  background: hsl(208, 90%, 95%);
++}
++
+ /* Styling for html syntax highlighting */
+ .entity-name-tag {
+   color: hsl(208,48%,40%); /* blue */
+ }
+ 
+ .entity-other-attribute-name {
+   color: hsl(208,48%,40%); /* blue */
+ }
+diff --git a/browser/themes/osx/devtools/orion.css b/browser/themes/osx/devtools/orion.css
+--- a/browser/themes/osx/devtools/orion.css
++++ b/browser/themes/osx/devtools/orion.css
+@@ -56,26 +56,32 @@
+   background-repeat: no-repeat;
+ }
+ .annotation.task .annotationHTML {
+   background-image: url("chrome://browser/skin/devtools/orion-task.png");
+ }
+ .annotation.breakpoint .annotationHTML {
+   background-image: url("chrome://browser/skin/devtools/orion-breakpoint.png");
+ }
++.annotation.tempBreakpoint .annotationHTML {
++  background-image: url("chrome://browser/skin/devtools/orion-breakpoint.png");
++  opacity: 0.4;
++}
+ .annotation.debugLocation .annotationHTML {
+   background-image: url("chrome://browser/skin/devtools/orion-debug-location.png");
+ }
+ .annotation.breakpoint.debugLocation .annotationHTML,
++.annotation.tempBreakpoint.debugLocation .annotationHTML,
+ .annotation.task.debugLocation .annotationHTML {
+   background-position: center, center;
+   background-repeat: no-repeat, no-repeat;
+   background-size: 75%, 100%;
+ }
+-.annotation.breakpoint.debugLocation .annotationHTML {
++.annotation.breakpoint.debugLocation .annotationHTML,
++.annotation.tempBreakpoint.debugLocation .annotationHTML {
+   background-image: url("chrome://browser/skin/devtools/orion-debug-location.png"),
+                     url("chrome://browser/skin/devtools/orion-breakpoint.png");
+ }
+ 
+ .annotation.task.debugLocation .annotationHTML {
+   background-image: url("chrome://browser/skin/devtools/orion-debug-location.png"),
+                     url("chrome://browser/skin/devtools/orion-task.png");
+ }
+@@ -86,17 +92,18 @@
+   border-radius: 2px;
+   left: 2px;
+   width: 8px;
+ }
+ .annotationOverview.task {
+   background-color: lightgreen;
+   border: 1px solid green;
+ }
+-.annotationOverview.breakpoint {
++.annotationOverview.breakpoint,
++.annotationOverview.tempBreakpoint {
+   background-color: lightblue;
+   border: 1px solid blue;
+ }
+ .annotationOverview.debugLocation {
+   background-color: white;
+   border: 1px solid green;
+ }
+ .annotationOverview.currentBracket {
+@@ -167,16 +174,21 @@
+   background: hsl(208, 93%, 94%);
+ }
+ 
+ .readonly .line_caret,
+ .readonly .annotationLine.currentLine {
+   background: hsl(208, 80%, 90%);
+ }
+ 
++/* Styling used for lines when you hover the line in the ruler */
++.annotationLine.lineRulerHover {
++  background: hsl(208, 90%, 95%);
++}
++
+ /* Styling for html syntax highlighting */
+ .entity-name-tag {
+   color: hsl(208,48%,40%); /* blue */
+ }
+ 
+ .entity-other-attribute-name {
+   color: hsl(208,48%,40%); /* blue */
+ }
+diff --git a/browser/themes/windows/devtools/orion.css b/browser/themes/windows/devtools/orion.css
+--- a/browser/themes/windows/devtools/orion.css
++++ b/browser/themes/windows/devtools/orion.css
+@@ -56,26 +56,32 @@
+   background-repeat: no-repeat;
+ }
+ .annotation.task .annotationHTML {
+   background-image: url("chrome://browser/skin/devtools/orion-task.png");
+ }
+ .annotation.breakpoint .annotationHTML {
+   background-image: url("chrome://browser/skin/devtools/orion-breakpoint.png");
+ }
++.annotation.tempBreakpoint .annotationHTML {
++  background-image: url("chrome://browser/skin/devtools/orion-breakpoint.png");
++  opacity: 0.4;
++}
+ .annotation.debugLocation .annotationHTML {
+   background-image: url("chrome://browser/skin/devtools/orion-debug-location.png");
+ }
+ .annotation.breakpoint.debugLocation .annotationHTML,
++.annotation.tempBreakpoint.debugLocation .annotationHTML,
+ .annotation.task.debugLocation .annotationHTML {
+   background-position: center, center;
+   background-repeat: no-repeat, no-repeat;
+   background-size: 75%, 100%;
+ }
+-.annotation.breakpoint.debugLocation .annotationHTML {
++.annotation.breakpoint.debugLocation .annotationHTML,
++.annotation.tempBreakpoint.debugLocation .annotationHTML {
+   background-image: url("chrome://browser/skin/devtools/orion-debug-location.png"),
+                     url("chrome://browser/skin/devtools/orion-breakpoint.png");
+ }
+ 
+ .annotation.task.debugLocation .annotationHTML {
+   background-image: url("chrome://browser/skin/devtools/orion-debug-location.png"),
+                     url("chrome://browser/skin/devtools/orion-task.png");
+ }
+@@ -86,17 +92,18 @@
+   border-radius: 2px;
+   left: 2px;
+   width: 8px;
+ }
+ .annotationOverview.task {
+   background-color: lightgreen;
+   border: 1px solid green;
+ }
+-.annotationOverview.breakpoint {
++.annotationOverview.breakpoint,
++.annotationOverview.tempBreakpoint {
+   background-color: lightblue;
+   border: 1px solid blue;
+ }
+ .annotationOverview.debugLocation {
+   background-color: white;
+   border: 1px solid green;
+ }
+ .annotationOverview.currentBracket {
+@@ -167,16 +174,21 @@
+   background: hsl(208, 93%, 94%);
+ }
+ 
+ .readonly .line_caret,
+ .readonly .annotationLine.currentLine {
+   background: hsl(208, 80%, 90%);
+ }
+ 
++/* Styling used for lines when you hover the line in the ruler */
++.annotationLine.lineRulerHover {
++  background: hsl(208, 90%, 95%);
++}
++
+ /* Styling for html syntax highlighting */
+ .entity-name-tag {
+   color: hsl(208,48%,40%); /* blue */
+ }
+ 
+ .entity-other-attribute-name {
+   color: hsl(208,48%,40%); /* blue */
+ }

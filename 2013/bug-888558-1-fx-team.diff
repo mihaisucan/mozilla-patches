@@ -1,0 +1,140 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1378407392 -10800
+#      Thu Sep 05 21:56:32 2013 +0300
+# Node ID 434147e2f000045b12aa78100a20e5f4f6fb5ee7
+# Parent  c70f74b72e32f4a0bb47691523e048d18a5e54ca
+Bug 888558 - Intermittent browser_webconsole_bug_646025_console_file_location.js | Timed out while waiting for: console API messages; r=me
+
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_646025_console_file_location.js b/browser/devtools/webconsole/test/browser_webconsole_bug_646025_console_file_location.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_646025_console_file_location.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_646025_console_file_location.js
+@@ -12,42 +12,45 @@ const TEST_URI = "http://example.com/bro
+ 
+ function test() {
+   addTab("data:text/html;charset=utf-8,Web Console file location display test");
+   browser.addEventListener("load", onLoad, true);
+ }
+ 
+ function onLoad(aEvent) {
+   browser.removeEventListener(aEvent.type, onLoad, true);
+-  openConsole(null, function(aHud) {
+-    hud = aHud;
+-    browser.addEventListener("load", testConsoleFileLocation, true);
++  openConsole(null, function(hud) {
+     content.location = TEST_URI;
++    waitForMessages({
++      webconsole: hud,
++      messages: [{
++        text: "message for level log",
++        category: CATEGORY_WEBDEV,
++        severity: SEVERITY_LOG,
++        source: { url: "test-file-location.js", line: 5 },
++      },
++      {
++        text: "message for level info",
++        category: CATEGORY_WEBDEV,
++        severity: SEVERITY_INFO,
++        source: { url: "test-file-location.js", line: 6 },
++      },
++      {
++        text: "message for level warn",
++        category: CATEGORY_WEBDEV,
++        severity: SEVERITY_WARNING,
++        source: { url: "test-file-location.js", line: 7 },
++      },
++      {
++        text: "message for level error",
++        category: CATEGORY_WEBDEV,
++        severity: SEVERITY_ERROR,
++        source: { url: "test-file-location.js", line: 8 },
++      },
++      {
++        text: "message for level debug",
++        category: CATEGORY_WEBDEV,
++        severity: SEVERITY_LOG,
++        source: { url: "test-file-location.js", line: 9 },
++      }],
++    }).then(finishTest);
+   });
+ }
+-
+-function testConsoleFileLocation(aEvent) {
+-  browser.removeEventListener(aEvent.type, testConsoleFileLocation, true);
+-
+-  outputNode = hud.outputNode;
+-
+-  waitForSuccess({
+-    name: "console API messages",
+-    validatorFn: function()
+-    {
+-      return outputNode.textContent.indexOf("message for level debug") > -1;
+-    },
+-    successFn: function()
+-    {
+-      findLogEntry("test-file-location.js");
+-      findLogEntry("message for level");
+-      findLogEntry("test-file-location.js:5");
+-      findLogEntry("test-file-location.js:6");
+-      findLogEntry("test-file-location.js:7");
+-      findLogEntry("test-file-location.js:8");
+-      findLogEntry("test-file-location.js:9");
+-
+-      finishTest();
+-    },
+-    failureFn: finishTest,
+-  });
+-}
+-
+diff --git a/browser/devtools/webconsole/test/head.js b/browser/devtools/webconsole/test/head.js
+--- a/browser/devtools/webconsole/test/head.js
++++ b/browser/devtools/webconsole/test/head.js
+@@ -885,18 +885,19 @@ function getMessageElementText(aElement)
+  *            message.
+  *            - longString: boolean, set to |true} to match long strings in the
+  *            message.
+  *            - type: match messages that are instances of the given object. For
+  *            example, you can point to Messages.NavigationMarker to match any
+  *            such message.
+  *            - objects: boolean, set to |true| if you expect inspectable
+  *            objects in the message.
+- *            - source: object that can hold one property: url. This is used to
+- *            match the source URL of the message.
++ *            - source: object of the shape { url, line }. This is used to
++ *            match the source URL and line number of the error message or
++ *            console API call.
+  * @return object
+  *         A promise object is returned once the messages you want are found.
+  *         The promise is resolved with the array of rule objects you give in
+  *         the |messages| property. Each objects is the same as provided, with
+  *         additional properties:
+  *         - matched: a Set of web console messages that matched the rule.
+  *         - clickableElements: a list of inspectable objects. This is available
+  *         if any of the following properties are present in the rule:
+@@ -1027,17 +1028,25 @@ function waitForMessages(aOptions)
+ 
+   function checkSource(aRule, aElement)
+   {
+     let location = aElement.querySelector(".webconsole-location");
+     if (!location) {
+       return false;
+     }
+ 
+-    return checkText(aRule.source.url, location.getAttribute("title"));
++    if (!checkText(aRule.source.url, location.getAttribute("title"))) {
++      return false;
++    }
++
++    if ("line" in aRule.source && location.sourceLine != aRule.source.line) {
++      return false;
++    }
++
++    return true;
+   }
+ 
+   function checkMessage(aRule, aElement)
+   {
+     let elemText = getMessageElementText(aElement);
+ 
+     if (aRule.text && !checkText(aRule.text, elemText)) {
+       return false;

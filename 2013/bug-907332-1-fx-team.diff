@@ -1,0 +1,59 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1378408442 -10800
+#      Thu Sep 05 22:14:02 2013 +0300
+# Node ID df7970b032f6e444315192471139a0ccc505836a
+# Parent  434147e2f000045b12aa78100a20e5f4f6fb5ee7
+Bug 907332 - Intermittent browser_webconsole_bug_594477_clickable_output.js | Timed out while waiting for: network message displayed; r=me
+
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_594477_clickable_output.js b/browser/devtools/webconsole/test/browser_webconsole_bug_594477_clickable_output.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_594477_clickable_output.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_594477_clickable_output.js
+@@ -22,32 +22,32 @@ function consoleOpened(aHud) {
+ 
+   // Reload so we get some output in the console.
+   browser.contentWindow.location.reload();
+ }
+ 
+ function tabLoad2(aEvent) {
+   browser.removeEventListener(aEvent.type, tabLoad2, true);
+ 
+-  waitForSuccess({
+-    name: "network message displayed",
+-    validatorFn: function()
+-    {
+-      return outputNode.querySelector(".hud-networkinfo .hud-clickable");
+-    },
+-    successFn: function() {
+-      outputItem = outputNode.querySelector(".hud-networkinfo .hud-clickable");
+-      ok(outputItem, "found a network message");
+-      document.addEventListener("popupshown", networkPanelShown, false);
++  waitForMessages({
++    webconsole: HUD,
++    messages: [{
++      text: "test-console.html",
++      category: CATEGORY_NETWORK,
++      severity: SEVERITY_LOG,
++    }],
++  }).then(([result]) => {
++    let msg = [...result.matched][0];
++    outputItem = msg.querySelector(".hud-clickable");
++    ok(outputItem, "found a network message");
++    document.addEventListener("popupshown", networkPanelShown, false);
+ 
+-      // Send the mousedown and click events such that the network panel opens.
+-      EventUtils.sendMouseEvent({type: "mousedown"}, outputItem);
+-      EventUtils.sendMouseEvent({type: "click"}, outputItem);
+-    },
+-    failureFn: finishTest,
++    // Send the mousedown and click events such that the network panel opens.
++    EventUtils.sendMouseEvent({type: "mousedown"}, outputItem);
++    EventUtils.sendMouseEvent({type: "click"}, outputItem);
+   });
+ }
+ 
+ function networkPanelShown(aEvent) {
+   document.removeEventListener(aEvent.type, networkPanelShown, false);
+ 
+   info("networkPanelShown");
+ 

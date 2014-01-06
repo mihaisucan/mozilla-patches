@@ -1,0 +1,78 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1369926494 -10800
+#      Thu May 30 18:08:14 2013 +0300
+# Node ID 1e40ab9ff73616695e93d6c37fd695d4e1dffc5a
+# Parent  d0e2d90352325fce07708a2b0f8b698a71727c77
+Bug 877199 - Browser console's window title temporarily says 'Web Console' before changing to 'Browser console'; r=robcee
+
+diff --git a/browser/devtools/webconsole/HUDService.jsm b/browser/devtools/webconsole/HUDService.jsm
+--- a/browser/devtools/webconsole/HUDService.jsm
++++ b/browser/devtools/webconsole/HUDService.jsm
+@@ -535,33 +535,31 @@ ViewHelpers.create({ constructor: Browse
+    */
+   init: function BC_init()
+   {
+     if (this._bc_init) {
+       return this._bc_init;
+     }
+ 
+     let window = this.iframeWindow;
++
++    // Make sure that the closing of the Browser Console window destroys this
++    // instance.
+     let onClose = () => {
+       window.removeEventListener("unload", onClose);
+       this.destroy();
+     };
+     window.addEventListener("unload", onClose);
+ 
+-    this._bc_init = this.$init().then((aReason) => {
+-      this._telemetry.toolOpened("browserconsole");
+-      let title = this.ui.rootElement.getAttribute("browserConsoleTitle");
+-      this.ui.rootElement.setAttribute("title", title);
++    // Make sure Ctrl-W closes the Browser Console window.
++    window.document.getElementById("cmd_close").removeAttribute("disabled");
+ 
+-      let cmd_close = this.ui.document.getElementById("cmd_close");
+-      cmd_close.removeAttribute("disabled");
++    this._telemetry.toolOpened("browserconsole");
+ 
+-      return aReason;
+-    });
+-
++    this._bc_init = this.$init();
+     return this._bc_init;
+   },
+ 
+   $destroy: WebConsole.prototype.destroy,
+ 
+   /**
+    * Destroy the object.
+    *
+@@ -695,18 +693,23 @@ var HeadsUpDisplayUICommands = {
+     function openWindow(aTarget)
+     {
+       target = aTarget;
+ 
+       let deferred = Promise.defer();
+ 
+       let win = Services.ww.openWindow(null, devtools.Tools.webConsole.url, "_blank",
+                                        BROWSER_CONSOLE_WINDOW_FEATURES, null);
+-      win.addEventListener("load", function onLoad() {
+-        win.removeEventListener("load", onLoad);
++      win.addEventListener("DOMContentLoaded", function onLoad() {
++        win.removeEventListener("DOMContentLoaded", onLoad);
++
++        // Set the correct Browser Console title.
++        let root = win.document.documentElement;
++        root.setAttribute("title", root.getAttribute("browserConsoleTitle"));
++
+         deferred.resolve(win);
+       });
+ 
+       return deferred.promise;
+     }
+ 
+     connect().then(getTarget).then(openWindow).then((aWindow) =>
+       HUDService.openBrowserConsole(target, aWindow, aWindow)

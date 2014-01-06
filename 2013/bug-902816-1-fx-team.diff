@@ -1,0 +1,32 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1378726914 -10800
+#      Mon Sep 09 14:41:54 2013 +0300
+# Node ID 00c07173e79e4644a944ad6dc9b3b53e12b4b1f1
+# Parent  27d9c8816436bea08e5e6a2fcb6bf8251dc84f5c
+Bug 902816 - Fix for intermittent browser_console_private_browsing.js | This test exceeded the timeout threshold; r=me
+
+diff --git a/browser/devtools/webconsole/test/browser_console_private_browsing.js b/browser/devtools/webconsole/test/browser_console_private_browsing.js
+--- a/browser/devtools/webconsole/test/browser_console_private_browsing.js
++++ b/browser/devtools/webconsole/test/browser_console_private_browsing.js
+@@ -10,16 +10,20 @@ function test()
+ {
+   const TEST_URI = "data:text/html;charset=utf8,<p>hello world! bug 874061" +
+                    "<button onclick='console.log(\"foobar bug 874061\");" +
+                    "fooBazBaz.yummy()'>click</button>";
+   let ConsoleAPIStorage = Cu.import("resource://gre/modules/ConsoleAPIStorage.jsm", {}).ConsoleAPIStorage;
+   let privateWindow, privateBrowser, privateTab, privateContent;
+   let hud, expectedMessages, nonPrivateMessage;
+ 
++  // This test is slightly more involved: it opens the web console twice,
++  // a new private window once, and the browser console twice. We can get
++  // a timeout with debug builds on slower machines.
++  requestLongerTimeout(2);
+   start();
+ 
+   function start()
+   {
+     gBrowser.selectedTab = gBrowser.addTab("data:text/html;charset=utf8," +
+                                            "<p>hello world! I am not private!");
+     gBrowser.selectedBrowser.addEventListener("load", onLoadTab, true);
+   }

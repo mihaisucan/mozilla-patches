@@ -1,0 +1,72 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1379155424 -10800
+#      Sat Sep 14 13:43:44 2013 +0300
+# Node ID 07e700436c4b1e054410697cbd83d7e91d282d6e
+# Parent  e7c825ddd5408f05e1072c2edf882ea609ecd833
+Bug 916329 - Use proper plural forms in messageRepeats.tooltip
+
+diff --git a/browser/devtools/webconsole/webconsole.js b/browser/devtools/webconsole/webconsole.js
+--- a/browser/devtools/webconsole/webconsole.js
++++ b/browser/devtools/webconsole/webconsole.js
+@@ -24,16 +24,17 @@ loader.lazyGetter(this, "NetworkPanel",
+                   () => require("devtools/webconsole/network-panel").NetworkPanel);
+ loader.lazyGetter(this, "ConsoleOutput",
+                   () => require("devtools/webconsole/console-output").ConsoleOutput);
+ loader.lazyGetter(this, "Messages",
+                   () => require("devtools/webconsole/console-output").Messages);
+ loader.lazyImporter(this, "ObjectClient", "resource://gre/modules/devtools/dbg-client.jsm");
+ loader.lazyImporter(this, "VariablesView", "resource:///modules/devtools/VariablesView.jsm");
+ loader.lazyImporter(this, "VariablesViewController", "resource:///modules/devtools/VariablesViewController.jsm");
++loader.lazyImporter(this, "PluralForm", "resource://gre/modules/PluralForm.jsm");
+ 
+ const STRINGS_URI = "chrome://browser/locale/devtools/webconsole.properties";
+ let l10n = new WebConsoleUtils.l10n(STRINGS_URI);
+ 
+ const XHTML_NS = "http://www.w3.org/1999/xhtml";
+ 
+ const MIXED_CONTENT_LEARN_MORE = "https://developer.mozilla.org/docs/Security/MixedContent";
+ 
+@@ -941,17 +942,19 @@ WebConsoleFrame.prototype = {
+     let repeatNode = aOriginal.getElementsByClassName("repeats")[0];
+     if (!repeatNode) {
+       return; // no repeat node, return early.
+     }
+ 
+     let occurrences = parseInt(repeatNode.getAttribute("value")) + 1;
+     repeatNode.setAttribute("value", occurrences);
+     repeatNode.textContent = occurrences;
+-    repeatNode.title = l10n.getFormatStr("messageRepeats.tooltip", [occurrences]);
++    let str = l10n.getStr("messageRepeats.tooltip2");
++    repeatNode.title = PluralForm.get(occurrences, str)
++                       .replace("#1", occurrences);
+   },
+ 
+   /**
+    * Filter the message node from the output if it is a repeat.
+    *
+    * @private
+    * @param nsIDOMNode aNode
+    *        The message node to be filtered or not.
+diff --git a/browser/locales/en-US/chrome/browser/devtools/webconsole.properties b/browser/locales/en-US/chrome/browser/devtools/webconsole.properties
+--- a/browser/locales/en-US/chrome/browser/devtools/webconsole.properties
++++ b/browser/locales/en-US/chrome/browser/devtools/webconsole.properties
+@@ -183,12 +183,16 @@ connectionTimeout=Connection timeout. Ch
+ # LOCALIZATION NOTE (propertiesFilterPlaceholder): this is the text that
+ # appears in the filter text box for the properties view container.
+ propertiesFilterPlaceholder=Filter properties
+ 
+ # LOCALIZATION NOTE (emptyPropertiesList): the text that is displayed in the
+ # properties pane when there are no properties to display.
+ emptyPropertiesList=No properties to display
+ 
+-# LOCALIZATION NOTE (messageRepeats.tooltip): the tooltip text that is displayed
++# LOCALIZATION NOTE (messageRepeats.tooltip2): the tooltip text that is displayed
+ # when you hover the red bubble that shows how many times a message is repeated
+ # in the web console output.
+-messageRepeats.tooltip=%S repeats
++# This is a semi-colon list of plural forms.
++# See: http://developer.mozilla.org/en/docs/Localization_and_Plurals
++# #1 number of message repeats
++# example: 3 repeats
++messageRepeats.tooltip2=#1 repeat;#1 repeats

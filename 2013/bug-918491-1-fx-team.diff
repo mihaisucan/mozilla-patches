@@ -1,0 +1,36 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1379964213 -10800
+#      Mon Sep 23 22:23:33 2013 +0300
+# Node ID 833c2af4f4ba5dd290b5571fb5dc8ca21082a8e4
+# Parent  1770589caa8ba8a0a4849762645a77abee3d4b55
+Bug 918491 - Additional logging for intermittent browser_webconsole_bug_598357_jsterm_output.js | Test timed out; r=me
+
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_598357_jsterm_output.js b/browser/devtools/webconsole/test/browser_webconsole_bug_598357_jsterm_output.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_598357_jsterm_output.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_598357_jsterm_output.js
+@@ -219,22 +219,20 @@ function testGen() {
+       executeSoon(subtestNext);
+     }
+   };
+ 
+   HUD.jsterm.on("variablesview-open", variablesViewShown);
+ 
+   eventHandlers.push(variablesViewShown);
+ 
+-  // Send the mousedown, mouseup and click events to check if the variables
+-  // view opens.
+-  EventUtils.sendMouseEvent({ type: "mousedown" }, messageBody, window);
+-  EventUtils.sendMouseEvent({ type: "click" }, messageBody, window);
++  EventUtils.synthesizeMouse(messageBody, 2, 2, {}, HUD.iframeWindow);
+ 
+   if (showsVariablesView) {
++    info("messageBody tagName '" + messageBody.tagName +  "' className '" + messageBody.className + "'");
+     yield undefined; // wait for the panel to open if we need to.
+   }
+ 
+   testNext();
+ 
+   yield undefined;
+ }
+ 

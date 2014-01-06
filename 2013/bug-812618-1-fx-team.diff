@@ -1,0 +1,167 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1371836999 -10800
+#      Fri Jun 21 20:49:59 2013 +0300
+# Node ID d4a7e2905ecb751606c3f62e78cbda4b2811faea
+# Parent  a173f58fb30fecba6fd77298aeaa49daf6b368ef
+Bug 812618 - Autocomplete at cursor location; f=robcee
+
+diff --git a/browser/devtools/webconsole/webconsole.js b/browser/devtools/webconsole/webconsole.js
+--- a/browser/devtools/webconsole/webconsole.js
++++ b/browser/devtools/webconsole/webconsole.js
+@@ -4042,19 +4042,18 @@ JSTerm.prototype = {
+     let inputNode = this.inputNode;
+     let inputValue = inputNode.value;
+     // If the inputNode has no value, then don't try to complete on it.
+     if (!inputValue) {
+       this.clearCompletion();
+       return false;
+     }
+ 
+-    // Only complete if the selection is empty and at the end of the input.
+-    if (inputNode.selectionStart == inputNode.selectionEnd &&
+-        inputNode.selectionEnd != inputValue.length) {
++    // Only complete if the selection is empty.
++    if (inputNode.selectionStart != inputNode.selectionEnd) {
+       this.clearCompletion();
+       return false;
+     }
+ 
+     // Update the completion results.
+     if (this.lastCompletion.value != inputValue) {
+       this._updateCompletionResult(aType, aCallback);
+       return false;
+@@ -4180,16 +4179,21 @@ JSTerm.prototype = {
+       popup.selectNextItem();
+     }
+ 
+     aCallback && aCallback(this);
+   },
+ 
+   onAutocompleteSelect: function JSTF_onAutocompleteSelect()
+   {
++    // Render the suggestion only if the cursor is at the end of the input.
++    if (this.inputNode.selectionStart != this.inputNode.value.length) {
++      return;
++    }
++
+     let currentItem = this.autocompletePopup.selectedItem;
+     if (currentItem && this.lastCompletion.value) {
+       let suffix = currentItem.label.substring(this.lastCompletion.
+                                                matchProp.length);
+       this.updateCompleteNode(suffix);
+     }
+     else {
+       this.updateCompleteNode("");
+@@ -4221,17 +4225,21 @@ JSTerm.prototype = {
+   acceptProposedCompletion: function JSTF_acceptProposedCompletion()
+   {
+     let updated = false;
+ 
+     let currentItem = this.autocompletePopup.selectedItem;
+     if (currentItem && this.lastCompletion.value) {
+       let suffix = currentItem.label.substring(this.lastCompletion.
+                                                matchProp.length);
+-      this.setInputValue(this.inputNode.value + suffix);
++      let cursor = this.inputNode.selectionStart;
++      let value = this.inputNode.value;
++      this.setInputValue(value.substr(0, cursor) + suffix + value.substr(cursor));
++      let newCursor = cursor + suffix.length;
++      this.inputNode.selectionStart = this.inputNode.selectionEnd = newCursor;
+       updated = true;
+     }
+ 
+     this.clearCompletion();
+ 
+     return updated;
+   },
+ 
+diff --git a/toolkit/devtools/server/actors/webconsole.js b/toolkit/devtools/server/actors/webconsole.js
+--- a/toolkit/devtools/server/actors/webconsole.js
++++ b/toolkit/devtools/server/actors/webconsole.js
+@@ -628,17 +628,18 @@ WebConsoleActor.prototype =
+    *        The request message - what input to autocomplete.
+    * @return object
+    *         The response message - matched properties.
+    */
+   onAutocomplete: function WCA_onAutocomplete(aRequest)
+   {
+     // TODO: Bug 842682 - use the debugger API for autocomplete in the Web
+     // Console, and provide suggestions from the selected debugger stack frame.
+-    let result = JSPropertyProvider(this.window, aRequest.text) || {};
++    let result = JSPropertyProvider(this.window, aRequest.text,
++                                    aRequest.cursor) || {};
+     return {
+       from: this.actorID,
+       matches: result.matches || [],
+       matchProp: result.matchProp,
+     };
+   },
+ 
+   /**
+diff --git a/toolkit/devtools/webconsole/WebConsoleUtils.jsm b/toolkit/devtools/webconsole/WebConsoleUtils.jsm
+--- a/toolkit/devtools/webconsole/WebConsoleUtils.jsm
++++ b/toolkit/devtools/webconsole/WebConsoleUtils.jsm
+@@ -698,49 +698,56 @@ function findCompletionBeginning(aStr)
+ }
+ 
+ /**
+  * Provides a list of properties, that are possible matches based on the passed
+  * scope and inputValue.
+  *
+  * @param object aScope
+  *        Scope to use for the completion.
+- *
+  * @param string aInputValue
+  *        Value that should be completed.
+- *
++ * @param number [aCursor=aInputValue.length]
++ *        Optional offset in the input where the cursor is located. If this is
++ *        omitted then the cursor is assumed to be at the end of the input
++ *        value.
+  * @returns null or object
+  *          If no completion valued could be computed, null is returned,
+  *          otherwise a object with the following form is returned:
+  *            {
+  *              matches: [ string, string, string ],
+  *              matchProp: Last part of the inputValue that was used to find
+  *                         the matches-strings.
+  *            }
+  */
+-function JSPropertyProvider(aScope, aInputValue)
++function JSPropertyProvider(aScope, aInputValue, aCursor)
+ {
++  if (aCursor === undefined) {
++    aCursor = aInputValue.length;
++  }
++
++  let inputValue = aInputValue.substring(0, aCursor);
+   let obj = WCU.unwrap(aScope);
+ 
+-  // Analyse the aInputValue and find the beginning of the last part that
++  // Analyse the inputValue and find the beginning of the last part that
+   // should be completed.
+-  let beginning = findCompletionBeginning(aInputValue);
++  let beginning = findCompletionBeginning(inputValue);
+ 
+   // There was an error analysing the string.
+   if (beginning.err) {
+     return null;
+   }
+ 
+   // If the current state is not STATE_NORMAL, then we are inside of an string
+   // which means that no completion is possible.
+   if (beginning.state != STATE_NORMAL) {
+     return null;
+   }
+ 
+-  let completionPart = aInputValue.substring(beginning.startPos);
++  let completionPart = inputValue.substring(beginning.startPos);
+ 
+   // Don't complete on just an empty string.
+   if (completionPart.trim() == "") {
+     return null;
+   }
+ 
+   let matches = null;
+   let matchProp = "";

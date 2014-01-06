@@ -1,0 +1,33 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1378727791 -10800
+#      Mon Sep 09 14:56:31 2013 +0300
+# Node ID 18bbcfef544f7737f3dd9f2912b19991d0c5db3b
+# Parent  00c07173e79e4644a944ad6dc9b3b53e12b4b1f1
+Bug 902385 - Fix for intermittent TEST-UNEXPECTED-FAIL | browser/devtools/webconsole/test/browser_bug_869003_inspect_cross_domain_object.js | This test exceeded the timeout threshold; r=me
+
+diff --git a/browser/devtools/webconsole/test/browser_bug_869003_inspect_cross_domain_object.js b/browser/devtools/webconsole/test/browser_bug_869003_inspect_cross_domain_object.js
+--- a/browser/devtools/webconsole/test/browser_bug_869003_inspect_cross_domain_object.js
++++ b/browser/devtools/webconsole/test/browser_bug_869003_inspect_cross_domain_object.js
+@@ -7,16 +7,21 @@
+ // bug 869003.
+ 
+ const TEST_URI = "http://example.com/browser/browser/devtools/webconsole/test/test-bug-869003-top-window.html";
+ 
+ let gWebConsole, gJSTerm, gVariablesView;
+ 
+ function test()
+ {
++  // This test is slightly more involved: it opens the web console, then the
++  // variables view for a given object, it updates a property in the view and
++  // checks the result. We can get a timeout with debug builds on slower machines.
++  requestLongerTimeout(2);
++
+   addTab("data:text/html;charset=utf8,<p>hello");
+   browser.addEventListener("load", function onLoad() {
+     browser.removeEventListener("load", onLoad, true);
+     openConsole(null, consoleOpened);
+   }, true);
+ }
+ 
+ function consoleOpened(hud)

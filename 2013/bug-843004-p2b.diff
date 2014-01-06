@@ -1,0 +1,789 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1385760392 -7200
+#      Fri Nov 29 23:26:32 2013 +0200
+# Node ID 97f62d7ab4c8d4de1c58c0d48083e0c1d960ad27
+# Parent  8570fb0c04dbde5c1ee1828e7896d6d8bb60b4b2
+Bug 843004 - Part 2: ObjectActor grip changes to allow pretty output
+
+diff --git a/browser/devtools/shared/widgets/VariablesView.jsm b/browser/devtools/shared/widgets/VariablesView.jsm
+--- a/browser/devtools/shared/widgets/VariablesView.jsm
++++ b/browser/devtools/shared/widgets/VariablesView.jsm
+@@ -3183,20 +3183,195 @@ VariablesView.getString = function(aGrip
+       case "NaN":
+       case "Infinity":
+       case "-Infinity":
+       case "-0":
+         return aGrip.type;
+       case "longString":
+         return "\"" + aGrip.initial + "\"";
+       default:
+-        if (!aConciseFlag) {
++        if (aGrip.type != "object") {
+           return "[" + aGrip.type + " " + aGrip.class + "]";
+         }
+-        return aGrip.class;
++
++        if (aGrip.class == "Function") {
++          let name = aGrip.userDisplayName || aGrip.displayName || aGrip.name || "";
++          let params = aGrip.parameterNames || "";
++          if (!aConciseFlag) {
++            return "function " + name + "(" + params + ")";
++          }
++          return (name || "function") + "(" + params + ")";
++        }
++
++        if (aGrip.displayString && aGrip.class == "RegExp") {
++          // TODO: handle longStrings
++          return aGrip.displayString;
++        }
++
++        let preview = aGrip.preview;
++        if (!preview) {
++          if (aConciseFlag) {
++            return aGrip.class;
++          }
++          return "[" + aGrip.type + " " + aGrip.class + "]";
++        }
++
++        if (preview.kind == "ArrayLike") {
++          if (!aConciseFlag && preview.items) {
++            let result = [];
++            for (let item of preview.items) {
++              result.push(VariablesView.getString(item, true));
++            }
++            if (result.length < preview.length) {
++              result.push((preview.length - result.length) + " more\u2026"); // TODO: localize
++            }
++
++            let prefix = aGrip.class == "Array" ? "" : aGrip.class + " ";
++            return prefix + "[" + result.join(", ") + "]";
++          }
++
++          if (aGrip.class == "Array") {
++            return "Array(" + preview.length + ")";
++          }
++          return aGrip.class + "[" + preview.length + "]";
++        }
++
++        if (preview.kind == "MapLike") {
++          if (aConciseFlag || !preview.entries) {
++            let size = typeof preview.size == "number" ?
++                         "[" + preview.size + "]" : "";
++            return aGrip.class + size;
++          }
++
++          let entries = [];
++          for (let [key, value] of preview.entries) {
++            // TODO: support longstring
++            if (typeof key != "string") {
++              key = VariablesView.getString(key, true);
++            }
++            value = VariablesView.getString(value, true);
++            entries.push(key + ": " + value);
++          }
++          if (typeof preview.size == "number" && preview.size > entries.length) {
++            entries.push((preview.size - entries.length) + " more\u2026");
++          }
++          return aGrip.class + " {" + entries.join(", ") + "}";
++        }
++
++        if (aGrip.class == "Date" && preview.timestamp) {
++          if (aConciseFlag) {
++            return "Date " + new Date(preview.timestamp).toISOString();
++          }
++          return "Date " + new Date(preview.timestamp).toLocaleString();
++        }
++
++        if (preview.kind == "CSSStyleSheet" ||
++            preview.kind == "CSSImportRule" ||
++            preview.kind == "DOMLocation") {
++          let result = aGrip.class;
++          if (!VariablesView.isFalsy({ value: preview.href })) {
++            result += " " + WebConsoleUtils.abbreviateSourceURL(preview.href,
++                                                                { onlyCropQuery: !aConciseFlag });
++          }
++          return result;
++        }
++
++        if (preview.kind == "CSSStyleRule") {
++          return aGrip.class + " " + VariablesView.getString(preview.selectorText);
++        }
++
++        if (preview.kind == "CSSMediaRule") {
++          return aGrip.class + " " + VariablesView.getString(preview.conditionText);
++        }
++
++        if (preview.kind == "DOMWindow" ||
++            (preview.kind == "DOMNode" &&
++             preview.nodeType == Ci.nsIDOMNode.DOCUMENT_NODE)) {
++          let location = WebConsoleUtils.abbreviateSourceURL(preview.location,
++                                                             { onlyCropQuery: !aConciseFlag });
++          return aGrip.class + " " + location;
++        }
++
++        if (preview.kind == "DOMNode" &&
++            preview.nodeType == Ci.nsIDOMNode.ELEMENT_NODE) {
++          let attrs = preview.attributes;
++          if (!aConciseFlag) {
++            let n = 0, result = "<" + preview.nodeName;
++            for (let name in attrs) {
++              result += " " + name + "=" + VariablesView.getString(attrs[name], true);
++              n++;
++            }
++            if (preview.attributesLength > n) {
++              result += " \u2026";
++            }
++            return result + ">";
++          }
++
++          let result = "<" + preview.nodeName;
++          if (attrs.id) {
++            result += "#" + attrs.id;
++          }
++          return result + ">";
++        }
++
++        if (preview.kind == "DOMNode" &&
++            preview.nodeType == Ci.nsIDOMNode.ATTRIBUTE_NODE) {
++          return preview.nodeName + "=" + VariablesView.getString(preview.value, true);
++        }
++
++        if (preview.kind == "DOMNode" &&
++            preview.nodeType == Ci.nsIDOMNode.TEXT_NODE) {
++          return preview.nodeName + " " + VariablesView.getString(preview.textContent, true);
++        }
++
++        if (preview.kind == "DOMNode" &&
++            preview.nodeType == Ci.nsIDOMNode.COMMENT_NODE) {
++          return "<!--" + preview.textContent + "-->";
++        }
++
++        if (preview.kind == "Error") {
++          if (aConciseFlag) {
++            return aGrip.class;
++          }
++
++          // TODO: handle non-string properties, including longStrings.
++          let msg = preview.name + ": " + preview.message;
++          if (!VariablesView.isFalsy({ value: preview.stack })) {
++            msg += "\nStack trace:\n" + preview.stack;
++          }
++          return msg;
++        }
++
++        if (aConciseFlag) {
++          return aGrip.class;
++        }
++
++        // generic object preview
++        if (preview.names && preview.ownProperties) {
++          let props = [];
++          for (let key in preview.ownProperties) {
++            let value = preview.ownProperties[key];
++            let valueString = "";
++            if (value.get) {
++              valueString = "Getter";
++            } else if (value.set) {
++              valueString = "Setter";
++            } else {
++              valueString = VariablesView.getString(value.value, true);
++            }
++            props.push(key + ": " + valueString);
++          }
++          if (preview.names > props.length) {
++            props.push("more\u2026");
++          }
++          let klass = aGrip.class != "Object" ? aGrip.class + " " : "";
++          return klass + "{" + props.join(", ") + "}";
++        }
++
++        return "[" + aGrip.type + " " + aGrip.class + "]";
+     }
+   }
+   switch (typeof aGrip) {
+     case "string":
+       return "\"" + aGrip + "\"";
+     case "boolean":
+       return aGrip ? "true" : "false";
+     case "number":
+diff --git a/toolkit/devtools/server/actors/script.js b/toolkit/devtools/server/actors/script.js
+--- a/toolkit/devtools/server/actors/script.js
++++ b/toolkit/devtools/server/actors/script.js
+@@ -2681,23 +2681,23 @@ function hasSafeGetter(aDesc) {
+  *        The Debugger.Object to get the value from.
+  * @param String aKey
+  *        The key to look for.
+  * @return Any
+  */
+ function getProperty(aObj, aKey) {
+   try {
+     do {
+-      const desc = aObj.getOwnPropertyDescriptor(aKey);
++      let desc = aObj.getOwnPropertyDescriptor(aKey);
+       if (desc) {
+         if ("value" in desc) {
+           return desc.value
+         }
+         // Call the getter if it's safe.
+-        return hasSafeGetter(desc) ? desc.get.call(aObj) : undefined;
++        return hasSafeGetter(desc) ? desc.get.call(aObj).return : undefined;
+       }
+       aObj = aObj.proto;
+     } while (aObj);
+   } catch (e) {
+     // If anything goes wrong report the error and return undefined.
+     DevToolsUtils.reportException("getProperty", e);
+   }
+   return undefined;
+@@ -2768,16 +2768,17 @@ let stringifiers = {
+   Error: errorStringify,
+   EvalError: errorStringify,
+   RangeError: errorStringify,
+   ReferenceError: errorStringify,
+   SyntaxError: errorStringify,
+   TypeError: errorStringify,
+   URIError: errorStringify,
+   Boolean: createBuiltinStringifier(Boolean),
++  Date: createBuiltinStringifier(Date),
+   Function: createBuiltinStringifier(Function),
+   Number: createBuiltinStringifier(Number),
+   RegExp: createBuiltinStringifier(RegExp),
+   String: createBuiltinStringifier(String),
+   Object: obj => "[object " + obj.class + "]",
+   Array: obj => {
+     // If we're at the top level then we need to create the Set for tracking
+     // previously stringified arrays.
+@@ -2837,59 +2838,70 @@ let stringifiers = {
+  *        The debuggee object.
+  * @param aThreadActor ThreadActor
+  *        The parent thread actor for this object.
+  */
+ function ObjectActor(aObj, aThreadActor)
+ {
+   this.obj = aObj;
+   this.threadActor = aThreadActor;
++
++  if (!("_gripDepth" in this.threadActor)) {
++    this.threadActor._gripDepth = 0;
++  }
+ }
+ 
+ ObjectActor.prototype = {
+   actorPrefix: "obj",
+ 
+   _forcedMagicProps: false,
+ 
+   /**
+    * Returns a grip for this actor for returning in a protocol message.
+    */
+   grip: function () {
++    let doPreview = this.threadActor._gripDepth++ == 0;
++    //XXX: no previews in browser debugger, for testing only
++    //if (!this.threadActor || !this.threadActor.parentActor || this.threadActor.actorPrefix != "console") {
++    //  doPreview = false;
++    //}
++    //if (this.threadActor && this.threadActor.parentActor && this.threadActor.parentActor.isRootActor) {
++    //  doPreview = false;
++    //}
++
+     let g = {
+       "type": "object",
+       "class": this.obj.class,
+       "actor": this.actorID,
+       "extensible": this.obj.isExtensible(),
+       "frozen": this.obj.isFrozen(),
+       "sealed": this.obj.isSealed()
+     };
+ 
+-    // Add additional properties for functions.
+-    if (this.obj.class === "Function") {
+-      if (this.obj.name) {
+-        g.name = this.obj.name;
++    /// XXX: Cu.isDeadWrapper() doesn't work with Debugger.Objects, but we have
++    // code in this file that relies on it working...
++    if (this.obj.class != "DeadObject") {
++      let raw = this.obj.unsafeDereference();
++      let wrap = new XPCNativeWrapper(raw);
++      console.log('xray test', raw.lolz, wrap.lolz, Cu.isXrayWrapper(raw), Cu.isXrayWrapper(wrap));
++      // XXX: |raw| is not an xray wrapper. not even |wrap| after calling
++      // XPCNativeWrapper()... why??
++
++      let previewers = DebuggerServer.ObjectActorPreviewers[this.obj.class] ||
++                       DebuggerServer.ObjectActorPreviewers.Object;
++      for (let fn of previewers) {
++        if (fn(this, g)) {
++          break;
++        }
+       }
+-      if (this.obj.displayName) {
+-        g.displayName = this.obj.displayName;
+-      }
+-
+-      // Check if the developer has added a de-facto standard displayName
+-      // property for us to use.
+-      try {
+-        let desc = this.obj.getOwnPropertyDescriptor("displayName");
+-        if (desc && desc.value && typeof desc.value == "string") {
+-          g.userDisplayName = this.threadActor.createValueGrip(desc.value);
+-        }
+-      } catch (e) {
+-        // Calling getOwnPropertyDescriptor with displayName might throw
+-        // with "permission denied" errors for some functions.
+-        dumpn(e);
+-      }
+-    }
+-
++    }
++
++    // TODO: do not do previews for __proto__
++
++    this.threadActor._gripDepth--;
+     return g;
+   },
+ 
+   /**
+    * Releases this actor from the pool.
+    */
+   release: function () {
+     if (this.registeredPool.objectActors) {
+@@ -3273,16 +3285,386 @@ ObjectActor.prototype.requestTypes = {
+   "property": ObjectActor.prototype.onProperty,
+   "displayString": ObjectActor.prototype.onDisplayString,
+   "ownPropertyNames": ObjectActor.prototype.onOwnPropertyNames,
+   "decompile": ObjectActor.prototype.onDecompile,
+   "release": ObjectActor.prototype.onRelease,
+   "scope": ObjectActor.prototype.onScope,
+ };
+ 
++// Number of items to preview in an array.
++const OBJECT_PREVIEW_MAX_ARRAY_ITEMS = 10;
++
++/**
++ * Functions for adding information to ObjectActor grips for the purpose of
++ * having customized output. This object holds arrays mapped by
++ * DebuggerObject.class. In each array you can add functions that take two
++ * arguments: the ObjectActor instance and the grip object being prepared for
++ * the client. Functions must return false if they cannot provide preview
++ * information for the debugger object, or true otherwise.
++ */
++// XXX: should we just flatten this structure into an array?
++DebuggerServer.ObjectActorPreviewers = {
++  Function: [function({obj, threadActor}, aGrip) {
++    if (obj.name) {
++      aGrip.name = obj.name;
++    }
++
++    if (obj.displayName) {
++      aGrip.displayName = obj.displayName;
++    }
++
++    if (obj.parameterNames) {
++      aGrip.parameterNames = obj.parameterNames;
++    }
++
++    // Check if the developer has added a de-facto standard displayName
++    // property for us to use.
++    try {
++      let desc = obj.getOwnPropertyDescriptor("displayName");
++      if (desc && desc.value && typeof desc.value == "string") {
++        aGrip.userDisplayName = threadActor.createValueGrip(desc.value);
++      }
++    } catch (e) {
++      // Calling getOwnPropertyDescriptor with displayName might throw
++      // with "permission denied" errors for some functions.
++      dumpn(e);
++    }
++
++    return true;
++  }], // Function
++
++  // TODO: try to avoid the use of unsafeDereference
++  RegExp: [function({obj, threadActor}, aGrip) {
++    let raw = obj.unsafeDereference();
++    aGrip.displayString = threadActor.createValueGrip(raw.toString());
++    return true;
++  }],
++
++  Date: [function({obj, threadActor}, aGrip) {
++    let raw = obj.unsafeDereference();
++    aGrip.preview = {
++      timestamp: threadActor.createValueGrip(raw.getTime()),
++    };
++    return true;
++  }],
++
++  Set: [function({obj, threadActor}, aGrip) {
++    let raw = obj.unsafeDereference();
++
++    aGrip.preview = {
++      kind: "ArrayLike",
++      length: raw.size,
++    };
++
++    if (threadActor._gripDepth > 1) {
++      return true;
++    }
++
++    let items = aGrip.preview.items = [];
++    for (let item of raw) {
++      if (typeof item == "object") {
++        item = obj.makeDebuggeeValue(item);
++      }
++      items.push(threadActor.createValueGrip(item));
++      if (items.length == OBJECT_PREVIEW_MAX_ARRAY_ITEMS) {
++        break;
++      }
++    }
++
++    return true;
++  }], // Set
++
++  Map: [function({obj, threadActor}, aGrip) {
++    let raw = obj.unsafeDereference();
++
++    aGrip.preview = {
++      kind: "MapLike",
++      size: raw.size,
++    };
++
++    if (threadActor._gripDepth > 1) {
++      return true;
++    }
++
++    let entries = aGrip.preview.entries = [];
++    for (let [key, value] of raw) {
++      if (typeof key == "object") {
++        key = obj.makeDebuggeeValue(key);
++      }
++      if (typeof value == "object") {
++        value = obj.makeDebuggeeValue(value);
++      }
++      entries.push([threadActor.createValueGrip(key),
++                    threadActor.createValueGrip(value)]);
++      if (entries.length == OBJECT_PREVIEW_MAX_ARRAY_ITEMS) {
++        break;
++      }
++    }
++
++    return true;
++  }], // Map
++
++  DOMStringMap: [function({obj, threadActor}, aGrip) {
++    if (threadActor._gripDepth > 1) {
++      return false;
++    }
++
++    aGrip.preview = {
++      kind: "MapLike",
++      entries: [],
++    };
++
++    let entries = aGrip.preview.entries;
++    let raw = obj.unsafeDereference();
++    for (let key in raw) {
++      let value = raw[key];
++      if (typeof value == "object") {
++        value = this.obj.makeDebuggeeValue(value);
++      }
++      entries.push([key, threadActor.createValueGrip(value)]);
++      if (entries.length == OBJECT_PREVIEW_MAX_ARRAY_ITEMS) {
++        break;
++      }
++    }
++
++    return true;
++  }], // DOMStringMap
++}; // DebuggerServer.ObjectActorPreviewers
++
++// Preview functions that do not rely on the object class.
++DebuggerServer.ObjectActorPreviewers.Object = [
++  function Error({obj, threadActor}, aGrip) {
++    switch (obj.class) {
++      case "Error":
++      case "EvalError":
++      case "RangeError":
++      case "ReferenceError":
++      case "SyntaxError":
++      case "TypeError":
++      case "URIError":
++        let raw = obj.unsafeDereference();
++        aGrip.preview = {
++          kind: "Error",
++          name: threadActor.createValueGrip(raw.name),
++          message: threadActor.createValueGrip(raw.message),
++          stack: threadActor.createValueGrip(raw.stack),
++        };
++        return true;
++      default:
++        return false;
++    }
++  },
++
++  function CSSMediaRule({obj, threadActor}, aGrip) {
++    let raw = obj.unsafeDereference();
++    if (!(raw instanceof Ci.nsIDOMCSSMediaRule)) {
++      return false;
++    }
++    aGrip.preview = {
++      kind: "CSSMediaRule",
++      conditionText: threadActor.createValueGrip(raw.conditionText),
++    };
++    return true;
++  },
++
++  function CSSStyleRule({obj, threadActor}, aGrip) {
++    let raw = obj.unsafeDereference();
++    if (!(raw instanceof Ci.nsIDOMCSSStyleRule)) {
++      return false;
++    }
++    aGrip.preview = {
++      kind: "CSSStyleRule",
++      selectorText: threadActor.createValueGrip(raw.selectorText),
++    };
++    return true;
++  },
++
++  function CSSImportRule({obj, threadActor}, aGrip) {
++    let raw = obj.unsafeDereference();
++    if (!(raw instanceof Ci.nsIDOMCSSImportRule)) {
++      return false;
++    }
++    aGrip.preview = {
++      kind: "CSSImportRule",
++      href: threadActor.createValueGrip(raw.href),
++    };
++    return true;
++  },
++
++  function CSSStyleSheet({obj, threadActor}, aGrip) {
++    let raw = obj.unsafeDereference();
++    if (!(raw instanceof Ci.nsIDOMCSSStyleSheet)) {
++      return false;
++    }
++    aGrip.preview = {
++      kind: "CSSStyleSheet",
++      href: threadActor.createValueGrip(raw.href),
++    };
++    return true;
++  },
++
++  function DOMLocation({obj, threadActor}, aGrip) {
++    let raw = obj.unsafeDereference();
++    if (!(raw instanceof Ci.nsIDOMLocation)) {
++      return false;
++    }
++    aGrip.preview = {
++      kind: "DOMLocation",
++      href: threadActor.createValueGrip(raw.href),
++    };
++    return true;
++  },
++
++  function DOMWindow({obj, threadActor}, aGrip) {
++    let raw = obj.unsafeDereference();
++    if (!(raw instanceof Ci.nsIDOMWindow)) {
++      return false;
++    }
++    aGrip.preview = {
++      kind: "DOMWindow",
++      location: threadActor.createValueGrip(raw.location.href),
++    };
++    return true;
++  },
++
++  function ArrayLike({obj, threadActor}, aGrip) {
++    let raw = obj.unsafeDereference();
++    if (obj.class != "Array" &&
++        obj.class != "DOMTokenList" &&
++        !(raw instanceof Ci.nsIDOMMozNamedAttrMap ||
++          raw instanceof Ci.nsIDOMCSSRuleList ||
++          raw instanceof Ci.nsIDOMCSSValueList ||
++          raw instanceof Ci.nsIDOMDOMStringList ||
++          raw instanceof Ci.nsIDOMFileList ||
++          raw instanceof Ci.nsIDOMFontFaceList ||
++          raw instanceof Ci.nsIDOMMediaList ||
++          raw instanceof Ci.nsIDOMMediaQueryList ||
++          raw instanceof Ci.nsIDOMNodeList ||
++          raw instanceof Ci.nsIDOMStyleSheetList)) {
++      return false;
++    }
++
++    if (typeof raw.length != "number") {
++      return false;
++    }
++
++    aGrip.preview = {
++      kind: "ArrayLike",
++      length: raw.length,
++    };
++
++    if (threadActor._gripDepth > 1) {
++      return true;
++    }
++
++    let items = aGrip.preview.items = [];
++    for (let i = 0; i < raw.length && i < OBJECT_PREVIEW_MAX_ARRAY_ITEMS; i++) {
++      let value = raw[i];
++      if (typeof value == "object") {
++        value = obj.makeDebuggeeValue(value);
++      }
++      items[i] = threadActor.createValueGrip(value);
++    }
++
++    return true;
++  }, // ArrayLike
++
++  function CSSStyleDeclaration({obj, threadActor}, aGrip) {
++    let raw = obj.unsafeDereference();
++    if (!(raw instanceof Ci.nsIDOMCSSStyleDeclaration)) {
++      return false;
++    }
++
++    aGrip.preview = {
++      kind: "MapLike",
++      entries: [],
++      size: raw.length,
++    };
++    let entries = aGrip.preview.entries;
++
++    for (let i = 0; i < OBJECT_PREVIEW_MAX_ARRAY_ITEMS &&
++                    i < raw.length; i++) {
++      let prop = raw[i];
++      let value = raw.getPropertyValue(prop);
++      entries.push([prop, threadActor.createValueGrip(value)]);
++    }
++
++    return true;
++  }, // CSSStyleDeclaration
++
++  function DOMNode({obj, threadActor}, aGrip) {
++    let raw = obj.unsafeDereference();
++    if (!(raw instanceof Ci.nsIDOMNode)) {
++      return false;
++    }
++
++    let preview = aGrip.preview = {
++      kind: "DOMNode",
++      nodeType: raw.nodeType,
++      nodeName: raw.nodeName,
++    };
++
++    if (raw instanceof Ci.nsIDOMDocument) {
++      preview.location = threadActor.createValueGrip(raw.location.href);
++    }
++
++    // Add preview for DOM element attributes.
++    if (raw instanceof Ci.nsIDOMElement) {
++      // TODO: use getProperty() or getAttribute()
++      let i = 0;
++      preview.attributes = {};
++      preview.attributesLength = raw.attributes.length;
++      for (let attr of raw.attributes) {
++        preview.attributes[attr.nodeName] = threadActor.createValueGrip(attr.value);
++        if (++i == OBJECT_PREVIEW_MAX_ARRAY_ITEMS) {
++          break;
++        }
++      }
++    }
++
++    if (raw instanceof Ci.nsIDOMAttr) {
++      preview.value = threadActor.createValueGrip(raw.value);
++    }
++
++    if (raw instanceof Ci.nsIDOMText ||
++        raw instanceof Ci.nsIDOMComment) {
++      preview.textContent = threadActor.createValueGrip(raw.textContent);
++    }
++
++    return true;
++  }, // DOMNode
++
++  // TODO: there's some exception here when I try to inspect Cu.
++  function GenericObject(aObjectActor, aGrip) {
++    let {obj, threadActor} = aObjectActor;
++    if (aGrip.preview || aGrip.displayString || threadActor._gripDepth > 1) {
++      return false;
++    }
++
++    let i = 0, names = obj.getOwnPropertyNames();
++    aGrip.preview = {
++      names: names.length,
++      ownProperties: Object.create(null),
++    };
++
++    // XXX not sure if it makes sense to use the number of own properties. we
++    // need it to determine if an object preview should show an ellipsis or
++    // not. thoughts?
++
++    for (let name of names) {
++      aGrip.preview.ownProperties[name] = aObjectActor._propertyDescriptor(name);
++      if (++i == OBJECT_PREVIEW_MAX_ARRAY_ITEMS) {
++        break;
++      }
++    }
++
++    return true;
++  }, // GenericObject
++]; // DebuggerServer.ObjectActorPreviewers.Object
+ 
+ /**
+  * Creates a pause-scoped actor for the specified object.
+  * @see ObjectActor
+  */
+ function PauseScopedObjectActor()
+ {
+   ObjectActor.apply(this, arguments);
+diff --git a/toolkit/devtools/webconsole/utils.js b/toolkit/devtools/webconsole/utils.js
+--- a/toolkit/devtools/webconsole/utils.js
++++ b/toolkit/devtools/webconsole/utils.js
+@@ -185,17 +185,18 @@ let WebConsoleUtils = {
+    * Abbreviates the given source URL so that it can be displayed flush-right
+    * without being too distracting.
+    *
+    * @param string aSourceURL
+    *        The source URL to shorten.
+    * @return string
+    *         The abbreviated form of the source URL.
+    */
+-  abbreviateSourceURL: function WCU_abbreviateSourceURL(aSourceURL)
++  abbreviateSourceURL:
++  function WCU_abbreviateSourceURL(aSourceURL, aOptions = {})
+   {
+     if (aSourceURL.substr(0, 5) == "data:") {
+       let commaIndex = aSourceURL.indexOf(",");
+       if (commaIndex > -1) {
+         aSourceURL = "data:" + aSourceURL.substring(commaIndex + 1);
+       }
+     }
+ 
+@@ -208,23 +209,25 @@ let WebConsoleUtils = {
+     // Remove any hash fragments.
+     let hashIndex = aSourceURL.indexOf("#");
+     if (hashIndex > -1) {
+       aSourceURL = aSourceURL.substring(0, hashIndex);
+     }
+ 
+     // Remove a trailing "/".
+     if (aSourceURL[aSourceURL.length - 1] == "/") {
+-      aSourceURL = aSourceURL.substring(0, aSourceURL.length - 1);
++      aSourceURL = aSourceURL.replace(/\/+$/, "");
+     }
+ 
+     // Remove all but the last path component.
+-    let slashIndex = aSourceURL.lastIndexOf("/");
+-    if (slashIndex > -1) {
+-      aSourceURL = aSourceURL.substring(slashIndex + 1);
++    if (!aOptions.onlyCropQuery) {
++      let slashIndex = aSourceURL.lastIndexOf("/");
++      if (slashIndex > -1) {
++        aSourceURL = aSourceURL.substring(slashIndex + 1);
++      }
+     }
+ 
+     return aSourceURL;
+   },
+ 
+   /**
+    * Tells if the given function is native or not.
+    *

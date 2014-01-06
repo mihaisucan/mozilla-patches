@@ -1,0 +1,32 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1378811333 -10800
+#      Tue Sep 10 14:08:53 2013 +0300
+# Node ID 4bec812ad597fd8685750926fed42a754b5e7682
+# Parent  18bbcfef544f7737f3dd9f2912b19991d0c5db3b
+Bug 864152 - Fix for intermittent browser_webconsole_network_panel.js | uncaught exception - TypeError: imageNode or elem is null at resource:///modules/devtools/webconsole/network-panel.js; r=me
+
+diff --git a/browser/devtools/webconsole/network-panel.js b/browser/devtools/webconsole/network-panel.js
+--- a/browser/devtools/webconsole/network-panel.js
++++ b/browser/devtools/webconsole/network-panel.js
+@@ -670,19 +670,17 @@ NetworkPanel.prototype =
+ 
+   /**
+    * Updates the content of the NetworkPanel's iframe.
+    *
+    * @returns void
+    */
+   update: function NP_update()
+   {
+-    // After the iframe's contentWindow is ready, the document object is set.
+-    // If the document object is not available yet nothing needs to be updated.
+-    if (!this.document || !this.document.getElementById("headUrl")) {
++    if (!this.document || this.document.readyState != "complete") {
+       return;
+     }
+ 
+     let updates = this.httpActivity.updates;
+     let timing = this.httpActivity.timings;
+     let request = this.httpActivity.request;
+     let response = this.httpActivity.response;
+ 

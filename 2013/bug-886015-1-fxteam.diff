@@ -1,0 +1,32 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1371930453 -10800
+#      Sat Jun 22 22:47:33 2013 +0300
+# Node ID 9cef456c9b52d14607e5852908cf436fde6e915e
+# Parent  6a08ed6098169d8abebac72b2e1fe753846b54b7
+Bug 886015 - Console js input looks broken on OS X; r=vporof
+
+diff --git a/browser/themes/shared/devtools/webconsole.inc.css b/browser/themes/shared/devtools/webconsole.inc.css
+--- a/browser/themes/shared/devtools/webconsole.inc.css
++++ b/browser/themes/shared/devtools/webconsole.inc.css
+@@ -79,16 +79,20 @@
+   margin: 0;
+ }
+ 
+ .hud-msg-node[selected="true"] > .webconsole-timestamp,
+ .hud-msg-node[selected="true"] > .webconsole-location {
+   color: inherit;
+ }
+ 
++.jsterm-input-container {
++  background: white;
++}
++
+ .jsterm-input-node,
+ .jsterm-complete-node {
+   font-family: monospace;
+ }
+ 
+ .hud-output-node {
+   -moz-appearance: none;
+   border-bottom: 1px solid ThreeDShadow;

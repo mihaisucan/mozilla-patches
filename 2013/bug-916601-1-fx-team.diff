@@ -1,0 +1,143 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1379236347 -10800
+#      Sun Sep 15 12:12:27 2013 +0300
+# Node ID d5fa3e72e0904a6d3e78c7a3e4ce424ebb84db7d
+# Parent  e13b2b7c34a444a32889f1c52479e2cdabf19c17
+Bug 916601 - Remove Ctrl +/-/0 zooming shortcuts from web console; r=harth
+
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_change_font_size.js b/browser/devtools/webconsole/test/browser_webconsole_change_font_size.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_change_font_size.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_change_font_size.js
+@@ -10,35 +10,35 @@
+ 
+ const TEST_URI = "http://example.com/";
+ 
+ function test() {
+   addTab(TEST_URI);
+   browser.addEventListener("load", function onLoad() {
+     browser.removeEventListener("load", onLoad, true);
+     Services.prefs.setIntPref("devtools.webconsole.fontSize", 10);
+-    openConsole(null, testFontSizeChange);
++    HUDService.toggleBrowserConsole().then(testFontSizeChange);
+   }, true);
+ }
+ 
+ function testFontSizeChange(hud) {
+   let inputNode = hud.jsterm.inputNode;
+   let outputNode = hud.jsterm.outputNode;
+   outputNode.focus();
+ 
+-  EventUtils.synthesizeKey("-", { accelKey: true });
++  EventUtils.synthesizeKey("-", { accelKey: true }, hud.iframeWindow);
+   is(inputNode.style.fontSize, "10px", "input font stays at same size with ctrl+-");
+   is(outputNode.style.fontSize, inputNode.style.fontSize, "output font stays at same size with ctrl+-");
+ 
+-  EventUtils.synthesizeKey("=", { accelKey: true });
++  EventUtils.synthesizeKey("=", { accelKey: true }, hud.iframeWindow);
+   is(inputNode.style.fontSize, "11px", "input font increased with ctrl+=");
+   is(outputNode.style.fontSize, inputNode.style.fontSize, "output font stays at same size with ctrl+=");
+ 
+-  EventUtils.synthesizeKey("-", { accelKey: true });
++  EventUtils.synthesizeKey("-", { accelKey: true }, hud.iframeWindow);
+   is(inputNode.style.fontSize, "10px", "font decreased with ctrl+-");
+   is(outputNode.style.fontSize, inputNode.style.fontSize, "output font stays at same size with ctrl+-");
+ 
+-  EventUtils.synthesizeKey("0", { accelKey: true });
++  EventUtils.synthesizeKey("0", { accelKey: true }, hud.iframeWindow);
+   is(inputNode.style.fontSize, "", "font reset with ctrl+0");
+   is(outputNode.style.fontSize, inputNode.style.fontSize, "output font stays at same size with ctrl+0");
+ 
+   finishTest();
+ }
+diff --git a/browser/devtools/webconsole/webconsole.js b/browser/devtools/webconsole/webconsole.js
+--- a/browser/devtools/webconsole/webconsole.js
++++ b/browser/devtools/webconsole/webconsole.js
+@@ -486,26 +486,34 @@ WebConsoleFrame.prototype = {
+     this.outputNode = doc.getElementById("output-container");
+     this.completeNode = doc.querySelector(".jsterm-complete-node");
+     this.inputNode = doc.querySelector(".jsterm-input-node");
+ 
+     this._setFilterTextBoxEvents();
+     this._initFilterButtons();
+     this._changeClearModifier();
+ 
+-    let fontSize = Services.prefs.getIntPref("devtools.webconsole.fontSize");
++    let fontSize = this.owner._browserConsole ?
++                   Services.prefs.getIntPref("devtools.webconsole.fontSize") : 0;
+ 
+     if (fontSize != 0) {
+       fontSize = Math.max(MIN_FONT_SIZE, fontSize);
+ 
+       this.outputNode.style.fontSize = fontSize + "px";
+       this.completeNode.style.fontSize = fontSize + "px";
+       this.inputNode.style.fontSize = fontSize + "px";
+     }
+ 
++    if (this.owner._browserConsole) {
++      for (let id of ["Enlarge", "Reduce", "Reset"]) {
++        this.document.getElementById("cmd_fullZoom" + id)
++                     .removeAttribute("disabled");
++      }
++    }
++
+     let updateSaveBodiesPrefUI = (aElement) => {
+       this.getSaveRequestAndResponseBodies().then(aValue => {
+         aElement.setAttribute("checked", aValue);
+         this.emit("save-bodies-ui-toggled");
+       });
+     }
+ 
+     let reverseSaveBodiesPref = ({ target: aElement }) => {
+@@ -4593,22 +4601,22 @@ CommandController.prototype = {
+       case "consoleCmd_openURL":
+       case "consoleCmd_copyURL": {
+         // Only enable URL-related actions if node is Net Activity.
+         let selectedItem = this.owner.output.getSelectedMessages(1)[0] ||
+                            this.owner._contextMenuHandler.lastClickedMessage;
+         return selectedItem && "url" in selectedItem;
+       }
+       case "consoleCmd_clearOutput":
++      case "cmd_selectAll":
++      case "cmd_find":
++        return true;
+       case "cmd_fontSizeEnlarge":
+       case "cmd_fontSizeReduce":
+       case "cmd_fontSizeReset":
+-      case "cmd_selectAll":
+-      case "cmd_find":
+-        return true;
+       case "cmd_close":
+         return this.owner.owner._browserConsole;
+     }
+     return false;
+   },
+ 
+   doCommand: function CommandController_doCommand(aCommand)
+   {
+diff --git a/browser/devtools/webconsole/webconsole.xul b/browser/devtools/webconsole/webconsole.xul
+--- a/browser/devtools/webconsole/webconsole.xul
++++ b/browser/devtools/webconsole/webconsole.xul
+@@ -37,19 +37,19 @@ function goUpdateConsoleCommands() {
+               oncommandupdate="goUpdateConsoleCommands();">
+     <command id="consoleCmd_openURL"
+              oncommand="goDoCommand('consoleCmd_openURL');"/>
+     <command id="consoleCmd_copyURL"
+              oncommand="goDoCommand('consoleCmd_copyURL');"/>
+     <command id="consoleCmd_clearOutput"
+              oncommand="goDoCommand('consoleCmd_clearOutput');"/>
+     <command id="cmd_find" oncommand="goDoCommand('cmd_find');"/>
+-    <command id="cmd_fullZoomEnlarge" oncommand="goDoCommand('cmd_fontSizeEnlarge');"/>
+-    <command id="cmd_fullZoomReduce" oncommand="goDoCommand('cmd_fontSizeReduce');"/>
+-    <command id="cmd_fullZoomReset" oncommand="goDoCommand('cmd_fontSizeReset');"/>
++    <command id="cmd_fullZoomEnlarge" oncommand="goDoCommand('cmd_fontSizeEnlarge');" disabled="true"/>
++    <command id="cmd_fullZoomReduce" oncommand="goDoCommand('cmd_fontSizeReduce');" disabled="true"/>
++    <command id="cmd_fullZoomReset" oncommand="goDoCommand('cmd_fontSizeReset');" disabled="true"/>
+     <command id="cmd_close" oncommand="goDoCommand('cmd_close');" disabled="true"/>
+   </commandset>
+   <keyset id="consoleKeys">
+     <key id="key_fullZoomReduce"  key="&fullZoomReduceCmd.commandkey;" command="cmd_fullZoomReduce"  modifiers="accel"/>
+     <key key="&fullZoomReduceCmd.commandkey2;"  command="cmd_fullZoomReduce" modifiers="accel"/>
+     <key id="key_fullZoomEnlarge" key="&fullZoomEnlargeCmd.commandkey;" command="cmd_fullZoomEnlarge" modifiers="accel"/>
+     <key key="&fullZoomEnlargeCmd.commandkey2;" command="cmd_fullZoomEnlarge" modifiers="accel"/>
+     <key key="&fullZoomEnlargeCmd.commandkey3;" command="cmd_fullZoomEnlarge" modifiers="accel"/>

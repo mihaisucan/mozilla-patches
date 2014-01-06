@@ -1,0 +1,47 @@
+# HG changeset patch
+# User Geoff Lankow <geoff@darktrojan.net>
+# Date 1379970441 -10800
+#      Tue Sep 24 00:07:21 2013 +0300
+# Node ID f71fb2860d08b1a7e92ff293ebdfe8cce110b63b
+# Parent  81863be148df6833a52250d15fa244c0f4ff3def
+Bug 905136 - Blackbox icons missing from debugger (Linux); r=msucan
+
+diff --git a/browser/themes/linux/devtools/debugger.css b/browser/themes/linux/devtools/debugger.css
+--- a/browser/themes/linux/devtools/debugger.css
++++ b/browser/themes/linux/devtools/debugger.css
+@@ -29,29 +29,33 @@
+  * is not checked. */
+ .side-menu-widget-item:hover > .side-menu-widget-item-checkbox,
+ .side-menu-widget-item.selected > .side-menu-widget-item-checkbox,
+ .side-menu-widget-item-checkbox:not([checked]) {
+   opacity: 1;
+   transition: opacity .25s ease 0s;
+ }
+ 
+-.side-menu-widget-item-checkbox > .checkbox-check {
++.side-menu-widget-item-checkbox > .checkbox-spacer-box {
++  -moz-appearance: none;
++}
++
++.side-menu-widget-item-checkbox > .checkbox-spacer-box > .checkbox-check {
+   -moz-appearance: none;
+   background: none;
+   background-image: url(itemToggle.png);
+   background-repeat: no-repeat;
+   background-clip: content-box;
+   background-position: -24px 0;
+   width: 24px;
+   height: 24px;
+   border: 0;
+ }
+ 
+-.side-menu-widget-item-checkbox[checked] > .checkbox-check {
++.side-menu-widget-item-checkbox[checked] > .checkbox-spacer-box > .checkbox-check {
+   background-position: 0 0;
+ }
+ 
+ .side-menu-widget-item-checkbox:not([checked]) ~ .side-menu-widget-item-contents > .dbg-breakpoint {
+   display: none;
+ }
+ 
+ /* Black box message */

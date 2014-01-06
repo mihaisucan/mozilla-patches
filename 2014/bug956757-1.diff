@@ -1,0 +1,30 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1389026681 -7200
+#      Mon Jan 06 18:44:41 2014 +0200
+# Node ID a93e6632c5320d16662ef426a0c59c7995ab50e1
+# Parent  3df7ac9caf43c013955097227f6f8b8e079aa5d9
+Bug 956757 - JavaScript Error: 'this.readAndConvertFromStream is not a function' in network-helper.js, line: 258; r=robcee
+
+diff --git a/toolkit/devtools/webconsole/network-helper.js b/toolkit/devtools/webconsole/network-helper.js
+--- a/toolkit/devtools/webconsole/network-helper.js
++++ b/toolkit/devtools/webconsole/network-helper.js
+@@ -238,17 +238,17 @@ let NetworkHelper = {
+   {
+     let channel = NetUtil.newChannel(aUrl);
+ 
+     // Ensure that we only read from the cache and not the server.
+     channel.loadFlags = Ci.nsIRequest.LOAD_FROM_CACHE |
+       Ci.nsICachingChannel.LOAD_ONLY_FROM_CACHE |
+       Ci.nsICachingChannel.LOAD_BYPASS_LOCAL_CACHE_IF_BUSY;
+ 
+-    NetUtil.asyncFetch(channel, function (aInputStream, aStatusCode, aRequest) {
++    NetUtil.asyncFetch(channel, (aInputStream, aStatusCode, aRequest) => {
+       if (!components.isSuccessCode(aStatusCode)) {
+         aCallback(null);
+         return;
+       }
+ 
+       // Try to get the encoding from the channel. If there is none, then use
+       // the passed assumed aCharset.
+       let aChannel = aRequest.QueryInterface(Ci.nsIChannel);

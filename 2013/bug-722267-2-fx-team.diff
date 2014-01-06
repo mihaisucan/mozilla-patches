@@ -1,0 +1,31 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1384282855 -7200
+#      Tue Nov 12 21:00:55 2013 +0200
+# Node ID 947929b2bd680fc9ebb4b1ec9dd76c04d15f656c
+# Parent  7b59d7f26fad1239f340a0af34372697c4724510
+Bug 722267 - Fix browser_webconsole_expandable_timestamps.js test failure on a CLOSED TREE; r=me
+
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_expandable_timestamps.js b/browser/devtools/webconsole/test/browser_webconsole_expandable_timestamps.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_expandable_timestamps.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_expandable_timestamps.js
+@@ -37,18 +37,17 @@ function test()
+ 
+   function onOptionsPanelSelected(panel)
+   {
+     info("options panel opened");
+ 
+     gDevTools.once("pref-changed", onPrefChanged);
+ 
+     let checkbox = panel.panelDoc.getElementById("webconsole-timestamp-messages");
+-    checkbox.scrollIntoView();
+-    EventUtils.synthesizeMouseAtCenter(checkbox, {}, panel.panelWin);
++    checkbox.click();
+   }
+ 
+   function onPrefChanged()
+   {
+     info("pref changed");
+     let prefValue = Services.prefs.getBoolPref(PREF_MESSAGE_TIMESTAMP);
+     ok(prefValue, "messages have timestamps (pref check)");
+     ok(!hud.outputNode.classList.contains("hideTimestamps"),

@@ -1,0 +1,407 @@
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_autocomplete_in_debugger_stackframe.js b/browser/devtools/webconsole/test/browser_webconsole_autocomplete_in_debugger_stackframe.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_autocomplete_in_debugger_stackframe.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_autocomplete_in_debugger_stackframe.js
+@@ -29,23 +29,41 @@ function testNext() {
+   });
+ }
+ 
+ function testCompletion(hud) {
+   let jsterm = hud.jsterm;
+   let input = jsterm.inputNode;
+   let popup = jsterm.autocompletePopup;
+ 
++  // Test that document.title gives string methods. Native getters must execute.
++  input.value = "document.title.";
++  input.setSelectionRange(input.value.length, input.value.length);
++  jsterm.complete(jsterm.COMPLETE_HINT_ONLY, testNext);
++  yield undefined;
++
++  let newItems = popup.getItems();
++  ok(newItems.length > 0, "'document.title.' gave a list of suggestions");
++  ok(newItems.some(function(item) {
++       return item.label == "substr";
++     }), "autocomplete results do contain substr");
++  ok(newItems.some(function(item) {
++       return item.label == "toLowerCase";
++     }), "autocomplete results do contain toLowerCase");
++  ok(newItems.some(function(item) {
++       return item.label == "strike";
++     }), "autocomplete results do contain strike");
++
+   // Test if 'f' gives 'foo1' but not 'foo2' or 'foo3'
+   input.value = "f";
+   input.setSelectionRange(1, 1);
+   jsterm.complete(jsterm.COMPLETE_HINT_ONLY, testNext);
+   yield undefined;
+ 
+-  let newItems = popup.getItems();
++  newItems = popup.getItems();
+   ok(newItems.length > 0, "'f' gave a list of suggestions");
+   ok(!newItems.every(function(item) {
+        return item.label != "foo1";
+      }), "autocomplete results do contain foo1");
+   ok(!newItems.every(function(item) {
+        return item.label != "foo1Obj";
+      }), "autocomplete results do contain foo1Obj");
+   ok(newItems.every(function(item) {
+diff --git a/toolkit/devtools/DevToolsUtils.js b/toolkit/devtools/DevToolsUtils.js
+--- a/toolkit/devtools/DevToolsUtils.js
++++ b/toolkit/devtools/DevToolsUtils.js
+@@ -161,8 +161,53 @@ function defineLazyPrototypeGetter(aObje
+         writable: true,
+         value: value
+       });
+ 
+       return value;
+     }
+   });
+ }
++
++/**
++ * Safely get the property value from a Debugger.Object for a given key. Walks
++ * the prototype chain until the property is found.
++ *
++ * @param Debugger.Object aObject
++ *        The Debugger.Object to get the value from.
++ * @param String aKey
++ *        The key to look for.
++ * @return Any
++ */
++this.getProperty = function getProperty(aObj, aKey) {
++  let root = aObj;
++  try {
++    do {
++      const desc = aObj.getOwnPropertyDescriptor(aKey);
++      if (desc) {
++        if ("value" in desc) {
++          return desc.value;
++        }
++        // Call the getter if it's safe.
++        return hasSafeGetter(desc) ? desc.get.call(root).return : undefined;
++      }
++      aObj = aObj.proto;
++    } while (aObj);
++  } catch (e) {
++    // If anything goes wrong report the error and return undefined.
++    reportException("getProperty", e);
++  }
++  return undefined;
++};
++
++/**
++ * Determines if a descriptor has a getter which doesn't call into JavaScript.
++ *
++ * @param Object aDesc
++ *        The descriptor to check for a safe getter.
++ * @return Boolean
++ *         Whether a safe getter was found.
++ */
++this.hasSafeGetter = function hasSafeGetter(aDesc) {
++  let fn = aDesc.get;
++  return fn && fn.callable && fn.class == "Function" && fn.script === undefined;
++};
++
+diff --git a/toolkit/devtools/DevToolsUtils.jsm b/toolkit/devtools/DevToolsUtils.jsm
+--- a/toolkit/devtools/DevToolsUtils.jsm
++++ b/toolkit/devtools/DevToolsUtils.jsm
+@@ -19,10 +19,12 @@ Components.classes["@mozilla.org/moz/jss
+   .loadSubScript("resource://gre/modules/devtools/DevToolsUtils.js", this);
+ 
+ this.DevToolsUtils = {
+   safeErrorString: safeErrorString,
+   reportException: reportException,
+   makeInfallible: makeInfallible,
+   yieldingEach: yieldingEach,
+   reportingDisabled: false , // Used by tests.
+-  defineLazyPrototypeGetter: defineLazyPrototypeGetter
++  defineLazyPrototypeGetter: defineLazyPrototypeGetter,
++  getProperty: getProperty,
++  hasSafeGetter: hasSafeGetter,
+ };
+diff --git a/toolkit/devtools/server/actors/script.js b/toolkit/devtools/server/actors/script.js
+--- a/toolkit/devtools/server/actors/script.js
++++ b/toolkit/devtools/server/actors/script.js
+@@ -2656,59 +2656,16 @@ SourceActor.prototype.requestTypes = {
+  *         Whether the value is non-primitive.
+  */
+ function isObject(aValue) {
+   const type = typeof aValue;
+   return type == "object" ? aValue !== null : type == "function";
+ }
+ 
+ /**
+- * Determines if a descriptor has a getter which doesn't call into JavaScript.
+- *
+- * @param Object aDesc
+- *        The descriptor to check for a safe getter.
+- * @return Boolean
+- *         Whether a safe getter was found.
+- */
+-function hasSafeGetter(aDesc) {
+-  let fn = aDesc.get;
+-  return fn && fn.callable && fn.class == "Function" && fn.script === undefined;
+-}
+-
+-/**
+- * Safely get the property value from a Debugger.Object for a given key. Walks
+- * the prototype chain until the property is found.
+- *
+- * @param Debugger.Object aObject
+- *        The Debugger.Object to get the value from.
+- * @param String aKey
+- *        The key to look for.
+- * @return Any
+- */
+-function getProperty(aObj, aKey) {
+-  try {
+-    do {
+-      const desc = aObj.getOwnPropertyDescriptor(aKey);
+-      if (desc) {
+-        if ("value" in desc) {
+-          return desc.value
+-        }
+-        // Call the getter if it's safe.
+-        return hasSafeGetter(desc) ? desc.get.call(aObj) : undefined;
+-      }
+-      aObj = aObj.proto;
+-    } while (aObj);
+-  } catch (e) {
+-    // If anything goes wrong report the error and return undefined.
+-    DevToolsUtils.reportException("getProperty", e);
+-  }
+-  return undefined;
+-}
+-
+-/**
+  * Create a function that can safely stringify Debugger.Objects of a given
+  * builtin type.
+  *
+  * @param Function aCtor
+  *        The builtin class constructor.
+  * @return Function
+  *         The stringifier for the class.
+  */
+@@ -2720,24 +2677,24 @@ function createBuiltinStringifier(aCtor)
+  * Stringify a Debugger.Object-wrapped Error instance.
+  *
+  * @param Debugger.Object aObj
+  *        The object to stringify.
+  * @return String
+  *         The stringification of the object.
+  */
+ function errorStringify(aObj) {
+-  let name = getProperty(aObj, "name");
++  let name = DevToolsUtils.getProperty(aObj, "name");
+   if (name === "" || name === undefined) {
+     name = aObj.class;
+   } else if (isObject(name)) {
+     name = stringify(name);
+   }
+ 
+-  let message = getProperty(aObj, "message");
++  let message = DevToolsUtils.getProperty(aObj, "message");
+   if (isObject(message)) {
+     message = stringify(message);
+   }
+ 
+   if (message === "" || message === undefined) {
+     return name;
+   }
+   return name + ": " + message;
+@@ -2785,17 +2742,17 @@ let stringifiers = {
+     if (topLevel) {
+       seen = new Set();
+     } else if (seen.has(obj)) {
+       return "";
+     }
+ 
+     seen.add(obj);
+ 
+-    const len = getProperty(obj, "length");
++    const len = DevToolsUtils.getProperty(obj, "length");
+     let string = "";
+ 
+     // The following check is only required because the debuggee could possibly
+     // be a Proxy and return any value. For normal objects, array.length is
+     // always a non-negative integer.
+     if (typeof len == "number" && len > 0) {
+       for (let i = 0; i < len; i++) {
+         const desc = obj.getOwnPropertyDescriptor(i);
+@@ -2814,20 +2771,20 @@ let stringifiers = {
+ 
+     if (topLevel) {
+       seen = null;
+     }
+ 
+     return string;
+   },
+   DOMException: obj => {
+-    const message = getProperty(obj, "message") || "<no message>";
+-    const result = (+getProperty(obj, "result")).toString(16);
+-    const code = getProperty(obj, "code");
+-    const name = getProperty(obj, "name") || "<unknown>";
++    const message = DevToolsUtils.getProperty(obj, "message") || "<no message>";
++    const result = (+DevToolsUtils.getProperty(obj, "result")).toString(16);
++    const code = DevToolsUtils.getProperty(obj, "code");
++    const name = DevToolsUtils.getProperty(obj, "name") || "<unknown>";
+ 
+     return '[Exception... "' + message + '" ' +
+            'code: "' + code +'" ' +
+            'nsresult: "0x' + result + ' (' + name + ')"]';
+   }
+ };
+ 
+ /**
+@@ -3097,17 +3054,17 @@ ObjectActor.prototype = {
+       } catch (e) {
+         // Calling getOwnPropertyDescriptor on wrapped native prototypes is not
+         // allowed (bug 560072).
+       }
+       if (!desc || desc.value !== undefined || !("get" in desc)) {
+         continue;
+       }
+ 
+-      if (hasSafeGetter(desc)) {
++      if (DevToolsUtils.hasSafeGetter(desc)) {
+         getters.add(name);
+       }
+     }
+ 
+     aObject._safeGetters = getters;
+     return getters;
+   },
+ 
+diff --git a/toolkit/devtools/webconsole/utils.js b/toolkit/devtools/webconsole/utils.js
+--- a/toolkit/devtools/webconsole/utils.js
++++ b/toolkit/devtools/webconsole/utils.js
+@@ -19,16 +19,17 @@ loader.lazyServiceGetter(this, "gActivit
+                          "@mozilla.org/network/http-activity-distributor;1",
+                          "nsIHttpActivityDistributor");
+ 
+ // TODO: Bug 842672 - toolkit/ imports modules from browser/.
+ // Note that these are only used in JSTermHelpers, see $0 and pprint().
+ loader.lazyImporter(this, "gDevTools", "resource:///modules/devtools/gDevTools.jsm");
+ loader.lazyImporter(this, "devtools", "resource://gre/modules/devtools/Loader.jsm");
+ loader.lazyImporter(this, "VariablesView", "resource:///modules/devtools/VariablesView.jsm");
++loader.lazyImporter(this, "DevToolsUtils", "resource://gre/modules/devtools/DevToolsUtils.jsm");
+ 
+ // Match the function name from the result of toString() or toSource().
+ //
+ // Examples:
+ // (function foobar(a, b) { ...
+ // function foobar2(a) { ...
+ // function() { ...
+ const REGEX_MATCH_FUNCTION_NAME = /^\(?function\s+([^(\s]+)\s*\(/;
+@@ -824,17 +825,17 @@ function JSPropertyProvider(aDbgObject, 
+   // We get the rest of the properties recursively starting from the Debugger.Object
+   // that wraps the first property
+   for (let prop of properties) {
+     prop = prop.trim();
+     if (!prop) {
+       return null;
+     }
+ 
+-    obj = getPropertyInDebuggerObject(obj, prop);
++    obj = DevToolsUtils.getProperty(obj, prop);
+ 
+     if (!isObjectUsable(obj)) {
+       return null;
+     }
+   }
+ 
+   // If the final property is a primitive
+   if (typeof obj != "object") {
+@@ -854,43 +855,32 @@ function JSPropertyProvider(aDbgObject, 
+  *         otherwise.
+  */
+ function isObjectUsable(aObject)
+ {
+   if (aObject == null) {
+     return false;
+   }
+ 
+-  if (typeof aObject == "object") {
+-    let raw = aObject.unsafeDereference();
+-    if (Cu.isDeadWrapper(raw)) {
+-      return false;
+-    }
++  if (typeof aObject == "object" && aObject.class == "DeadObject") {
++    return false;
+   }
+ 
+   return true;
+ }
+ 
+ /**
+  * @see getExactMatch_impl()
+  */
+ function getVariableInEnvironment(anEnvironment, aName)
+ {
+   return getExactMatch_impl(anEnvironment, aName, DebuggerEnvironmentSupport);
+ }
+ 
+ /**
+- * @see getExactMatch_impl()
+- */
+-function getPropertyInDebuggerObject(aDbgObject, aName)
+-{
+-  return getExactMatch_impl(aDbgObject, aName, DebuggerObjectSupport);
+-}
+-
+-/**
+  * @see getMatchedProps_impl()
+  */
+ function getMatchedPropsInEnvironment(anEnvironment, aMatch)
+ {
+   return getMatchedProps_impl(anEnvironment, aMatch, DebuggerEnvironmentSupport);
+ }
+ 
+ /**
+@@ -1017,45 +1007,18 @@ let DebuggerObjectSupport = {
+ 
+   getProperties: function(aObj)
+   {
+     return aObj.getOwnPropertyNames();
+   },
+ 
+   getProperty: function(aObj, aName, aRootObj)
+   {
+-    let desc = aObj.getOwnPropertyDescriptor(aName);
+-    if (!desc) {
+-      return null;
+-    }
+-
+-    if ("value" in desc) {
+-      return { value: desc.value };
+-    }
+-
+-    if (!desc.get) {
+-      return null;
+-    }
+-
+-    let safe = desc.get.callable && desc.get.class == "Function" &&
+-               desc.get.script === undefined;
+-    if (!safe) {
+-      return null;
+-    }
+-
+-    let result = desc.get.call(aRootObj);
+-    if (!result || "throw" in result) {
+-      return null;
+-    }
+-
+-    if ("yield" in result) {
+-      return { value: result.yield };
+-    }
+-
+-    return { value: result.return };
++    // This is left unimplemented in favor to DevToolsUtils.getProperty().
++    throw "Unimplemented!";
+   },
+ };
+ 
+ let DebuggerEnvironmentSupport = {
+   chainIterator: function(aObj)
+   {
+     while (aObj) {
+       yield aObj;

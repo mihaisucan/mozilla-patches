@@ -1,0 +1,304 @@
+# HG changeset patch
+# User Oprea Andrei <andrei.br92@gmail.com>
+# Date 1384189207 -7200
+#      Mon Nov 11 19:00:07 2013 +0200
+# Node ID e7f24a9d00714c3869e1a52502f13f85d64ddaa5
+# Parent  3fdb887ba7d707a1c8b6487475a245906284d854
+Bug 722267 - Option to enable/disable timestamps for messages in the console; r=msucan; try: -b do -p linux,linux64,macosx64,win32,win64 -u xpcshell,mochitest-bc,mochitest-o -t none
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -1202,16 +1202,21 @@ pref("devtools.browserconsole.filter.sec
+ // Text size in the Web Console. Use 0 for the system default size.
+ pref("devtools.webconsole.fontSize", 0);
+ 
+ // Persistent logging: |true| if you want the Web Console to keep all of the
+ // logged messages after reloading the page, |false| if you want the output to
+ // be cleared each time page navigation happens.
+ pref("devtools.webconsole.persistlog", false);
+ 
++// Web Console timestamp: |true| if you want the logs and instructions
++// in the Web Console to display a timestamp, or |false| to not display
++// any timestamps.
++pref("devtools.webconsole.timestampMessages", false);
++
+ // The number of lines that are displayed in the web console for the Net,
+ // CSS, JS and Web Developer categories.
+ pref("devtools.hud.loglimit.network", 200);
+ pref("devtools.hud.loglimit.cssparser", 200);
+ pref("devtools.hud.loglimit.exception", 200);
+ pref("devtools.hud.loglimit.console", 200);
+ 
+ // The developer tools editor configuration:
+diff --git a/browser/devtools/framework/toolbox-options.xul b/browser/devtools/framework/toolbox-options.xul
+--- a/browser/devtools/framework/toolbox-options.xul
++++ b/browser/devtools/framework/toolbox-options.xul
+@@ -49,16 +49,20 @@
+             </menulist>
+           </hbox>
+         </vbox>
+         <label value="&options.webconsole.label;"/>
+         <vbox id="webconsole-options" class="options-groupbox">
+           <checkbox label="&options.enablePersistentLogging.label;"
+                     tooltiptext="&options.enablePersistentLogging.tooltip;"
+                     data-pref="devtools.webconsole.persistlog"/>
++          <checkbox id="webconsole-timestamp-messages"
++                    label="&options.timestampMessages.label;"
++                    tooltiptext="&options.timestampMessages.tooltip;"
++                    data-pref="devtools.webconsole.timestampMessages"/>
+         </vbox>
+         <label value="&options.profiler.label;"/>
+         <vbox id="profiler-options" class="options-groupbox">
+           <checkbox label="&options.showPlatformData.label;"
+                     tooltiptext="&options.showPlatformData.tooltip;"
+                     data-pref="devtools.profiler.ui.show-platform-data"/>
+         </vbox>
+         <label value="&options.context.advancedSettings;"/>
+diff --git a/browser/devtools/webconsole/test/browser.ini b/browser/devtools/webconsole/test/browser.ini
+--- a/browser/devtools/webconsole/test/browser.ini
++++ b/browser/devtools/webconsole/test/browser.ini
+@@ -234,8 +234,9 @@ skip-if = os == "linux"
+ [browser_webconsole_notifications.js]
+ [browser_webconsole_output_copy_newlines.js]
+ [browser_webconsole_output_order.js]
+ [browser_webconsole_property_provider.js]
+ [browser_webconsole_scratchpad_panel_link.js]
+ [browser_webconsole_view_source.js]
+ [browser_webconsole_reflow.js]
+ [browser_webconsole_log_file_filter.js]
++[browser_webconsole_expandable_timestamps.js]
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_expandable_timestamps.js b/browser/devtools/webconsole/test/browser_webconsole_expandable_timestamps.js
+new file mode 100644
+--- /dev/null
++++ b/browser/devtools/webconsole/test/browser_webconsole_expandable_timestamps.js
+@@ -0,0 +1,58 @@
++/* Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/ */
++
++// Test for the message timestamps option: check if the preference toggles the
++// display of messages in the console output. See bug 722267.
++
++function test()
++{
++  const PREF_MESSAGE_TIMESTAMP = "devtools.webconsole.timestampMessages";
++  let hud;
++
++  registerCleanupFunction(() => {
++    Services.prefs.clearUserPref(PREF_MESSAGE_TIMESTAMP);
++  });
++
++  addTab("data:text/html;charset=utf-8,Web Console test for bug 722267 - " +
++         "preference for toggling timestamps in messages");
++
++  browser.addEventListener("load", function tabLoad() {
++    browser.removeEventListener("load", tabLoad, true);
++    openConsole(null, consoleOpened);
++  }, true);
++
++  function consoleOpened(aHud)
++  {
++    hud = aHud;
++
++    info("console opened");
++    let prefValue = Services.prefs.getBoolPref(PREF_MESSAGE_TIMESTAMP);
++    ok(!prefValue, "messages have no timestamp by default (pref check)");
++    ok(hud.outputNode.classList.contains("hideTimestamps"),
++       "messages have no timestamp (class name check)");
++
++    let toolbox = gDevTools.getToolbox(hud.target);
++    toolbox.selectTool("options").then(onOptionsPanelSelected);
++  }
++
++  function onOptionsPanelSelected(panel)
++  {
++    info("options panel opened");
++
++    gDevTools.once("pref-changed", onPrefChanged);
++
++    let checkbox = panel.panelDoc.getElementById("webconsole-timestamp-messages");
++    checkbox.scrollIntoView();
++    EventUtils.synthesizeMouseAtCenter(checkbox, {}, panel.panelWin);
++  }
++
++  function onPrefChanged()
++  {
++    info("pref changed");
++    let prefValue = Services.prefs.getBoolPref(PREF_MESSAGE_TIMESTAMP);
++    ok(prefValue, "messages have timestamps (pref check)");
++    ok(!hud.outputNode.classList.contains("hideTimestamps"),
++       "messages have timestamps (class name check)");
++    finishTest();
++  }
++}
+diff --git a/browser/devtools/webconsole/webconsole.js b/browser/devtools/webconsole/webconsole.js
+--- a/browser/devtools/webconsole/webconsole.js
++++ b/browser/devtools/webconsole/webconsole.js
+@@ -166,16 +166,17 @@ const FILTER_PREFS_PREFIX = "devtools.we
+ // The minimum font size.
+ const MIN_FONT_SIZE = 10;
+ 
+ // The maximum length of strings to be displayed by the Web Console.
+ const MAX_LONG_STRING_LENGTH = 200000;
+ 
+ const PREF_CONNECTION_TIMEOUT = "devtools.debugger.remote-timeout";
+ const PREF_PERSISTLOG = "devtools.webconsole.persistlog";
++const PREF_MESSAGE_TIMESTAMP = "devtools.webconsole.timestampMessages";
+ 
+ /**
+  * A WebConsoleFrame instance is an interactive console initialized *per target*
+  * that displays console log data as well as provides an interactive terminal to
+  * manipulate the target's document content.
+  *
+  * The WebConsoleFrame is responsible for the actual Web Console UI
+  * implementation.
+@@ -196,16 +197,17 @@ function WebConsoleFrame(aWebConsoleOwne
+   this._networkRequests = {};
+   this.filterPrefs = {};
+ 
+   this.output = new ConsoleOutput(this);
+ 
+   this._toggleFilter = this._toggleFilter.bind(this);
+   this._onPanelSelected = this._onPanelSelected.bind(this);
+   this._flushMessageQueue = this._flushMessageQueue.bind(this);
++  this._onToolboxPrefChanged = this._onToolboxPrefChanged.bind(this);
+ 
+   this._outputTimer = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
+   this._outputTimerInitialized = false;
+ 
+   EventEmitter.decorate(this);
+ }
+ exports.WebConsoleFrame = WebConsoleFrame;
+ 
+@@ -557,16 +559,23 @@ WebConsoleFrame.prototype = {
+     this.jsterm = new JSTerm(this);
+     this.jsterm.init();
+     this.jsterm.inputNode.focus();
+ 
+     let toolbox = gDevTools.getToolbox(this.owner.target);
+     if (toolbox) {
+       toolbox.on("webconsole-selected", this._onPanelSelected);
+     }
++
++    // Toggle the timestamp on preference change
++    gDevTools.on("pref-changed", this._onToolboxPrefChanged);
++    this._onToolboxPrefChanged("pref-changed", {
++      pref: PREF_MESSAGE_TIMESTAMP,
++      newValue: Services.prefs.getBoolPref(PREF_MESSAGE_TIMESTAMP),
++    });
+   },
+ 
+   /**
+    * Sets the focus to JavaScript input field when the web console tab is
+    * selected.
+    * @private
+    */
+   _onPanelSelected: function WCF__onPanelSelected()
+@@ -2734,16 +2743,39 @@ WebConsoleFrame.prototype = {
+         return;
+       }
+ 
+       aCallback(this, aEvent);
+     }, false);
+   },
+ 
+   /**
++   * Handler for the pref-changed event coming from the toolbox.
++   * Currently this function only handles the timestamps preferences.
++   *
++   * @private
++   * @param object aEvent
++   *        This parameter is a string that holds the event name
++   *        pref-changed in this case.
++   * @param object aData
++   *        This is the pref-changed data object.
++  */
++  _onToolboxPrefChanged: function WCF__onToolboxPrefChanged(aEvent, aData)
++  {
++    if (aData.pref == PREF_MESSAGE_TIMESTAMP) {
++      if (aData.newValue) {
++        this.outputNode.classList.remove("hideTimestamps");
++      }
++      else {
++        this.outputNode.classList.add("hideTimestamps");
++      }
++    }
++  },
++
++  /**
+    * Copies the selected items to the system clipboard.
+    *
+    * @param object aOptions
+    *        - linkOnly:
+    *        An optional flag to copy only URL without timestamp and
+    *        other meta-information. Default is false.
+    */
+   copySelectedItems: function WCF_copySelectedItems(aOptions)
+@@ -2843,16 +2875,18 @@ WebConsoleFrame.prototype = {
+ 
+     this._destroyer = promise.defer();
+ 
+     let toolbox = gDevTools.getToolbox(this.owner.target);
+     if (toolbox) {
+       toolbox.off("webconsole-selected", this._onPanelSelected);
+     }
+ 
++    gDevTools.off("pref-changed", this._onToolboxPrefChanged);
++
+     this._repeatNodes = {};
+     this._outputQueue = [];
+     this._pruneCategoriesQueue = {};
+     this._networkRequests = {};
+ 
+     if (this._outputTimerInitialized) {
+       this._outputTimerInitialized = false;
+       this._outputTimer.cancel();
+diff --git a/browser/locales/en-US/chrome/browser/devtools/toolbox.dtd b/browser/locales/en-US/chrome/browser/devtools/toolbox.dtd
+--- a/browser/locales/en-US/chrome/browser/devtools/toolbox.dtd
++++ b/browser/locales/en-US/chrome/browser/devtools/toolbox.dtd
+@@ -104,16 +104,21 @@
+ 
+ <!-- LOCALIZATION NOTE (options.enablePersistentLogging.label): This is the
+   -  label for the checkbox that toggles persistent logs in the Web Console,
+   -  i.e. devtools.webconsole.persistlog a boolean preference in about:config,
+   -  in the options panel. -->
+ <!ENTITY options.enablePersistentLogging.label    "Enable persistent logs">
+ <!ENTITY options.enablePersistentLogging.tooltip  "If you enable this option the Web Console will not clear the output each time you navigate to a new page">
+ 
++<!-- LOCALIZATION NOTE (options.timestampMessages.label): This is the
++   - label for the checkbox that toggles timestamps in the Web Console -->
++<!ENTITY options.timestampMessages.label      "Enable timestamps">
++<!ENTITY options.timestampMessages.tooltip    "If you enable this option commands and output in the Web Console will display a timestamp">
++
+ <!-- LOCALIZATION NOTE (options.profiler.label): This is the label for the
+   -  heading of the group of JavaScript Profiler preferences in the options
+   -  panel. -->
+ <!ENTITY options.profiler.label            "JavaScript Profiler">
+ 
+ <!-- LOCALIZATION NOTE (options.showPlatformData.label): This is the
+   -  label for the checkbox that toggles the display of the platform data in the,
+   -  Profiler i.e. devtools.profiler.ui.show-platform-data a boolean preference
+diff --git a/browser/themes/shared/devtools/webconsole.inc.css b/browser/themes/shared/devtools/webconsole.inc.css
+--- a/browser/themes/shared/devtools/webconsole.inc.css
++++ b/browser/themes/shared/devtools/webconsole.inc.css
+@@ -107,16 +107,20 @@ a {
+ #output-container {
+   -moz-user-select: text;
+   -moz-box-flex: 1;
+   display: flex;
+   flex-direction: column;
+   align-items: flex-start;
+ }
+ 
++#output-container.hideTimestamps > .message > .timestamp {
++  display: none;
++}
++
+ .filtered-by-type,
+ .filtered-by-string {
+   display: none;
+ }
+ 
+ .hidden-message {
+   display: block;
+   visibility: hidden;

@@ -1,0 +1,35 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1379510658 -10800
+#      Wed Sep 18 16:24:18 2013 +0300
+# Node ID 5458d0f7387bed514529a53dc972fc6155291350
+# Parent  d2070b8d476549025da18f10ea4bfcb031b2df70
+Bug 914405: fix for browser_bug_638949_copy_link_location.js; r=me
+
+diff --git a/browser/devtools/webconsole/test/browser_bug_638949_copy_link_location.js b/browser/devtools/webconsole/test/browser_bug_638949_copy_link_location.js
+--- a/browser/devtools/webconsole/test/browser_bug_638949_copy_link_location.js
++++ b/browser/devtools/webconsole/test/browser_bug_638949_copy_link_location.js
+@@ -89,18 +89,21 @@ function testWithNetActivity() {
+ function onNetworkMessage(aResults) {
+   output.focus();
+   let message = [...aResults[0].matched][0];
+   HUD.ui.output.selectMessage(message);
+ 
+   goUpdateCommand(COMMAND_NAME);
+   ok(isEnabled(), COMMAND_NAME + " is enabled");
+ 
+-  waitForClipboard(message.url, () => goDoCommand(COMMAND_NAME),
+-                   testMenuWithNetActivity, testMenuWithNetActivity);
++  info("expected clipboard value: " + message.url);
++
++  waitForClipboard((aData) => { return aData.trim() == message.url; },
++    () => { goDoCommand(COMMAND_NAME) },
++    testMenuWithNetActivity, testMenuWithNetActivity);
+ 
+   function testMenuWithNetActivity() {
+     // Test that the "Copy Link Location" menu item is visible for network-related
+     // messages.
+     waitForContextMenu(menu, message, () => {
+       let isVisible = !menu.querySelector(CONTEXT_MENU_ID).hidden;
+       ok(isVisible, CONTEXT_MENU_ID + " is visible");
+     }, finishTest);

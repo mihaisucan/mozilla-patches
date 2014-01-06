@@ -1,0 +1,37 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1386104246 -7200
+#      Tue Dec 03 22:57:26 2013 +0200
+# Node ID 7b4222a6d190635e39398a1e97b958079ca613d5
+# Parent  921670f4c865d2189f17aa609bf048ddc19b92a0
+test case
+
+diff --git a/toolkit/devtools/server/actors/script.js b/toolkit/devtools/server/actors/script.js
+--- a/toolkit/devtools/server/actors/script.js
++++ b/toolkit/devtools/server/actors/script.js
+@@ -2837,16 +2837,25 @@ ObjectActor.prototype = {
+         }
+       } catch (e) {
+         // Calling getOwnPropertyDescriptor with displayName might throw
+         // with "permission denied" errors for some functions.
+         dumpn(e);
+       }
+     }
+ 
++    let raw = this.obj.unsafeDereference();
++    let wrap = new XPCNativeWrapper(raw);
++    console.log('xray test', raw.lolz, wrap.lolz, wrap.wrappedJSObject, Cu.isXrayWrapper(raw), Cu.isXrayWrapper(wrap));
++    if (raw.lolz) {
++      console.log('xray test2', raw.lolz());
++    }
++    if (wrap.lolz) {
++      console.log('xray test3', wrap.lolz());
++    }
+     return g;
+   },
+ 
+   /**
+    * Releases this actor from the pool.
+    */
+   release: function () {
+     if (this.registeredPool.objectActors) {
