@@ -1,0 +1,627 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1389734258 -7200
+#      Tue Jan 14 23:17:38 2014 +0200
+# Node ID 5804ed45b1d0a51f0430dec2572815cc509bc435
+# Parent  01fb70a7cdbfaef2bb139f9a9a7135ba93537246
+Bug 917227 - Network monitor doesn't work with Firefox OS
+
+diff --git a/browser/devtools/main.js b/browser/devtools/main.js
+--- a/browser/devtools/main.js
++++ b/browser/devtools/main.js
+@@ -218,17 +218,17 @@ Tools.netMonitor = {
+   visibilityswitch: "devtools.netmonitor.enabled",
+   icon: "chrome://browser/skin/devtools/tool-network@2x.png",
+   url: "chrome://browser/content/devtools/netmonitor.xul",
+   label: l10n("netmonitor.label", netMonitorStrings),
+   tooltip: l10n("netmonitor.tooltip", netMonitorStrings),
+   inMenu: true,
+ 
+   isTargetSupported: function(target) {
+-    return !target.isApp;
++    return true;
+   },
+ 
+   build: function(iframeWindow, toolbox) {
+     let panel = new NetMonitorPanel(iframeWindow, toolbox);
+     return panel.open();
+   }
+ };
+ 
+diff --git a/toolkit/devtools/server/actors/childtab.js b/toolkit/devtools/server/actors/childtab.js
+--- a/toolkit/devtools/server/actors/childtab.js
++++ b/toolkit/devtools/server/actors/childtab.js
+@@ -14,20 +14,23 @@
+  * Creates a tab actor for handling requests to the single tab, like
+  * attaching and detaching. ContentAppActor respects the actor factories
+  * registered with DebuggerServer.addTabActor.
+  *
+  * @param connection DebuggerServerConnection
+  *        The conection to the client.
+  * @param browser browser
+  *        The browser instance that contains this tab.
++ * @param number appId
++ *        The web application ID for the content app actor.
+  */
+-function ContentAppActor(connection, browser)
++function ContentAppActor(connection, browser, appId)
+ {
+   BrowserTabActor.call(this, connection, browser);
++  this.appId = appId;
+ }
+ 
+ ContentAppActor.prototype = Object.create(BrowserTabActor.prototype);
+ 
+ ContentAppActor.prototype.constructor = ContentAppActor;
+ 
+ Object.defineProperty(ContentAppActor.prototype, "title", {
+   get: function() {
+diff --git a/toolkit/devtools/server/actors/webapps.js b/toolkit/devtools/server/actors/webapps.js
+--- a/toolkit/devtools/server/actors/webapps.js
++++ b/toolkit/devtools/server/actors/webapps.js
+@@ -117,16 +117,17 @@ function WebappsActor(aConnection) {
+   Cu.import("resource://gre/modules/AppsUtils.jsm");
+   Cu.import("resource://gre/modules/FileUtils.jsm");
+   Cu.import('resource://gre/modules/Services.jsm');
+   promise = Cu.import("resource://gre/modules/commonjs/sdk/core/promise.js").Promise;
+ 
+   // Keep reference of already created app actors.
+   // key: app frame message manager, value: ContentTabActor's grip() value
+   this._appActorsMap = new Map();
++  this._netMonitorMap = new Map();
+ 
+   this.conn = aConnection;
+   this._uploads = [];
+   this._actorPool = new ActorPool(this.conn);
+   this.conn.addActorPool(this._actorPool);
+ }
+ 
+ WebappsActor.prototype = {
+@@ -809,16 +810,43 @@ WebappsActor.prototype = {
+   _connectToApp: function (aFrame) {
+     let deferred = Promise.defer();
+ 
+     let mm = aFrame.QueryInterface(Ci.nsIFrameLoaderOwner).frameLoader.messageManager;
+     mm.loadFrameScript("resource://gre/modules/devtools/server/child.js", false);
+ 
+     let childTransport, prefix;
+ 
++    let onNetMonitorMessage = makeInfallible((msg) => {
++      let { action, appId } = msg.json;
++      dump("***** Got debug:netmonitor " + action + " " + appId + "\n");
++
++      // Pipe network monitor data from parent to child via the message manager.
++      switch (action) {
++        case "start": {
++          debug("establishing network monitoring for app " + appId);
++          let netMonitor = new NetworkMonitor(null, appId, this);
++          netMonitor._messageManager = mm;
++          netMonitor.init();
++          this._netMonitorMap.set(mm, netMonitor);
++          break;
++        }
++        case "stop": {
++          let netMonitor = this._netMonitorMap.get(mm);
++          if (netMonitor) {
++            netMonitor.destroy();
++            netMonitor._messageManager = null;
++            this._netMonitorMap.delete(mm);
++          }
++          break;
++        }
++      }
++    });
++    mm.addMessageListener("debug:netmonitor", onNetMonitorMessage);
++
+     let onActorCreated = makeInfallible(function (msg) {
+       mm.removeMessageListener("debug:actor", onActorCreated);
+ 
+       dump("***** Got debug:actor\n");
+       let { actor, appId } = msg.json;
+       prefix = msg.json.prefix;
+ 
+       // Pipe Debugger message from/to parent/child via the message manager
+@@ -837,16 +865,18 @@ WebappsActor.prototype = {
+ 
+       deferred.resolve(actor);
+     }).bind(this);
+     mm.addMessageListener("debug:actor", onActorCreated);
+ 
+     let onMessageManagerDisconnect = makeInfallible(function (subject, topic, data) {
+       if (subject == mm) {
+         Services.obs.removeObserver(onMessageManagerDisconnect, topic);
++        mm.removeMessageListener("debug:netmonitor", onNetMonitorMessage);
++
+         if (childTransport) {
+           // If we have a child transport, the actor has already
+           // been created. We need to stop using this message manager.
+           childTransport.close();
+           this.conn.cancelForwarding(prefix);
+         } else {
+           // Otherwise, the app has been closed before the actor
+           // had a chance to be created, so we are not able to create
+@@ -857,27 +887,45 @@ WebappsActor.prototype = {
+         if (actor) {
+           // The ContentAppActor within the child process doesn't necessary
+           // have to time to uninitialize itself when the app is closed/killed.
+           // So ensure telling the client that the related actor is detached.
+           this.conn.send({ from: actor.actor,
+                            type: "tabDetached" });
+           this._appActorsMap.delete(mm);
+         }
++
++        let netMonitor = this._netMonitorMap.get(mm);
++        if (netMonitor) {
++          netMonitor.destroy();
++          netMonitor._messageManager = null;
++        }
++        this._netMonitorMap.delete(mm);
+       }
+     }).bind(this);
+     Services.obs.addObserver(onMessageManagerDisconnect,
+                              "message-manager-disconnect", false);
+ 
+     let prefixStart = this.conn.prefix + "child";
+     mm.sendAsyncMessage("debug:connect", { prefix: prefixStart });
+ 
+     return deferred.promise;
+   },
+ 
++  onNetworkEvent: function(event, channel, netMonitor) {
++    let mm = netMonitor._messageManager;
++    let proxy = new NetworkEventActorProxy(mm, this);
++    dump("onNetworkEvent " + proxy.id + "\n");
++    mm.sendAsyncMessage("debug:netmonitor:newEvent", {
++      id: proxy.id,
++      event: event,
++    });
++    return proxy;
++  },
++
+   getAppActor: function ({ manifestURL }) {
+     debug("getAppActor\n");
+ 
+     let appFrame = null;
+     for each (let frame in this._appFrames()) {
+       if (frame.getAttribute("mozapp") == manifestURL) {
+         appFrame = frame;
+         break;
+@@ -1021,8 +1069,43 @@ if (Services.prefs.getBoolPref("devtools
+   requestTypes.listRunningApps = WebappsActor.prototype.listRunningApps;
+   requestTypes.getAppActor = WebappsActor.prototype.getAppActor;
+   requestTypes.watchApps = WebappsActor.prototype.watchApps;
+   requestTypes.unwatchApps = WebappsActor.prototype.unwatchApps;
+   requestTypes.getIconAsDataURL = WebappsActor.prototype.getIconAsDataURL;
+ }
+ 
+ DebuggerServer.addGlobalActor(WebappsActor, "webappsActor");
++
++function NetworkEventActorProxy(messageManager, owner) {
++  this.id = gSequenceId();
++  dump("NetworkEventActorProxy constructor " + this.id + "\n");
++  this.messageManager = messageManager;
++  this.owner = owner;
++}
++
++NetworkEventActorProxy.methodFactory = function(method) {
++  return function() {
++    dump("NetworkEventActorProxy " + method + " " + this.id + "\n");
++    let args = Array.slice(arguments);
++    this.messageManager.sendAsyncMessage("debug:netmonitor:updateEvent", {
++      id: this.id,
++      method: method,
++      args: args,
++    });
++  };
++};
++
++NetworkEventActorProxy.prototype = { };
++
++(function() {
++  // Listeners for new network event data coming from NetworkMonitor.
++  let methods = ["addRequestHeaders", "addRequestCookies", "addRequestPostData",
++                 "addResponseStart", "addResponseHeaders", "addResponseCookies",
++                 "addResponseContent", "addEventTimings"];
++  let factory = NetworkEventActorProxy.methodFactory;
++  for (let method of methods) {
++    NetworkEventActorProxy.prototype[method] = factory(method);
++  }
++})();
++
++function gSequenceId() { return gSequenceId.n++; }
++gSequenceId.n = 1;
+diff --git a/toolkit/devtools/server/actors/webconsole.js b/toolkit/devtools/server/actors/webconsole.js
+--- a/toolkit/devtools/server/actors/webconsole.js
++++ b/toolkit/devtools/server/actors/webconsole.js
+@@ -31,31 +31,31 @@ for (let name of ["WebConsoleUtils", "Co
+       }
+       return devtools.require("devtools/toolkit/webconsole/utils")[prop];
+     }.bind(null, name),
+     configurable: true,
+     enumerable: true
+   });
+ }
+ 
+-
+ /**
+  * The WebConsoleActor implements capabilities needed for the Web Console
+  * feature.
+  *
+  * @constructor
+  * @param object aConnection
+  *        The connection to the client, DebuggerServerConnection.
+  * @param object [aParentActor]
+  *        Optional, the parent actor.
+  */
+ function WebConsoleActor(aConnection, aParentActor)
+ {
+   this.conn = aConnection;
+   this.parentActor = aParentActor;
++  console.log("WebConsoleActor constructor parent actor ID", this.parentActor.actorID, "appId", this.parentActor.appId);
+ 
+   this._actorPool = new ActorPool(this.conn);
+   this.conn.addActorPool(this._actorPool);
+ 
+   this._prefs = {};
+ 
+   this.dbg = new Debugger();
+ 
+@@ -451,16 +451,25 @@ WebConsoleActor.prototype =
+    *        The JSON request object received from the Web Console client.
+    * @return object
+    *         The response object which holds the startedListeners array.
+    */
+   onStartListeners: function WCA_onStartListeners(aRequest)
+   {
+     let startedListeners = [];
+     let window = !this.parentActor.isRootActor ? this.window : null;
++    let appId = null;
++
++    if ("ContentAppActor" in DebuggerServer &&
++        this.parentActor instanceof DebuggerServer.ContentAppActor) {
++      // Filter network requests by appId on Firefox OS devices.
++      appId = this.parentActor.appId;
++    }
++
++    console.log("WCA_onStartListeners window " + window, "appId", appId, "listeners", aRequest.listeners);
+ 
+     while (aRequest.listeners.length > 0) {
+       let listener = aRequest.listeners.shift();
+       switch (listener) {
+         case "PageError":
+           if (!this.consoleServiceListener) {
+             this.consoleServiceListener =
+               new ConsoleServiceListener(window, this);
+@@ -473,18 +482,23 @@ WebConsoleActor.prototype =
+             this.consoleAPIListener =
+               new ConsoleAPIListener(window, this);
+             this.consoleAPIListener.init();
+           }
+           startedListeners.push(listener);
+           break;
+         case "NetworkActivity":
+           if (!this.networkMonitor) {
+-            this.networkMonitor =
+-              new NetworkMonitor(window, this);
++            if (appId) {
++              this.networkMonitor =
++                new DebuggerServer.NetworkMonitorChild(window, appId, this);
++            }
++            else {
++              this.networkMonitor = new NetworkMonitor(window, null, this);
++            }
+             this.networkMonitor.init();
+           }
+           startedListeners.push(listener);
+           break;
+         case "FileActivity":
+           if (!this.consoleProgressListener) {
+             this.consoleProgressListener =
+               new ConsoleProgressListener(this.window, this);
+@@ -1101,16 +1115,18 @@ WebConsoleActor.prototype =
+    * Handler for network events. This method is invoked when a new network event
+    * is about to be recorded.
+    *
+    * @see NetworkEventActor
+    * @see NetworkMonitor from webconsole/utils.js
+    *
+    * @param object aEvent
+    *        The initial network request event information.
++   * @param nsIHttpChannel aChannel
++   *        The network request nsIHttpChannel object.
+    * @return object
+    *         A new NetworkEventActor is returned. This is used for tracking the
+    *         network request and response.
+    */
+   onNetworkEvent: function WCA_onNetworkEvent(aEvent, aChannel)
+   {
+     let actor = this.getNetworkEventActor(aChannel);
+     actor.init(aEvent);
+@@ -1125,18 +1141,20 @@ WebConsoleActor.prototype =
+ 
+     return actor;
+   },
+ 
+   /**
+    * Get the NetworkEventActor for a nsIChannel, if it exists,
+    * otherwise create a new one.
+    *
+-   * @param object aChannel
++   * @param nsIHttpChannel aChannel
+    *        The channel for the network event.
++   * @return object
++   *         The NetworkEventActor for the given channel.
+    */
+   getNetworkEventActor: function WCA_getNetworkEventActor(aChannel) {
+     let actor = this._netEvents.get(aChannel);
+     if (actor) {
+       // delete from map as we should only need to do this check once
+       this._netEvents.delete(aChannel);
+       actor.channel = null;
+       return actor;
+diff --git a/toolkit/devtools/server/child.js b/toolkit/devtools/server/child.js
+--- a/toolkit/devtools/server/child.js
++++ b/toolkit/devtools/server/child.js
+@@ -15,19 +15,72 @@ let onConnect = DevToolsUtils.makeInfall
+   removeMessageListener("debug:connect", onConnect);
+ 
+   let mm = msg.target;
+ 
+   let prefix = msg.data.prefix + docShell.appId;
+ 
+   let conn = DebuggerServer.connectToParent(prefix, mm);
+ 
+-  let actor = new DebuggerServer.ContentAppActor(conn, content);
++  let actor = new DebuggerServer.ContentAppActor(conn, content, docShell.appId);
+   let actorPool = new ActorPool(conn);
+   actorPool.addActor(actor);
+   conn.addActorPool(actorPool);
+ 
+   sendAsyncMessage("debug:actor", {actor: actor.grip(),
+                                    appId: docShell.appId,
+                                    prefix: prefix});
+ });
+ 
+ addMessageListener("debug:connect", onConnect);
++
++DebuggerServer.NetworkMonitorChild = function(appId, owner) {
++  dump("NetworkMonitorChild constructor " + appId + "\n");
++  this.appId = appId;
++  this.owner = owner;
++  this._onNewEvent = this._onNewEvent.bind(this);
++  this._onUpdateEvent = this._onUpdateEvent.bind(this);
++  this._netEvents = new WeakMap();
++};
++
++DebuggerServer.NetworkMonitorChild.prototype = {
++  appId: null,
++  owner: null,
++  _netEvents: null,
++
++  init: function() {
++    dump("NetworkMonitorChild init() " + this.appId + "\n");
++    addMessageListener("debug:netmonitor:newEvent", this._onNewEvent);
++    addMessageListener("debug:netmonitor:updateEvent", this._onUpdateEvent);
++    sendAsyncMessage("debug:netmonitor", { appId: this.appId, action: "start" });
++  },
++
++  _onNewEvent: function(msg) {
++    let {id, event} = msg.data;
++    dump("NetworkMonitorChild _onNewEvent() " + id + "\n");
++    let actor = this.owner.onNetworkEvent(event);
++    this._netEvents.set(id, actor);
++  },
++
++  _onUpdateEvent: function(msg) {
++    let {id, method, args} = msg.data;
++    let actor = this._netEvents.get(id);
++    dump("NetworkMonitorChild _onUpdateEvent() " + id + " " + method + "\n");
++    if (!actor) {
++      Cu.reportError("Received debug:netmonitor:updateEvent for unknown event ID: " + id);
++      return;
++    }
++    if (!(method in actor)) {
++      Cu.reportError("Received debug:netmonitor:updateEvent unsupported method: " + method);
++      return;
++    }
++    actor[method].apply(actor, args);
++  },
++
++  destroy: function() {
++    dump("NetworkMonitorChild destroy() " + this.appId + "\n");
++    removeMessageListener("debug:netmonitor:newEvent", this._onNewEvent);
++    removeMessageListener("debug:netmonitor:updateEvent", this._onUpdateEvent);
++    sendAsyncMessage("debug:netmonitor", { action: "stop" });
++    this._netEvents.clear();
++    this.owner = null;
++  },
++};
+diff --git a/toolkit/devtools/webconsole/network-helper.js b/toolkit/devtools/webconsole/network-helper.js
+--- a/toolkit/devtools/webconsole/network-helper.js
++++ b/toolkit/devtools/webconsole/network-helper.js
+@@ -184,16 +184,28 @@ let NetworkHelper = {
+ 
+         return this.readAndConvertFromStream(descriptor, aCharset);
+       }
+     }
+     return null;
+   },
+ 
+   /**
++   * Gets the web appId that is associated with aRequest.
++   *
++   * @param nsIHttpChannel aRequest
++   * @returns number
++   *          The appId for the given request.
++   */
++  getAppIdForRequest: function NH_getAppIdForRequest(aRequest)
++  {
++    return this.getRequestLoadContext(aRequest).appId;
++  },
++
++  /**
+    * Gets the nsIDOMWindow that is associated with aRequest.
+    *
+    * @param nsIHttpChannel aRequest
+    * @returns nsIDOMWindow or null
+    */
+   getWindowForRequest: function NH_getWindowForRequest(aRequest)
+   {
+     try {
+@@ -421,17 +433,17 @@ let NetworkHelper = {
+     if (aMimeType.indexOf("text/") == 0) {
+       return true;
+     }
+ 
+     // XML and JSON often come with custom MIME types, so in addition to the
+     // standard "application/xml" and "application/json", we also look for
+     // variants like "application/x-bigcorp-xml" by checking for either string
+     // after any word boundary.
+-    if (/^application\/(\w+[\.-]?)+\+(xml|json)/.test(aMimeType)) {
++    if (/^application\/\w[\w\.-]*\+(xml|json)$/.test(aMimeType)) {
+       return true;
+     }
+ 
+     let category = this.mimeCategoryMap[aMimeType] || null;
+     switch (category) {
+       case "txt":
+       case "js":
+       case "json":
+diff --git a/toolkit/devtools/webconsole/utils.js b/toolkit/devtools/webconsole/utils.js
+--- a/toolkit/devtools/webconsole/utils.js
++++ b/toolkit/devtools/webconsole/utils.js
+@@ -1889,35 +1889,40 @@ NetworkResponseListener.prototype = {
+ /**
+  * The network monitor uses the nsIHttpActivityDistributor to monitor network
+  * requests. The nsIObserverService is also used for monitoring
+  * http-on-examine-response notifications. All network request information is
+  * routed to the remote Web Console.
+  *
+  * @constructor
+  * @param nsIDOMWindow aWindow
+- *        Optional, the window that we monitor network requests for. If no
+- *        window is given, all browser network requests are logged.
++ *        Optional, filter network requests by the associated window object.
++ * @param number aAppId
++ *        Optional, filter network requests by the associated web app ID.
+  * @param object aOwner
+  *        The network monitor owner. This object needs to hold:
+- *        - onNetworkEvent(aRequestInfo, aChannel). This method is invoked once for
+- *        every new network request and it is given two arguments: the initial network
+- *        request information, and the channel. onNetworkEvent() must return an object
+- *        which holds several add*() methods which are used to add further network
+- *        request/response information.
++ *        - onNetworkEvent(aRequestInfo, aChannel, aNetworkMonitor).
++ *        This method is invoked once for every new network request and it is
++ *        given two arguments: the initial network request information, and the
++ *        channel. The third argument is the NetworkMonitor instance.
++ *        onNetworkEvent() must return an object which holds several add*()
++ *        methods which are used to add further network request/response
++ *        information.
+  *        - saveRequestAndResponseBodies property which tells if you want to log
+  *        request and response bodies.
+  */
+-function NetworkMonitor(aWindow, aOwner)
++function NetworkMonitor(aWindow, aAppId, aOwner)
+ {
+   this.window = aWindow;
++  this.appId = aAppId;
+   this.owner = aOwner;
+   this.openRequests = {};
+   this.openResponses = {};
+   this._httpResponseExaminer = this._httpResponseExaminer.bind(this);
++  console.log("NetworkMonitor constructor window " + this.window, "appId", this.appId);
+ }
+ 
+ NetworkMonitor.prototype = {
+   httpTransactionCodes: {
+     0x5001: "REQUEST_HEADER",
+     0x5002: "REQUEST_BODY_SENT",
+     0x5003: "RESPONSE_START",
+     0x5004: "RESPONSE_HEADER",
+@@ -1988,22 +1993,35 @@ NetworkMonitor.prototype = {
+     // NetworkResponseListener is responsible with updating the httpActivity
+     // object with the data from the new object in openResponses.
+ 
+     if (!this.owner || aTopic != "http-on-examine-response" ||
+         !(aSubject instanceof Ci.nsIHttpChannel)) {
+       return;
+     }
+ 
++    console.log("NM__httpResponseExaminer start");
+     let channel = aSubject.QueryInterface(Ci.nsIHttpChannel);
+ 
+     if (this.window) {
+       // Try to get the source window of the request.
+       let win = NetworkHelper.getWindowForRequest(channel);
++      console.log("NM__httpResponseExaminer getWindowForRequest() result " + win);
+       if (!win || win.top !== this.window) {
++        console.log("NM__httpResponseExaminer window does not match");
++        return;
++      }
++    }
++
++    if (this.appId) {
++      // Try to get the source appId of the request.
++      let appId = NetworkHelper.getAppIdForRequest(channel);
++      console.log("NM__httpResponseExaminer getAppIdForRequest() result", appId);
++      if (!appId || appId !== this.appId) {
++        console.log("NM__httpResponseExaminer appId does not match");
+         return;
+       }
+     }
+ 
+     let response = {
+       id: gSequenceId(),
+       channel: channel,
+       headers: [],
+@@ -2138,19 +2156,30 @@ NetworkMonitor.prototype = {
+    */
+   _onRequestHeader:
+   function NM__onRequestHeader(aChannel, aTimestamp, aExtraStringData)
+   {
+     let win = NetworkHelper.getWindowForRequest(aChannel);
+ 
+     // Try to get the source window of the request.
+     if (this.window && (!win || win.top !== this.window)) {
++      console.log("NM__onRequestHeader window does not match");
+       return;
+     }
+ 
++    if (this.appId) {
++      // Try to get the source appId of the request.
++      let appId = NetworkHelper.getAppIdForRequest(channel);
++      console.log("NM__onRequestHeader getAppIdForRequest() result", appId);
++      if (!appId || appId !== this.appId) {
++        console.log("NM__onRequestHeader appId does not match");
++        return;
++      }
++    }
++
+     let httpActivity = this.createActivityObject(aChannel);
+ 
+     // see NM__onRequestBodySent()
+     httpActivity.charset = win ? win.document.characterSet : null;
+     httpActivity.private = win ? PrivateBrowsingUtils.isWindowPrivate(win) : false;
+ 
+     httpActivity.timings.REQUEST_HEADER = {
+       first: aTimestamp,
+@@ -2199,17 +2228,17 @@ NetworkMonitor.prototype = {
+         headers.push({ name: aName, value: aValue });
+       }
+     });
+ 
+     if (cookieHeader) {
+       cookies = NetworkHelper.parseCookieHeader(cookieHeader);
+     }
+ 
+-    httpActivity.owner = this.owner.onNetworkEvent(event, aChannel);
++    httpActivity.owner = this.owner.onNetworkEvent(event, aChannel, this);
+ 
+     this._setupResponseListener(httpActivity);
+ 
+     this.openRequests[httpActivity.id] = httpActivity;
+ 
+     httpActivity.owner.addRequestHeaders(headers);
+     httpActivity.owner.addRequestCookies(cookies);
+   },

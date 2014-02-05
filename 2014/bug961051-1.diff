@@ -1,0 +1,30 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1389980200 -7200
+#      Fri Jan 17 19:36:40 2014 +0200
+# Node ID 353954d317474aea865d4af29f38152c0b78d86d
+# Parent  392e23a3ce048dc1f79adcdb4f110d3e23c5b27b
+Bug 961051 - Fix for intermittent browser_console_addonsdk_loader_exception.js | This test exceeded the timeout threshold; r=me
+
+diff --git a/browser/devtools/webconsole/test/browser_console_addonsdk_loader_exception.js b/browser/devtools/webconsole/test/browser_console_addonsdk_loader_exception.js
+--- a/browser/devtools/webconsole/test/browser_console_addonsdk_loader_exception.js
++++ b/browser/devtools/webconsole/test/browser_console_addonsdk_loader_exception.js
+@@ -6,16 +6,18 @@
+ // Check that exceptions from scripts loaded with the addon-sdk loader are
+ // opened correctly in View Source from the Browser Console.
+ // See bug 866950.
+ 
+ const TEST_URI = "data:text/html;charset=utf8,<p>hello world from bug 866950";
+ 
+ function test()
+ {
++  requestLongerTimeout(2);
++
+   let webconsole, browserconsole;
+ 
+   addTab(TEST_URI);
+   browser.addEventListener("load", function onLoad() {
+     browser.removeEventListener("load", onLoad, true);
+ 
+     openConsole(null, consoleOpened);
+   }, true);

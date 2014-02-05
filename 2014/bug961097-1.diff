@@ -1,0 +1,46 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1389982852 -7200
+#      Fri Jan 17 20:20:52 2014 +0200
+# Node ID 010de8110f84014b9a6d966d71bf95721a82cf84
+# Parent  1eed783d9a6f7383f55f95120742ba53bcdf5486
+Bug 961097 - Very janky regular expression introduced in bug 923856; r=bz
+
+diff --git a/toolkit/devtools/webconsole/network-helper.js b/toolkit/devtools/webconsole/network-helper.js
+--- a/toolkit/devtools/webconsole/network-helper.js
++++ b/toolkit/devtools/webconsole/network-helper.js
+@@ -421,17 +421,17 @@ let NetworkHelper = {
+     if (aMimeType.indexOf("text/") == 0) {
+       return true;
+     }
+ 
+     // XML and JSON often come with custom MIME types, so in addition to the
+     // standard "application/xml" and "application/json", we also look for
+     // variants like "application/x-bigcorp-xml" by checking for either string
+     // after any word boundary.
+-    if (/^application\/(\w+[\.-]?)+\+(xml|json)/.test(aMimeType)) {
++    if (/^application\/\w+[\w\.-]*\+(?:xml|json)$/.test(aMimeType)) {
+       return true;
+     }
+ 
+     let category = this.mimeCategoryMap[aMimeType] || null;
+     switch (category) {
+       case "txt":
+       case "js":
+       case "json":
+diff --git a/toolkit/devtools/webconsole/test/unit/test_network_helper.js b/toolkit/devtools/webconsole/test/unit/test_network_helper.js
+--- a/toolkit/devtools/webconsole/test/unit/test_network_helper.js
++++ b/toolkit/devtools/webconsole/test/unit/test_network_helper.js
+@@ -30,9 +30,12 @@ function test_isTextMimeType () {
+   // Test custom JSON subtype
+   do_check_eq(NetworkHelper.isTextMimeType("application/vnd.tent.posts-feed.v0+json"), true);
+   // Test custom XML subtype
+   do_check_eq(NetworkHelper.isTextMimeType("application/vnd.tent.posts-feed.v0+xml"), true);
+   // Test case-insensitive
+   do_check_eq(NetworkHelper.isTextMimeType("application/vnd.BIG-CORP+json"), true);
+   // Test non-text type
+   do_check_eq(NetworkHelper.isTextMimeType("image/png"), false);
++
++  // Test we do not cause internal errors with unoptimized regex. Bug 961097
++  do_check_eq(NetworkHelper.isTextMimeType("application/vnd.google.safebrowsing-chunk"), false);
+ }
