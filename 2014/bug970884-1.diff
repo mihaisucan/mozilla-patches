@@ -1,0 +1,94 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1392209041 -7200
+#      Wed Feb 12 14:44:01 2014 +0200
+# Node ID 16c610f11035c0dc284b8acca0a6c980c3a85a96
+# Parent  445dca4f26f044063a48b3d0ad8b5518786091a4
+Bug 970884 - Fix for intermittent browser_webconsole_bug_589162_css_filter.js | Timed out while waiting for: css error displayed; r=me
+
+diff --git a/browser/devtools/webconsole/test/browser_webconsole_bug_589162_css_filter.js b/browser/devtools/webconsole/test/browser_webconsole_bug_589162_css_filter.js
+--- a/browser/devtools/webconsole/test/browser_webconsole_bug_589162_css_filter.js
++++ b/browser/devtools/webconsole/test/browser_webconsole_bug_589162_css_filter.js
+@@ -7,56 +7,41 @@
+  *  Mihai Șucan <mihai.sucan@gmail.com>
+  *  Patrick Walton <pcwalton@mozilla.com>
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ const TEST_URI = "data:text/html;charset=utf-8,<div style='font-size:3em;" +
+   "foobarCssParser:baz'>test CSS parser filter</div>";
+ 
+-function onContentLoaded()
+-{
+-  browser.removeEventListener("load", onContentLoaded, true);
+-
+-  let HUD = HUDService.getHudByWindow(content);
+-  let hudId = HUD.hudId;
+-  let outputNode = HUD.outputNode;
+-
+-  HUD.jsterm.clearOutput();
+-
+-  waitForSuccess({
+-    name: "css error displayed",
+-    validatorFn: function()
+-    {
+-      return outputNode.textContent.indexOf("foobarCssParser") > -1;
+-    },
+-    successFn: function()
+-    {
+-      HUD.setFilterState("cssparser", false);
+-
+-      let msg = "the unknown CSS property warning is not displayed, " +
+-                "after filtering";
+-      testLogEntry(outputNode, "foobarCssParser", msg, true, true);
+-
+-      HUD.setFilterState("cssparser", true);
+-      finishTest();
+-    },
+-    failureFn: finishTest,
+-  });
+-}
+-
+ /**
+  * Unit test for bug 589162:
+  * CSS filtering on the console does not work
+  */
+-function test()
+-{
+-  addTab(TEST_URI);
+-  browser.addEventListener("load", function onLoad() {
+-    browser.removeEventListener("load", onLoad, true);
++function test() {
++  Task.spawn(runner).then(finishTest);
+ 
+-    openConsole(null, function() {
+-      browser.addEventListener("load", onContentLoaded, true);
+-      content.location.reload();
++  function* runner() {
++    let {tab} = yield loadTab(TEST_URI);
++    let hud = yield openConsole(tab);
++
++    // CSS warnings are disabled by default.
++    hud.setFilterState("cssparser", true);
++    hud.jsterm.clearOutput();
++
++    content.location.reload();
++
++    yield waitForMessages({
++      webconsole: hud,
++      messages: [{
++        text: "foobarCssParser",
++        category: CATEGORY_CSS,
++        severity: SEVERITY_WARNING,
++      }],
+     });
+-  }, true);
++
++    hud.setFilterState("cssparser", false);
++
++    let msg = "the unknown CSS property warning is not displayed, " +
++              "after filtering";
++    testLogEntry(hud.outputNode, "foobarCssParser", msg, true, true);
++  }
+ }
+-

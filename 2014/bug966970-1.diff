@@ -1,0 +1,52 @@
+# HG changeset patch
+# User Mihai Sucan <mihai.sucan@gmail.com>
+# Date 1391602957 -7200
+#      Wed Feb 05 14:22:37 2014 +0200
+# Node ID eaf24e9ebc2ddccd5533451ecd584c82f4184c85
+# Parent  18d70a3136f51e5cd12d5f54f28d9f6c2c77f2e2
+Bug 966970 - Fix for intermittent browser_webconsole_bug_632275_getters_document_width.js | Test timed out; r=pbrosset
+
+diff --git a/browser/devtools/framework/toolbox.js b/browser/devtools/framework/toolbox.js
+--- a/browser/devtools/framework/toolbox.js
++++ b/browser/devtools/framework/toolbox.js
+@@ -1055,27 +1055,35 @@ Toolbox.prototype = {
+   /**
+    * Destroy the inspector/walker/selection fronts
+    * Returns a promise that resolves when the fronts are destroyed
+    */
+   destroyInspector: function() {
+     let deferred = promise.defer();
+ 
+     if (this._inspector) {
+-      this._selection.destroy();
+-      this._selection = null;
+-      this._walker.release().then(
++      // Selection is not always available.
++      if (this._selection) {
++        this._selection.destroy();
++        this._selection = null;
++      }
++
++      let walker = this._walker ? this._walker.release() : promise.resolve(null);
++      walker.then(
+         () => {
+           this._inspector.destroy();
+-          this._highlighter.destroy();
++          if (this._highlighter) {
++            this._highlighter.destroy();
++          }
+         },
+         (e) => {
+           console.error("Walker.release() failed: " + e);
+           this._inspector.destroy();
+-          return this._highlighter.destroy();
++
++          return this._highlighter ? this._highlighter.destroy() : promise.resolve(null);
+         }
+       ).then(() => {
+         this._inspector = null;
+         this._highlighter = null;
+         this._walker = null;
+         deferred.resolve();
+       });
+     } else {
